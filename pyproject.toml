@@ -1,0 +1,10 @@
+[project]
+name = "from-0-to-agi"
+version = "0.1.0"
+description = "从矩阵到大语言模型的完整学习教程"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+    "torch>=2.0",
+]
