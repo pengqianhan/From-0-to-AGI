@@ -6,3 +6,4 @@
 - [Mathematical theory of deep learning](https://arxiv.org/abs/2407.18384)
 - [Scaling Laws That Extrapolate 300× Past the Fit](https://openathena.ai/blog/delphi/)
 -[12G 显存，够吗？——消费级 GPU 上做 LLM 算法研究的完整路线](https://x.com/dashen_wang/status/2038970877732380924)
+- [Reproducing all of Schmidhuber’s papers (1990-2025)](https://github.com/cybertronai/schmidhuber-problems/blob/main/VISUAL_TOUR.md)
