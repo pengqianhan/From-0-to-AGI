@@ -3,3 +3,4 @@
 - [minimind](https://github.com/jingyaogong/minimind)
 - [nanoGPT](https://github.com/karpathy/nanoGPT)
 - [Hands-On Modern Reinforcement Learning](https://walkinglabs.github.io/hands-on-modern-rl/preface/intro)
+- [Mathematical theory of deep learning](https://arxiv.org/abs/2407.18384)
