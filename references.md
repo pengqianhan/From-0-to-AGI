@@ -1,5 +1,5 @@
 这个教程不是从头构建，参考了很多前人的工作，以下是一些重要的参考资料：
-- [CS336] Stanford CS336
+- [CS336](https://cs336.stanford.edu/)
 - [minimind](https://github.com/jingyaogong/minimind)
 - [nanoGPT](https://github.com/karpathy/nanoGPT)
 - [Hands-On Modern Reinforcement Learning](https://walkinglabs.github.io/hands-on-modern-rl/preface/intro)
