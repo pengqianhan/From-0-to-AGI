@@ -16,3 +16,4 @@
 - [Small-Scale Experiments: Are We There Yet?](https://arxiv.org/pdf/2608.11859):这篇文章介绍了小规模LLM的scaling law,小模型对超参数极度敏感掩盖了缩放定律的真实存在,只有充分调优后小规模实验才能可靠预测大规模结果。
 - datasets: fine-web edu,ultra-fineweb-L1
 - [Marin 535B-A23B 训练直播](https://wandb.ai/marin-community/marin_moe/reports/535B-A23B-18T-Token-Hero-Run-Scaling-Ladder--VmlldzoxNzc2MDM5Ng),[github details](https://github.com/marin-community/marin/issues/8435)，[data composition:](https://storage.googleapis.com/marin-public/held/harrier-k40-cluster-overview/2026.08.18/index.html?revision=uniform-sampling)
+- [UNDERSTANDING TRANSFORMERS AND ATTENTIONMECHANISMS: AN INTRODUCTION FOR APPLIEDMATHEMATICIANS](https://arxiv.org/pdf/2604.00965)
