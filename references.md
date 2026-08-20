@@ -14,3 +14,4 @@
 - [Pretraining a Mini Kimi K3](https://books.vizuara.ai/book/pretraining-a-mini-k3) 对于k3这个新架构的预训练可以参考
 - 1.5万字速通LLM主流模型结构（Llama、Qwen、GLM、Deepseek...](https://zhuanlan.zhihu.com/p/2060741715095560795): 这篇文章对主流的LLM模型结构进行了详细的介绍和比较，涵盖了Llama、Qwen、GLM、Deepseek等模型的架构特点和应用场景。
 - [Small-Scale Experiments: Are We There Yet?](https://arxiv.org/pdf/2608.11859):这篇文章介绍了小规模LLM的scaling law,小模型对超参数极度敏感掩盖了缩放定律的真实存在,只有充分调优后小规模实验才能可靠预测大规模结果。
+- datasets: fine-web edu,ultra-fineweb-L1
