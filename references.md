@@ -10,4 +10,7 @@
 - [AI 研究方法的演变](https://github.com/owlman/CS_StudyNotes/blob/master/02_%E5%9F%BA%E7%A1%80%E7%90%86%E8%AE%BA%E5%AD%A6%E4%B9%A0/%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD/01.%E5%AD%A6%E4%B9%A0%E7%AC%94%E8%AE%B0/AI%20%E7%A0%94%E7%A9%B6%E6%96%B9%E6%B3%95%E7%9A%84%E6%BC%94%E5%8F%98.md): 从1950年开始的一个AI研究方法的演变，涵盖了从符号主义到连接主义，再到现代深度学习的历程。
 - [Advanced Natural Language Processing / Spring 2026 from CMU](https://cmu-l3.github.io/anlp-spring2026/)[code](https://github.com/cmu-l3/anlp-spring2026-code)
 - [Maths, CS & AI Compendium](https://github.com/HenryNdubuaku/maths-cs-ai-compendium/tree/main)
-- [Pi Book](https://github.com/antinomie-lab/pi-book/tree/main)： 这本书的格式和交互方式很适合学习
+- [Pi Book](https://github.com/antinomie-lab/pi-book/tree/main)： 这本书的格式和交互方式很适合学习，关于Pi agent 的内容也可以参考
+- [Pretraining a Mini Kimi K3](https://books.vizuara.ai/book/pretraining-a-mini-k3) 对于k3这个新架构的预训练可以参考
+- 1.5万字速通LLM主流模型结构（Llama、Qwen、GLM、Deepseek...](https://zhuanlan.zhihu.com/p/2060741715095560795): 这篇文章对主流的LLM模型结构进行了详细的介绍和比较，涵盖了Llama、Qwen、GLM、Deepseek等模型的架构特点和应用场景。
+- [Small-Scale Experiments: Are We There Yet?](https://arxiv.org/pdf/2608.11859):这篇文章介绍了小规模LLM的scaling law,小模型对超参数极度敏感掩盖了缩放定律的真实存在,只有充分调优后小规模实验才能可靠预测大规模结果。
