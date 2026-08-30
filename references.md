@@ -17,3 +17,4 @@
 - datasets: fine-web edu,ultra-fineweb-L1
 - [Marin 535B-A23B 训练直播](https://wandb.ai/marin-community/marin_moe/reports/535B-A23B-18T-Token-Hero-Run-Scaling-Ladder--VmlldzoxNzc2MDM5Ng),[github details](https://github.com/marin-community/marin/issues/8435)，[data composition:](https://storage.googleapis.com/marin-public/held/harrier-k40-cluster-overview/2026.08.18/index.html?revision=uniform-sampling)
 - [UNDERSTANDING TRANSFORMERS AND ATTENTIONMECHANISMS: AN INTRODUCTION FOR APPLIEDMATHEMATICIANS](https://arxiv.org/pdf/2604.00965)
+- [Puro-2B](https://www.alphaxiv.org/abs/2608.27370):Puro-2B：穷实验室在RTX 5090上以5090美元预算训练的Qwen2-1.5B
