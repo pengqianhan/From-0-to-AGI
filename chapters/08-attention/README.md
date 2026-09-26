@@ -296,7 +296,7 @@ bits-per-byte 就是第 7 章的指标：损失除以 ln 2（这里 1 字符 = 1
 
 ## 从极简到生产级
 
-主线模型的注意力在 [`zero/model.py`](../../zero/model.py) 的 `Attention` 类里。骨架和本章的 `MultiHeadAttention` 一模一样：三个投影 `wq`、`wk`、`wv`，缩放点积，因果 mask，多头，输出投影 `wo`，参数名都相同。`Attention.forward` 的核心（省略了 transpose）：
+主线模型的注意力在 [`zero/model.py`](../../zero/model.py) 的 `Attention` 类里。骨架和本章的 `MultiHeadAttention` 一模一样：三个投影 `wq`、`wk`、`wv`，缩放点积，因果 mask，多头，输出投影 `wo`，参数名都相同。`Attention.forward` 的核心（省略了 transpose，几行稍作合并）：
 
 ```python
 q = self.q_norm(self.wq(x).view(bsz, seqlen, self.n_heads, self.head_dim))      # QK-Norm
@@ -312,7 +312,7 @@ return self.wo(out.reshape(bsz, seqlen, self.n_heads * self.head_dim))
 
 | 极简版（本章） | 生产级（`zero/model.py` 的 `Attention`） | 为什么 |
 |---|---|---|
-| `wq`、`wk`、`wv` 三个 `nn.Linear(C, C)` | 同样是三个独立的投影（不是融合成一个大矩阵），但 `wk`、`wv` 的输出是 `kv_dim = n_kv_heads × head_dim`；全部无 bias | 参数名和形状与 Hugging Face 的 Qwen3 一一对应，才能直接加载官方权重对拍；无 bias 是 Qwen3 等模型的共识做法 |
+| `wq`、`wk`、`wv` 三个 `nn.Linear(C, C)` | 同样是三个独立的投影（不是融合成一个大矩阵），但 `wk`、`wv` 的输出是 `kv_dim = n_kv_heads × head_dim`；全部无 bias | 参数名和形状与 Hugging Face 的 Qwen3 一一对应，才能直接加载官方权重对拍；不用 bias：Qwen3 去掉了 Qwen2 的 QKV bias，OLMo 2 也不用任何 bias |
 | 头数 H，每头 `d = C/H` | `n_heads` 个查询头，`n_kv_heads` 个 K/V 头；`head_dim` 可以不等于 `dim / n_heads` | **GQA**（分组查询注意力）：几个查询头共用一组 K/V，KV cache 按比例变小。第 10 章讲 |
 | 直接用 q、k | `q_norm`、`k_norm`：对每个头的 q、k 在 head_dim 上做 RMSNorm | **QK-Norm**：防止注意力分数过大导致训练发散（Qwen3、OLMo 2、Gemma 3 都用）。第 9 章讲 |
 | 可学习的位置向量加在输入上（`04` 里） | `apply_rope`：对 q、k 做旋转位置编码 | **RoPE**：位置信息直接进入 q·k，只和相对距离有关。第 9 章讲 |

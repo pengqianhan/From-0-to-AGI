@@ -242,7 +242,7 @@ class ChapterScene(NarratedScene):
                       max_tip_length_to_length_ratio=0.15)
             lbl = zh(m01.TOKENS[i], 22, col).next_to(ax.c2p(*v), UP if v[1] >= 0 else DOWN, 0.08)
             vecs.add(VGroup(a, lbl))
-        cell = 0.62
+        cell = 0.74
         g_uni = grid(W_UNI, cell, theme.ATTN, numbers=False)
         frac = VGroup()
         for i in range(T5):
@@ -255,7 +255,7 @@ class ChapterScene(NarratedScene):
             self.play(*self.set_heading("最朴素的办法：把前面的向量取平均"), Create(ax),
                       LaggedStart(*[GrowArrow(v[0]) for v in vecs], lag_ratio=0.15),
                       LaggedStart(*[FadeIn(v[1]) for v in vecs], lag_ratio=0.15), run_time=self.fit(2))
-            mat_uni.move_to([2.3, 0.1, 0])
+            mat_uni.move_to([2.3, 0.5, 0])
             for i, lab in enumerate(row_lbl):
                 lab.next_to(g_uni[0][i][0], LEFT, 0.15)
             wl = MathTex("W", font_size=40, color=theme.ATTN).next_to(mat_uni, UP, 0.2)
@@ -270,9 +270,10 @@ class ChapterScene(NarratedScene):
                               max_tip_length_to_length_ratio=0.3)
             box_last = SurroundingRectangle(g_uni[0][T5 - 1], color=theme.HIGHLIGHT, buff=0.03)
             self.wait(self.remaining() * 0.25)
-            self.play(Create(box_last), GrowArrow(avg_arrow), run_time=self.fit(1.2))
+            avg_lbl = zh("平均", 20, theme.FG).next_to(ax.c2p(*avg), DOWN + RIGHT, 0.05)
+            self.play(Create(box_last), GrowArrow(avg_arrow), FadeIn(avg_lbl), run_time=self.fit(1.2))
             same = zh(f"和逐个循环求平均的最大差：{np.abs(W_UNI @ X - m01.prefix_mean_loop(X)).max():.0e}",
-                      22, theme.OUTPUT).move_to([2.3, -2.35, 0])
+                      22, theme.OUTPUT).move_to([2.3, -2.45, 0])
             self.wait(self.remaining() * 0.3)
             self.play(FadeIn(same), run_time=self.fit(0.8))
 
@@ -289,15 +290,16 @@ class ChapterScene(NarratedScene):
             wavg = W_DOT[-1] @ X
             new_arrow = Arrow(ax.c2p(0, 0), ax.c2p(*wavg), buff=0, color=theme.FG, stroke_width=6,
                               max_tip_length_to_length_ratio=0.3)
-            self.play(Transform(avg_arrow, new_arrow), run_time=self.fit(1.2))
+            new_lbl = zh("加权平均", 20, theme.FG).next_to(ax.c2p(*wavg), RIGHT, 0.1)
+            self.play(Transform(avg_arrow, new_arrow), Transform(avg_lbl, new_lbl), run_time=self.fit(1.2))
             self.wait(self.remaining() * 0.35)
             diag = VGroup(*[SurroundingRectangle(g_uni[i][i], color=theme.HIGHLIGHT, buff=0.02)
                             for i in range(T5)])
             self_top = sum(int(np.argmax(W_DOT[t]) == t) for t in range(T5))
-            warn = zh(f"问题：{self_top}/{T5} 个位置最关注的都是自己", 24, theme.HIGHLIGHT).move_to([2.3, -2.35, 0])
+            warn = zh(f"问题：{self_top}/{T5} 个位置最关注的都是自己", 24, theme.HIGHLIGHT).move_to([2.3, -2.45, 0])
             self.play(Create(diag), FadeIn(warn), run_time=self.fit(1))
             self.wait(self.remaining() - 0.6)
-            self.play(FadeOut(VGroup(ax, vecs, g_uni, g_dot[1], wl, row_lbl, avg_arrow, diag, warn)),
+            self.play(FadeOut(VGroup(ax, vecs, g_uni, g_dot[1], wl, row_lbl, avg_arrow, avg_lbl, diag, warn)),
                       run_time=self.fit(0.6))
 
         # ── S06 Q K V ────────────────────────────────────────────────────
@@ -398,15 +400,15 @@ class ChapterScene(NarratedScene):
                 base = Line([1.2, y, 0], [6.6, y, 0], color=theme.MUTED, stroke_width=1.5)
                 bars = VGroup()
                 for i, w in enumerate(ws):
-                    h = max(0.01, 1.3 * float(w))
+                    h = max(0.01, 1.5 * float(w))
                     b = Rectangle(width=0.26, height=h, fill_color=color, fill_opacity=0.9, stroke_width=0)
                     b.move_to([1.4 + 0.335 * i, y + h / 2, 0])
                     bars.add(b)
-                t = zh(title, 20, theme.FG).next_to(base, UP, 1.45).align_to(base, LEFT)
+                t = zh(title, 20, theme.FG).next_to(base, UP, 1.65).align_to(base, LEFT)
                 return VGroup(base, bars, t)
 
-            c1 = bar_chart(BARS_RAW, theme.ATTN, 0.55, "d = 1024，不缩放：16 个位置的权重")
-            c2 = bar_chart(BARS_SCALED, theme.ATTN, -2.3, "除以 √d 之后")
+            c1 = bar_chart(BARS_RAW, theme.ATTN, 0.45, "d = 1024，不缩放：16 个位置的权重")
+            c2 = bar_chart(BARS_SCALED, theme.ATTN, -2.2, "除以 √d 之后")
             self.play(FadeIn(c1[0]), FadeIn(c1[2]), GrowFromEdge(c1[1], DOWN), run_time=self.fit(1.5))
             self.wait(self.remaining() * 0.3)
             self.play(FadeIn(g2), LaggedStart(*[FadeIn(VGroup(tbl[8 + 5 * i], tbl[9 + 5 * i]))
@@ -436,7 +438,7 @@ class ChapterScene(NarratedScene):
             strip = VGroup(*[Rectangle(width=0.16, height=0.5, stroke_width=0.5, stroke_color=theme.BG,
                                        fill_color=head_cols[i // 8], fill_opacity=0.85) for i in range(32)])
             strip.arrange(RIGHT, buff=0).move_to([0, 2.2, 0])
-            cl = MathTex("C = 32", font_size=30).next_to(strip, LEFT, 0.3)
+            cl = MathTex("C = 32", font_size=30).move_to([-5.9, 2.2, 0])
             self.play(*self.set_heading("多头注意力：切成 H 份，各算各的"), FadeIn(strip), FadeIn(cl),
                       run_time=self.fit(1))
             groups = VGroup(*[VGroup(*strip[8 * h:8 * h + 8]) for h in range(4)])
@@ -511,8 +513,8 @@ class ChapterScene(NarratedScene):
             self.play(*self.set_heading("训练好的模型：真实的注意力权重"),
                       FadeIn(VGroup(panels[0][0], panels[0][1], panels[0][2], panels[0][3])),
                       run_time=self.fit(1.5))
-            axes_note = zh("行：当前字符　列：被看的字符（_ 是空格）", 20, theme.MUTED).move_to([0, 2.55, 0])
-            axes_note.to_edge(RIGHT, buff=0.4)
+            axes_note = zh("行：当前字符　列：被看的字符（_ 是空格）", 20, theme.MUTED)
+            axes_note.to_corner(UP + RIGHT, buff=0.45)
             self.play(FadeIn(axes_note), run_time=self.fit(0.6))
             self.wait(self.remaining() * 0.12)
             self.play(FadeIn(panels[0][4]), run_time=self.fit(0.8))
