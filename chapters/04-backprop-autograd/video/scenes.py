@@ -127,6 +127,16 @@ for _ in range(500):
     _l.backward()
     _opt.step()
 TORCH_FINAL = ((_model(_xt) - _yt) ** 2).mean().item()
+_gc_params = {k: v.detach().clone().requires_grad_(True) for k, v in _model.named_parameters()}
+
+
+def _loss_of_params(*ps):
+    out = torch.func.functional_call(_model, dict(zip(_gc_params, ps, strict=True)), (_xt,))
+    return ((out - _yt) ** 2).mean()
+
+
+GRADCHECK = torch.autograd.gradcheck(_loss_of_params, tuple(_gc_params.values()), eps=1e-6,
+                                     atol=1e-6)
 
 # S11 计时：04_pytorch_compare.py 的一次实测（毫秒），每次运行都会不同，见 README 第 9 节
 TIMING = [(20, 43.7, 0.355), (200, 775.3, 0.414)]
@@ -407,7 +417,7 @@ class ChapterScene(NarratedScene):
                 table.add(MathTex(lhs, font_size=30), MathTex(rhs, font_size=30,
                                                                  color=theme.HIGHLIGHT))
             table.arrange_in_grid(rows=len(rows), cols=2, col_alignments="ll", buff=(0.5, 0.28))
-            table.move_to([-3.4, 0.1, 0])
+            table.move_to([-3.6, 0.1, 0])
             code_lines = [
                 "def __mul__(self, other):",
                 "    out = Value(self.data * other.data)",
@@ -417,7 +427,7 @@ class ChapterScene(NarratedScene):
                 "    out._backward = _backward",
                 "    return out",
             ]
-            code = code_block(code_lines, 19, 0.16).move_to([3.55, 0.3, 0])
+            code = code_block(code_lines, 18, 0.16).move_to([3.45, 0.3, 0])
             for i in range(len(table) // 2):
                 self.play(FadeIn(table[2 * i]), FadeIn(table[2 * i + 1]),
                           run_time=self.fit(0.5, reserve=5))
@@ -474,7 +484,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(code), Create(box), run_time=self.fit(0.8))
             bug = VGroup(zh(f"改成 = ：相对误差 {BUG_EXPR_REL:.2f}", 22, theme.GRAD),
                          zh("PyTorch 也累加 → 每步先 zero_grad()", 22, theme.MUTED)
-                         ).arrange(DOWN, aligned_edge=LEFT, buff=0.15).move_to([4.4, -1.55, 0])
+                         ).arrange(DOWN, aligned_edge=LEFT, buff=0.15).move_to([4.0, -1.55, 0])
             self.wait(self.remaining() * 0.15)
             self.play(FadeIn(bug[0]), run_time=self.fit(0.6))
             self.wait(self.remaining() * 0.4)
@@ -515,7 +525,7 @@ class ChapterScene(NarratedScene):
                 "self.grad = 1.0",
                 "for v in reversed(topo):",
                 "    v._backward()",
-            ]).move_to([0, -1.75, 0])
+            ]).move_to([0, -1.95, 0])
             code[0][5:9].set_color(theme.HIGHLIGHT)
             per = (self.remaining() - 3) / len(order)
             grads = VGroup()
@@ -672,7 +682,7 @@ class ChapterScene(NarratedScene):
             summary = VGroup(
                 zh(f"梯度最大差 {MAX_DIFF:.1e}（双精度舍入误差）", 22, theme.FG),
                 zh(f"SGD 500 步后损失：{LOSSES[-1]:.10f}  vs  {TORCH_FINAL:.10f}", 22, theme.FG),
-                zh("torch.autograd.gradcheck：用数值梯度检验，同一个思路", 22, theme.MUTED),
+                zh(f"torch.autograd.gradcheck（数值梯度检验，同一个思路）→ {GRADCHECK}", 22, theme.MUTED),
             ).arrange(DOWN, aligned_edge=LEFT, buff=0.16).move_to([0, -1.75, 0])
             self.wait(self.remaining() * 0.1)
             for s in summary:
