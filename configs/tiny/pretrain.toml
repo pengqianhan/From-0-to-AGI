@@ -1,5 +1,5 @@
 # tiny 预训练配置：CPU 上几十秒跑完的冒烟测试（第 14 章"极小配置演示"）。
-# 约 1.2M 参数，用 assets/tiny_corpus/ 现场训练分词器、切分片，然后训练几百步。
+# 约 1.3M 参数，用 assets/tiny_corpus/ 现场训练分词器、切分片，然后训练几百步。
 #   uv run python -m zero.train.pretrain --config configs/tiny/pretrain.toml
 # 注意：这个规模的结果只能说明"代码能跑通、loss 会降"，不能说明任何关于主线模型的结论。
 
@@ -15,7 +15,8 @@ rope_theta = 10000.0
 max_seq_len = 256        # 预留给中期训练把 seq_len 翻倍
 norm_eps = 1e-6
 qk_norm = true
-tie_embeddings = true    # 小模型里 embedding 占比大，共享能省不少参数
+tie_embeddings = false   # 主线模型共享 embedding；但在这个极小规模上实测不共享时 loss 更快走出
+                         # "只会猜高频词"的平台期（同样 200 步 val 5.71 vs 5.91），冒烟演示更清楚
 init_std = 0.02
 
 [train]

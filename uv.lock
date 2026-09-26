@@ -609,7 +609,7 @@ requires-dist = [
     { name = "sherpa-onnx", marker = "extra == 'video'", specifier = ">=1.13.8" },
     { name = "sherpa-onnx-core", marker = "extra == 'video'", specifier = ">=1.13.8" },
     { name = "tokenizers", specifier = ">=0.21" },
-    { name = "torch", specifier = ">=2.0" },
+    { name = "torch", specifier = ">=2.5" },
 ]
 provides-extras = ["video"]
 
