@@ -42,7 +42,7 @@ from manim import (
 from manim.utils.color import ManimColor
 
 from video_kit import theme
-from video_kit.scene import NarratedScene, polyline_in_axes, zh
+from video_kit.scene import NarratedScene, code_block, polyline_in_axes, zh
 
 CODE = Path(__file__).resolve().parent.parent / "code"
 
@@ -545,7 +545,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() * 0.35)
             self.play(FadeIn(conv), run_time=self.fit(0.8))
             self.wait(self.remaining() * 0.45)
-            gpt = zh(f"GPT-2：V = 50257，初始损失 ≈ ln V = {np.log(50257):.2f}", 24, theme.HIGHLIGHT
+            gpt = zh(f"GPT-2（V = 50257）：初始 ≈ ln V = {np.log(50257):.2f}", 22, theme.HIGHLIGHT
                      ).next_to(conv, DOWN, 0.4)
             self.play(FadeIn(gpt), run_time=self.fit(0.8))
             self.wait(self.remaining() - 0.6)
@@ -554,16 +554,16 @@ class ChapterScene(NarratedScene):
 
         # ── S14 从极简到生产级 ───────────────────────────────────────────
         with self.shot("S14"):
-            left_code = VGroup(*[mono(s, 20) for s in [
-                "z = z - z.max(-1, keepdims=True)",
-                "logp = z - log(exp(z).sum(-1))",
-                "loss = -logp[range(N), y].mean()",
-            ]]).arrange(DOWN, aligned_edge=LEFT, buff=0.22).move_to([-3.4, 1.0, 0])
-            right_code = VGroup(*[mono(s, 20) for s in [
-                "logits = model(x)",
-                "loss = F.cross_entropy(logits, y)",
-                "loss.backward()",
-            ]]).arrange(DOWN, aligned_edge=LEFT, buff=0.22).move_to([3.5, 1.0, 0])
+            left_code = code_block("""
+z = z - z.max(-1, keepdims=True)
+logp = z - log(exp(z).sum(-1))
+loss = -logp[range(N), y].mean()
+""", 20, line_buff=0.22).move_to([-3.4, 1.0, 0])
+            right_code = code_block("""
+logits = model(x)
+loss = F.cross_entropy(logits, y)
+loss.backward()
+""", 20, line_buff=0.22).move_to([3.5, 1.0, 0])
             lt = zh("手写（NumPy）", 24, theme.MUTED).next_to(left_code, UP, 0.35)
             rt = zh("PyTorch 标准写法", 24, theme.HIGHLIGHT).next_to(right_code, UP, 0.35)
             self.play(*self.set_heading("从极简到生产级：F.cross_entropy"), FadeIn(lt), FadeIn(left_code),

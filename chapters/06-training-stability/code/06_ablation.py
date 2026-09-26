@@ -7,7 +7,6 @@
 运行：uv run python chapters/06-training-stability/code/06_ablation.py      （约 1.5 分钟）
 """
 
-import copy
 import importlib.util
 import math
 import time
@@ -141,7 +140,7 @@ def train_steps(model, state, cfg, lr_of_step, n_steps: int, bad_steps=(), log_e
             break
         lr = lr_of_step(t)
         with torch.no_grad():
-            for i, (name, p) in enumerate(ps):
+            for i, (_name, p) in enumerate(ps):
                 g = p.grad
                 if cfg["opt"] == "sgd":
                     p -= lr * g                                     # θ ← θ − η·g

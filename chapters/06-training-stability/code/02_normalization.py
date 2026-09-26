@@ -64,7 +64,7 @@ if __name__ == "__main__":
           f"{(layer_norm(xc, one, zero) - rms_norm(xc, one)).abs().max():.2e}")
     print(f"把 x 放大 100 倍：RMSNorm 输出的最大变化 = "
           f"{(rms_norm(100 * x, one) - rn).abs().max():.2e}（尺度不变性）")
-    print(f"可学习参数（宽 d）：LayerNorm 有 γ、β 共 2d 个，RMSNorm 只有 γ 共 d 个\n")
+    print("可学习参数（宽 d）：LayerNorm 有 γ、β 共 2d 个，RMSNorm 只有 γ 共 d 个\n")
 
     shown = [1, 10, 20, 30]
     print(f"{signal.DEPTH} 层 ReLU MLP，每层前面加 RMSNorm：")

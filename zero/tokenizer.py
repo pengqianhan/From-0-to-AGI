@@ -93,6 +93,11 @@ class Tokenizer:
     def encode(self, text: str) -> list[int]:
         return self._tok.encode(text, add_special_tokens=False).ids
 
+    def encode_with_offsets(self, text: str) -> tuple[list[int], list[tuple[int, int]]]:
+        """编码并返回每个 token 在原文里的字符区间 [start, end)（对话模板算 loss mask 用）。"""
+        enc = self._tok.encode(text, add_special_tokens=False)
+        return enc.ids, [tuple(o) for o in enc.offsets]  # type: ignore[misc]
+
     def encode_batch(self, texts: Sequence[str]) -> list[list[int]]:
         return [e.ids for e in self._tok.encode_batch(list(texts), add_special_tokens=False)]
 
@@ -164,9 +169,16 @@ class Tokenizer:
         return cls(HFTokenizer.from_file(str(p)))
 
     def save_hf(
-        self, out_dir: str | os.PathLike, model_max_length: int = 32768, eos_token: str = ENDOFTEXT
+        self,
+        out_dir: str | os.PathLike,
+        model_max_length: int = 32768,
+        eos_token: str = ENDOFTEXT,
+        chat_template: str | None = None,
     ) -> None:
-        """写出 transformers 的 `AutoTokenizer` 能直接读的文件。"""
+        """写出 transformers 的 `AutoTokenizer` 能直接读的文件。
+
+        chat_template：Jinja 对话模板（见 zero/post/chat.py 的 CHAT_TEMPLATE），写进 tokenizer_config.json，
+        `tokenizer.apply_chat_template(...)`、vLLM、llama.cpp 转换脚本都从这里读。"""
         out = Path(out_dir)
         self.save(out / "tokenizer.json")
         added = {
@@ -194,6 +206,8 @@ class Tokenizer:
             "clean_up_tokenization_spaces": False,
             "split_special_tokens": False,
         }
+        if chat_template is not None:
+            tok_cfg["chat_template"] = chat_template
         with open(out / "tokenizer_config.json", "w") as f:
             json.dump(tok_cfg, f, indent=2, ensure_ascii=False)
         with open(out / "special_tokens_map.json", "w") as f:

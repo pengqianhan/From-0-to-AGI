@@ -235,9 +235,15 @@ def export_to_hf_qwen3(
     out_dir: str | os.PathLike,
     tokenizer: Tokenizer | None = None,
     dtype: torch.dtype = torch.bfloat16,
+    chat: bool = False,
+    chat_template: str | None = None,
 ) -> Path:
     """导出成 HF 目录：config.json、generation_config.json、model.safetensors，以及（给了分词器时）
-    tokenizer.json / tokenizer_config.json / special_tokens_map.json。返回目录路径。"""
+    tokenizer.json / tokenizer_config.json（含 chat_template）/ special_tokens_map.json。返回目录路径。
+
+    chat=True 表示对话模型（SFT 之后）：生成的结束符是 `<|im_end|>`（同时保留 `<|endoftext|>`），
+    与 Qwen3 的对话模型一致；Base 模型保持 `<|endoftext|>`。
+    chat_template 默认用 `zero.post.chat.CHAT_TEMPLATE`（Base 模型也写上，与 Qwen3 Base 的做法一致）。"""
     from safetensors.torch import save_file
 
     config = config or model.config
@@ -257,13 +263,29 @@ def export_to_hf_qwen3(
     }
     gen: dict[str, Any] = {"do_sample": True, "temperature": 0.7, "top_p": 0.8}
     if tokenizer is not None:
-        eos = tokenizer.eos_id
-        extra.update({"eos_token_id": eos, "bos_token_id": None, "pad_token_id": tokenizer.eot_id})
+        eos: int | list[int] = tokenizer.eos_id
+        if chat:
+            eos = [tokenizer.im_end_id, tokenizer.eot_id]
+        extra.update(
+            {
+                "eos_token_id": eos[0] if isinstance(eos, list) else eos,
+                "bos_token_id": None,
+                "pad_token_id": tokenizer.eot_id,
+            }
+        )
         gen.update({"eos_token_id": eos, "pad_token_id": tokenizer.eot_id})
     with open(out / "config.json", "w") as f:
         json.dump(config_to_hf_qwen3(config, **extra), f, indent=2, ensure_ascii=False)
     with open(out / "generation_config.json", "w") as f:
         json.dump(gen, f, indent=2)
     if tokenizer is not None:
-        tokenizer.save_hf(out, model_max_length=config.max_seq_len)
+        from zero.post.chat import CHAT_TEMPLATE, IM_END
+        from zero.tokenizer import ENDOFTEXT
+
+        tokenizer.save_hf(
+            out,
+            model_max_length=config.max_seq_len,
+            eos_token=IM_END if chat else ENDOFTEXT,
+            chat_template=chat_template if chat_template is not None else CHAT_TEMPLATE,
+        )
     return out

@@ -54,4 +54,4 @@ description: 第 5 章自我检验：分类与概率（softmax、交叉熵、最
 - 答错了：不要直接给答案，给一个提示（比如让他们运行 `code/02_cross_entropy.py` 看第 4 部分的梯度表，或改 `code/05_pytorch_version.py` 试一试），让他们重新思考。
 - 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
 
-四关都通过后，告诉用户可以进入第 6 章（`chapters/06-*`：让训练稳定——初始化、归一化、残差连接、AdamW、学习率调度）。
+四关都通过后，告诉用户可以进入第 6 章（`chapters/06-training-stability/`，学完后用 `/ch06-training-stability` 自检）。
