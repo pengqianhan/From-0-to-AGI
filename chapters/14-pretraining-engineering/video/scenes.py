@@ -526,7 +526,7 @@ class ChapterScene(NarratedScene):
             self.play(Create(grid), FadeIn(ql), FadeIn(kl), run_time=self.fit(1.5))
             skip = VGroup(*[grid[i * n + j] for i in range(n) for j in range(n) if j > i])
             self.play(skip.animate.set_fill(theme.BG, 1).set_stroke(theme.MUTED, 0.8), run_time=self.fit(1))
-            skl = zh("因果 mask：整块跳过", 20, theme.MUTED).move_to([x0 + n * c - 1.1, y0 - 0.9, 0])
+            skl = zh("右上：因果 mask，整块跳过", 20, theme.MUTED).move_to([x0 + n * c / 2, y0 - n * c - 0.3, 0])
             self.play(FadeIn(skl), run_time=self.fit(0.5))
             state = VGroup(
                 zh("第 4 块 Q 的每一行：", 22, theme.FG),
@@ -583,12 +583,12 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(code), run_time=self.fit(0.8))
             hdr = VGroup(*[zh(t, 20, theme.MUTED) for t in ("步", "一次 2B 条", "梯度累积", "2 进程")])
             table = VGroup()
-            xs = [1.2, 2.6, 4.2, 5.8]
+            xs = [0.9, 2.3, 3.95, 5.6]
             for k, h in enumerate(hdr):
                 h.move_to([xs[k], 2.0, 0])
             for r_i, r in enumerate(D["ddp_rows"]):
                 y = 1.35 - r_i * 0.55
-                cells = [mono(str(r[0]), 22, theme.FG)] + [mono(f"{v:.6f}", 22, theme.OUTPUT) for v in r[1:]]
+                cells = [mono(str(r[0]), 20, theme.FG)] + [mono(f"{v:.6f}", 18, theme.OUTPUT) for v in r[1:]]
                 for k, cc in enumerate(cells):
                     cc.move_to([xs[k], y, 0])
                 table.add(VGroup(*cells))
@@ -625,7 +625,7 @@ class ChapterScene(NarratedScene):
                 ring.add(CurvedArrow(a + (b - a) * 0.28, a + (b - a) * 0.72, angle=-0.4,
                                      color=theme.MUTED, stroke_width=3))
             self.play(FadeIn(nodes), Create(ring), run_time=self.fit(1.5))
-            phase = zh("① reduce-scatter：N−1 轮，每轮传一块、累加", 22, theme.FG).move_to([3.6, 1.8, 0])
+            phase = zh("① reduce-scatter：N−1 轮，每轮传一块、累加", 20, theme.FG).move_to([3.6, 1.8, 0]).align_to([1.0, 0, 0], LEFT)
             self.play(FadeIn(phase), run_time=self.fit(0.6))
             per = max(0.5, (self.remaining() - 6) / 6)
             # reduce-scatter：第 r 轮，卡 i 把第 (i−r) 块发给右邻居，右邻居这一块变深
@@ -637,7 +637,7 @@ class ChapterScene(NarratedScene):
                     anims.append(chunks[dst][c].animate.set_fill(opacity=min(1.0, 0.35 + 0.22 * (r + 1))))
                 self.play(*[a.animate.set_color(theme.HIGHLIGHT) for a in ring], *anims, run_time=self.fit(per * 0.7))
                 self.play(*[a.animate.set_color(theme.MUTED) for a in ring], run_time=self.fit(per * 0.3))
-            phase2 = zh("② all-gather：再 N−1 轮，把完整的块传一圈", 22, theme.FG).move_to([3.6, 1.1, 0])
+            phase2 = zh("② all-gather：再 N−1 轮，把完整的块传一圈", 20, theme.FG).move_to([3.6, 1.1, 0]).align_to([1.0, 0, 0], LEFT)
             self.play(FadeIn(phase2), run_time=self.fit(0.6))
             for r in range(n - 1):
                 self.play(*[chunks[i][k].animate.set_fill(opacity=1.0) for i in range(n) for k in range(n)
@@ -645,10 +645,10 @@ class ChapterScene(NarratedScene):
                           *[a.animate.set_color(theme.HIGHLIGHT) for a in ring], run_time=self.fit(per * 0.7))
                 self.play(*[a.animate.set_color(theme.MUTED) for a in ring], run_time=self.fit(per * 0.3))
             res = VGroup(
-                zh("每卡发送 = 2(N−1)/N × 自己的梯度量", 24, theme.HIGHLIGHT),
+                zh("每卡发送 = 2(N−1)/N × 自己的梯度量", 22, theme.HIGHLIGHT),
                 zh(f"4 卡模拟：每卡 1,000,000 个 → 发出 {D['ring_send']} 个", 20, theme.FG),
                 zh("几乎与卡数无关", 20, theme.FG),
-            ).arrange(DOWN, aligned_edge=LEFT, buff=0.2).move_to([3.6, -0.6, 0])
+            ).arrange(DOWN, aligned_edge=LEFT, buff=0.2).move_to([3.6, -0.6, 0]).align_to([1.0, 0, 0], LEFT)
             self.play(FadeIn(res), run_time=self.fit(0.8))
             self.clear_all(nodes, ring, phase, phase2, res)
 
@@ -693,7 +693,7 @@ class ChapterScene(NarratedScene):
                 b = hbar(D["static"][k], vmax, 5.2, theme.INPUT, 0.34).move_to([0, y, 0]).align_to([-3.4, 0, 0], LEFT)
                 v = mono(f"{D['static'][k] / GIB:.2f} GiB", 20, theme.FG).next_to(b, RIGHT, 0.15)
                 bars.add(VGroup(lab, b, v))
-            cap = zh("主线每卡静态显存（8 卡）", 20, theme.MUTED).move_to([4.4, -0.9, 0])
+            cap = zh("主线每卡静态显存（8 卡）", 20, theme.MUTED).move_to([4.9, -1.7, 0])
             self.wait(self.remaining() * 0.2)
             self.play(FadeIn(cap), LaggedStart(*[FadeIn(b) for b in bars], lag_ratio=0.3), run_time=self.fit(2))
             self.clear_all(left, right, ll, rl, leg, bars, cap)
