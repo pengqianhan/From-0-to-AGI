@@ -4,7 +4,7 @@
 在同一份留出的干净文本（英文、中文）上比较 bits-per-byte。每种数据用 2 个随机种子各训练一次，
 看差距是否大于种子带来的波动。bpb 用本章的公式手算一遍，再和生产级的 zero/data/bpb.py 对拍。
 
-    uv run python chapters/13-data/code/06_quality_ablation.py     # CPU 约 5–8 分钟
+    uv run python chapters/13-data/code/06_quality_ablation.py     # 单线程约 3 分钟 CPU 时间
 """
 
 from __future__ import annotations
@@ -155,7 +155,16 @@ def run() -> dict:
 
 
 def main() -> None:
+    import argparse
+    import json
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--json", type=Path, default=None, help="把结果另存成 JSON（视频用，写到 video/out/ 下）")
+    args = ap.parse_args()
     res = run()
+    if args.json:
+        args.json.parent.mkdir(parents=True, exist_ok=True)
+        args.json.write_text(json.dumps(res, ensure_ascii=False, indent=1))
     print(f"\n{'训练数据':<10}{'文档数':>7}{'token 数':>11}{'英文 bpb（种子 0 / 1）':>24}{'中文 bpb（种子 0 / 1）':>24}")
     for name in res["bpb"]:
         b = res["bpb"][name]
@@ -163,13 +172,14 @@ def main() -> None:
         zh = " / ".join(f"{v:.3f}" for v in b["zh"])
         print(f"{name:<10}{res['docs'][name]:>7}{res['tokens'][name]:>11,}{en:>24}{zh:>24}")
     a, b = res["bpb"]["原样脏网页"], res["bpb"]["过滤后"]
-    d_en = np.mean(a["en"]) - np.mean(b["en"])
-    d_zh = np.mean(a["zh"]) - np.mean(b["zh"])
-    noise = max(abs(v[0] - v[1]) for r in res["bpb"].values() for v in r.values())
-    print(f"\n同样训练 {STEPS} 步 × {BATCH} × {SEQ} = {STEPS * BATCH * SEQ:,} 个 token："
-          f"过滤后的数据让英文 bpb 平均低 {d_en:.3f}，中文低 {d_zh:.3f}"
-          f"（两个种子之间的最大差别 {noise:.3f}）")
-
+    # 配对比较：同一个种子下两种数据的初始化和抽样位置相同，差值才是"数据"带来的
+    d_en = [x - y for x, y in zip(a["en"], b["en"])]
+    d_zh = [x - y for x, y in zip(a["zh"], b["zh"])]
+    print(f"\n同样训练 {STEPS} 步 × {BATCH} × {SEQ} = {STEPS * BATCH * SEQ:,} 个 token，"
+          "过滤后的数据让 bpb 降低（配对差值，种子 0 / 1）：")
+    print(f"  英文 {d_en[0]:.3f} / {d_en[1]:.3f}，中文 {d_zh[0]:.3f} / {d_zh[1]:.3f}")
+    print(f"  对照：同一种数据换种子，bpb 最多差 {max(abs(v[0] - v[1]) for r in res['bpb'].values() for v in r.values()):.3f}"
+          "——所以只能比较同一个种子下的两次训练（配对），不能拿不同种子的结果互相比")
 
 if __name__ == "__main__":
     main()

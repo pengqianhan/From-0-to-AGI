@@ -98,16 +98,16 @@ def _config_from_run(run_dir: Path) -> tuple[ModelConfig, int]:
 
     ckpt = find_latest(run_dir / "ckpt")
     if ckpt is None:
-        raise FileNotFoundError(f"{run_dir}/ckpt 里没有 checkpoint；请用 --run 目录:配置.toml 指定配置")
+        raise FileNotFoundError(
+            f"{run_dir}/ckpt 里没有 checkpoint；请用 --run 目录:配置.toml 指定配置"
+        )
     meta = json.loads((ckpt / "meta.json").read_text())
     conf = meta["config"]
     cfg = _from_dict(ModelConfig, conf["model"], "[model]")
     return cfg, int(conf["train"]["data"]["seq_len"])
 
 
-def load_run(
-    spec: str, param_count: str = "non_embedding", group: str = ""
-) -> Point:
+def load_run(spec: str, param_count: str = "non_embedding", group: str = "") -> Point:
     """spec = "运行目录" 或 "运行目录:配置.toml"。取最后一次验证 loss 与当时的 token 数。"""
     run, _, config = spec.partition(":")
     run_dir = Path(run)
@@ -120,7 +120,9 @@ def load_run(
     else:
         cfg, seq_len = _config_from_run(run_dir)
     n = model_size(cfg, param_count, seq_len)
-    return Point(N=n, D=float(rec["tokens"]), loss=float(rec["val_loss"]), name=run_dir.name, group=group)
+    return Point(
+        N=n, D=float(rec["tokens"]), loss=float(rec["val_loss"]), name=run_dir.name, group=group
+    )
 
 
 def load_points(path: str | Path) -> list[Point]:
@@ -128,7 +130,15 @@ def load_points(path: str | Path) -> list[Point]:
     for line in Path(path).read_text().splitlines():
         if line.strip():
             d = json.loads(line)
-            pts.append(Point(float(d["N"]), float(d["D"]), float(d["loss"]), d.get("name", ""), d.get("group", "")))
+            pts.append(
+                Point(
+                    float(d["N"]),
+                    float(d["D"]),
+                    float(d["loss"]),
+                    d.get("name", ""),
+                    d.get("group", ""),
+                )
+            )
     return pts
 
 
@@ -148,6 +158,7 @@ class ChinchillaFit:
     max_rel_err: float = 0.0  # 拟合点上最大的相对误差
     n_points: int = 0
     param_count: str = "non_embedding"
+    at_boundary: bool = False  # 指数落在搜索范围边上：拟合没有真正定住，外推不可信
 
     def predict(self, N: Any, D: Any) -> Any:
         N, D = np.asarray(N, dtype=float), np.asarray(D, dtype=float)
@@ -220,7 +231,11 @@ def fit_chinchilla(
 
     def solve(alphas: np.ndarray, betas: np.ndarray):
         X = np.stack(
-            [np.ones((len(alphas), len(y))), n[None, :] ** -alphas[:, None], d[None, :] ** -betas[:, None]],
+            [
+                np.ones((len(alphas), len(y))),
+                n[None, :] ** -alphas[:, None],
+                d[None, :] ** -betas[:, None],
+            ],
             axis=2,
         )
         coef, sse = _nnls3_batched(X, y, w)
@@ -238,8 +253,8 @@ def fit_chinchilla(
     a, b, coef, _ = solve(A_, B_)
     step_a, step_b = a_grid[1] - a_grid[0], b_grid[1] - b_grid[0]
     for _ in range(3):  # 在最优格点周围细化
-        fa = np.linspace(max(a - step_a, 1e-4), a + step_a, 21)
-        fb = np.linspace(max(b - step_b, 1e-4), b + step_b, 21)
+        fa = np.linspace(max(a - step_a, lo_a), min(a + step_a, hi_a), 21)
+        fb = np.linspace(max(b - step_b, lo_b), min(b + step_b, hi_b), 21)
         if tie_exponents:
             A_, B_ = fa, fa
         else:
@@ -248,9 +263,16 @@ def fit_chinchilla(
         step_a, step_b = step_a / 10, step_b / 10
     E, An, Bn = (float(c) for c in coef)
     fit = ChinchillaFit(
-        E=E, A=An * N0**a, B=Bn * D0**b, alpha=float(a), beta=float(b),
-        n_points=len(points), param_count=param_count,
+        E=E,
+        A=An * N0**a,
+        B=Bn * D0**b,
+        alpha=float(a),
+        beta=float(b),
+        n_points=len(points),
+        param_count=param_count,
     )
+    tol = 1e-3
+    fit.at_boundary = bool(min(a - lo_a, hi_a - a) < tol or min(b - lo_b, hi_b - b) < tol)
     pred = fit.predict(N, D)
     fit.rmse = float(np.sqrt(np.mean((pred - y) ** 2)))
     fit.max_rel_err = float(np.max(np.abs(pred - y) / y))
@@ -275,7 +297,11 @@ class PowerLawFit:
 
 
 def fit_power_law(
-    C: Sequence[float], L: Sequence[float], with_floor: bool = True, gamma_range=(0.005, 1.5), grid=600
+    C: Sequence[float],
+    L: Sequence[float],
+    with_floor: bool = True,
+    gamma_range=(0.005, 1.5),
+    grid=600,
 ) -> PowerLawFit:
     """对 γ 网格搜索；每个 γ 上 E、a 线性（非负）求解。with_floor=False 时 E 固定为 0（纯幂律）。"""
     C_ = np.asarray(C, dtype=float)
@@ -394,12 +420,18 @@ def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="拟合 L(N, D) 并外推（第 12 章 / 闸门 1）")
     ap.add_argument("--run", action="append", default=[], help="运行目录[:配置.toml]，可重复")
     ap.add_argument("--points", help="JSONL 点文件：每行 {N, D, loss[, name, group]}")
-    ap.add_argument("--holdout", action="append", default=[], help="只用来检验、不参与拟合的运行目录[:配置]")
+    ap.add_argument(
+        "--holdout", action="append", default=[], help="只用来检验、不参与拟合的运行目录[:配置]"
+    )
     ap.add_argument("--param-count", default="non_embedding", choices=PARAM_COUNTS)
     ap.add_argument("--tie-exponents", action="store_true", help="强制 α = β（点少时更稳）")
-    ap.add_argument("--target-config", help="要外推的目标模型配置（例：configs/main/pretrain.toml）")
+    ap.add_argument(
+        "--target-config", help="要外推的目标模型配置（例：configs/main/pretrain.toml）"
+    )
     ap.add_argument("--target-N", help="或直接给 N（口径同 --param-count），如 605.6M")
-    ap.add_argument("--target-D", action="append", default=[], help="目标 token 数，可重复，如 400B")
+    ap.add_argument(
+        "--target-D", action="append", default=[], help="目标 token 数，可重复，如 400B"
+    )
     ap.add_argument("--bootstrap", type=int, default=200, help="bootstrap 次数（0 = 不做）")
     ap.add_argument("--out", help="把拟合结果写成 JSON（plan_budget --fit 可以读）")
     args = ap.parse_args(argv)
@@ -413,15 +445,26 @@ def main(argv: list[str] | None = None) -> None:
     print(f"拟合 {len(points)} 个点（N 口径：{args.param_count}）")
     print(f"  L(N, D) = {fit.E:.4f} + {fit.A:.4g}/N^{fit.alpha:.4f} + {fit.B:.4g}/D^{fit.beta:.4f}")
     print(f"  拟合残差 RMSE {fit.rmse:.4f}，最大相对误差 {fit.max_rel_err:.2%}")
+    if fit.at_boundary:
+        print(
+            "  ⚠ 指数落在搜索范围的边上：数据没能把规律定住（常见原因：学习率没调好、尺寸或预算覆盖太窄），外推不可信"
+        )
     print(f"{'运行':<24} {'N':>12} {'D':>12} {'实际':>8} {'拟合':>8} {'误差':>8}")
     for p in points:
         pred = float(fit.predict(p.N, p.D))
-        print(f"{p.name[:24]:<24} {p.N:>12.4g} {p.D:>12.4g} {p.loss:>8.4f} {pred:>8.4f} {(pred - p.loss) / p.loss:>+8.2%}")
+        print(
+            f"{p.name[:24]:<24} {p.N:>12.4g} {p.D:>12.4g} {p.loss:>8.4f} {pred:>8.4f} {(pred - p.loss) / p.loss:>+8.2%}"
+        )
     N_opt, D_opt = fit.compute_optimal(1e21)
     print(f"  拟合给出的算力最优比例（C=1e21）：{D_opt / N_opt:.1f} token/参数")
 
-    boot = bootstrap_chinchilla(points, args.bootstrap, tie_exponents=args.tie_exponents,
-                                param_count=args.param_count) if args.bootstrap > 0 else None
+    boot = (
+        bootstrap_chinchilla(
+            points, args.bootstrap, tie_exponents=args.tie_exponents, param_count=args.param_count
+        )
+        if args.bootstrap > 0
+        else None
+    )
     result: dict[str, Any] = {"fit": fit.to_dict(), "points": [asdict(p) for p in points]}
 
     holdouts = [load_run(s, args.param_count) for s in args.holdout]
@@ -430,9 +473,15 @@ def main(argv: list[str] | None = None) -> None:
         result["holdout"] = []
         for p in holdouts:
             pred = float(fit.predict(p.N, p.D))
-            ci = boot.interval(lambda f, p=p: float(f.predict(p.N, p.D))) if boot else (float("nan"),) * 2
-            print(f"  {p.name}: 实际 {p.loss:.4f}，外推 {pred:.4f}（95% 区间 {ci[0]:.4f}–{ci[1]:.4f}），"
-                  f"误差 {(pred - p.loss) / p.loss:+.2%}")
+            ci = (
+                boot.interval(lambda f, p=p: float(f.predict(p.N, p.D)))
+                if boot
+                else (float("nan"),) * 2
+            )
+            print(
+                f"  {p.name}: 实际 {p.loss:.4f}，外推 {pred:.4f}（95% 区间 {ci[0]:.4f}–{ci[1]:.4f}），"
+                f"误差 {(pred - p.loss) / p.loss:+.2%}"
+            )
             result["holdout"].append({**asdict(p), "pred": pred, "ci95": ci})
 
     target_N = None
@@ -449,10 +498,18 @@ def main(argv: list[str] | None = None) -> None:
         for d in args.target_D or ["20x"]:
             D = 20 * target_N if d == "20x" else parse_count(d)
             pred = float(fit.predict(target_N, D))
-            ci = boot.interval(lambda f, D=D: float(f.predict(target_N, D))) if boot else (float("nan"),) * 2
-            print(f"外推：N={target_N:.4g}, D={D:.4g} → loss {pred:.4f}（95% 区间 {ci[0]:.4f}–{ci[1]:.4f}）")
+            ci = (
+                boot.interval(lambda f, D=D: float(f.predict(target_N, D)))
+                if boot
+                else (float("nan"),) * 2
+            )
+            print(
+                f"外推：N={target_N:.4g}, D={D:.4g} → loss {pred:.4f}（95% 区间 {ci[0]:.4f}–{ci[1]:.4f}）"
+            )
             result["targets"].append({"N": target_N, "D": D, "pred": pred, "ci95": ci})
-        print("  提醒：外推倍数越大区间越宽；只有与阶梯同一配方（数据、分词器、超参规则）时才有意义。")
+        print(
+            "  提醒：外推倍数越大区间越宽；只有与阶梯同一配方（数据、分词器、超参规则）时才有意义。"
+        )
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(json.dumps(result, indent=2, ensure_ascii=False))

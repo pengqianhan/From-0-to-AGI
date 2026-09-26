@@ -23,14 +23,28 @@ REPO = Path(__file__).resolve().parent.parent
 
 
 def fake_rows(n: int) -> list[dict]:
-    rows = [{"id": f"doc{i}", "text": f"document number {i} " * 5, "url": f"http://x/{i}", "score": i % 5} for i in range(n)]
+    rows = [
+        {
+            "id": f"doc{i}",
+            "text": f"document number {i} " * 5,
+            "url": f"http://x/{i}",
+            "score": i % 5,
+        }
+        for i in range(n)
+    ]
     rows[3]["text"] = "   "  # 空文本：跳过，但仍占一个行号
     return rows
 
 
 def spec(**kw) -> DownloadSpec:  # noqa: ANN003
-    base = dict(name="fw", registry="fineweb-edu", repo="HuggingFaceFW/fineweb-edu",
-                config="sample-10BT", keep_fields=["url", "score"], docs_per_shard=4)
+    base = dict(
+        name="fw",
+        registry="fineweb-edu",
+        repo="HuggingFaceFW/fineweb-edu",
+        config="sample-10BT",
+        keep_fields=["url", "score"],
+        docs_per_shard=4,
+    )
     base.update(kw)
     return DownloadSpec(**base)
 
@@ -45,8 +59,17 @@ def read_all(d: Path) -> list[dict]:
 
 def test_make_record_keeps_provenance() -> None:
     r = make_record({"id": 7, "text": "hello", "url": "u", "junk": 1}, spec(), 12)
-    assert r == {"id": "7", "text": "hello", "source": "fw", "hf_repo": "HuggingFaceFW/fineweb-edu",
-                 "hf_config": "sample-10BT", "hf_split": "train", "hf_revision": None, "row": 12, "url": "u"}
+    assert r == {
+        "id": "7",
+        "text": "hello",
+        "source": "fw",
+        "hf_repo": "HuggingFaceFW/fineweb-edu",
+        "hf_config": "sample-10BT",
+        "hf_split": "train",
+        "hf_revision": None,
+        "row": 12,
+        "url": "u",
+    }
     assert make_record({"text": ""}, spec(), 0) is None
     assert make_record({"content": "x"}, spec(text_field="content"), 0)["text"] == "x"
 
@@ -82,24 +105,36 @@ def test_target_bytes_stops_early(tmp_path: Path) -> None:
 def test_swh_content_fetch(tmp_path: Path) -> None:
     rows = [{"blob_id": "a", "text": None}, {"blob_id": "b", "text": None}]
     s = spec(name="se", registry="fineweb-edu", swh_content=True, id_field="blob_id")
-    download_source(s, tmp_path, rows=rows, fetch=lambda b: None if b == "b" else "print(1)",
-                    log=lambda x: None)
+    download_source(
+        s, tmp_path, rows=rows, fetch=lambda b: None if b == "b" else "print(1)", log=lambda x: None
+    )
     recs = read_all(tmp_path / "se")
     assert [(r["id"], r["text"]) for r in recs] == [("a", "print(1)")]
 
 
-def test_license_gate() -> None:
+def test_license_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    from zero.data import sources
+
+    fake = sources.DatasetSource(
+        name="fake-unverified", url="u", license="待核实", languages=("en",), stage="pretrain"
+    )
+    monkeypatch.setitem(sources.SOURCES, "fake-unverified", fake)
     assert check_license(spec()) == "ODC-By-1.0"
     with pytest.raises(PermissionError):
-        check_license(spec(registry="stack-edu"))  # sources.py 里还是"待核实"
-    assert "待核实" in check_license(spec(registry="stack-edu"), allow_unverified=True)
+        check_license(spec(registry="fake-unverified"))
+    assert "待核实" in check_license(spec(registry="fake-unverified"), allow_unverified=True)
     with pytest.raises(KeyError):
         check_license(spec(registry="not-registered"))
 
 
 def test_plan_targets() -> None:
-    t = plan_targets({"en": 3, "zh": 1}, token_budget=1e9, bytes_per_token={"en": 4.0, "zh": 2.0},
-                     keep_rate={"zh": 0.5}, margin=1.0)
+    t = plan_targets(
+        {"en": 3, "zh": 1},
+        token_budget=1e9,
+        bytes_per_token={"en": 4.0, "zh": 2.0},
+        keep_rate={"zh": 0.5},
+        margin=1.0,
+    )
     assert t == {"en": int(0.75e9 * 4), "zh": int(0.25e9 * 2 / 0.5)}
 
 

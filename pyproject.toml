@@ -19,6 +19,14 @@ video = [
     "sherpa-onnx-core>=1.13.8",
 ]
 
+# 第二步下载预训练数据（zero/data/download.py）：datasets 流式读取，boto3 取 Stack-Edu 的文件内容，
+# zstandard 解压 DCLM 的 .jsonl.zst
+data = [
+    "datasets>=3.0",
+    "boto3>=1.34",
+    "zstandard>=0.22",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.4.2",

@@ -70,8 +70,12 @@ def plan(
     speedup: float = 1.0,
     fit: ChinchillaFit | None = None,
 ) -> PlanRow:
-    tokens = tokens_for_budget(config, budget_usd, seq_len, gpu, price_per_gpu_hour, mfu, num_gpus, speedup)
-    est = estimate_cost(config, tokens, seq_len, gpu, price_per_gpu_hour, min(mfu * speedup, 1.0), num_gpus)
+    tokens = tokens_for_budget(
+        config, budget_usd, seq_len, gpu, price_per_gpu_hour, mfu, num_gpus, speedup
+    )
+    est = estimate_cost(
+        config, tokens, seq_len, gpu, price_per_gpu_hour, min(mfu * speedup, 1.0), num_gpus
+    )
     pred = None
     if fit is not None:
         pred = float(fit.predict(model_size(config, fit.param_count, seq_len), tokens))
@@ -90,7 +94,7 @@ def plan(
 
 
 def apply_candidate(base: ModelConfig, spec: str) -> tuple[str, ModelConfig]:
-    """"名字:dim=1024,ffn_dim=3072,n_layers=24" → 在 base 上改这几个字段。"""
+    """ "名字:dim=1024,ffn_dim=3072,n_layers=24" → 在 base 上改这几个字段。"""
     name, _, kv = spec.partition(":")
     cfg = copy.deepcopy(base)
     for item in filter(None, kv.split(",")):
@@ -106,9 +110,15 @@ def apply_candidate(base: ModelConfig, spec: str) -> tuple[str, ModelConfig]:
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="给定预算，候选模型能训多少 token、要多久、预测 loss")
     ap.add_argument("--config", action="append", required=True, help="含 [model] 的 TOML；可重复")
-    ap.add_argument("--candidate", action="append", default=[],
-                    help="在第一个 --config 上改形状的候选，如 '0.5B:dim=1024,ffn_dim=3072'；可重复")
-    ap.add_argument("--budget", type=float, default=5000.0, help="美元预算（默认 5000，GOAL.md 3.4 的预训练线）")
+    ap.add_argument(
+        "--candidate",
+        action="append",
+        default=[],
+        help="在第一个 --config 上改形状的候选，如 '0.5B:dim=1024,ffn_dim=3072'；可重复",
+    )
+    ap.add_argument(
+        "--budget", type=float, default=5000.0, help="美元预算（默认 5000，GOAL.md 3.4 的预训练线）"
+    )
     ap.add_argument("--gpu", default="h100-sxm", choices=sorted(GPUS))
     ap.add_argument("--price", type=float, default=2.5, help="每卡时美元")
     ap.add_argument("--mfu", type=float, action="append", default=[], help="可重复，默认 0.4")
@@ -119,7 +129,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--json", help="把表格写成 JSON")
     args = ap.parse_args(argv)
 
-    fit = ChinchillaFit.from_dict(json.loads(Path(args.fit).read_text())["fit"]) if args.fit else None
+    fit = (
+        ChinchillaFit.from_dict(json.loads(Path(args.fit).read_text())["fit"]) if args.fit else None
+    )
     candidates: list[tuple[str, ModelConfig, int]] = []
     for path in args.config:
         cfg = load_model_config(path)
@@ -133,19 +145,38 @@ def main(argv: list[str] | None = None) -> None:
     rows = []
     for mfu in args.mfu or [0.4]:
         for name, cfg, seq in candidates:
-            rows.append(plan(cfg, args.budget, seq, name, args.gpu, args.price, mfu, args.num_gpus, args.speedup, fit))
+            rows.append(
+                plan(
+                    cfg,
+                    args.budget,
+                    seq,
+                    name,
+                    args.gpu,
+                    args.price,
+                    mfu,
+                    args.num_gpus,
+                    args.speedup,
+                    fit,
+                )
+            )
     spec = GPUS[args.gpu]
-    print(f"预算 ${args.budget:,.0f}，{args.num_gpus}×{spec.name}（峰值 {spec.bf16_dense_tflops} TFLOPS"
-          f"{'' if spec.verified else '，待核实'}），${args.price}/卡时"
-          + (f"，假设额外提速 ×{args.speedup}（未验证）" if args.speedup != 1.0 else ""))
+    print(
+        f"预算 ${args.budget:,.0f}，{args.num_gpus}×{spec.name}（峰值 {spec.bf16_dense_tflops} TFLOPS"
+        f"{'' if spec.verified else '，待核实'}），${args.price}/卡时"
+        + (f"，假设额外提速 ×{args.speedup}（未验证）" if args.speedup != 1.0 else "")
+    )
     head = f"{'候选':<14} {'MFU':>4} {'总参数':>8} {'非emb':>8} {'token':>8} {'tok/参数':>8} {'卡时':>7} {'8卡天数':>7}"
     print(head + (f" {'预测loss':>8}" if fit else ""))
     for r in rows:
-        line = (f"{r.name[:14]:<14} {r.mfu:>4.2f} {r.params_total / 1e6:>7.1f}M {r.params_non_embedding / 1e6:>7.1f}M "
-                f"{r.tokens / 1e9:>7.0f}B {r.tokens_per_param:>8.0f} {r.gpu_hours:>7.0f} {r.wall_days:>7.1f}")
+        line = (
+            f"{r.name[:14]:<14} {r.mfu:>4.2f} {r.params_total / 1e6:>7.1f}M {r.params_non_embedding / 1e6:>7.1f}M "
+            f"{r.tokens / 1e9:>7.0f}B {r.tokens_per_param:>8.0f} {r.gpu_hours:>7.0f} {r.wall_days:>7.1f}"
+        )
         print(line + (f" {r.predicted_loss:>8.4f}" if r.predicted_loss is not None else ""))
     if args.json:
-        Path(args.json).write_text(json.dumps([r.__dict__ for r in rows], indent=2, ensure_ascii=False))
+        Path(args.json).write_text(
+            json.dumps([r.__dict__ for r in rows], indent=2, ensure_ascii=False)
+        )
 
 
 if __name__ == "__main__":

@@ -74,8 +74,10 @@ def main() -> None:
     for T_big in (1024, 32768):
         n_full = T_big * (T_big + 1) // 2
         n_swa = int(sliding_mask(T_big, W).sum()) if T_big <= 4096 else W * T_big - W * (W - 1) // 2
-        print(f"T={T_big:>6}: 全因果 {n_full:>12,} 对，W={W} 的滑动窗口 {n_swa:>9,} 对"
-              f"（{n_full / n_swa:,.0f} 倍）")
+        print(
+            f"T={T_big:>6}: 全因果 {n_full:>12,} 对，W={W} 的滑动窗口 {n_swa:>9,} 对"
+            f"（{n_full / n_swa:,.0f} 倍）"
+        )
 
     print("\n感受野：最后一个 token 在第 l 层之后，信息最远能来自多少个位置之前（T=64, W=4）")
     T = 64
@@ -93,8 +95,10 @@ def main() -> None:
     for name, n_layers, n_global, win, kvh, hd in MODELS:
         full_b = kv_bytes(n_layers, 0, win, T, kvh, hd)
         real_b = kv_bytes(n_global, n_layers - n_global, win, T, kvh, hd)
-        print(f"  {name:<28}{full_b / 2**30:>12.2f} GiB{real_b / 2**30:>10.2f} GiB"
-              f"{1 - real_b / full_b:>9.1%}")
+        print(
+            f"  {name:<28}{full_b / 2**30:>12.2f} GiB{real_b / 2**30:>10.2f} GiB"
+            f"{1 - real_b / full_b:>9.1%}"
+        )
 
 
 if __name__ == "__main__":

@@ -2,14 +2,14 @@
 
 步骤（和闸门 1 的"外推预测"一模一样，只是缩小了几万倍）：
   1. 读第 3 个脚本的学习率扫描，每个尺寸用自己的最优学习率 η*；
-  2. 4 个尺寸 × 3 个 token 预算（WSD 分叉，一次训练得到 3 个点）→ 12 个 (N, D, loss)；
+  2. 4 个尺寸 × 3 个 token 预算（WSD 分叉，一次训练得到 3 个点），两个小尺寸再补一个"过训练"预算 → 14 个点；
   3. 拟合 L(N, D) = E + A/N^α + B/D^β（网格搜索 α、β，每个格点上 E、A、B 用线性最小二乘解出）；
   4. 按尺寸重采样做 bootstrap，得到外推的 95% 区间；
   5. 用 η*(N) 的幂律外推出大一号模型（N 是阶梯最大的 2.1 倍）的学习率，真的训练它，比较预测与实际；
      另跑一次"直接沿用阶梯最大尺寸的学习率"作对照，看学习率外推本身带来多少误差。
 
 运行：uv run python chapters/12-scaling-laws/code/04_mini_ladder.py
-      （需要先跑 03_lr_sweep.py；单线程约 6–10 分钟，结果缓存在 out/ch12/ladder.json，加 --fresh 重跑）
+      （需要先跑 03_lr_sweep.py；共享 CPU 上单线程实测约 15 分钟，结果缓存在 out/ch12/ladder.json，加 --fresh 重跑）
 这是"极小配置演示"：1 万到 50 万参数、几十万字节。它验证的是方法，不是主线模型的任何数字。
 """
 
@@ -30,17 +30,23 @@ sw = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sw)
 
 BUDGETS = [65_536, 131_072, 262_144]  # 128 / 256 / 512 步
+# 过训练区：主线模型是约 600 token/参数，阶梯里必须有 token/参数远大于 20 的点，否则 N 方向的指数定不下来。
+# 两个最小的尺寸再加一个 1M 字节的预算（约 100 和 33 token/参数），便宜。
+EXTRA = {"s1": [1_048_576], "s2": [1_048_576]}
 
 
 # ── 拟合：变量投影。固定 (α, β) 后 L = E + A·x + B·y 对 (E, A, B) 是线性的 ─────────
-def fit_lnd(N, D, L, grid=np.arange(0.05, 1.501, 0.01)):
+GRID = np.arange(0.02, 1.501, 0.02)  # α、β 的搜索网格
+
+
+def fit_lnd(N, D, L, grid=GRID):
     N, D, L = (np.asarray(v, dtype=float) for v in (N, D, L))
     n, d = N / N.mean(), D / D.mean()  # 先归一化，避免 N^-α 太小让方程病态
     a, b = (g.ravel() for g in np.meshgrid(grid, grid, indexing="ij"))
     X = np.stack([np.ones((len(a), len(L))), n[None] ** -a[:, None], d[None] ** -b[:, None]], axis=2)
     w = 1 / L  # 按相对误差加权
     Xw, Lw = X * w[None, :, None], L * w
-    coef = np.linalg.solve(np.einsum("gni,gnj->gij", Xw, Xw), np.einsum("gni,n->gi", Xw, Lw))
+    coef = np.linalg.solve(np.einsum("gni,gnj->gij", Xw, Xw), np.einsum("gni,n->gi", Xw, Lw)[..., None])[..., 0]
     sse = ((Lw[None] - np.einsum("gni,gi->gn", Xw, coef)) ** 2).sum(1)
     sse[(coef < 0).any(1)] = np.inf  # E、A、B 都必须非负
     i = int(np.argmin(sse))
@@ -52,7 +58,7 @@ def predict(f, N, D):
     return f["E"] + f["A"] / np.asarray(N, float) ** f["alpha"] + f["B"] / np.asarray(D, float) ** f["beta"]
 
 
-def bootstrap(points, n_boot=300, seed=0):
+def bootstrap(points, n_boot=200, seed=0):
     """按尺寸（一组 3 个点，来自同一次训练，彼此相关）有放回地重采样，重新拟合。"""
     rng = np.random.default_rng(seed)
     sizes = sorted({p["N"] for p in points})
@@ -68,30 +74,40 @@ def bootstrap(points, n_boot=300, seed=0):
 
 def run_ladder(fresh=False):
     path = sw.OUT / "ladder.json"
-    if path.exists() and not fresh:
-        return json.loads(path.read_text())
+    result = None if fresh or not path.exists() else json.loads(path.read_text())
     sweep = sw.run_sweep()
     best = sw.best_lrs(sweep)
-    c, k = sw.fit_power_law([best[s]["N"] for s, _, _ in sw.LADDER], [best[s]["lr"] for s, _, _ in sw.LADDER])
-    data, t0, points = sw.load_bytes(), time.time(), []
-    for name, dim, L in sw.LADDER:
-        N, lr = sw.non_embedding_params(dim, L), best[name]["lr"]
-        for D, bpb in sw.train_wsd_branches(dim, L, lr, BUDGETS, data=data).items():
-            points.append({"size": name, "N": N, "D": D, "loss": bpb, "lr": lr})
-            print(f"  阶梯 {name} N={N:>7,} D={D:>7,} lr={lr:g}: {bpb:.4f}  ({time.time() - t0:4.0f}s)")
-    name, dim, L = sw.HELD_OUT
-    N5 = sw.non_embedding_params(dim, L)
-    lr5 = float(c * N5**-k)  # 学习率也是外推出来的，不对留出模型调参
-    lr_alt = best[sw.LADDER[-1][0]]["lr"]  # 对照：直接沿用阶梯最大尺寸的学习率
-    runs = {}
-    for tag, lr in [("law", lr5), ("reuse", lr_alt)]:
-        runs[tag] = []
-        for D, bpb in sw.train_wsd_branches(dim, L, lr, BUDGETS, data=data).items():
-            runs[tag].append({"size": name, "N": N5, "D": D, "loss": bpb, "lr": lr})
-            print(f"  留出 {name} N={N5:>7,} D={D:>7,} lr={lr:.4g}: {bpb:.4f}  ({time.time() - t0:4.0f}s)")
-    result = {"budgets": BUDGETS, "lr_law": {"c": c, "k": k}, "points": points,
-              "held_out": runs["law"], "held_out_reuse_lr": runs["reuse"]}
-    path.write_text(json.dumps(result, indent=1))
+    data, t0 = sw.load_bytes(), time.time()
+    if result is None:
+        c, k = sw.fit_power_law([best[s]["N"] for s, _, _ in sw.LADDER], [best[s]["lr"] for s, _, _ in sw.LADDER])
+        points = []
+        for name, dim, L in sw.LADDER:
+            N, lr = sw.non_embedding_params(dim, L), best[name]["lr"]
+            for D, bpb in sw.train_wsd_branches(dim, L, lr, BUDGETS, data=data).items():
+                points.append({"size": name, "N": N, "D": D, "loss": bpb, "lr": lr})
+                print(f"  阶梯 {name} N={N:>7,} D={D:>9,} lr={lr:.4g}: {bpb:.4f}  ({time.time() - t0:4.0f}s)", flush=True)
+        name, dim, L = sw.HELD_OUT
+        N5 = sw.non_embedding_params(dim, L)
+        lr5 = float(c * N5**-k)  # 学习率也是外推出来的，不对留出模型调参
+        lr_alt = best[sw.LADDER[-1][0]]["lr"]  # 对照：直接沿用阶梯最大尺寸的学习率
+        runs = {}
+        for tag, lr in [("law", lr5), ("reuse", lr_alt)]:
+            runs[tag] = []
+            for D, bpb in sw.train_wsd_branches(dim, L, lr, BUDGETS, data=data).items():
+                runs[tag].append({"size": name, "N": N5, "D": D, "loss": bpb, "lr": lr})
+                print(f"  留出 {name} N={N5:>7,} D={D:>9,} lr={lr:.4g}: {bpb:.4f}  ({time.time() - t0:4.0f}s)", flush=True)
+        result = {"budgets": BUDGETS, "lr_law": {"c": c, "k": k}, "points": points,
+                  "held_out": runs["law"], "held_out_reuse_lr": runs["reuse"]}
+        path.write_text(json.dumps(result, indent=1))
+    have = {(p["size"], p["D"]) for p in result["points"]}
+    for name, dim, L in sw.LADDER:  # 过训练区的补充点（可以单独补跑，不影响已有的点）
+        todo = [D for D in EXTRA.get(name, []) if (name, D) not in have]
+        if todo:
+            N, lr = sw.non_embedding_params(dim, L), best[name]["lr"]
+            for D, bpb in sw.train_wsd_branches(dim, L, lr, todo, data=data).items():
+                result["points"].append({"size": name, "N": N, "D": D, "loss": bpb, "lr": lr})
+                print(f"  阶梯 {name} N={N:>7,} D={D:>9,} lr={lr:.4g}: {bpb:.4f}  ({time.time() - t0:4.0f}s)", flush=True)
+            path.write_text(json.dumps(result, indent=1))
     return result
 
 
@@ -103,11 +119,12 @@ def main():
     res = run_ladder(args.fresh)
     pts, held = res["points"], res["held_out"]
     f = fit_lnd([p["N"] for p in pts], [p["D"] for p in pts], [p["loss"] for p in pts])
-    print(f"\n拟合（12 个阶梯点）：L(N, D) = {f['E']:.3f} + {f['A']:.4g}/N^{f['alpha']:.2f} + {f['B']:.4g}/D^{f['beta']:.2f}")
-    print(f"{'尺寸':>4} {'N':>8} {'D':>8} | {'实际':>7} {'拟合':>7} {'误差':>7}")
-    for p in pts:
+    print(f"\n拟合（{len(pts)} 个阶梯点）：L(N, D) = {f['E']:.3f} + {f['A']:.4g}/N^{f['alpha']:.2f} + {f['B']:.4g}/D^{f['beta']:.2f}")
+    print(f"{'尺寸':>4} {'N':>8} {'D':>9} {'D/N':>5} | {'实际':>7} {'拟合':>7} {'误差':>7}")
+    for p in sorted(pts, key=lambda p: (p["N"], p["D"])):
         q = predict(f, p["N"], p["D"])
-        print(f"{p['size']:>4} {p['N']:>8,} {p['D']:>8,} | {p['loss']:>7.4f} {q:>7.4f} {(q - p['loss']) / p['loss']:>+7.2%}")
+        print(f"{p['size']:>4} {p['N']:>8,} {p['D']:>9,} {p['D'] / p['N']:>5.0f} | {p['loss']:>7.4f} {q:>7.4f} "
+              f"{(q - p['loss']) / p['loss']:>+7.2%}")
     fits = bootstrap(pts)
     lr_law = res["lr_law"]
     print(f"\n学习率外推：η*(N) = {lr_law['c']:.3g}·N^(-{lr_law['k']:.3f}) → 留出模型用 {held[0]['lr']:.4g}")

@@ -51,7 +51,8 @@ class DownloadSpec:
     name: str  # 输出目录名 / 分片前缀（与流水线的来源名一致）
     registry: str  # zero/data/sources.py 的登记名
     repo: str  # Hugging Face 数据集仓库，如 "HuggingFaceFW/fineweb-edu"
-    config: str | None = None  # 子集（name=），如 "sample-100BT"、"cmn_Hani"
+    # 子集（name=），如 "sample-100BT"、"cmn_Hani"；可以是列表（Stack-Edu 每种编程语言一个子集），按顺序读
+    config: str | list[str] | None = None
     split: str = "train"
     revision: str | None = None  # 固定到某个 commit，保证可复现（第二步定稿时填）
     data_files: str | None = None
@@ -77,7 +78,9 @@ def specs_from_config(cfg: dict[str, Any]) -> list[DownloadSpec]:
     out = []
     for s in cfg.get("sources", []):
         if "download" in s:
-            out.append(DownloadSpec.from_dict(s["name"], s.get("registry", s["name"]), s["download"]))
+            out.append(
+                DownloadSpec.from_dict(s["name"], s.get("registry", s["name"]), s["download"])
+            )
     return out
 
 
@@ -134,6 +137,8 @@ def make_record(row: dict[str, Any], spec: DownloadSpec, index: int) -> dict[str
         "hf_revision": spec.revision,
         "row": index,
     }
+    if "hf_subset" in row:
+        rec["hf_config"] = row["hf_subset"]
     for k in spec.keep_fields:
         if k in row:
             rec[k] = row[k]
@@ -249,17 +254,23 @@ def hf_rows(spec: DownloadSpec, skip: int = 0) -> Iterator[dict[str, Any]]:  # p
         from datasets import load_dataset
     except ImportError as e:
         raise ImportError("需要 datasets：uv sync --extra data") from e
-    kw: dict[str, Any] = {"split": spec.split, "streaming": True}
-    if spec.config:
-        kw["name"] = spec.config
-    if spec.revision:
-        kw["revision"] = spec.revision
-    if spec.data_files:
-        kw["data_files"] = spec.data_files
-    ds = load_dataset(spec.repo, **kw)
-    if skip:
-        ds = ds.skip(skip)
-    yield from ds
+    import itertools
+
+    configs = spec.config if isinstance(spec.config, list) else [spec.config]
+
+    def stream(config: str | None) -> Iterator[dict[str, Any]]:
+        kw: dict[str, Any] = {"split": spec.split, "streaming": True}
+        if config:
+            kw["name"] = config
+        if spec.revision:
+            kw["revision"] = spec.revision
+        if spec.data_files:
+            kw["data_files"] = spec.data_files
+        for row in load_dataset(spec.repo, **kw):
+            yield {**row, "hf_subset": config} if len(configs) > 1 else row
+
+    # 多个子集首尾相接；续传时跳过前 skip 行（跳过的行也要从网络读一遍，第二步如果太慢再按子集记录进度）
+    yield from itertools.islice(itertools.chain.from_iterable(map(stream, configs)), skip, None)
 
 
 def fetch_swh_content(blob_id: str, s3: Any = None) -> str | None:  # pragma: no cover

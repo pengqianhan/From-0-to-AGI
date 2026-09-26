@@ -11,7 +11,7 @@ scaling law 扭歪（Lourie et al. 2026, arXiv:2608.11859）。所以阶梯实�
 学习率调度用 WSD（第 6 章）：warmup → 恒定 → 最后 20% 线性降到 0。
 
 运行：uv run python chapters/12-scaling-laws/code/03_lr_sweep.py
-      （单线程，共享 CPU 上约 4–6 分钟；结果缓存到 out/ch12/lr_sweep.json，再跑直接读缓存，加 --fresh 重跑）
+      （单线程，共享 CPU 上实测约 7 分钟；结果缓存到 out/ch12/lr_sweep.json，再跑直接读缓存，加 --fresh 重跑）
 这是"极小配置演示"：几万参数、十几万 token，结论只说明方法，不代表主线模型。
 """
 

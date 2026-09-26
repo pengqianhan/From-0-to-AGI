@@ -31,7 +31,7 @@ def generate(model, ids: list[int], n: int, use_cache: bool, report_at=()):
     cache = m.KVCache(model.c.n_layers) if use_cache else None
     sizes = {}
     nxt_in, start = torch.tensor([ids]), 0
-    for step in range(1, n + 1):
+    for _ in range(n):
         if use_cache:
             logits = model(nxt_in, cache, start)
             start += nxt_in.shape[1]
@@ -49,8 +49,11 @@ def main() -> None:
     prompt = data.encode("ROMEO:\n")
     report_at = (16, 64, 128, 256, 306)
     print(f"提示词 'ROMEO:\\n'，贪心生成 300 个字符；窗口 W = {m.W}\n")
-    print(f"{'配置':<11}{'与不用缓存逐字相同':>18}   KV cache 字节数（已缓存 " +
-          " / ".join(str(t) for t in report_at) + " 个位置）")
+    print(
+        f"{'配置':<11}{'与不用缓存逐字相同':>18}   KV cache 字节数（已缓存 "
+        + " / ".join(str(t) for t in report_at)
+        + " 个位置）"
+    )
     texts = {}
     for variant in m.VARIANTS:
         model = m.load_or_train("lm", variant)

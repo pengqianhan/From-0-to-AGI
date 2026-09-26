@@ -10,7 +10,7 @@ embedding、lm_head、RMSNorm 仍然用 AdamW（Kimi K2、GLM-4.5、DeepSeek-V4 
 和 03 脚本里调好的 AdamW 最优值比较。这是"极小配置演示"：几万参数上的结果不能直接推到 0.7B。
 
 运行：uv run python chapters/12-scaling-laws/code/06_muon.py
-      （需要先跑 03_lr_sweep.py；单线程约 2–4 分钟，结果缓存在 out/ch12/muon.json）
+      （需要先跑 03_lr_sweep.py；共享 CPU 上单线程实测约 5 分钟，结果缓存在 out/ch12/muon.json）
 生产级实现：zero/train/muon.py（MuonAdamW + build_muon_optimizer），测试 tests/test_muon.py。
 """
 
@@ -89,6 +89,7 @@ def main():
     ap.add_argument("--fresh", action="store_true")
     args = ap.parse_args()
     torch.set_num_threads(1)
+    torch.manual_seed(0)
     G = torch.randn(64, 32)
     s = torch.linalg.svdvals(newton_schulz5(G))
     print(f"NS5 检查：随机 64×32 梯度的奇异值 {torch.linalg.svdvals(G / G.norm()).min():.3f}–"
@@ -103,19 +104,30 @@ def main():
     for name, dim, L in sw.LADDER:
         if name not in SIZES:
             continue
-        for lr in MUON_LRS:
-            if (name, lr) in done:
-                continue
-            bpb = sw.train_wsd_branches(dim, L, lr, [sw.SWEEP_TOKENS], data=data, make_opt=make_muon)[sw.SWEEP_TOKENS]
-            rows.append({"size": name, "N": best[name]["N"], "lr": lr, "val_bpb": bpb})
-            print(f"  Muon {name} lr={lr:g}: {bpb:.4f}")
-            path.write_text(json.dumps(rows, indent=1))
+        grid = list(MUON_LRS)
+        while True:  # 和 03 一样：最优在网格边上就往外扩一倍
+            for lr in grid:
+                if (name, lr) in done:
+                    continue
+                bpb = sw.train_wsd_branches(dim, L, lr, [sw.SWEEP_TOKENS], data=data, make_opt=make_muon)[sw.SWEEP_TOKENS]
+                rows.append({"size": name, "N": best[name]["N"], "lr": lr, "val_bpb": bpb})
+                done.add((name, lr))
+                print(f"  Muon {name} lr={lr:g}: {bpb:.4f}", flush=True)
+                path.write_text(json.dumps(rows, indent=1))
+            mine = sorted((r["lr"], r["val_bpb"]) for r in rows if r["size"] == name)
+            top = min(mine, key=lambda t: t[1])[0]
+            if top == mine[0][0] and top / 2 >= 1e-4:
+                grid = [top / 2]
+            elif top == mine[-1][0] and top * 2 <= 0.16:
+                grid = [top * 2]
+            else:
+                break
     print(f"\n同样 {sw.SWEEP_TOKENS:,} 字节，验证 loss（bit/字节）：")
     print(f"{'尺寸':>4} {'N':>8} | {'AdamW 最优':>14} | {'Muon 最优':>14} | 差")
     for name in SIZES:
         mu = min((r for r in rows if r["size"] == name), key=lambda r: r["val_bpb"])
         ad = best[name]
-        print(f"{name:>4} {ad['N']:>8,} | {ad['val_bpb']:.4f} (η={ad['lr']:<6g}) | {mu['val_bpb']:.4f} (η={mu['lr']:<6g}) | "
+        print(f"{name:>4} {ad['N']:>8,} | {ad['val_bpb']:.4f} (η={ad['grid_lr']:<6g}) | {mu['val_bpb']:.4f} (η={mu['lr']:<6g}) | "
               f"{mu['val_bpb'] - ad['val_bpb']:+.4f}")
 
 

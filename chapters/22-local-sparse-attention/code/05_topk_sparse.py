@@ -37,11 +37,15 @@ def main() -> None:
     lm = m.load_or_train("lm", "full")
     rf = 4 * (m.W - 1)
     print("全注意力模型，推理时每个 query 只留 k 个键（不重新训练）")
-    print(f"{'挑法':<16}{'k':>4}{f'捞针 d<{m.W}':>11}{f'捞针 d>{rf}':>11}{'全部距离':>10}{'LM loss':>9}")
+    print(
+        f"{'挑法':<16}{'k':>4}{f'捞针 d<{m.W}':>11}{f'捞针 d>{rf}':>11}{'全部距离':>10}{'LM loss':>9}"
+    )
     base_acc = m.needle_accuracy(needle)
     base_loss = m.lm_val_loss(lm)
-    print(f"{'不限制（全注意力）':<16}{'-':>4}{base_acc[: m.W - 1].mean():>11.1%}"
-          f"{base_acc[rf:].mean():>11.1%}{base_acc.mean():>10.1%}{base_loss:>9.3f}")
+    print(
+        f"{'不限制（全注意力）':<16}{'-':>4}{base_acc[: m.W - 1].mean():>11.1%}"
+        f"{base_acc[rf:].mean():>11.1%}{base_acc.mean():>10.1%}{base_loss:>9.3f}"
+    )
     for k in (4, 8, 16):
         for name in ("最近 k 个", "分数最高的 k 个"):
             for model in (needle, lm):
@@ -54,8 +58,10 @@ def main() -> None:
             for model in (needle, lm):
                 set_recent(model, None)
                 model.set_topk(None)
-            print(f"{name:<16}{k:>4}{acc[: m.W - 1].mean():>11.1%}{acc[rf:].mean():>11.1%}"
-                  f"{acc.mean():>10.1%}{loss:>9.3f}")
+            print(
+                f"{name:<16}{k:>4}{acc[: m.W - 1].mean():>11.1%}{acc[rf:].mean():>11.1%}"
+                f"{acc.mean():>10.1%}{loss:>9.3f}"
+            )
 
 
 if __name__ == "__main__":

@@ -43,7 +43,9 @@ def test_rms_matched_update_scale() -> None:
 
 
 def test_param_split_follows_tech_reports() -> None:
-    cfg = ModelConfig(vocab_size=128, dim=32, n_layers=2, n_heads=4, n_kv_heads=2, ffn_dim=64, max_seq_len=16)
+    cfg = ModelConfig(
+        vocab_size=128, dim=32, n_layers=2, n_heads=4, n_kv_heads=2, ffn_dim=64, max_seq_len=16
+    )
     model = Transformer(cfg)
     groups = split_params_for_muon(model)
     names = {id(p): n for n, p in model.named_parameters()}
@@ -71,7 +73,9 @@ def _train(model, opt, steps=30, seed=0):
 
 def test_muon_trains_and_resumes_exactly() -> None:
     torch.manual_seed(0)
-    cfg = ModelConfig(vocab_size=64, dim=32, n_layers=2, n_heads=4, n_kv_heads=2, ffn_dim=64, max_seq_len=16)
+    cfg = ModelConfig(
+        vocab_size=64, dim=32, n_layers=2, n_heads=4, n_kv_heads=2, ffn_dim=64, max_seq_len=16
+    )
     model = Transformer(cfg)
     ocfg = OptimConfig(lr=0.02, weight_decay=0.01)
     opt = build_muon_optimizer(model, ocfg)

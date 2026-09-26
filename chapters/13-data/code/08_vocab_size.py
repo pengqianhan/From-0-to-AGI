@@ -46,7 +46,7 @@ MARK_SAMPLES = {
 }
 
 
-def load_corpus(corpus: Path | None) -> tuple[dict[str, str], dict[str, str]]:
+def load_corpus(corpus: Path | None, train_mb: float = 20.0) -> tuple[dict[str, str], dict[str, str]]:
     if corpus is None:  # tiny：每份语料最后 10% 做验证
         files = {"en": "shakespeare.txt", "zh": "chinese_poetry.txt", "code": "code.txt"}
         train, val = {}, {}
@@ -55,7 +55,14 @@ def load_corpus(corpus: Path | None) -> tuple[dict[str, str], dict[str, str]]:
             cut = int(len(t) * 0.9)
             train[k], val[k] = t[:cut], t[cut:]
         return train, val
-    train = {k: (corpus / f"{k}_train.txt").read_text("utf-8") for k in MIX}
+    # 训练分词器的文本按目标配比取：英文 55%、中文 30%、代码 15%（共 train_mb MB）。
+    # 配比决定了合并规则花在哪种语言上——代码占太多，中文的词就学不进词表。
+    train = {}
+    for k, w in MIX.items():
+        t = (corpus / f"{k}_train.txt").read_text("utf-8")
+        budget = int(train_mb * 1e6 * w)
+        b = t.encode("utf-8")[:budget].decode("utf-8", errors="ignore")
+        train[k] = b[: b.rfind("\n\n")] if len(t.encode()) > budget else t
     val = {k: (corpus / f"{k}_val.txt").read_text("utf-8") for k in MIX}
     return train, val
 
@@ -126,8 +133,10 @@ def main() -> None:
     ap.add_argument("--corpus", type=Path, default=None)
     ap.add_argument("--refs", action="store_true")
     ap.add_argument("--sizes", type=int, nargs="*", default=None)
+    ap.add_argument("--train-mb", type=float, default=20.0)
+    ap.add_argument("--json", type=Path, default=None, help="把表格数字另存成 JSON（视频用）")
     args = ap.parse_args()
-    train, val = load_corpus(args.corpus)
+    train, val = load_corpus(args.corpus, args.train_mb)
     sizes = args.sizes or ([1024, 2048, 4096, 8192, 16384] if args.corpus is None
                            else [16384, 32768, 49152, 65536, 98304, 131072, 151936])
     print("训练文本：" + "，".join(f"{k} {len(v.encode()) / 1e6:.1f} MB" for k, v in train.items())
@@ -137,9 +146,12 @@ def main() -> None:
     for V in sizes:
         t0 = time.time()
         tok = train_tokenizer(list(train.values()), V)
+        print(f"  训练 V={V:,}：{time.time() - t0:.0f}s，实际词表 {tok.vocab_size:,}")
+        if tok.vocab_size < V:  # 训练文本太少：出现 ≥2 次的相邻对用完了，词表长不到 V
+            print(f"    （训练文本不够，词表只长到 {tok.vocab_size:,}；这一行不进表）")
+            continue
         bpt = {k: bytes_per_token(tok, v) for k, v in val.items()}
         rows.append((f"zero BPE {V // 1024}K" if V % 1024 == 0 else f"zero BPE {V:,}", V, bpt))
-        print(f"  训练 V={V:,}：{time.time() - t0:.0f}s，实际词表 {tok.vocab_size:,}")
     if args.refs and LLAMA_CPP.exists():
         for label, (V, tok) in ref_tokenizers().items():
             rows.append((label, V, {k: bytes_per_token(tok, v) for k, v in val.items()}))
@@ -153,6 +165,13 @@ def main() -> None:
               f"{c['bpt_mix']:>7.2f}{c['emb']:>10.1f}M{c['total']:>8.1f}M"
               f"{c['flops_per_byte'] / base:>17.3f}")
     print("（FLOPs/字节 以 V=65,536 时每 token 的 FLOPs 为单位；越小 = 同样算力读到的文本越多）")
+    if args.json:
+        import json  # noqa: PLC0415
+
+        args.json.parent.mkdir(parents=True, exist_ok=True)
+        args.json.write_text(json.dumps(
+            [{"label": lb, "V": V, "bpt": bpt, **cost_row(V, bpt), "fpb_rel": cost_row(V, bpt)["flops_per_byte"] / base}
+             for lb, V, bpt in rows], ensure_ascii=False, indent=1))
 
     # 预切分正则：qwen2（= Qwen3，zero 默认）vs qwen3.5
     q2, q35 = PRETOKENIZE_PRESETS["qwen2"], PRETOKENIZE_PRESETS["qwen3.5"]

@@ -59,7 +59,7 @@ def make_batch(bsz: int, N: int, g: torch.Generator):
     return seq[:, :-1], seq[:, 1:], mask
 
 
-def train(pattern: str, steps: int = 1500, bsz: int = 64, lr: float = 3e-3, seed: int = 0,
+def train(pattern: str, steps: int = 600, bsz: int = 64, lr: float = 3e-3, seed: int = 0,
           verbose: bool = True):
     path = OUT / f"recall_{pattern}_s{steps}_seed{seed}.pt"
     torch.manual_seed(seed)

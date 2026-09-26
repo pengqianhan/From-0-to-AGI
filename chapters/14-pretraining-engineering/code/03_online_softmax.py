@@ -61,7 +61,7 @@ def main():
     print(f"  {'j':>2} {'x_j':>5} {'m_j':>5} {'l_j':>9}  说明")
     prev_m = -math.inf
     for j, (xj, (mj, lj)) in enumerate(zip(EXAMPLE, trace), 1):
-        note = "新最大值：旧的和乘 exp(%g − %g) = %.4f" % (prev_m, mj, math.exp(prev_m - mj)) \
+        note = f"新最大值：旧的和乘 exp({prev_m:g} − {mj:g}) = {math.exp(prev_m - mj):.4f}" \
             if mj > prev_m and j > 1 else ""
         print(f"  {j:>2} {xj:>5g} {mj:>5g} {lj:>9.4f}  {note}")
         prev_m = mj

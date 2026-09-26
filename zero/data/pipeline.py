@@ -206,6 +206,7 @@ class PipelineSpec:
     val_max_docs: int = 0  # 每个来源验证集最多多少篇（0 = 不限）
     shard_tokens: int = 100_000_000
     token_budget: float = 0.0  # 预训练 token 预算（manifest 里算"每个来源要过几遍"）
+    write_stages: bool = True  # 每个阶段的结果都落盘成 JSONL（tiny 方便检查；main 数据量大时只写最后一步）
 
 
 @dataclass
@@ -241,7 +242,9 @@ def config_from_dict(d: dict[str, Any]) -> PipelineConfig:
     if len(set(names)) != len(names):
         raise ValueError(f"来源名重复：{names}")
     dec = dict(d.get("decontam", {}))
-    dec["eval_sets"] = [_build(EvalSetSpec, e, "decontam.eval_sets") for e in dec.get("eval_sets", [])]
+    dec["eval_sets"] = [
+        _build(EvalSetSpec, e, "decontam.eval_sets") for e in dec.get("eval_sets", [])
+    ]
     return PipelineConfig(
         pipeline=_build(PipelineSpec, d.get("pipeline", {}), "pipeline"),
         sources=sources,
@@ -503,7 +506,10 @@ def decontam_stage(docs: Sequence[Doc], index: NgramIndex) -> tuple[StageResult,
         if h:
             removed["contaminated"] += 1
             hits.append(
-                {"doc": d["id"], "hits": [{"eval_set": k[0], "item": k[1], "ngrams": v} for k, v in h.items()]}
+                {
+                    "doc": d["id"],
+                    "hits": [{"eval_set": k[0], "item": k[1], "ngrams": v} for k, v in h.items()],
+                }
             )
         else:
             kept.append(d)
@@ -574,10 +580,13 @@ def run_pipeline(cfg: PipelineConfig, log: Callable[[str], None] = print) -> dic
     per_source: dict[str, list[Doc]] = {}
 
     def record(src: str, stage: str, docs: Sequence[Doc], res: StageResult | None = None) -> None:
-        funnel.setdefault(src, []).append({"stage": stage, "docs": len(docs), "bytes": _nbytes(docs)})
+        funnel.setdefault(src, []).append(
+            {"stage": stage, "docs": len(docs), "bytes": _nbytes(docs)}
+        )
         if res is not None and res.removed:
             removed_all.setdefault(src, {})[stage] = dict(res.removed)
-        write_jsonl(docs, work / f"{len(funnel[src]):02d}_{stage}" / f"{src}.jsonl")
+        if P.write_stages or stage == "decontam":
+            write_jsonl(docs, work / f"{len(funnel[src]):02d}_{stage}" / f"{src}.jsonl")
 
     # 1–5：逐来源
     for spec in cfg.sources:
@@ -657,6 +666,8 @@ def run_pipeline(cfg: PipelineConfig, log: Callable[[str], None] = print) -> dic
     for name in per_source:
         info: dict[str, Any] = {}
         for split, docs in (("train", train[name]), ("val", val[name])):
+            for stale in out_dir.glob(f"{name}_{split}_*.bin"):  # 上次运行留下的分片（可能更多）
+                stale.unlink()
             paths = write_shards(
                 (d["text"] for d in docs),
                 tok,

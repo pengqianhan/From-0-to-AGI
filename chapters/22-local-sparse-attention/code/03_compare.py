@@ -41,16 +41,22 @@ def bucket_means(acc: torch.Tensor, n_layers: int) -> list[float]:
 def main() -> None:
     rf = 4 * (m.W - 1)
     print(f"窗口 W = {m.W}，4 层；只用滑动窗口时的理论感受野 = 4 × (W − 1) = {rf}\n")
-    print(f"{'配置':<11}{'各层窗口':<22}{'LM 验证 loss':>12}{'KV 位置@128':>12}{'KV 位置@4096':>13}")
+    print(
+        f"{'配置':<11}{'各层窗口':<22}{'LM 验证 loss':>12}{'KV 位置@128':>12}{'KV 位置@4096':>13}"
+    )
     for variant, windows in m.VARIANTS.items():
         model = m.load_or_train("lm", variant)
         loss = m.lm_val_loss(model)
-        print(f"{variant:<11}{str(windows):<22}{loss:>12.3f}"
-              f"{cached_positions(windows, 128):>12}{cached_positions(windows, 4096):>13}")
+        print(
+            f"{variant:<11}{str(windows):<22}{loss:>12.3f}"
+            f"{cached_positions(windows, 128):>12}{cached_positions(windows, 4096):>13}"
+        )
 
     print(f"\n大海捞针准确率（8 选 1，瞎猜 = 12.5%；序列长 {m.NEEDLE_T}，每个距离测 64 条）")
-    print(f"{'配置':<11}{f'd < {m.W}（窗口内）':>16}{f'{m.W} ≤ d ≤ {rf}（接力）':>20}"
-          f"{f'd > {rf}（够不着）':>16}")
+    print(
+        f"{'配置':<11}{f'd < {m.W}（窗口内）':>16}{f'{m.W} ≤ d ≤ {rf}（接力）':>20}"
+        f"{f'd > {rf}（够不着）':>16}"
+    )
     curves = {}
     for variant in m.VARIANTS:
         model = m.load_or_train("needle", variant)

@@ -8,7 +8,7 @@
   支路的新配比：英 0.25 / 中 0.25 / 代码 0.50（把目标能力的数据上采样）。
 
 运行：uv run python chapters/15-midtraining-long-context/code/04_anneal_mixture.py
-      （单线程约 8 分钟；结果缓存在 code/out/anneal_mixture.pt，视频直接读它；加 --fresh 重跑）
+      （单线程约 8 分钟 CPU 时间，机器繁忙时墙钟更长；结果缓存在 code/out/anneal_mixture.pt，视频直接读它；加 --fresh 重跑）
 """
 
 import argparse

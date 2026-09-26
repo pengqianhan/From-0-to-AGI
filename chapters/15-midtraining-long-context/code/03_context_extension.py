@@ -8,7 +8,7 @@
 
 所有设置都只改 RoPE 的 cos/sin，不改任何可学参数；评测时同一个模型对所有长度用同一套 cos/sin（"静态缩放"）。
 运行：uv run python chapters/15-midtraining-long-context/code/03_context_extension.py
-      （单线程约 10 分钟；结果缓存在 code/out/context_extension.pt，视频直接读它；加 --fresh 重跑）
+      （单线程约 11 分钟 CPU 时间，机器繁忙时墙钟更长；结果缓存在 code/out/context_extension.pt，视频直接读它；加 --fresh 重跑）
 """
 
 import argparse

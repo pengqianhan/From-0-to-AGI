@@ -12,8 +12,6 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-import numpy as np
-
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 
@@ -58,7 +56,16 @@ def run() -> dict:
 
 
 def main() -> None:
+    import argparse
+    import json
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--json", type=Path, default=None, help="把结果另存成 JSON（视频用，写到 video/out/ 下）")
+    args = ap.parse_args()
     res = run()
+    if args.json:
+        args.json.parent.mkdir(parents=True, exist_ok=True)
+        args.json.write_text(json.dumps(res, ensure_ascii=False, indent=1))
     abl = _load("06_quality_ablation")
     total = abl.STEPS * abl.BATCH * abl.SEQ
     print(f"\n可用的训练 token：{res['train_tokens']}；每个模型训练 {total:,} 个 token")
@@ -75,8 +82,8 @@ def main() -> None:
     print("\n每个来源被看了几遍（epoch）：")
     for name, e in epochs.items():
         print(f"  {name}：" + "，".join(f"{k} {v:.2f}" for k, v in e.items()))
-    print(f"\n（{np.round(list(res['bpb']['均衡'].values()), 3)} 这样的差别要和随机种子的波动比，"
-          "见 06 的两个种子）")
+    print("\n注意：三个模型用同一个随机种子（同样的初始化），差别来自配比；"
+          "只训练了一个种子，小于约 0.03 的差别不要当真（参考 06 的配对差值）")
 
 
 if __name__ == "__main__":

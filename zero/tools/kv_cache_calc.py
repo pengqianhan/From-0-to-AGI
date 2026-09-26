@@ -184,7 +184,9 @@ def kv_cache_bytes(cfg: Any, seq_len: int, batch: int = 1, dtype_bytes: int = 2)
 def kv_bytes_per_token(cfg: Any, dtype_bytes: int = 2) -> int:
     """每多一个 token（在所有窗口都填满之前），KV cache 增加多少字节。"""
     lay = _as_layout(cfg)
-    return sum(s.per_token for s in lay.layers if s.kind in ("full", "mla", "sliding")) * dtype_bytes
+    return (
+        sum(s.per_token for s in lay.layers if s.kind in ("full", "mla", "sliding")) * dtype_bytes
+    )
 
 
 def fixed_state_bytes(cfg: Any, batch: int = 1, dtype_bytes: int = 2) -> int:

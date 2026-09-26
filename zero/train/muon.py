@@ -42,7 +42,9 @@ from torch import nn
 NS_COEFFS = (3.4445, -4.7750, 2.0315)
 
 
-def zeropower_via_newtonschulz5(G: torch.Tensor, steps: int = 5, dtype: torch.dtype | None = None) -> torch.Tensor:
+def zeropower_via_newtonschulz5(
+    G: torch.Tensor, steps: int = 5, dtype: torch.dtype | None = None
+) -> torch.Tensor:
     """把矩阵 G 近似正交化（≈ U Vᵀ）。dtype 默认：CUDA 上 bfloat16（参考实现），CPU 上 float32。"""
     assert G.ndim == 2, "Muon 只处理二维矩阵"
     a, b, c = NS_COEFFS
@@ -84,8 +86,16 @@ class MuonAdamW(torch.optim.Optimizer):
         if adjust not in ("rms", "spectral"):
             raise ValueError(f"adjust 只能是 rms/spectral，当前 {adjust!r}")
         defaults = dict(
-            lr=lr, weight_decay=weight_decay, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps,
-            adjust=adjust, rms_scale=rms_scale, betas=betas, eps=eps, use_muon=False,
+            lr=lr,
+            weight_decay=weight_decay,
+            momentum=momentum,
+            nesterov=nesterov,
+            ns_steps=ns_steps,
+            adjust=adjust,
+            rms_scale=rms_scale,
+            betas=betas,
+            eps=eps,
+            use_muon=False,
         )
         super().__init__(param_groups, defaults)
         for g in self.param_groups:
@@ -98,7 +108,8 @@ class MuonAdamW(torch.optim.Optimizer):
     def _scale(shape: torch.Size, adjust: str, rms_scale: float) -> float:
         m, n = shape
         if adjust == "rms":
-            return rms_scale * math.sqrt(max(m, n))  # NS5 输出的 RMS ≈ 1/√max(m,n)，乘回来得到 RMS ≈ rms_scale
+            # NS5 输出的 RMS ≈ 1/√max(m,n)，乘回来得到 RMS ≈ rms_scale
+            return rms_scale * math.sqrt(max(m, n))
         return math.sqrt(max(1.0, m / n))
 
     @torch.no_grad()
@@ -142,7 +153,9 @@ class MuonAdamW(torch.optim.Optimizer):
         return loss
 
 
-def split_params_for_muon(model: nn.Module, decay_embeddings: bool = False) -> dict[str, list[nn.Parameter]]:
+def split_params_for_muon(
+    model: nn.Module, decay_embeddings: bool = False
+) -> dict[str, list[nn.Parameter]]:
     """按名字分组：块内二维权重 → muon；embedding / lm_head → adam（是否衰减可选）；一维（norm）→ adam 不衰减。"""
     groups: dict[str, list[nn.Parameter]] = {"muon": [], "adam_decay": [], "adam_no_decay": []}
     seen: set[int] = set()
@@ -160,7 +173,9 @@ def split_params_for_muon(model: nn.Module, decay_embeddings: bool = False) -> d
     return groups
 
 
-def build_muon_optimizer(model: nn.Module, cfg: Any, device: torch.device | None = None) -> MuonAdamW:
+def build_muon_optimizer(
+    model: nn.Module, cfg: Any, device: torch.device | None = None
+) -> MuonAdamW:
     """与 trainer.build_optimizer 同签名。cfg 是 OptimConfig：lr、weight_decay、beta1、beta2、eps、decay_embeddings；
     可选字段 muon_momentum / muon_ns_steps / muon_adjust / muon_rms_scale（没有就用默认值）。"""
     groups = split_params_for_muon(model, getattr(cfg, "decay_embeddings", False))

@@ -23,7 +23,7 @@ DENSE = {
 MOE = {
     "Mixtral-8x7B": dict(
         d=4096, L=32, H=32, KV=8, hd=128, V=32000, E=8, K=2, I_moe=14336,
-        official=(46.7, 12.9), src="Mixtral 论文：47B / 13B"),
+        official=(47, 13), src="Mixtral 论文：47B / 13B（取整）"),
     "DeepSeek-V3": dict(
         d=7168, L=61, H=128, V=129280, E=256, K=8, I_moe=2048, shared=1, dense_layers=3,
         I_dense=18432, mla=dict(q_lora=1536, kv_lora=512, nope=128, rope=64, v=128),
@@ -31,13 +31,13 @@ MOE = {
     "Kimi-K2": dict(
         d=7168, L=61, H=64, V=163840, E=384, K=8, I_moe=2048, shared=1, dense_layers=1,
         I_dense=18432, mla=dict(q_lora=1536, kv_lora=512, nope=128, rope=64, v=128),
-        router_bias=True, official=(1040, 32.6), src="技术报告表 2：1.04T / 32.6B"),
+        router_bias=True, official=(1040, 32.6), src="技术报告表 2：1.04T / 32.6B（模型卡写 1T / 32B）；本表少约 14B，原因待核实"),
     "Qwen3-235B-A22B": dict(
         d=4096, L=94, H=64, KV=4, hd=128, V=151936, E=128, K=8, I_moe=1536, qk_norm=True,
         official=(235, 22), src="技术报告：235B / 22B"),
     "Qwen3-30B-A3B": dict(
         d=2048, L=48, H=32, KV=4, hd=128, V=151936, E=128, K=8, I_moe=768, qk_norm=True,
-        official=(30, 3), src="技术报告：30B / 3B"),
+        official=(30.5, 3.3), src="模型卡：30.5B / 3.3B"),
     "GLM-4.5": dict(
         d=5120, L=92, H=96, KV=8, hd=128, V=151552, E=160, K=8, I_moe=1536, shared=1,
         dense_layers=3, I_dense=12288, qkv_bias=True, qk_norm=True, router_bias=True,

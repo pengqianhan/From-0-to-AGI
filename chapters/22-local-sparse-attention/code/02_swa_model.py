@@ -253,7 +253,7 @@ def train(task: str, windows: list, steps: int, seed: int = 0, verbose: bool = T
     return model.eval()
 
 
-STEPS = {"lm": 600, "needle": 1500}
+STEPS = {"lm": 600, "needle": 600}
 
 
 def load_or_train(task: str, variant: str, verbose: bool = True) -> TinyLM:

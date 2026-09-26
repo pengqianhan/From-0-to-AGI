@@ -72,16 +72,19 @@ def truncate(cache: KVCache, n: int) -> None:
 
 @torch.no_grad()
 def forward_time(model, ctx_len: int, n_new: int, reps: int = 60) -> float:
-    """已有 ctx_len 个位置的缓存时，一次前向喂 n_new 个新 token 的耗时（毫秒，取中位数）。"""
+    """已有 ctx_len 个位置的缓存时，一次前向喂 n_new 个新 token 的耗时（毫秒，取中位数）。
+
+    用 time.process_time()（本进程占用的 CPU 时间）而不是墙钟时间：构建机上几十个任务抢 4 个核，
+    墙钟时间主要反映"排队等 CPU"，CPU 时间才反映这次前向本身的工作量（单线程时两者本应相同）。"""
     g = torch.Generator().manual_seed(0)
     cache = KVCache(model.c.n_layers)
     model(torch.randint(0, model.c.vocab_size, (1, ctx_len), generator=g), cache)
     new = torch.randint(0, model.c.vocab_size, (1, n_new), generator=g)
     times = []
     for _ in range(reps):
-        t0 = time.perf_counter()
+        t0 = time.process_time()
         model(new, cache)
-        times.append(time.perf_counter() - t0)
+        times.append(time.process_time() - t0)
         truncate(cache, ctx_len)  # 每次都回到同样的起点
     return statistics.median(times) * 1e3
 
@@ -95,9 +98,13 @@ if __name__ == "__main__":
     data = ch10.CharData()
     print(f"目标模型：{n_params(target):,} 参数，验证集 loss {ch10.val_loss(target):.3f}")
     print(f"草稿模型：{n_params(draft):,} 参数，验证集 loss {ch10.val_loss(draft):.3f}")
-    print(f"参数量之比 {n_params(target) / n_params(draft):.0f} : 1，共用同一个 {data.vocab_size} 字符的词表")
+    print(
+        f"参数量之比 {n_params(target) / n_params(draft):.0f} : 1，共用同一个 {data.vocab_size} 字符的词表"
+    )
 
-    print("\n已有 200 个位置的 KV cache，一次前向喂 T 个新 token 的耗时（单线程 CPU，中位数）：")
+    print(
+        "\n已有 200 个位置的 KV cache，一次前向喂 T 个新 token 的耗时（单线程，进程 CPU 时间，中位数）："
+    )
     print(f"{'T':>4} {'目标模型 ms':>12} {'相对 T=1':>9} {'草稿模型 ms':>12}")
     base = None
     for T in (1, 2, 3, 5, 9, 17):

@@ -157,10 +157,10 @@ class ChapterScene(NarratedScene):
             sub = zh(f"主线模型：2 × 28 × 8 × 128 × 2 字节 = {per:,} 字节 = {per // 1024} KiB / token",
                      26).move_to([0, 0.5, 0])
             self.play(FadeIn(sub), run_time=self.fit(1))
-            scale = 3.2  # 每 GiB 的宽度
+            scale = 2.0  # 每 GiB 的宽度
             kv_gib, w_gib = D["main_32k"] / GiB, D["weights"] / GiB
-            b1 = hbar(kv_gib * scale, theme.ATTN).move_to([-3.2, -0.6, 0], aligned_edge=LEFT)
-            b2 = hbar(w_gib * scale, theme.PARAM).move_to([-3.2, -1.4, 0], aligned_edge=LEFT)
+            b1 = hbar(kv_gib * scale, theme.ATTN).move_to([-2.0, -0.6, 0], aligned_edge=LEFT)
+            b2 = hbar(w_gib * scale, theme.PARAM).move_to([-2.0, -1.4, 0], aligned_edge=LEFT)
             l1 = zh("一条 32K 对话的 KV cache", 22).next_to(b1, LEFT, 0.25)
             l2 = zh("模型权重（689.5M 参数）", 22).next_to(b2, LEFT, 0.25)
             v1 = zh(f"{kv_gib:.2f} GiB", 24, theme.ATTN).next_to(b1, RIGHT, 0.2)
@@ -177,7 +177,7 @@ class ChapterScene(NarratedScene):
         with self.shot("S03"):
             self.play(*self.set_heading("prefill：注意力的运算量随 T² 增长"), run_time=self.fit(0.8))
             H, W, base = 4.2, 1.1, -2.2
-            xs = [-4.2, -1.8, 0.6, 3.0]
+            xs = [-5.2, -3.0, -0.8, 1.4]
             bars, texts = VGroup(), VGroup()
             for x, p in zip(xs, D["prefill"]):
                 lin = hbar(W, theme.PARAM, height=H * (1 - p["share"]))
@@ -192,12 +192,12 @@ class ChapterScene(NarratedScene):
             leg = VGroup(
                 VGroup(hbar(0.35, theme.ATTN, 0.3), zh("注意力 ∝ T²", 22)).arrange(RIGHT, buff=0.15),
                 VGroup(hbar(0.35, theme.PARAM, 0.3), zh("矩阵乘 ∝ T", 22)).arrange(RIGHT, buff=0.15),
-            ).arrange(DOWN, aligned_edge=LEFT, buff=0.25).move_to([5.6, 1.2, 0])
+            ).arrange(DOWN, aligned_edge=LEFT, buff=0.25).move_to([4.7, 1.2, 0])
             self.play(FadeIn(leg), run_time=self.fit(0.8))
             for b, t in zip(bars, texts):
                 self.play(GrowFromEdge(b, DOWN), FadeIn(t), run_time=self.fit(1.2, reserve=3))
                 self.wait(min(1.5, self.remaining() * 0.12))
-            note = zh("主线模型，前向运算量", 20, theme.MUTED).move_to([5.6, 0.1, 0])
+            note = zh("主线模型，前向运算量", 20, theme.MUTED).move_to([4.7, 0.1, 0])
             self.play(FadeIn(note), run_time=self.fit(0.5))
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(bars, texts, leg, note)), run_time=self.fit(0.6))
@@ -262,7 +262,7 @@ class ChapterScene(NarratedScene):
                 self.play(GrowFromEdge(g[0], DOWN), FadeIn(g[1]), FadeIn(g[2]),
                           run_time=self.fit(1.2, reserve=2))
                 self.wait(self.remaining() * 0.15)
-            note = zh("80 GB 扣掉权重全给 KV cache，不计激活与碎片", 20, theme.MUTED).move_to([3.6, 2.6, 0])
+            note = zh("80 GB 扣掉权重全给 KV cache\n不计激活与碎片", 20, theme.MUTED).move_to([-3.5, 1.6, 0])
             self.play(FadeIn(note), run_time=self.fit(0.5))
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(grp, note)), run_time=self.fit(0.6))
@@ -376,7 +376,7 @@ class ChapterScene(NarratedScene):
             krl = MathTex(r"k^{R}", font_size=34, color=theme.OUTPUT).next_to(kr, UP, 0.1)
             krd = zh("64 维，带 RoPE", 18, theme.MUTED).next_to(kr, DOWN, 0.1)
             a1 = Arrow(x.get_right() + UP * 0.7, c.get_left(), buff=0.1, color=theme.MUTED)
-            a1l = MathTex(r"W^{DKV}", font_size=30, color=theme.PARAM).next_to(a1, UP, 0.05)
+            a1l = MathTex(r"W^{DKV}", font_size=30, color=theme.PARAM).next_to(a1, DOWN, 0.08)
             a2 = Arrow(x.get_right() + DOWN * 1.3, kr.get_left(), buff=0.1, color=theme.MUTED)
             cache_box = SurroundingRectangle(VGroup(c, cd, kr, krd, cl, krl), color=theme.HIGHLIGHT,
                                              buff=0.18)

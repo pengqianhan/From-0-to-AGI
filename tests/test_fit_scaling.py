@@ -17,8 +17,8 @@ from zero.tools.fit_scaling import (
     fit_loss_to_score,
     fit_power_law,
     load_points,
-    load_run,
     main,
+    model_size,
 )
 from zero.tools.plan_budget import apply_candidate, plan, tokens_for_budget
 
@@ -42,6 +42,7 @@ def test_fit_recovers_known_parameters() -> None:
     assert fit.alpha == pytest.approx(TRUE.alpha, abs=0.02)
     assert fit.beta == pytest.approx(TRUE.beta, abs=0.02)
     assert fit.rmse < 1e-3
+    assert not fit.at_boundary
     # 外推 2 倍尺寸、长得多的训练：误差 < 0.3%
     N, D = 6e8, 4e11
     assert float(fit.predict(N, D)) == pytest.approx(float(TRUE.predict(N, D)), rel=3e-3)
@@ -82,7 +83,6 @@ def test_loss_to_score_sigmoid() -> None:
 
 def test_cli_with_trainer_logs(tmp_path, capsys) -> None:
     """用训练器格式的 log.jsonl + 配置文件拟合，并读留出运行、写出 JSON。"""
-    cfg_path = tmp_path / "m.toml"
     runs = []
     for i, (dim, ffn) in enumerate([(64, 192), (96, 256), (128, 384), (160, 448), (192, 512)]):
         cfg_path_i = tmp_path / f"m{i}.toml"
@@ -90,25 +90,41 @@ def test_cli_with_trainer_logs(tmp_path, capsys) -> None:
             f"[model]\nvocab_size = 256\ndim = {dim}\nn_layers = 2\nn_heads = 4\nn_kv_heads = 2\n"
             f"ffn_dim = {ffn}\nmax_seq_len = 64\n[data]\nseq_len = 64\n"
         )
-        N = load_run.__globals__["model_size"](load_model_config(cfg_path_i))
+        N = model_size(load_model_config(cfg_path_i))
         for ratio in [10, 40]:
             run = tmp_path / f"r{i}_{ratio}"
             run.mkdir()
             D = N * ratio
-            recs = [{"step": 1, "loss": 5.0, "tokens": 1000, "val_loss": None},
-                    {"step": 2, "loss": 3.0, "tokens": int(D), "val_loss": float(TRUE.predict(N, D))}]
+            recs = [
+                {"step": 1, "loss": 5.0, "tokens": 1000, "val_loss": None},
+                {"step": 2, "loss": 3.0, "tokens": int(D), "val_loss": float(TRUE.predict(N, D))},
+            ]
             (run / "log.jsonl").write_text("\n".join(json.dumps(r) for r in recs))
             runs.append(f"{run}:{cfg_path_i}")
-    cfg_path.write_text("")
     out = tmp_path / "fit.json"
-    main([*sum((["--run", r] for r in runs[:-2]), []), "--holdout", runs[-1],
-          "--target-N", "600M", "--target-D", "400B", "--bootstrap", "10", "--out", str(out)])
+    main(
+        [
+            *sum((["--run", r] for r in runs[:-2]), []),
+            "--holdout",
+            runs[-1],
+            "--target-N",
+            "600M",
+            "--target-D",
+            "400B",
+            "--bootstrap",
+            "10",
+            "--out",
+            str(out),
+        ]
+    )
     res = json.loads(out.read_text())
     ho = res["holdout"][0]
     assert ho["pred"] == pytest.approx(ho["loss"], rel=0.01)
     assert "外推" in capsys.readouterr().out
     pts_file = tmp_path / "pts.jsonl"
-    pts_file.write_text("\n".join(json.dumps({"N": p.N, "D": p.D, "loss": p.loss}) for p in _ladder()))
+    pts_file.write_text(
+        "\n".join(json.dumps({"N": p.N, "D": p.D, "loss": p.loss}) for p in _ladder())
+    )
     assert len(load_points(pts_file)) == 12
 
 
