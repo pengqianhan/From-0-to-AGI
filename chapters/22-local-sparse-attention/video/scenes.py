@@ -289,7 +289,7 @@ class ChapterScene(NarratedScene):
                 return cells, rows, lab, ll, nums
 
             a = panel(D["rf_swa"], 2.0, "全部滑动窗口（W = 4）：l × 3", theme.INPUT)
-            b = panel(D["rf_mix"], -0.35, "第 3 层换成全局", theme.OUTPUT)
+            b = panel(D["rf_mix"], -0.35, "第 3、6 层换成全局", theme.OUTPUT)
             for cells, _rows, lab, ll, _ in (a, b):
                 self.play(FadeIn(cells), FadeIn(lab), FadeIn(ll), run_time=self.fit(0.8))
             for l in range(6):

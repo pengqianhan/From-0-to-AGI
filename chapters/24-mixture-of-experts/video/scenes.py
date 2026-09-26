@@ -71,6 +71,7 @@ def compute() -> dict:
     d["summary"] = exp.summarize(rows)
     d["loads"] = {r["name"]: r["loads"] for r in rows if r["seed"] == 0 and r["loads"]}
     d["log_every"] = exp.LOG_EVERY
+    d["show_layer"] = exp.SHOW_LAYER
     d["touched"] = {n: [sv.touched_fraction(E, K, b) for b in (1, 16, 64)]
                     for n, (E, K, _) in sv.MOE_CFG.items()}
     t5 = sv.QWEN3_TABLE5
@@ -167,7 +168,8 @@ class ChapterScene(NarratedScene):
                 a.align_to([-3.0, 0, 0], LEFT)
                 f = bar(W * b["ffn"] / total, theme.PARAM, 0.6).next_to(a, RIGHT, buff=0)
                 lab = zh(name, 26).next_to(a, LEFT, 0.3)
-                ta = zh(f"注意力 {b['attn'] / 1e6:.1f}M", 20, theme.BG).move_to(a)
+                ta = zh(f"注意力 {b['attn'] / 1e6:.1f}M", 20, theme.ATTN).next_to(a, UP, 0.1)
+                ta.align_to(a, LEFT)
                 tf = zh(f"FFN {b['ffn'] / 1e6:.1f}M · {b['share']:.1%}", 22, theme.BG).move_to(f)
                 rows.add(VGroup(lab, a, f, ta, tf))
             note = zh("每层矩阵参数（≈ 每个 token 的矩阵乘算力）", 22, theme.MUTED).move_to([0.5, -2.2, 0])
@@ -193,7 +195,7 @@ class ChapterScene(NarratedScene):
             router = RoundedRectangle(width=1.4, height=0.8, corner_radius=0.1,
                                       stroke_color=theme.ATTN).move_to([-2.4, 0.1, 0])
             rlab = zh("路由器", 22, theme.ATTN).move_to(router)
-            out = RoundedRectangle(width=1.2, height=0.8, corner_radius=0.1,
+            out = RoundedRectangle(width=1.8, height=0.8, corner_radius=0.1,
                                    stroke_color=theme.OUTPUT).move_to([3.4, 0.1, 0])
             olab = zh("加权求和", 20, theme.OUTPUT).move_to(out)
             self.play(FadeIn(experts), FadeIn(router), FadeIn(rlab), FadeIn(out), FadeIn(olab),
@@ -288,21 +290,22 @@ class ChapterScene(NarratedScene):
             self.play(*self.set_heading("问题：路由坍缩"), run_time=self.fit(0.8))
             badge = self.demo_badge("极小实验")
             loads = D["loads"]["MoE-无均衡"]
+            L = D["show_layer"]
             idxs = [0, 2, 6, len(loads) - 1]
-            h = histogram(loads[idxs[0]][0], width=5.5, height=3.0).move_to([-1.5, -0.2, 0])
+            h = histogram(loads[idxs[0]][L], width=5.5, height=3.0).move_to([-1.5, -0.2, 0])
             h.align_to([0, -2.1, 0], DOWN)
             base_y = h[1].get_y()
-            step_lab = zh(f"第 0 层 · step {idxs[0] * D['log_every']}", 24).move_to([4.2, 1.2, 0])
-            ratio = mono(f"最大/平均 {imb(loads[idxs[0]][0]):.2f}", 24, theme.HIGHLIGHT).next_to(
+            step_lab = zh(f"第 {L} 层 · step {idxs[0] * D['log_every']}", 24).move_to([4.2, 1.2, 0])
+            ratio = mono(f"最大/平均 {imb(loads[idxs[0]][L]):.2f}", 24, theme.HIGHLIGHT).next_to(
                 step_lab, DOWN, 0.3)
             even = zh("虚线 = 均匀 1/8", 20, theme.HIGHLIGHT).next_to(ratio, DOWN, 0.3)
             self.play(FadeIn(badge), FadeIn(h), FadeIn(step_lab), FadeIn(ratio), FadeIn(even),
                       run_time=self.fit(1.0))
             for i in idxs[1:]:
-                nh = histogram(loads[i][0], width=5.5, height=3.0).move_to(h)
+                nh = histogram(loads[i][L], width=5.5, height=3.0).move_to(h)
                 nh.shift(UP * (base_y - nh[1].get_y()))
-                ns = zh(f"第 0 层 · step {i * D['log_every']}", 24).move_to(step_lab)
-                nr = mono(f"最大/平均 {imb(loads[i][0]):.2f}", 24, theme.HIGHLIGHT).move_to(ratio)
+                ns = zh(f"第 {L} 层 · step {i * D['log_every']}", 24).move_to(step_lab)
+                nr = mono(f"最大/平均 {imb(loads[i][L]):.2f}", 24, theme.HIGHLIGHT).move_to(ratio)
                 self.play(Transform(h, nh), Transform(step_lab, ns), Transform(ratio, nr),
                           run_time=self.fit(1.5))
                 self.wait(min(1.0, self.remaining() * 0.2))
@@ -406,13 +409,13 @@ class ChapterScene(NarratedScene):
     # ── S10 小实验：负载 ─────────────────────────────────────────────────
     def s10(self) -> None:
         with self.shot("S10"):
-            self.play(*self.set_heading("小实验：三种均衡方式（第 0 层，训练结束）"), run_time=self.fit(0.8))
+            self.play(*self.set_heading("小实验：三种均衡方式（第 1 层，训练结束）"), run_time=self.fit(0.8))
             badge = self.demo_badge("极小实验")
             names = [("MoE-无均衡", "无均衡", theme.GRAD), ("MoE-辅助损失", "辅助损失", theme.ATTN),
                      ("MoE-无辅助损失", "偏置（无辅助损失）", theme.OUTPUT)]
             groups = VGroup()
             for i, (n, lab, col) in enumerate(names):
-                frac = D["loads"][n][-1][0]
+                frac = D["loads"][n][-1][D["show_layer"]]
                 h = histogram(frac, width=3.4, height=2.6, color=col)
                 h.move_to([-4.4 + i * 4.4, 0, 0])
                 h.align_to([0, -1.9, 0], DOWN)
@@ -518,13 +521,13 @@ class ChapterScene(NarratedScene):
             for n in names:
                 r = t5[n]
                 tbl.add(zh(f"{n}：MMLU {r['scores'][0]:.2f}  总 {r['total']}B / 激活 {r['active']}B", 20))
-            tbl.arrange(DOWN, aligned_edge=LEFT, buff=0.2).move_to([-3.2, 0.1, 0])
+            tbl.arrange(DOWN, aligned_edge=LEFT, buff=0.2).move_to([0, 0.75, 0])
             self.play(FadeIn(tbl), run_time=self.fit(1.2))
             tq = D["touched"]["Qwen3-30B-A3B"]
             rd = VGroup(zh("解码一步读取的专家比例（Qwen3-30B-A3B）", 20, theme.MUTED),
                         mono(f"batch 1: {tq[0]:.1%}   16: {tq[1]:.1%}   64: {tq[2]:.1%}", 20,
                              theme.HIGHLIGHT)).arrange(DOWN, aligned_edge=LEFT, buff=0.2)
-            rd.move_to([3.3, 0.1, 0])
+            rd.move_to([0, -0.75, 0])
             self.play(FadeIn(rd), run_time=self.fit(1.0))
             key = zh("MoE 省的是算力，不是显存", 30, theme.HIGHLIGHT).move_to([0, -1.9, 0])
             self.wait(max(0.1, self.remaining() * 0.4))

@@ -318,8 +318,9 @@ class ChapterScene(NarratedScene):
             self.play(LaggedStart(*[FadeIn(b) for b in bars], lag_ratio=0.08), FadeIn(leg),
                       run_time=self.fit(2.5))
             T, ts, tl = D["decode"][-1]
-            note = zh(f"256K 上下文：{ts:.0f} ms vs {tl:.2f} ms", 24, theme.HIGHLIGHT)
-            note.move_to([4.6, -0.4, 0])
+            note = VGroup(zh("256K 上下文：", 22, theme.HIGHLIGHT),
+                          zh(f"{ts:.0f} ms vs {tl:.2f} ms", 22, theme.HIGHLIGHT))
+            note.arrange(DOWN, aligned_edge=LEFT, buff=0.12).move_to([5.0, 0.1, 0])
             self.play(FadeIn(note), run_time=self.fit(0.6))
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(ax, ylab, bars, leg, note)), run_time=self.fit(0.6))
@@ -393,8 +394,8 @@ class ChapterScene(NarratedScene):
                 self.play(Create(line), FadeIn(lab), run_time=self.fit(1.0))
             c99 = D["decay"]["0.99"]
             vals = zh(f"α = 0.99：{c99[10]:.3f} → {c99[100]:.3f} → {c99[500 - 1]:.3f}", 22, theme.ATTN)
-            vals.move_to([3.4, -1.1, 0])
-            fam = zh("RetNet · GLA · Mamba-2 的共同骨架", 22, theme.MUTED).move_to([3.4, -1.8, 0])
+            vals.move_to([4.0, -0.9, 0])
+            fam = zh("RetNet · GLA · Mamba-2 的共同骨架", 22, theme.MUTED).move_to([4.0, -1.5, 0])
             self.play(FadeIn(vals), run_time=self.fit(0.6))
             self.wait(self.remaining() * 0.4)
             self.play(FadeIn(fam), run_time=self.fit(0.6))

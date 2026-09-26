@@ -533,7 +533,9 @@ truncate(cache, len(seq) - 1)   # 回滚""",
                 y_length=4.0,
                 axis_config={"color": theme.MUTED, "include_numbers": True, "font_size": 20},
             ).move_to([-1.4, 0.0, 0])
-            xl = MathTex(r"\alpha", font_size=30, color=theme.MUTED).next_to(ax, RIGHT, 0.15)
+            xl = MathTex(r"\alpha", font_size=30, color=theme.MUTED).next_to(
+                ax.x_axis.get_end(), DOWN, 0.25
+            )
             yl = zh("加速比", 20, theme.MUTED).next_to(ax, UP, 0.1)
             self.play(Create(ax), FadeIn(xl), FadeIn(yl), run_time=self.fit(1.2))
             colors = {"1": theme.INPUT, "3": theme.OUTPUT, "6": theme.ATTN}

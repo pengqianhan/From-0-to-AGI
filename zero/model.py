@@ -22,6 +22,7 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
+import torch.utils.checkpoint
 from torch import nn
 
 from zero.config import ModelConfig
@@ -285,6 +286,9 @@ class Transformer(nn.Module):
         self.rope = RotaryEmbedding(
             config.head_dim, config.max_seq_len, config.rope_theta, config.rope_scaling
         )
+        # 激活检查点（第 14 章）：训练时每个 Block 只保存输入，反向时重算内部激活，
+        # 用约 1/3 的额外算力换显存。由 Trainer 按 train.activation_checkpointing 打开。
+        self.activation_checkpointing = False
         self.init_weights()
 
     # ---- 初始化 ----
@@ -314,8 +318,14 @@ class Transformer(nn.Module):
         _, seqlen = tokens.shape
         cos, sin = self.rope(start_pos, seqlen)
         h = self.tok_emb(tokens)
+        use_ckpt = self.activation_checkpointing and self.training and kv_cache is None
         for layer in self.layers:
-            h = layer(h, cos, sin, kv_cache, start_pos)
+            if use_ckpt:
+                h = torch.utils.checkpoint.checkpoint(
+                    layer, h, cos, sin, None, start_pos, use_reentrant=False
+                )
+            else:
+                h = layer(h, cos, sin, kv_cache, start_pos)
         h = self.norm(h)
         return self.lm_head(h)
 

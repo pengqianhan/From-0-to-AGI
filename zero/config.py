@@ -216,6 +216,9 @@ class TrainConfig:
     device: str = "auto"  # "auto" | "cpu" | "cuda"
     dtype: str = "auto"  # "auto"（CUDA 用 bf16，CPU 用 fp32）| "bf16" | "fp32"
     compile: bool = False  # torch.compile（尚未在 GPU 上验证）
+    activation_checkpointing: bool = (
+        False  # 激活检查点：每层只存输入、反向时重算（第 14 章；尚未在 GPU 上验证）
+    )
     cpu_threads: int = (
         0  # CPU 上 PyTorch 的线程数；0 表示用默认值。机器被别的进程占满时设 1 反而最快
     )

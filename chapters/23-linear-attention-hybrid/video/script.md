@@ -17,7 +17,7 @@
 | F9 | Gated DeltaNet 分块形式 == 递推形式，最大输出差 4.8e-07 | `03_delta_rule.py` 第 4 部分 | 代码生成 |
 | F10 | Qwen3.5-0.8B：24 层 = 6 × (3 × Gated DeltaNet + 1 × Gated Attention)；`full_attention_interval: 4`；全注意力 2 个 KV 头 × head_dim 256；线性层 16 个头 × 128 维 | HF `Qwen/Qwen3.5-0.8B` 的 config.json 与模型卡（2026-09 读取） | 已核对 |
 | F11 | Qwen3.5-0.8B 一条 262144 token 序列：KV 3072 MiB + 线性状态 18.6 MiB；若 24 层都是全注意力则 12288 MiB | `code/04_hybrid_lm.py` 最后一部分（按 config 计算，KV 用 BF16、状态 FP32） | 代码生成 |
-| F12 | 小语言模型（4 层、字符级、800 步）的验证集 loss：见 S12 | `code/04_hybrid_lm.py` 输出 | 代码生成（极小规模） |
+| F12 | 小语言模型（4 层、字符级、800 步、单种子）的验证集 loss：AAAA 1.685、LLLL 1.754、GGGG 1.661、GGGA 1.649 | `code/04_hybrid_lm.py` 输出 | 代码生成（极小规模） |
 | F13 | 联想回忆准确率（N=4 → 24）：AA 100%→94%，LL 64%→17%，GG 85%→29%，GA 99%→79% | `code/05_associative_recall.py` 输出（2 层、600 步、单种子） | 代码生成（极小规模） |
 | F14 | 采用方：Qwen3-Next / Qwen3.5（Gated DeltaNet 3:1）；Kimi Linear（KDA + MLA 3:1）；蚂蚁 Ling-3.0（KDA + MLA 3:1）；NVIDIA Nemotron-H / Nemotron 3（Mamba-2 + 少量注意力）；IBM Granite 4.0-H（Mamba-2 : 注意力 = 9:1）；Falcon-H1（同一层内注意力与 Mamba-2 并联） | 各模型卡 / config / 技术报告（见 README"采用方与来源"） | 已核对 |
 | F15 | MiniMax-Text-01 用 lightning attention（线性）与 softmax 7:1 混合；MiniMax-M2 回到全注意力 | `MiniMaxAI/MiniMax-Text-01`、`MiniMax-M2.5` 的 config.json（`attn_type_list`）；MiniMax 官方博客 *Why Did M2 End Up as a Full Attention Model?* | 已核对 |
@@ -84,7 +84,7 @@
 ### S12 小实验：混合能把回忆找回来
 - 画面：右上角"极小规模实验"标注。左：四种结构的验证 loss 柱状图（AAAA / LLLL / GGGG / GGGA）。右：联想回忆准确率随键值对数量变化的折线，纯线性掉下去，混合与全注意力保持在高处。
 - 屏幕文字：纯线性：回忆掉队　　混合：找回来了
-- 旁白：最后是两个极小规模的实验。左边，四个同样大小的四层小语言模型，只换每层的注意力类型，各训练八百步：四种结构的验证 loss 相差不大，3:1 混合结构的 loss 最低。右边的实验更能说明问题，叫联想回忆：先给模型一串键值对，再反复问它某个键对应的值。纯注意力在二十四对时还有九成四的准确率；朴素线性注意力从六成四一路掉到一成七；Gated DeltaNet 好一些，但也只剩二成九；而只把两层中的一层换回全注意力，混合模型在二十四对时回到了七成九。规模很小，但方向和论文一致：精确回忆，要靠那几层全注意力。
+- 旁白：最后是两个极小规模的实验。左边，四个同样大小的四层小语言模型，只换每层的注意力类型，各训练八百步：四种结构的验证 loss 相差不大，3:1 混合最低，朴素线性注意力最高，但单个随机种子排不出可靠的名次；它说明的是，大部分层换成线性层，语言建模没有明显变差。右边的实验更能说明问题，叫联想回忆：先给模型一串键值对，再反复问它某个键对应的值。纯注意力在二十四对时还有九成四的准确率；朴素线性注意力从六成四一路掉到一成七；Gated DeltaNet 好一些，但也只剩二成九；而只把两层中的一层换回全注意力，混合模型在二十四对时回到了七成九。规模很小，但方向和论文一致：精确回忆，要靠那几层全注意力。
 
 ### S13 谁在用
 - 画面：一张表：千问 Qwen3-Next、Qwen3.5（Gated DeltaNet，3:1）；Kimi Linear（KDA 加 MLA，3:1）；蚂蚁 Ling 3.0（KDA 加 MLA，3:1）；英伟达 Nemotron-H 和 Nemotron 3（Mamba 2 加少量注意力）；IBM Granite 4.0（Mamba 2 比注意力 9:1）；Falcon-H1（同层并联）。最下面一行灰色：MiniMax-01 用过 7:1 的线性混合，M2 回到了全注意力。

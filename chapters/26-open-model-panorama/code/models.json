@@ -908,8 +908,9 @@
     "vocab_size": 154880
    },
    "card": {
-    "total_params": "744B（按 GLM-5 模型卡）",
-    "active_params": "40B（按 GLM-5 模型卡）",
+    "total_params": "744B",
+    "active_params": "40B",
+    "params_source": "GLM-5 模型卡（GLM-5.3 卡未写参数量，config 形状与 GLM-5 相同）",
     "base": "GLM-5.3 与 GLM-5.2 同一个底座，只改后训练",
     "license": "glm-5.3（GLM-5.2 为 MIT）"
    },

@@ -11,11 +11,15 @@
 #   - 65,536（2^16）对中英代码三语的压缩率与参数代价是个折中起点；换成 131,072 时总量 773.4M，仍 ≤ 0.8B。
 #   改词表时务必重新跑 count_params 确认不超过 0.8B。
 #
-# 预训练 token 预算按 GOAL.md 3.3 的 0.5–1T 取下限 500B（闸门 1 定稿）：
-#   每步 token = micro_batch_size 8 × grad_accum_steps 2 × 8 卡 × seq_len 4096 = 524,288
-#   max_steps = 500e9 / 524,288 ≈ 953,674
-#   uv run python -m zero.tools.estimate_cost --config configs/main/pretrain.toml --tokens 500B --gpu h100-sxm
-# 显存：micro_batch_size / grad_accum_steps 的组合尚未在 GPU 上验证，阶段 6 实测后调整。
+# 预训练 token 预算：第 12 章的建议是约 400B（MFU 0.4、$2.5/卡时下约 $4.9K，不超过 GOAL.md 3.4 的
+# $5K 预训练线；500B 约 $6.1K 会超）。预训练停在 WSD 的稳定段，按阶段 6 实测吞吐"花完预算即停"，
+# 衰减留给中期训练。闸门 1 定稿。
+#   每步 token = micro_batch_size 4 × grad_accum_steps 4 × 8 卡 × seq_len 4096 = 524,288
+#   max_steps = 400e9 / 524,288 ≈ 762,940
+#   uv run python -m zero.tools.estimate_cost --config configs/main/pretrain.toml --tokens 400B --gpu h100-sxm
+# 显存：第 14 章 zero/tools/memory_calc.py 估算 micro batch 8 × 4096 在 eager 模式下每卡约 114 GiB，
+# 超过 80GB，所以用 4 × 累积 4（每步 token 不变）；仍不够时打开 activation_checkpointing。
+# 尚未在 GPU 上验证，阶段 6 实测后调整。
 
 [model]
 vocab_size = 65536
@@ -34,9 +38,10 @@ init_std = 0.02
 
 [train]
 seed = 1337
-max_steps = 953674
-micro_batch_size = 8
-grad_accum_steps = 2
+max_steps = 762940
+micro_batch_size = 4
+grad_accum_steps = 4
+activation_checkpointing = false  # 显存不够时改成 true（第 14 章）
 device = "auto"
 dtype = "auto"           # CUDA 上 BF16 autocast
 compile = true           # 尚未在 GPU 上验证

@@ -238,7 +238,20 @@ KV cache 只跟着那 6 层全注意力走；另外 18 层 Gated DeltaNet 的状
 
 `04_hybrid_lm.py` 用第 10 章同款的字符级莎士比亚语料，训练四个 4 层小模型（宽度 128、4 个头、SwiGLU FFN、同样的数据顺序和超参，各 800 步），只换每层的 token mixer：A = softmax 注意力（带 RoPE），L = 朴素线性注意力，G = Gated DeltaNet（L 和 G 都带短卷积和输出归一化）。
 
-<<LM_TABLE>>
+| 结构 | 参数量 | 验证集 loss（nats/字符） | 推理缓存 T=1,024 | T=65,536 |
+|---|---:|---:|---:|---:|
+| AAAA（纯注意力） | 861,440 | 1.685 | 2,048 KB | 131,072 KB |
+| LLLL（纯朴素线性） | 867,712 | 1.754 | 73 KB | 73 KB |
+| GGGG（纯 Gated DeltaNet） | 871,872 | 1.661 | 73 KB | 73 KB |
+| GGGA（3:1 混合） | 869,264 | **1.649** | 567 KB | 32,823 KB |
+
+（缓存按"KV 用 BF16、线性状态用 FP32"计算，见 `cache_bytes`。）
+
+- 朴素线性注意力最差（1.754）：只会累加的状态在字符级建模里也吃亏；
+- Gated DeltaNet 在这个规模上甚至比纯注意力略好（1.661 vs 1.685）。这并不说明它"比注意力强"：800 步、0.87M 参数、128 字符的上下文，模型主要在学局部拼写，短卷积 + 门控递推恰好很擅长这种局部模式；
+- 3:1 混合最低（1.649），同时缓存只有纯注意力的约 1/4（T 越长越接近 1/4）。
+
+**如实说明**：单一随机种子，四者差距（最大 0.1 nats，前三名之间只差 0.04）与第 10 章观察到的种子波动同一量级，这里不能据此排出可靠的名次。它能说明的只是：在同样的参数量下，把大部分层换成线性层**没有让语言建模明显变差**，而缓存省了大半。线性层真正的短板要用专门的任务才看得出来——下一个实验。
 
 ### 8.3 小实验二：联想回忆——纯线性掉队，混合找回来
 
@@ -296,6 +309,7 @@ KV cache 只跟着那 6 层全注意力走；另外 18 层 Gated DeltaNet 的状
 | `04` 的 `LinearMixer`（q/k/v 投影、短卷积、L2 归一化、每头 RMSNorm） | `LinearAttention`、`GatedDeltaNet`（共用 `_LinearMixer`） | 参数名与 HF 相同（`in_proj_qkv`、`in_proj_z`、`in_proj_b`、`in_proj_a`、`conv1d`、`A_log`、`dt_bias`、`norm`、`out_proj`）；**门控 RMSNorm**（输出乘 SiLU(z)）；value 头数可以是 q/k 头数的整数倍；Mamba-2 式的 A、dt 初始化；短卷积带缓存（保存最后 K−1 个输入），分段喂和一次喂结果相同；`mode="auto"` 时 T = 1 走递推、否则走分块 |
 | `04` 的 `TinyLM(pattern="GGGA")` | `HybridConfig`、`HybridTransformer`、`hybrid_layer_types(n_layers, full_attention_interval=4)` | 配置驱动，`layer_types` 与 HF 的 Qwen3.5 config 同名同义；全注意力层直接复用主线的 `zero.model.Attention`（GQA + QK-Norm + RoPE + SDPA） |
 | 无 | `HybridCache`：全注意力层用预分配的 `KVCache`（只为全注意力层分配），线性层用 `LinearState`（递推状态 + 卷积尾巴）；`generate_greedy` | 推理时两种缓存并存；`cache_bytes_per_sequence` 按层记账（第 21 章账本的延伸） |
+| `04` 的 `cache_bytes`、`qwen35_cache_mib` | `cache_bytes_per_sequence`；以及第 21 章的 `zero/tools/kv_cache_calc.py`（`layout_from_config` 直接读 HF config 里的 `layer_types` / Kimi 的 `linear_attn_config`，线性层按固定状态记账） | 读真实 config 算任意混合模型的缓存，不用手抄层数 |
 | 无 | 未实现：Qwen3.5 全注意力层的**输出门**（gated attention，`attn_output_gate: true`）、部分 RoPE（`partial_rotary_factor: 0.25`）、MoE、MTP | 本章只关心 token mixer 的混合方式；这些在第 24、25 章和第 26 章的全景里讲 |
 
 **对拍**：`tests/test_arch_linear_attention.py`（`uv run pytest tests/test_arch_linear_attention.py`，本机 33 项全部通过，约 10 秒），保证：

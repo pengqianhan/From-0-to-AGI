@@ -292,7 +292,7 @@ class ChapterScene(NarratedScene):
     def s07(self):
         with self.shot("S07"):
             self.play(*self.set_heading("小实验：把小底座 SFT 成会调工具"), run_time=self.fit(0.8))
-            badge = self.badge_in()
+            self.badge_in()
             task = VGroup(zh("两个工具", 22, theme.MUTED),
                           mono("get_weather(city)", 20, theme.OUTPUT),
                           mono("add(a, b)", 20, theme.OUTPUT),

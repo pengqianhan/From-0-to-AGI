@@ -132,6 +132,7 @@ class Trainer:
         self.device = self.info.device
 
         model = Transformer(cfg.model).to(self.device)
+        model.activation_checkpointing = cfg.train.activation_checkpointing
         self.init_meta: dict[str, Any] | None = None
         resume_path = find_latest(tc.checkpoint_dir) if tc.checkpoint.resume else None
         if tc.init_from and resume_path is None:

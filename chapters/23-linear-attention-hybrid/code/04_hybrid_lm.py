@@ -6,7 +6,8 @@
   G = Gated DeltaNet（S ← α S (I − β k kᵀ) + β v kᵀ）
 比较四种 4 层结构：AAAA（纯注意力）、LLLL、GGGG（纯线性）、GGGA（3:1 混合，Qwen3.5 的排法）。
 
-  - 训练：assets/tiny_corpus/shakespeare.txt，字符级，每种 800 步（CPU 单线程每种约 1–3 分钟）；
+  - 训练：assets/tiny_corpus/shakespeare.txt，字符级，每种 800 步（CPU 单线程每种约几分钟；
+    构建机多任务共享 CPU 时要十几分钟到半小时）；
   - 报告：验证集 loss，以及推理缓存（KV cache + 线性层状态）随上下文长度的增长。
 权重缓存在 code/out/*.pt（已被 .gitignore 忽略），05_associative_recall.py 复用这里的模型定义。
 
