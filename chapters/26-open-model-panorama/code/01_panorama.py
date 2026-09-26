@@ -13,9 +13,14 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import torch
+
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parents[2]
+sys.path.insert(0, str(REPO))  # 让脚本能 import 仓库根目录下的 zero
 
 from zero.config import load_model_config
 from zero.model import count_params
@@ -26,12 +31,10 @@ from zero.tools.kv_cache_calc import (
     kv_bytes_per_token,
     kv_cache_bytes,
     layout_from_config,
-)
+)  # noqa: E402
 
 torch.set_num_threads(1)
 
-HERE = Path(__file__).resolve().parent
-REPO = HERE.parents[2]
 GiB, KiB = 2**30, 2**10
 SEQ = 131072  # 128K
 FLAGSHIPS = ["deepseek-v4-pro", "qwen3.8-2.4t-a95b", "kimi-k3", "gpt-oss-120b", "glm-5.3", "minimax-m3"]

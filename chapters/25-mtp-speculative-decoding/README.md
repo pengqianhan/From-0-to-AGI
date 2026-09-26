@@ -51,14 +51,14 @@ uv run python chapters/25-mtp-speculative-decoding/code/05_mtp.py               
 `02_greedy_speculative.py` 里，贪心版本的核心就是这几行：
 
 ```python
-feed = seq[len(tc) :] + drafts                                   # 缓存里还没有的已确定 token + k 个草稿
-p_logits = target(torch.tensor([feed]), tc)[0, -(k + 1) :]       # 一次前向，最后 k+1 个位置
-choice = p_logits.argmax(-1).tolist()                            # 目标在每个位置的答案
+feed = seq[len(tc) :] + drafts  # 缓存里还没有的已确定 token + k 个草稿
+p_logits = target(torch.tensor([feed]), tc)[0, -(k + 1) :]  # 一次前向，最后 k+1 个位置
+choice = p_logits.argmax(-1).tolist()  # 目标在每个位置的答案
 m = 0
-while m < k and drafts[m] == choice[m]:                           # 从左往右接受
+while m < k and drafts[m] == choice[m]:  # 从左往右接受
     m += 1
-seq += drafts[:m] + [choice[m]]                                  # m 个草稿 + 1 个纠正（或奖励）
-truncate(tc, len(seq) - 1)                                       # 回滚：扔掉被拒草稿的 K/V
+seq += drafts[:m] + [choice[m]]  # m 个草稿 + 1 个纠正（或奖励）
+truncate(tc, len(seq) - 1)  # 回滚：扔掉被拒草稿的 K/V
 ```
 
 这里有一个真实的例子（视频 S03 用的就是它）：提示词是验证集里的一段莎士比亚，草稿猜了 4 个字符，目标模型接受了前两个，第三个不同意、换成了自己的答案——这一轮只跑了一次目标模型，就产出了 3 个字符。
@@ -110,7 +110,7 @@ P(被拒后抽到 x)       = (1 − α) · max(0, p(x) − q(x)) / (1 − α)  =
 def accept_or_resample(p, q, x, g):
     if torch.rand((), generator=g) < torch.clamp(p[x] / q[x], max=1.0):  # 以 min(1, p/q) 接受
         return True, x
-    residual = torch.clamp(p - q, min=0)                                  # 残差 max(0, p − q)
+    residual = torch.clamp(p - q, min=0)  # 残差 max(0, p − q)
     return False, int(torch.multinomial(residual / residual.sum(), 1, generator=g))
 ```
 
@@ -215,8 +215,10 @@ MTP 的第一个目的是**让主模型训练得更好**：每个位置除了"�
 `05` 里 MTP 模块的核心：
 
 ```python
-x = self.proj(torch.cat([self.enorm(emb_next), self.hnorm(h)], dim=-1))  # [RMSNorm(Emb(t_{i+1})); RMSNorm(h_i)] → 投影
-return self.norm(self.block(x, cos, sin, cache, 0))                       # 一个 block + RMSNorm，再乘共享的 Embᵀ
+x = self.proj(
+    torch.cat([self.enorm(emb_next), self.hnorm(h)], dim=-1)
+)  # [RMSNorm(Emb(t_{i+1})); RMSNorm(h_i)] → 投影
+return self.norm(self.block(x, cos, sin, cache, 0))  # 一个 block + RMSNorm，再乘共享的 Embᵀ
 ```
 
 训练时一行：`loss = l_main + lam * l_mtp`，其中 `l_mtp` 的目标是 `y[:, 1:]`（y 是左移一位的目标序列，再左移一位就是"下下个"）。

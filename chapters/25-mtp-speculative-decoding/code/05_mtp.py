@@ -78,8 +78,9 @@ def mtp_forward(lm, head, x):
     return h @ lm.emb.weight.T, hm @ lm.emb.weight.T
 
 
-def train_mtp(seed: int, lam: float = 0.3, steps: int = 600, bsz: int = 16, seq: int = 64,
-              lr: float = 3e-3):
+def train_mtp(
+    seed: int, lam: float = 0.3, steps: int = 600, bsz: int = 16, seq: int = 64, lr: float = 3e-3
+):
     """与 ch10.train 同样的初始化 / 数据 / 学习率，只多了 λ · L_MTP。"""
     data = ch10.CharData()
     c = ch10.Config(vocab_size=data.vocab_size)
@@ -103,8 +104,10 @@ def train_mtp(seed: int, lam: float = 0.3, steps: int = 600, bsz: int = 16, seq:
         torch.nn.utils.clip_grad_norm_(params, 1.0)
         opt.step()
         if step % 200 == 0:
-            print(f"  step {step:4d}  主损失 {l_main.item():.3f}  MTP 损失 {l_mtp.item():.3f}  "
-                  f"({time.time() - t0:.0f}s)")
+            print(
+                f"  step {step:4d}  主损失 {l_main.item():.3f}  MTP 损失 {l_mtp.item():.3f}  "
+                f"({time.time() - t0:.0f}s)"
+            )
     return lm.eval(), head.eval()
 
 
@@ -164,8 +167,13 @@ def mtp_self_speculative(lm, head, prompt, n_new):
         L = len(seq)
         # MTP 在位置 i 需要 h_i 和 seq[i+1]：补上 len(hc)..L−2，最后一个位置的输出就是草稿
         s = len(hc)
-        hm = head(pending[None], lm.emb(torch.tensor([seq[s + 1 : L]])),
-                  lm.cos[s : L - 1], lm.sin[s : L - 1], hc)
+        hm = head(
+            pending[None],
+            lm.emb(torch.tensor([seq[s + 1 : L]])),
+            lm.cos[s : L - 1],
+            lm.sin[s : L - 1],
+            hc,
+        )
         d = int((hm[0, -1] @ lm.emb.weight.T).argmax())
         # 主模型一次前向：[seq[L−1], d] → 两个位置的预测
         hn = hidden(lm, torch.tensor([[seq[L - 1], d]]), mc)
@@ -189,8 +197,10 @@ if __name__ == "__main__":
         (lb, ab, _), (lm_, am, a2) = rows[seed]
         print(f"{'λ=0（第 10 章）种子 ' + str(seed):<22} {lb:9.3f} {ab:16.3f} {'—':>20}")
         print(f"{'λ=0.3（加 MTP）种子 ' + str(seed):<22} {lm_:9.3f} {am:16.3f} {a2:20.3f}")
-    print("（同一种子的两行：初始化和数据顺序完全相同，只差 MTP 损失。第 10 章发现换一个种子 loss 就差 0.03，"
-          "\n  在这个规模上 MTP 对主模型的影响要和这个噪声比。）")
+    print(
+        "（同一种子的两行：初始化和数据顺序完全相同，只差 MTP 损失。第 10 章发现换一个种子 loss 就差 0.03，"
+        "\n  在这个规模上 MTP 对主模型的影响要和这个噪声比。）"
+    )
 
     lm, head = load_mtp(0)
     P, N = m2.prompts(), 200
@@ -200,8 +210,10 @@ if __name__ == "__main__":
     rounds = sum(o[1] for o in outs)
     acc = sum(o[2] for o in outs)
     print(f"\nMTP 自推测解码（种子 0，贪心，4 段 × {N} 个字符）：与主模型贪心解码逐字相同：{same}")
-    print(f"草稿接受率 {acc / rounds:.3f}，主模型前向 {rounds} 次（普通解码 {len(P) * N} 次），"
-          f"每次前向产出 {(len(P) * N) / rounds:.2f} 个字符")
+    print(
+        f"草稿接受率 {acc / rounds:.3f}，主模型前向 {rounds} 次（普通解码 {len(P) * N} 次），"
+        f"每次前向产出 {(len(P) * N) / rounds:.2f} 个字符"
+    )
     tb, ts = [], []
     for _ in range(3):
         t0 = time.process_time()
@@ -216,4 +228,6 @@ if __name__ == "__main__":
     print(f"CPU 时间：普通贪心 {tb:.2f} s，MTP 自推测 {ts:.2f} s，加速 {tb / ts:.2f}×")
     n_head = sum(p.numel() for p in head.parameters())
     n_lm = sum(p.numel() for p in lm.parameters())
-    print(f"MTP 模块参数 {n_head:,}（主模型 {n_lm:,} 的 {n_head / n_lm:.0%}；embedding 与输出头共享，不另算）")
+    print(
+        f"MTP 模块参数 {n_head:,}（主模型 {n_lm:,} 的 {n_head / n_lm:.0%}；embedding 与输出头共享，不另算）"
+    )
