@@ -19,3 +19,4 @@
 - [UNDERSTANDING TRANSFORMERS AND ATTENTIONMECHANISMS: AN INTRODUCTION FOR APPLIEDMATHEMATICIANS](https://arxiv.org/pdf/2604.00965)
 - [Puro-2B](https://www.alphaxiv.org/abs/2608.27370):Puro-2B：穷实验室在RTX 5090上以5090美元预算训练的Qwen2-1.5B
 - [Awesome Claude Opus 5.5 Videos](https://github.com/athemeroy/awesome-opus-5-5-videos): 用 Claude Opus 5.5 做视频的案例合集，重点看"教育讲解片"路径（Manim/Remotion + TTS）和 [七类可复用提示词模板](https://github.com/athemeroy/awesome-opus-5-5-videos/blob/main/docs/prompt-playbook.zh-CN.md)，每章配套视频的制作流程参考这里。
+- [XiaomiMiMo/verl](https://github.com/XiaomiMiMo/verl)：小米 MiMo 开源的智能体强化学习训练代码（基于 verl 0.9.0.dev，Apache-2.0），复现 MiMo-V2.6 技术报告第 7 节的 RL 配方，包含代码（可执行测试判分）、网络安全、通用知识工作（rubric 判分）、网页开发（视觉判分）、音乐五类 RL 环境，并公开了训练数据 [MiMo-V2.6-RL-oss](https://huggingface.co/datasets/XiaomiMiMo/MiMo-V2.6-RL-oss)。可作为第 19 章 RL 环境与奖励设计的参考，也是第二步实际 RL 训练可评估使用的框架。

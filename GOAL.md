@@ -139,6 +139,7 @@
 - **代码**：
   - 主线训练代码放在 `zero/`（暂名），从第 7 章起由各章逐步长出来，设计参考 nanochat（单节点、可读）。
   - 训练代码不把大型框架当黑盒依赖；评测使用官方或标准的评测代码。
+  - 强化学习的参考与备选：[verl](https://github.com/verl-project/verl) 及小米的 [XiaomiMiMo/verl](https://github.com/XiaomiMiMo/verl)（开源了 MiMo-V2.6 的五类 RL 环境与判分器）。`zero/` 里的 GRPO 保持可读的自有实现；第二步如果自有实现的吞吐不够，可以改用 verl 做实际 RL 训练，但先用同一个小任务与 `zero` 的实现对拍，确认两者结果一致。
   - 这个预算下单台 8×H100 就够，不需要多机。
 
 ### 3.4 预算与闸门
@@ -216,7 +217,7 @@
 | 16 | SFT | chat template（含工具调用格式）、loss mask、指令数据 | SFT 模型 |
 | 17 | 蒸馏 | 为什么小模型靠蒸馏变强（Llama 3.2、Gemma、Qwen3 小模型、DeepSeek-R1-Distill 都这么做）；教师数据 SFT、logits 蒸馏、在线策略蒸馏（待核实）；教师许可证 | 经执行验证的工具调用蒸馏数据 + 蒸馏后的模型 |
 | 18 | 偏好对齐 | 先讲 RLHF（奖励模型 + PPO，作铺垫），再从同一个目标推导出 DPO | DPO 模型（提升通用对话质量） |
-| 19 | 强化学习 | GRPO 与可验证奖励；工具调用环境（沙箱、模拟 API）、奖励设计、防止 reward hacking | 最终模型 |
+| 19 | 强化学习 | GRPO 与可验证奖励；工具调用环境（沙箱、模拟 API）、奖励设计、防止 reward hacking；环境与判分器的设计参考 XiaomiMiMo/verl | 最终模型 |
 | 20 | 发布 | 按预注册协议做最终评测、量化、本地部署、模型卡、如实报告 | Hugging Face 上的模型 + 评测报告 + 本地 demo（闸门 3） |
 
 ### 第五部分：架构演进——为了更长的上下文、更小的 KV cache
