@@ -376,7 +376,7 @@ class ChapterScene(NarratedScene):
             krl = MathTex(r"k^{R}", font_size=34, color=theme.OUTPUT).next_to(kr, UP, 0.1)
             krd = zh("64 维，带 RoPE", 18, theme.MUTED).next_to(kr, DOWN, 0.1)
             a1 = Arrow(x.get_right() + UP * 0.7, c.get_left(), buff=0.1, color=theme.MUTED)
-            a1l = MathTex(r"W^{DKV}", font_size=30, color=theme.PARAM).next_to(a1, DOWN, 0.08)
+            a1l = MathTex(r"W^{DKV}", font_size=30, color=theme.PARAM).next_to(a1, DOWN, 0.08).shift(LEFT * 0.35)
             a2 = Arrow(x.get_right() + DOWN * 1.3, kr.get_left(), buff=0.1, color=theme.MUTED)
             cache_box = SurroundingRectangle(VGroup(c, cd, kr, krd, cl, krl), color=theme.HIGHLIGHT,
                                              buff=0.18)
