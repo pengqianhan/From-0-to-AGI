@@ -1,10 +1,36 @@
 [project]
 name = "from-0-to-agi"
 version = "0.1.0"
-description = "从矩阵到大语言模型的完整学习教程"
-requires-python = ">=3.9"
+description = "From 0 to AGI：从 y = ax + b 到最先进的开源模型"
+requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.24",
     "matplotlib>=3.7",
     "torch>=2.0",
 ]
+
+[project.optional-dependencies]
+video = [
+    "edge-tts>=7.2.8",
+    "manim>=0.19.0",
+    "sherpa-onnx>=1.13.8",
+    "sherpa-onnx-core>=1.13.8",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "ruff>=0.16.9",
+    "transformers>=4.57.6",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501", "E741"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

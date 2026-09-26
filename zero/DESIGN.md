@@ -1,0 +1,44 @@
+# zero：主线模型的生产级代码
+
+`zero` 是本课主线模型的生产级代码（暂名）。它和各章 `code/` 里的极简代码讲同一件事，但要能真正训练 0.6–0.8B 的模型。规范见 `GOAL.md` 9.1。
+
+## 设计原则
+
+1. **可读优先**：参考 nanochat 的风格——单节点、纯 PyTorch、没有黑盒训练框架。每个文件开头一段中文说明它对应哪一章。
+2. **架构与 Qwen3 稠密模型兼容**：Pre-Norm RMSNorm、SwiGLU、RoPE、GQA、QK-Norm、共享 embedding、无 bias。好处：
+   - 正确性可以直接对拍：随机初始化一个小的 Hugging Face `Qwen3ForCausalLM`，把权重搬进 `zero`，logits 必须一致；
+   - 导出后直接被 transformers / vLLM / llama.cpp 支持，GGUF 转换用 llama.cpp 官方脚本。
+3. **配置驱动**：所有超参在 `configs/*.toml` 里，代码不写死。三档：`configs/tiny/`（CPU 冒烟）、`configs/ladder/`（阶梯实验）、`configs/main/`（主线训练）。
+4. **测试先行**：第一步没有 GPU，可信度全靠 `tests/`。CPU 上测不了的路径（多卡、FlashAttention kernel、FP8）在代码里标注 `# 尚未在 GPU 上验证`。
+5. **离线可跑**：冒烟测试和单元测试不依赖网络。极小语料放在 `assets/tiny_corpus/`（提交进仓库，附许可证说明）。
+
+## 模块与对应章节
+
+| 模块 | 内容 | 对应章节 |
+|---|---|---|
+| `zero/config.py` | `ModelConfig`、`TrainConfig` 等 dataclass；`load_config(path)` 读 TOML | 9、12 |
+| `zero/model.py` | `RMSNorm`、`RotaryEmbedding`（含 YaRN 缩放）、`Attention`（GQA + QK-Norm + SDPA + KV cache）、`SwiGLU`、`Block`、`Transformer`；`Transformer.forward(tokens, kv_cache=None, start_pos=0) -> logits` | 8、9、10、15 |
+| `zero/kv_cache.py` | `KVCache`：预分配的 K/V 缓存 | 10、21 |
+| `zero/generate.py` | `sample_next(logits, temperature, top_p)`、`generate(model, prompt_ids, max_new_tokens, ..., use_cache=True)` | 10 |
+| `zero/hf.py` | `load_from_hf_qwen3(hf_model_or_state_dict, config) -> Transformer`、`export_to_hf_qwen3(model, tokenizer, out_dir)` | 9、20 |
+| `zero/tokenizer.py` | `train_bpe(texts, vocab_size, special_tokens) -> Tokenizer`（基于 HF `tokenizers` 的 byte-level BPE）；`Tokenizer.encode/decode/save/load`；压缩率统计 `bytes_per_token` | 7、13 |
+| `zero/data/` | `sources.py`（数据集登记表：名称、地址、许可证、语言）、`clean.py`、`dedup.py`（精确哈希 + MinHash）、`quality.py`（启发式过滤 + 分类器接口）、`decontam.py`（n-gram 去污染）、`shard.py`（分词后写成 uint32 分片）、`loader.py`（`PackedDataLoader`：分布式、可断点续传的 `state_dict`）、`mixture.py`（多来源按比例采样） | 13、14 |
+| `zero/train/` | `dist.py`（DDP/FSDP 初始化）、`schedule.py`（cosine、WSD）、`checkpoint.py`（模型、优化器、调度器、数据加载器、随机数状态）、`trainer.py`（通用训练循环：BF16 autocast、梯度累积、梯度裁剪、日志、评估、MFU 估计）、`pretrain.py`、`midtrain.py`（入口：`python -m zero.train.pretrain --config ...`） | 6、12、14、15 |
+| `zero/post/` | `chat.py`（对话模板与工具调用格式的渲染/解析）、`sft.py`（loss mask、打包）、`distill.py`（教师数据生成 + 执行验证 + logits 蒸馏损失）、`dpo.py`、`grpo.py`、`envs/tool_env.py`（模拟 API 与可验证奖励） | 16–19 |
+| `zero/eval/` | `harness.py`（少样本对数似然选择题、生成式精确匹配）、`bootstrap.py`（置信区间）、`bfcl.py`（第二步对接官方 BFCL 的适配层）、`report.py` | 11、20 |
+| `zero/export/` | `gguf.py`（调用 llama.cpp 的 `convert_hf_to_gguf.py`） | 20 |
+| `zero/arch/` | 第五部分的实验模块，**不用于主线**：`mla.py`、`sliding_window.py`、`linear_attention.py`（含 Gated DeltaNet 递推）、`moe.py`、`mtp.py`、`speculative.py` | 21–25 |
+| `zero/tools/` | `estimate_cost.py`（卡时与费用估算）、`count_params.py`、`kv_cache_calc.py` | 12、21 |
+| `zero/demo/cli.py` | 本地工具调用命令行助手 | 20 |
+| `zero/smoke.py` | 端到端冒烟测试：`uv run python -m zero.smoke` | 全部 |
+
+## 数据格式约定
+
+- 预训练分片：`<name>_<idx>.bin`（`np.uint32` token 序列，文档之间插入 `<|endoftext|>`）+ `<name>.json`（元数据：分词器哈希、token 数、来源）。
+- 对话数据（SFT/DPO/RL）：JSONL，每行 `{"messages": [{"role": "system|user|assistant|tool", "content": "...", "tool_calls": [...]}], "tools": [...]}`；DPO 额外有 `chosen`/`rejected`。
+- 工具调用格式（与 Qwen/Hermes 风格一致，便于导出后被推理框架识别）：助手消息里用
+  `<tool_call>{"name": "...", "arguments": {...}}</tool_call>`，工具结果放在 `role="tool"` 的消息里。
+
+## 测试（`tests/`）
+
+对应 GOAL.md 9.1 的清单：模型 logits 对拍、KV cache 一致性、分词器往返与压缩率、SFT/DPO/GRPO 损失手算对拍、断点续训一致性、工具调用模板往返与奖励函数。全部在 CPU 上几分钟内跑完：`uv run pytest`。
