@@ -318,8 +318,9 @@ class ChapterScene(NarratedScene):
                 t = zh(name, 22, theme.FG).next_to(sq, RIGHT, 0.15)
                 legend.add(VGroup(sq, t))
             legend.arrange(DOWN, aligned_edge=LEFT, buff=0.22).move_to([-4.6, 0.6, 0])
-            p16 = zh(f"参数 + 梯度 + m + v = 16 字节/参数 → {D['p16'] / GIB:.1f} GiB", 22,
-                     theme.HIGHLIGHT).move_to([-3.9, -1.7, 0])
+            p16 = VGroup(zh("参数 + 梯度 + m + v = 16 字节/参数", 20, theme.HIGHLIGHT),
+                         zh(f"→ {D['p16'] / GIB:.1f} GiB", 20, theme.HIGHLIGHT)).arrange(DOWN, aligned_edge=LEFT, buff=0.12)
+            p16.move_to([0, -1.6, 0]).align_to([-6.6, 0, 0], LEFT)
             self.play(FadeIn(legend), run_time=self.fit(1))
             self.play(Create(cap), FadeIn(cap_l), run_time=self.fit(0.8))
             s4, s8 = stacks
@@ -355,7 +356,7 @@ class ChapterScene(NarratedScene):
             # 梯度累积：4 个小梯度块 → 1 个大块
             y = -1.2
             smalls = VGroup(*[Square(0.55, stroke_width=0, fill_color=theme.GRAD, fill_opacity=0.35 + 0.15 * i)
-                              for i in range(4)]).arrange(RIGHT, buff=0.3).move_to([-3.0, y, 0])
+                              for i in range(4)]).arrange(RIGHT, buff=0.55).move_to([-3.2, y, 0])
             labs = VGroup(*[zh(f"micro {i + 1}", 18, theme.MUTED).next_to(s, DOWN, 0.12)
                             for i, s in enumerate(smalls)])
             big = Square(1.1, stroke_width=0, fill_color=theme.GRAD, fill_opacity=0.9).move_to([2.2, y, 0])
@@ -453,7 +454,7 @@ class ChapterScene(NarratedScene):
                 a1 = Arrow([-1.6, y, 0], [2.6, y + 0.1, 0], color=theme.MUTED, buff=0, stroke_width=3)
                 a2 = Arrow([2.6, y - 0.15, 0], [-1.6, y - 0.25, 0], color=theme.GRAD, buff=0, stroke_width=3)
                 arrows.add(a1, a2)
-            steps = zh("写 S → 读 S 算 softmax → 写 P → 读 P 乘 V", 22, theme.FG).move_to([0.5, -1.6, 0])
+            steps = zh("写 S → 读 S 算 softmax → 写 P → 读 P 乘 V", 22, theme.FG).move_to([2.4, -0.9, 0])
             self.play(LaggedStart(*[Create(a) for a in arrows], lag_ratio=0.2), run_time=self.fit(2.5))
             self.play(FadeIn(steps), run_time=self.fit(0.6))
             big = zh(f"主线一层的 S + P：{D['sp_gib']:.1f} GiB", 28, theme.HIGHLIGHT).move_to([0.5, -2.3, 0])

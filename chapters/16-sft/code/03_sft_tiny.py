@@ -91,6 +91,32 @@ def assistant_loss(model, tok, examples) -> float:
     return F.cross_entropy(model(x).flatten(0, 1), y.flatten(), ignore_index=-100).item()
 
 
+@torch.no_grad()
+def loss_split(model, tok, examples) -> dict:
+    """把助手 token 分成两类，各自算平均 loss：参数值（城市名、数字，要从问题里照抄）/ 其余（格式、函数名）。"""
+    tot = {"args": [0.0, 0], "rest": [0.0, 0]}
+    for ex in examples:
+        ids, mask = lm.encode_with_mask(tok, ex["messages"])
+        text = "".join(s for s, _, _ in lm.tmpl.render(ex["messages"]))
+        arg_pos = set()
+        start = text.index('"arguments": ')
+        for v in ex["call"]["arguments"].values():
+            v = json.dumps(v)
+            v = v[1:-1] if v.startswith('"') else v  # 字符串值不含引号
+            p = text.index(v, start)
+            a, b = len(tok.encode(text[:p])), len(tok.encode(text[: p + len(v)]))
+            arg_pos |= set(range(a, b))
+            start = p + len(v)
+        logits = model(torch.tensor([ids[:-1]]))[0]
+        nll = F.cross_entropy(logits, torch.tensor(ids[1:]), reduction="none")
+        for t in range(1, len(ids)):  # 第 t 个 token 由位置 t-1 预测
+            if mask[t]:
+                k = "args" if t in arg_pos else "rest"
+                tot[k][0] += nll[t - 1].item()
+                tot[k][1] += 1
+    return {k: v[0] / v[1] for k, v in tot.items()} | {"n_args": tot["args"][1], "n_rest": tot["rest"][1]}
+
+
 # ── 训练 ────────────────────────────────────────────────────────────────────
 def sft(tok, train_set, val_set, use_mask: bool, steps: int = STEPS, seed: int = 0, log=print):
     torch.manual_seed(seed)
@@ -212,6 +238,7 @@ def run(log=print) -> dict:
         res[name] = {"hist": hist, "eval": evaluate(model, tok, test_set),
                      "val_asst_loss": assistant_loss(model, tok, val_set)}
         if name == "masked":
+            res["masked"]["split"] = loss_split(model, tok, val_set)
             res["masked"]["eval_seen"] = evaluate(model, tok, dataset(N_TEST, 3, "train"))
             res["examples"] = [{"q": ex["messages"][1]["content"],
                                 "reply": reply(model, tok, ex["messages"][:2])}
@@ -239,6 +266,9 @@ if __name__ == "__main__":
         e = r[name]["eval"]
         print(f"{label:24s} {e['format']:6.2f} {e['name']:8.2f} {e['args']:8.2f} "
               f"{r[name]['val_asst_loss']:16.3f}")
+    sp = r["masked"]["split"]
+    print(f"有 mask 的模型，验证集助手 token 拆开看：参数值 {sp['n_args']} 个，平均 loss {sp['args']:.3f}；"
+          f"其余（格式、函数名）{sp['n_rest']} 个，平均 loss {sp['rest']:.3f}")
     e = r["masked"]["eval_seen"]
     print(f"对照：有 mask 的模型换成训练里见过的城市（数字仍随机）：格式 {e['format']:.2f}，"
           f"函数名 {e['name']:.2f}，参数全对 {e['args']:.2f}")
