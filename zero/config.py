@@ -174,6 +174,7 @@ class DataConfig:
 
 @dataclass
 class OptimConfig:
+    name: str = "adamw"  # "adamw" | "muon"（Muon 用于二维权重矩阵，其余参数仍用 AdamW；见第 12 章）
     lr: float = 3e-4  # 峰值学习率
     weight_decay: float = 0.1
     beta1: float = 0.9

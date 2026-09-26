@@ -180,9 +180,8 @@ class ChapterScene(NarratedScene):
             title = zh("eval/PREREGISTRATION.md", 22, theme.MUTED)
             grp = VGroup(title, items).arrange(DOWN, aligned_edge=LEFT, buff=0.3)
             frame = SurroundingRectangle(grp, buff=0.3, color=theme.INPUT, corner_radius=0.1)
-            card = VGroup(frame, grp).move_to([-4.3, 0.3, 0])
-            stamp = zh("训练前冻结", 30, theme.GRAD).rotate(0.25).move_to(frame.get_corner(DOWN + RIGHT)
-                                                                   + LEFT * 0.9 + UP * 0.5)
+            card = VGroup(frame, grp).move_to([-4.3, 0.75, 0])
+            stamp = zh("训练前冻结", 30, theme.GRAD).rotate(0.12).next_to(frame, DOWN, 0.35)
             stamp_box = SurroundingRectangle(stamp, buff=0.12, color=theme.GRAD)
             self.play(FadeIn(card), run_time=self.fit(1.0))
             self.play(FadeIn(VGroup(stamp, stamp_box), scale=1.4), run_time=self.fit(0.6))
@@ -203,9 +202,11 @@ class ChapterScene(NarratedScene):
                 ends = VGroup(*[Line([x0 + v * scale, y - 0.15, 0], [x0 + v * scale, y + 0.15, 0],
                                      color=col, stroke_width=4) for v in (lo, hi)])
                 lab = zh(text, 22, col).next_to(seg, UP, 0.12)
+                if lo < 0 < hi:  # 跨过 0 的区间：标签放右边，别压在 0 线上
+                    lab.next_to(seg, RIGHT, 0.2)
                 objs.add(VGroup(seg, ends, lab))
                 self.play(Create(seg), FadeIn(ends), FadeIn(lab), run_time=self.fit(0.8))
-            note = zh("95% 置信区间（配对 bootstrap）", 22, theme.MUTED).move_to([3.3, -2.35, 0])
+            note = zh("95% 置信区间（配对 bootstrap）", 22, theme.MUTED).move_to([4.9, -2.35, 0])
             self.play(FadeIn(note), run_time=self.fit(0.5))
             self.wait(max(0.1, self.remaining() - 0.6))
             self.clear_all(card, stamp, stamp_box, axis, zero, zlab, objs, note)
@@ -410,7 +411,9 @@ class ChapterScene(NarratedScene):
                     w = nbytes * unit
                     r = Rectangle(width=w, height=0.6, stroke_color=theme.BG, stroke_width=1,
                                   fill_color=col, fill_opacity=0.8).move_to([x + w / 2, y, 0])
-                    t = zh(lab, 18, theme.FG).next_to(r, DOWN, 0.1)
+                    t = zh(lab or " ", 18, theme.FG).next_to(r, DOWN, 0.1)
+                    if t.get_left()[0] < -6.9:
+                        t.align_to(r, LEFT)
                     g.add(VGroup(r, t))
                     x += w
                 head = zh(title, 24, theme.FG).move_to([-6.0, y + 0.65, 0], aligned_edge=LEFT)
@@ -418,7 +421,7 @@ class ChapterScene(NarratedScene):
 
             q8 = strip([(2, theme.PARAM, "scale 2B"), (32, theme.INPUT, "32 个 int8 = 32B")],
                        0.3, 1.2, "Q8_0：32 个数 → 34 字节 = 8.5 bit/权重")
-            q4 = strip([(4, theme.PARAM, "d, dmin"), (12, theme.ATTN, "子块 scale/min 12B"),
+            q4 = strip([(4, theme.PARAM, ""), (12, theme.ATTN, "d,dmin 4B + 子块 scale/min 12B"),
                         (128, theme.INPUT, "256 个 4 bit 整数 = 128B")],
                        0.07, -0.6, "Q4_K：256 个数 → 144 字节 = 4.5 bit/权重")
             self.play(FadeIn(q8), run_time=self.fit(1.2))
@@ -497,9 +500,9 @@ class ChapterScene(NarratedScene):
             for i, (name, text, ok) in enumerate(LLAMA_CHECK["rows"]):
                 y = 0.8 - i * 0.75
                 col = theme.OUTPUT if ok else theme.GRAD
-                lab = zh(name, 22, col).move_to([-6.6, y, 0], aligned_edge=LEFT)
-                txt = mono(text, 22, theme.FG).move_to([-2.2, y, 0], aligned_edge=LEFT)
-                mark = zh("逐字相同" if ok else "第 10 个 token 分叉", 22, col)
+                lab = zh(name, 20, col).move_to([-6.8, y, 0], aligned_edge=LEFT)
+                txt = mono(text, 18, theme.FG).move_to([-3.0, y, 0], aligned_edge=LEFT)
+                mark = zh("逐字相同" if ok else "第 10 个 token 分叉", 20, col)
                 mark.move_to([6.9, y, 0], aligned_edge=RIGHT)
                 rows.add(VGroup(lab, txt, mark))
             for r in rows[:3]:
@@ -526,7 +529,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() * 0.35)
             badge = self.show_badge()
             lines = VGroup(
-                mono("$ python -m zero.demo.cli --model out/smoke/hf_chat --once ...", 18,
+                mono("$ python -m zero.demo.cli --once ...", 18,
                      theme.MUTED),
                 zh("你：3 * (4 + 5) 等于多少？", 22),
                 zh("助手：（空）", 22, theme.GRAD),
@@ -537,7 +540,8 @@ class ChapterScene(NarratedScene):
                           zh("1.3M 参数：还不会用工具", 20, theme.GRAD),
                           zh("search_files 只在 --root 之内", 20, theme.HIGHLIGHT)
                           ).arrange(DOWN, aligned_edge=LEFT, buff=0.15)
-            side.next_to(term, RIGHT, 0.35)
+            term.move_to([-3.2, -1.3, 0])
+            side.next_to(term, RIGHT, 0.4)
             if side.get_right()[0] > 6.9:
                 side.shift(LEFT * (side.get_right()[0] - 6.9))
             self.play(FadeIn(term), run_time=self.fit(1.0))

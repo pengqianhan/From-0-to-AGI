@@ -324,7 +324,7 @@ class ChapterScene(NarratedScene):
                 tab.add(zh(name, 22).move_to([xs[0], y, 0]), mono(f"{v:,}", 22).move_to([xs[1], y, 0]),
                         mono(f"{p:.1f}M", 22, c).move_to([xs[2], y, 0]))
             diff = rows[1][2] - rows[0][2]
-            cap = zh(f"+{diff:.1f}M，超过 0.8B 上限", 20, theme.GRAD).move_to([5.3, -1.65, 0])
+            cap = zh(f"换 Qwen3 词表：+{diff:.1f}M 参数，超过 0.8B 上限", 22, theme.GRAD).move_to([0.3, -2.35, 0])
             self.play(FadeIn(tab), run_time=self.fit(1))
             self.wait(self.remaining() * 0.4)
             self.play(FadeIn(cap), run_time=self.fit(0.6))
@@ -366,9 +366,9 @@ class ChapterScene(NarratedScene):
                           mono("3.0", 16, theme.MUTED).move_to([x0, -2.15, 0]),
                           mono("3.8", 16, theme.MUTED).move_to([x0 + W, -2.15, 0]),
                           zh("验证 bits/char（越低越好，横轴从 3.0 起）", 18, theme.MUTED
-                             ).move_to([x0 + W / 2 + 0.3, -2.2, 0]))
+                             ).move_to([x0 + W / 2, -2.5, 0]))
             cap = zh(f"玩具实验：学生 {r['student_params']:,} 参数，3 种子平均", 18,
-                     theme.MUTED).move_to([-4.6, -2.2, 0])
+                     theme.MUTED).move_to([-4.6, -2.5, 0])
             self.play(FadeIn(axis), FadeIn(cap), run_time=self.fit(0.6))
             for row in g:
                 self.play(GrowFromEdge(row[1], LEFT), FadeIn(row[0]), FadeIn(row[2]), run_time=self.fit(0.7))
@@ -555,13 +555,14 @@ class ChapterScene(NarratedScene):
     def s13(self) -> None:
         with self.shot("S13"):
             self.play(*self.set_heading("小结"), run_time=self.fit(0.6))
-            items = [("软标签 + 温度", theme.PARAM), ("同一个词表？", theme.GRAD),
-                     ("序列级 / logits / 在线策略", theme.INPUT), ("执行验证 + 许可证", theme.OUTPUT)]
+            items = [(["软标签", "+ 温度"], theme.PARAM), (["同一个词表？"], theme.GRAD),
+                     (["序列级 / logits", "/ 在线策略"], theme.INPUT), (["执行验证", "+ 许可证"], theme.OUTPUT)]
             g = VGroup()
-            for t, c in items:
-                r = RoundedRectangle(width=3.0, height=1.1, corner_radius=0.15, color=c, fill_opacity=0.2)
-                g.add(VGroup(r, zh(t, 20, c).move_to(r)))
-            g.arrange(RIGHT, buff=0.35).move_to([0, 1.0, 0])
+            for lines, c in items:
+                r = RoundedRectangle(width=2.7, height=1.2, corner_radius=0.15, color=c, fill_opacity=0.2)
+                txt = VGroup(*[zh(t, 20, c) for t in lines]).arrange(DOWN, buff=0.12).move_to(r)
+                g.add(VGroup(r, txt))
+            g.arrange(RIGHT, buff=0.55).move_to([0, 1.0, 0])
             arrows = VGroup(*[Arrow(g[i].get_right(), g[i + 1].get_left(), buff=0.05, color=theme.MUTED,
                                     stroke_width=3, max_tip_length_to_length_ratio=0.3)
                               for i in range(3)])

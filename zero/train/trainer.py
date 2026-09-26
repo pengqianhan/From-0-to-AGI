@@ -47,7 +47,11 @@ def seed_everything(seed: int) -> None:
 
 
 def build_optimizer(model: nn.Module, cfg: Any, device: torch.device) -> torch.optim.AdamW:
-    """AdamW，按"是否做权重衰减"分两组参数。"""
+    """AdamW，按"是否做权重衰减"分两组参数。optim.name = "muon" 时改用 Muon（第 12 章）。"""
+    if getattr(cfg, "name", "adamw") == "muon":
+        from .muon import build_muon_optimizer
+
+        return build_muon_optimizer(model, cfg, device)
     decay, no_decay = [], []
     for name, p in model.named_parameters():
         if not p.requires_grad:

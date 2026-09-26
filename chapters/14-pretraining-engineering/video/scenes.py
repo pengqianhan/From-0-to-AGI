@@ -776,13 +776,11 @@ class ChapterScene(NarratedScene):
             flag = VGroup(Line([xp(r["save"]), y, 0], [xp(r["save"]), y + 0.5, 0], color=theme.OUTPUT, stroke_width=4),
                           zh(f"第 {r['save']} 步存档", 18, theme.OUTPUT).move_to([xp(r["save"]) - 0.2, y + 0.75, 0]))
             crash = VGroup(mono("✕", 34, theme.GRAD).move_to([xp(r["crash"]), y, 0]),
-                           zh(f"第 {r['crash']} 步崩溃", 18, theme.GRAD).move_to([xp(r["crash"]) + 0.6, y - 0.45, 0]))
+                           zh(f"第 {r['crash']} 步崩溃 → 回到第 {r['save']} 步存档续训", 18, theme.GRAD)
+                           .next_to([xp(r["crash"]), y - 0.3, 0], DOWN, 0.05).align_to([xp(r["save"]) - 0.3, 0, 0], LEFT))
             self.play(Create(tl), run_time=self.fit(0.8))
             self.play(FadeIn(flag), run_time=self.fit(0.6))
             self.play(FadeIn(crash), run_time=self.fit(0.6))
-            back = CurvedArrow([xp(r["crash"]), y + 0.25, 0], [xp(r["save"]) + 0.05, y + 0.25, 0], angle=1.2,
-                               color=theme.HIGHLIGHT, stroke_width=3)
-            self.play(Create(back), run_time=self.fit(0.8))
             from manim import Axes
 
             lo, hi = min(r["ref"]) - 0.05, max(r["ref"]) + 0.05
@@ -795,7 +793,7 @@ class ChapterScene(NarratedScene):
             lg.next_to(ax, DOWN, 0.1)
             self.play(Create(ax), Create(ref_c), FadeIn(lg), run_time=self.fit(1.5))
             self.play(Create(res_c), run_time=self.fit(1.2))
-            same = zh("续训 15 步逐位相同" if r["same"] else "续训结果不一致", 22, theme.OUTPUT).move_to([-2.5, -2.3, 0])
+            same = zh("续训 15 步逐位相同" if r["same"] else "续训结果不一致", 22, theme.OUTPUT).move_to([4.4, -1.7, 0])
             self.play(FadeIn(same), run_time=self.fit(0.6))
             labels = [("optim", "不恢复优化器"), ("sched", "不恢复调度器"), ("data_rng", "不恢复数据位置"),
                       ("torch_rng", "不恢复随机数")]
@@ -810,7 +808,7 @@ class ChapterScene(NarratedScene):
             cap = zh("少恢复一项：loss 最大偏差", 20, theme.MUTED).move_to([4.4, 2.5, 0])
             self.wait(self.remaining() * 0.2)
             self.play(FadeIn(cap), LaggedStart(*[FadeIn(b) for b in bars], lag_ratio=0.3), run_time=self.fit(2))
-            self.clear_all(tl, flag, crash, back, ax, ref_c, res_c, lg, same, cap, bars)
+            self.clear_all(tl, flag, crash, ax, ref_c, res_c, lg, same, cap, bars)
 
     # ── S16 极小配置演示 ─────────────────────────────────────────────────
     def s16(self):
@@ -837,7 +835,7 @@ class ChapterScene(NarratedScene):
             info = VGroup(
                 zh("1.31M 参数，200 步，单线程 CPU", 22, theme.FG),
                 zh(f"loss {first[1]:.2f} → {last[1]:.2f}，val {last[2]:.2f}", 22, theme.FG),
-            ).arrange(DOWN, aligned_edge=LEFT, buff=0.2).move_to([3.7, 1.6, 0])
+            ).arrange(DOWN, aligned_edge=LEFT, buff=0.2).move_to([3.7, 1.6, 0]).align_to([0.7, 0, 0], LEFT)
             self.play(FadeIn(info), run_time=self.fit(0.8))
             ck = DashedLine(ax.c2p(100, 5), ax.c2p(100, 8), color=theme.OUTPUT)
             ckl = zh("第 100 步存档", 18, theme.OUTPUT).next_to(ck, UP, 0.05)
@@ -847,8 +845,9 @@ class ChapterScene(NarratedScene):
                 c2 = polyline_in_axes(ax, [(100, [x for x in tiny if x[0] == 100][0][1])] + [(s, l) for s, l, _ in tres],
                                       color=theme.HIGHLIGHT, stroke_width=3)
                 same = all(any(a[0] == b[0] and a[1] == b[1] for a in tiny) for b in tres)
-                rtxt = zh("删掉第 200 步存档、同一条命令重跑：" + ("第 125–200 步逐位相同" if same else "结果不一致"),
-                          22, theme.HIGHLIGHT).move_to([3.3, 0.3, 0])
+                rtxt = VGroup(zh("删掉第 200 步存档，同一条命令重跑：", 20, theme.HIGHLIGHT),
+                              zh("第 125–200 步 loss 逐位相同" if same else "结果不一致", 20, theme.HIGHLIGHT)
+                              ).arrange(DOWN, aligned_edge=LEFT, buff=0.15).move_to([3.3, 0.2, 0]).align_to([0.7, 0, 0], LEFT)
                 self.play(Create(c2), FadeIn(rtxt), run_time=self.fit(1.5))
             else:
                 rtxt = zh("未找到续训日志", 22, theme.GRAD).move_to([3.3, 0.3, 0])
@@ -856,7 +855,7 @@ class ChapterScene(NarratedScene):
             lines = [f"torchrun 2 进程 DDP：跑通，val {D['ddp2'][1]:.2f}" if D.get("ddp2") else "torchrun：未找到日志",
                      "pytest：续训、DDP、显存计算器 11 项通过"]
             more = VGroup(*[zh(t, 22, theme.FG) for t in lines]).arrange(DOWN, aligned_edge=LEFT, buff=0.2)
-            more.move_to([3.4, -1.0, 0])
+            more.move_to([3.4, -1.2, 0]).align_to([0.7, 0, 0], LEFT)
             self.wait(self.remaining() * 0.2)
             self.play(FadeIn(more), run_time=self.fit(0.8))
             self.clear_all(ax, xl, yl, c1, dots, info, ck, ckl, rtxt, more, badge)
@@ -868,16 +867,18 @@ class ChapterScene(NarratedScene):
     def s17(self):
         with self.shot("S17"):
             self.play(*self.set_heading("小结"), run_time=self.fit(0.8))
-            items = ["算账：算力·显存·时间", "BF16 算，FP32 存", "FlashAttention\n分块 + online softmax",
-                     "DDP 求平均\nFSDP 切状态", "续训：恢复全部状态"]
+            items = ["算账\n算力·显存·时间", "BF16 算\nFP32 存", "FlashAttention\n分块 + online softmax",
+                     "DDP 求平均\nFSDP 切状态", "续训\n恢复全部状态"]
             boxes = VGroup()
             for t in items:
-                txt = zh(t, 22, theme.FG)
-                box = RoundedRectangle(width=2.5, height=1.3, corner_radius=0.12, stroke_color=theme.INPUT,
+                txt = zh(t, 20, theme.FG)
+                if txt.width > 2.35:
+                    txt.scale_to_fit_width(2.35)
+                box = RoundedRectangle(width=2.6, height=1.3, corner_radius=0.12, stroke_color=theme.INPUT,
                                        fill_color=theme.INPUT, fill_opacity=0.1)
                 txt.move_to(box)
                 boxes.add(VGroup(box, txt))
-            boxes.arrange(RIGHT, buff=0.2).move_to([0, 1.2, 0])
+            boxes.arrange(RIGHT, buff=0.15).move_to([0, 1.2, 0])
             self.play(LaggedStart(*[FadeIn(b) for b in boxes], lag_ratio=0.5), run_time=self.fit(4))
             plan = zh("第二步：先花不到 50 美元在真 GPU 上逐项验证、实测 MFU，再定预训练预算", 22,
                       theme.HIGHLIGHT).move_to([0, -0.4, 0])

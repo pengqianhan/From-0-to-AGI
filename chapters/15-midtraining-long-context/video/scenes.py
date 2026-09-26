@@ -181,8 +181,8 @@ class ChapterScene(NarratedScene):
     def s02(self) -> None:
         with self.shot("S02"):
             self.play(*self.set_heading("预训练收尾的两个问题"), run_time=self.fit(0.8))
-            segs = [("预训练（稳定段）", 6.2, theme.MUTED, "4K 片段 · 学习率恒定"),
-                    ("中期训练", 2.2, theme.PARAM, "学习率降到 0"),
+            segs = [("预训练（稳定段）", 5.0, theme.MUTED, "4K 片段 · 学习率恒定"),
+                    ("中期训练", 1.9, theme.PARAM, "学习率降到 0"),
                     ("长上下文", 1.6, theme.ATTN, "32K 片段")]
             x = -6.2
             bars = VGroup()
@@ -192,23 +192,22 @@ class ChapterScene(NarratedScene):
                 n = zh(note, 18, theme.MUTED).next_to(b, DOWN, 0.15)
                 bars.add(VGroup(b, t, n))
                 x += w + 0.08
-            base = zh("Base 模型 → 闸门 2", 24, theme.HIGHLIGHT).move_to([5.35, 1.2, 0])
+            base = zh("Base 模型 → 闸门 2", 24, theme.HIGHLIGHT).move_to([4.85, 1.2, 0])
             self.play(LaggedStart(*[GrowFromEdge(g[0], LEFT) for g in bars], lag_ratio=0.3),
                       run_time=self.fit(1.5))
             self.play(*[FadeIn(g[1:]) for g in bars], FadeIn(base), run_time=self.fit(0.8))
             q1 = zh("问题一：学习率最低的那一段，喂什么数据？", 28, t2c={"喂什么数据": theme.PARAM}
                     ).move_to([0, -0.5, 0])
-            q2 = zh("问题二：只见过 4K 的模型，怎么读 32K？", 28).move_to([0, -1.4, 0])
+            q2 = zh("问题二：只见过 4K 的模型，怎么读 32K？", 28, t2c={"怎么读 32K": theme.ATTN}
+                    ).move_to([0, -1.4, 0])
             arr1 = Line(q1.get_top() + UP * 0.1, bars[1][2].get_bottom() + DOWN * 0.05,
                         color=theme.PARAM, stroke_width=2)
             self.wait(self.remaining() * 0.15)
             self.play(FadeIn(q1), Create(arr1), run_time=self.fit(1))
             self.wait(self.remaining() * 0.35)
-            arr2 = Line(q2.get_right() + RIGHT * 0.1, bars[2][2].get_bottom() + DOWN * 0.05,
-                        color=theme.ATTN, stroke_width=2)
-            self.play(FadeIn(q2), Create(arr2), run_time=self.fit(1))
+            self.play(FadeIn(q2), run_time=self.fit(1))
             self.wait(max(0.05, self.remaining() - 0.6))
-            self.play(FadeOut(VGroup(bars, base, q1, q2, arr1, arr2)), run_time=self.fit(0.6))
+            self.play(FadeOut(VGroup(bars, base, q1, q2, arr1)), run_time=self.fit(0.6))
 
     # ── S03 WSD 曲线 + 衰减段换数据 ─────────────────────────────────────
     def s03(self) -> None:
@@ -403,7 +402,7 @@ class ChapterScene(NarratedScene):
             f = MathTex(r"\lambda_i = 2\pi\cdot\theta^{2i/d}", font_size=40).move_to([-4.3, 2.3, 0])
             self.play(Write(f), run_time=self.fit(1))
             heads = ["i", "θ = 1 万", "θ = 50 万", "θ = 100 万"]
-            xs = [-5.4, -3.6, -1.6, 0.4]
+            xs = [-5.8, -4.2, -2.4, -0.6]
             table = VGroup(*[zh(h, 22, theme.MUTED).move_to([x, 1.45, 0]) for h, x in zip(heads, xs)])
             for r, i in enumerate(("0", "16", "32", "48", "63")):
                 y0 = 0.95 - 0.5 * r
@@ -416,11 +415,11 @@ class ChapterScene(NarratedScene):
             nf = D["not_full"]["4096"]
             un = D["unseen"]
             facts = VGroup(
-                zh("4K 内转不满一圈（红色）的维度对：", 22),
-                zh(f"θ = 1 万：{nf[0]} 对    θ = 100 万：{nf[2]} 对", 22, theme.GRAD),
-                zh("读到 32K 时会遇到“没见过的角度”的：", 22),
-                zh(f"不改：{un['none']} 对    调大基频到 100 万：{un['abf']} 对", 22, theme.OUTPUT),
-            ).arrange(DOWN, aligned_edge=LEFT, buff=0.22).move_to([4.3, 0.2, 0])
+                zh("4K 内转不满一圈（红色）的维度对：", 20),
+                zh(f"θ = 1 万：{nf[0]} 对    θ = 100 万：{nf[2]} 对", 20, theme.GRAD),
+                zh("读到 32K 时会遇到“没见过的角度”的：", 20),
+                zh(f"不改：{un['none']} 对    调大基频到 100 万：{un['abf']} 对", 20, theme.OUTPUT),
+            ).arrange(DOWN, aligned_edge=LEFT, buff=0.22).move_to([3.7, 0.2, 0])
             self.wait(self.remaining() * 0.2)
             self.play(FadeIn(facts[:2]), run_time=self.fit(0.8))
             self.wait(self.remaining() * 0.35)
@@ -457,25 +456,25 @@ class ChapterScene(NarratedScene):
     def s09(self) -> None:
         with self.shot("S09"):
             self.play(*self.set_heading("铺垫：位置内插（PI）把所有指针一起压慢"), run_time=self.fit(0.8))
-            f = MathTex(r"\omega_i \rightarrow \omega_i / s", font_size=44).move_to([0, 2.3, 0])
+            f = MathTex(r"\omega_i \rightarrow \omega_i / s", font_size=44).move_to([0, 2.45, 0])
             self.play(Write(f), run_time=self.fit(0.8))
-            R = 1.4
+            R = 1.25
             groups = VGroup()
-            for c, step, name, col in ((np.array([-3.4, 0.2, 0]), 1.0, "原来：相邻 token 差 1 弧度", theme.OUTPUT),
-                                       (np.array([3.4, 0.2, 0]), 1 / 8, "PI ×8：只差 0.125 弧度", theme.GRAD)):
+            for c, step, name, col in ((np.array([-3.4, -0.05, 0]), 1.0, "原来：相邻 token 差 1 弧度", theme.OUTPUT),
+                                       (np.array([3.4, -0.05, 0]), 1 / 8, "PI ×8：只差 0.125 弧度", theme.GRAD)):
                 circ = Circle(radius=R, color=theme.MUTED, stroke_width=2).move_to(c)
                 dots = VGroup(*[Dot(c + R * np.array([math.cos(PI / 2 - k * step),
                                                        math.sin(PI / 2 - k * step), 0]),
                                     radius=0.08, color=col) for k in range(5)])
                 lab = zh(name, 22, col).next_to(circ, DOWN, 0.25)
                 groups.add(VGroup(circ, dots, lab))
-            sub = zh("最快那一对（秒针）上，位置 0–4 的落点", 20, theme.MUTED).move_to([0, 1.55, 0])
+            sub = zh("最快那一对（秒针）上，位置 0–4 的落点", 20, theme.MUTED).move_to([0, 1.8, 0])
             self.play(FadeIn(sub), FadeIn(groups[0][0]), LaggedStart(*[FadeIn(d) for d in groups[0][1]]),
                       FadeIn(groups[0][2]), run_time=self.fit(1.5))
             self.wait(self.remaining() * 0.2)
             self.play(FadeIn(groups[1][0]), LaggedStart(*[FadeIn(d) for d in groups[1][1]]),
                       FadeIn(groups[1][2]), run_time=self.fit(1.5))
-            note = zh("不越界了，但近处的位置挤在一起、难以分辨", 24, theme.HIGHLIGHT).move_to([0, -2.3, 0])
+            note = zh("不越界了，但近处的位置挤在一起、难以分辨", 24, theme.HIGHLIGHT).move_to([0, -2.35, 0])
             self.wait(self.remaining() * 0.25)
             self.play(FadeIn(note), run_time=self.fit(0.8))
             self.wait(max(0.05, self.remaining() - 0.6))
@@ -489,16 +488,17 @@ class ChapterScene(NarratedScene):
             turns = D["tiny_turns"]
             bars = VGroup()
             for i, k in enumerate(keep):
-                x = -6.0 + 0.5 * i
+                x = -6.3 + 0.36 * i
                 col = theme.OUTPUT if k >= 0.999 else (theme.ATTN if k <= 0.001 else theme.PARAM)
                 h_keep = 2.2 * k
-                full = Rectangle(width=0.38, height=2.2, stroke_color=theme.MUTED, stroke_width=1
-                                 ).move_to([x, 0.35, 0], aligned_edge=DOWN)
-                b = box(0.38, max(h_keep, 0.03), col).move_to([x, 0.35, 0], aligned_edge=DOWN)
-                bars.add(VGroup(full, b, mono(str(i), 16, theme.MUTED).next_to(full, DOWN, 0.08)))
+                full = Rectangle(width=0.28, height=2.2, stroke_color=theme.MUTED, stroke_width=1
+                                 ).move_to([x, -0.2, 0], aligned_edge=DOWN)
+                b = box(0.28, max(h_keep, 0.03), col).move_to([x, -0.2, 0], aligned_edge=DOWN)
+                bars.add(VGroup(full, b, mono(str(i), 14, theme.MUTED).next_to(full, DOWN, 0.08)))
             yl = zh("保留原频率的比例", 20, theme.MUTED).next_to(bars, UP, 0.15)
-            xl = zh("维度对编号（本章小实验：head_dim 32，训练长度 64，s = 4）", 18, theme.MUTED
-                    ).next_to(bars, DOWN, 0.1)
+            xl = VGroup(zh("维度对编号", 18, theme.MUTED),
+                        zh("本章小实验：head_dim 32，训练长度 64，s = 4", 16, theme.MUTED)
+                        ).arrange(DOWN, buff=0.08).next_to(bars, DOWN, 0.12)
             self.play(FadeIn(yl), LaggedStart(*[FadeIn(b) for b in bars], lag_ratio=0.05), FadeIn(xl),
                       run_time=self.fit(2))
             legend = VGroup(
@@ -506,13 +506,14 @@ class ChapterScene(NarratedScene):
                        ).arrange(RIGHT, buff=0.12),
                 VGroup(box(0.3, 0.25, theme.PARAM), zh("中间：线性过渡", 18)).arrange(RIGHT, buff=0.12),
                 VGroup(box(0.3, 0.25, theme.ATTN), zh("不满 1 圈：÷ s，和 PI 一样", 18)).arrange(RIGHT, buff=0.12),
-            ).arrange(DOWN, aligned_edge=LEFT, buff=0.18).move_to([3.5, 1.9, 0])
+            ).arrange(DOWN, aligned_edge=LEFT, buff=0.18).move_to([3.2, 1.7, 0])
             self.play(FadeIn(legend), run_time=self.fit(1))
             self.wait(self.remaining() * 0.3)
             temp = MathTex(r"\sqrt{1/t} = 0.1\ln s + 1", font_size=40, color=theme.HIGHLIGHT
-                           ).move_to([3.5, 0.3, 0])
-            tv = zh(f"s = 4 时 = {D['mscale4']:.3f}：logits 乘它的平方，注意力更“尖”", 18
-                    ).next_to(temp, DOWN, 0.2)
+                           ).move_to([3.2, -0.1, 0])
+            tv = VGroup(zh(f"s = 4 时 = {D['mscale4']:.3f}", 18),
+                        zh("logits 乘它的平方，注意力更“尖”", 18)).arrange(DOWN, buff=0.1
+                                                                      ).next_to(temp, DOWN, 0.2)
             self.play(Write(temp), FadeIn(tv), run_time=self.fit(1.2))
             self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(bars, yl, xl, legend, temp, tv)), run_time=self.fit(0.6))
@@ -547,16 +548,16 @@ mscale = 0.1 * math.log(s) + 1.0"""
             self.play(*self.set_heading("小实验：只用长度 64 训练，读 128、256"), run_time=self.fit(0.8))
             badge = self.show_badge()
             C = D["ctx"]
-            allv = [v for k in C.values() for vv in k.values() for v in vv.values()]
-            ymax = min(max(allv), 6.0)
-            ymin = max(0.0, min(allv) - 0.2)
 
-            def panel(key: str, cx: float, title: str):
-                ax = Axes(x_range=[0, 3, 1], y_range=[ymin, ymax, 1], x_length=4.6, y_length=3.4,
+            def panel(key: str, cx: float, title: str, ymin: float, ymax: float, step: float):
+                ax = Axes(x_range=[0, 3, 1], y_range=[ymin, ymax, step], x_length=4.4, y_length=3.3,
                           tips=False, axis_config={"color": theme.MUTED, "include_ticks": False}
                           ).move_to([cx, 0.2, 0])
                 labs = VGroup(*[mono(str(L), 18, theme.MUTED).next_to(ax.c2p(k + 0.5, ymin), DOWN, 0.12)
                                 for k, L in enumerate((64, 128, 256))])
+                n = int(round((ymax - ymin) / step))
+                labs.add(*[mono(f"{ymin + j * step:.2f}", 15, theme.MUTED).next_to(
+                    ax.c2p(0, ymin + j * step), LEFT, 0.1) for j in range(n + 1)])
                 t = zh(title, 22).next_to(ax, UP, 0.15)
                 lines = VGroup()
                 for v in ("none", "pi", "yarn", "abf"):
@@ -566,8 +567,8 @@ mscale = 0.1 * math.log(s) + 1.0"""
                     lines.add(VGroup(ln, dots))
                 return ax, labs, t, lines
 
-            ax1, l1, t1, ln1 = panel("zero_shot", -3.4, "不训练，直接换 RoPE")
-            ylab = zh("验证 loss", 18, theme.MUTED).next_to(ax1, LEFT, 0.1).rotate(PI / 2)
+            ax1, l1, t1, ln1 = panel("zero_shot", -3.1, "不训练，直接换 RoPE", 1.5, 3.7, 0.5)
+            ylab = zh("验证 loss", 18, theme.MUTED).rotate(PI / 2).next_to(ax1, LEFT, 0.75)
             leg = VGroup(*[VGroup(Line(ORIGIN_L, ORIGIN_L + RIGHT * 0.4, color=VARIANT_COLOR[v], stroke_width=4),
                                   zh(VARIANT_NAME[v], 18, VARIANT_COLOR[v])).arrange(RIGHT, buff=0.1)
                            for v in ("none", "pi", "yarn", "abf")]).arrange(RIGHT, buff=0.35)
@@ -576,7 +577,7 @@ mscale = 0.1 * math.log(s) + 1.0"""
             for g in ln1:
                 self.play(Create(g), run_time=self.fit(0.8, reserve=6))
             self.wait(self.remaining() * 0.3)
-            ax2, l2, t2, ln2 = panel("finetuned", 3.1, "再用长度 256 微调 150 步")
+            ax2, l2, t2, ln2 = panel("finetuned", 3.6, "再用长度 256 微调 150 步", 1.5, 1.75, 0.05)
             self.play(Create(ax2), FadeIn(l2), FadeIn(t2), run_time=self.fit(0.8))
             self.play(LaggedStart(*[Create(g) for g in ln2], lag_ratio=0.2), run_time=self.fit(1.6))
             self.wait(max(0.05, self.remaining() - 0.6))
@@ -631,9 +632,11 @@ mscale = 0.1 * math.log(s) + 1.0"""
                           for r, L in enumerate(lengths)])
             cl = VGroup(*[mono(f"{dd:.1f}", 18, theme.MUTED).move_to([-4.6 + 0.95 * c, 1.55, 0])
                           for c, dd in enumerate(depths)])
-            ttl = zh("tiny 模型：长度 × 深度的准确率", 20).move_to([-3.7, 2.2, 0])
+            ttl = zh("tiny 模型：长度 × 深度的准确率", 20).move_to([-3.7, 2.4, 0])
+            hd = VGroup(zh("深度 →", 16, theme.MUTED).move_to([-3.65, 1.95, 0]),
+                        zh("长度", 16, theme.MUTED).move_to([-5.65, 1.55, 0]))
             note = zh("约 1.3M 参数，每格 5 题；得分如实报告", 18, theme.MUTED).move_to([-3.7, -0.9, 0])
-            self.play(FadeIn(ttl), FadeIn(grid), FadeIn(rl), FadeIn(cl), run_time=self.fit(1.5))
+            self.play(FadeIn(ttl), FadeIn(hd), FadeIn(grid), FadeIn(rl), FadeIn(cl), run_time=self.fit(1.5))
             self.play(FadeIn(note), run_time=self.fit(0.6))
             self.wait(self.remaining() * 0.15)
             ruler = VGroup(
@@ -645,7 +648,7 @@ mscale = 0.1 * math.log(s) + 1.0"""
             ).arrange(DOWN, aligned_edge=LEFT, buff=0.2).move_to([3.2, 0.6, 0])
             self.play(LaggedStart(*[FadeIn(x) for x in ruler], lag_ratio=0.3), run_time=self.fit(2.5))
             self.wait(max(0.05, self.remaining() - 0.6))
-            self.play(FadeOut(VGroup(grid, rl, cl, ttl, note, ruler, badge)), run_time=self.fit(0.6))
+            self.play(FadeOut(VGroup(grid, rl, cl, ttl, hd, note, ruler, badge)), run_time=self.fit(0.6))
 
     # ── S15 生产级 + 主线进度 ───────────────────────────────────────────
     def s15(self) -> None:
@@ -657,7 +660,7 @@ rope_theta = 1000000.0
 max_seq_len = 32768
 [train]
 init_from = "out/main/midtrain/ckpt"
-parallel = "fsdp\"""", 18).move_to([-3.9, 1.45, 0])
+parallel = "fsdp\"""", 18).move_to([-3.8, 1.2, 0])
             ct = zh("configs/main/longctx.toml", 18, theme.MUTED).next_to(cfg, UP, 0.15)
             self.play(FadeIn(ct), FadeIn(cfg), run_time=self.fit(1))
             log = VGroup(zh("tiny 中期训练（zero.train.midtrain）", 20, theme.HIGHLIGHT),
