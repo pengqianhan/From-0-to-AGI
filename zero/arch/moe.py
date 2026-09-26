@@ -245,8 +245,9 @@ class MoEFFN(nn.Module):
         # CPU 版：逐专家循环。GPU 上应换成 grouped GEMM（尚未在 GPU 上验证）。
         out = torch.zeros_like(x)
         xs = x[flat_t]
-        for e, seg in enumerate(torch.split(torch.arange(flat_t.numel(), device=x.device),
-                                            counts.tolist())):
+        for e, seg in enumerate(
+            torch.split(torch.arange(flat_t.numel(), device=x.device), counts.tolist())
+        ):
             if seg.numel() == 0:
                 continue
             h = xs[seg]

@@ -5,7 +5,8 @@
   2. 4 个尺寸 × 3 个 token 预算（WSD 分叉，一次训练得到 3 个点）→ 12 个 (N, D, loss)；
   3. 拟合 L(N, D) = E + A/N^α + B/D^β（网格搜索 α、β，每个格点上 E、A、B 用线性最小二乘解出）；
   4. 按尺寸重采样做 bootstrap，得到外推的 95% 区间；
-  5. 用 η*(N) 的幂律外推出大一号模型（N 是阶梯最大的 2.3 倍）的学习率，真的训练它，比较预测与实际。
+  5. 用 η*(N) 的幂律外推出大一号模型（N 是阶梯最大的 2.1 倍）的学习率，真的训练它，比较预测与实际；
+     另跑一次"直接沿用阶梯最大尺寸的学习率"作对照，看学习率外推本身带来多少误差。
 
 运行：uv run python chapters/12-scaling-laws/code/04_mini_ladder.py
       （需要先跑 03_lr_sweep.py；单线程约 6–10 分钟，结果缓存在 out/ch12/ladder.json，加 --fresh 重跑）
@@ -81,11 +82,15 @@ def run_ladder(fresh=False):
     name, dim, L = sw.HELD_OUT
     N5 = sw.non_embedding_params(dim, L)
     lr5 = float(c * N5**-k)  # 学习率也是外推出来的，不对留出模型调参
-    held = []
-    for D, bpb in sw.train_wsd_branches(dim, L, lr5, BUDGETS, data=data).items():
-        held.append({"size": name, "N": N5, "D": D, "loss": bpb, "lr": lr5})
-        print(f"  留出 {name} N={N5:>7,} D={D:>7,} lr={lr5:.4g}: {bpb:.4f}  ({time.time() - t0:4.0f}s)")
-    result = {"budgets": BUDGETS, "lr_law": {"c": c, "k": k}, "points": points, "held_out": held}
+    lr_alt = best[sw.LADDER[-1][0]]["lr"]  # 对照：直接沿用阶梯最大尺寸的学习率
+    runs = {}
+    for tag, lr in [("law", lr5), ("reuse", lr_alt)]:
+        runs[tag] = []
+        for D, bpb in sw.train_wsd_branches(dim, L, lr, BUDGETS, data=data).items():
+            runs[tag].append({"size": name, "N": N5, "D": D, "loss": bpb, "lr": lr})
+            print(f"  留出 {name} N={N5:>7,} D={D:>7,} lr={lr:.4g}: {bpb:.4f}  ({time.time() - t0:4.0f}s)")
+    result = {"budgets": BUDGETS, "lr_law": {"c": c, "k": k}, "points": points,
+              "held_out": runs["law"], "held_out_reuse_lr": runs["reuse"]}
     path.write_text(json.dumps(result, indent=1))
     return result
 
@@ -108,11 +113,12 @@ def main():
     print(f"\n学习率外推：η*(N) = {lr_law['c']:.3g}·N^(-{lr_law['k']:.3f}) → 留出模型用 {held[0]['lr']:.4g}")
     print(f"外推到留出尺寸 {held[0]['size']}（N = {held[0]['N']:,}，阶梯最大的 {held[0]['N'] / max(p['N'] for p in pts):.1f} 倍）：")
     print(f"{'D':>8} | {'预测':>7} {'95% 区间':>15} | {'实际':>7} {'误差':>7}")
-    for h in held:
+    for h, h2 in zip(held, res["held_out_reuse_lr"]):
         q = predict(f, h["N"], h["D"])
         boots = [predict(g, h["N"], h["D"]) for g in fits]
         lo, hi = np.percentile(boots, [2.5, 97.5])
-        print(f"{h['D']:>8,} | {q:>7.4f} {lo:>7.4f}–{hi:<7.4f} | {h['loss']:>7.4f} {(q - h['loss']) / h['loss']:>+7.2%}")
+        print(f"{h['D']:>8,} | {q:>7.4f} {lo:>7.4f}–{hi:<7.4f} | {h['loss']:>7.4f} {(q - h['loss']) / h['loss']:>+7.2%}"
+              f"   （沿用 s4 学习率 {h2['lr']:.4g}：{h2['loss']:.4f}，误差 {(q - h2['loss']) / h2['loss']:+.2%}）")
     C = 6 * max(p["N"] for p in pts) * max(BUDGETS)
     G = (f["alpha"] * f["A"] / (f["beta"] * f["B"])) ** (1 / (f["alpha"] + f["beta"]))
     n_opt = G * (C / 6) ** (f["beta"] / (f["alpha"] + f["beta"]))
