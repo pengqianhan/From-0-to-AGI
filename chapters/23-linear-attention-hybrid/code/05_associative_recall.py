@@ -11,7 +11,7 @@
 GG（纯 Gated DeltaNet）、GA（1 层 Gated DeltaNet + 1 层全注意力）。
 线性层的 head_dim 故意取得很小（16），让状态容量明显不够用，差别才看得清。
 
-训练：每步随机取 N ∈ [4, 24]，同样的数据顺序；权重缓存在 code/out/*.pt。
+训练：每种 600 步，每步随机取 N ∈ [4, 24]，同样的数据顺序（CPU 单线程每种约几分钟到十几分钟）；权重缓存在 code/out/*.pt。
 运行：uv run python chapters/23-linear-attention-hybrid/code/05_associative_recall.py
 """
 

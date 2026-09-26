@@ -81,7 +81,8 @@ def document_mask(doc_ids: torch.Tensor) -> torch.Tensor:
     return causal(len(doc_ids)) & (doc_ids[:, None] == doc_ids[None, :])
 
 
-if __name__ == "__main__":
+def run() -> dict:
+    """做两个实验，返回正文和视频要用的数字。"""
     tok = lm.ChatTok(ch10.CharData().chars)
     rng = random.Random(3)
     # 长短不一：一部分样本前面多一轮闲聊（模拟真实数据里的多轮对话）
@@ -96,24 +97,23 @@ if __name__ == "__main__":
     lengths = [len(c) for c in convs]
     window = 513  # seq_len 512 + 1（与 zero 一样，窗口多存一个 token 用来错位出目标）
     bins = pack_first_fit(lengths, window)
-    real = sum(lengths)
-    print(f"200 条对话，长度 {min(lengths)}–{max(lengths)} 个 token，合计 {real}")
-    print(f"不打包（一条一行，补齐到 {window}）：{len(convs)} 行，真实 token 占 "
-          f"{100 * real / (len(convs) * window):.0f}%")
-    print(f"首次适配打包：{len(bins)} 个窗口，真实 token 占 {100 * real / (len(bins) * window):.0f}%，"
-          f"每个窗口平均装 {len(convs) / len(bins):.1f} 条")
+    r = {"n": len(convs), "min": min(lengths), "max": max(lengths), "real": sum(lengths),
+         "window": window, "n_bins": len(bins),
+         "bins_preview": [[lengths[i] for i in b] for b in bins[:6]],
+         "pad_pct": 100 * sum(lengths) / (len(convs) * window),
+         "pack_pct": 100 * sum(lengths) / (len(bins) * window)}
 
     # ── 串门 ───────────────────────────────────────────────────────────────
     model, _ = sft.get_or_train("masked", tok, sft.dataset(sft.N_TRAIN, 0, "train"),
                                 sft.dataset(64, 1, "train"), True)
-    a = lm.encode_with_mask(tok, [{"role": "system", "content": lm.SYSTEM},
-                                  {"role": "user", "content": "What is the weather in Paris?"},
-                                  {"role": "assistant", "content": "", "tool_calls": [
-                                      {"name": "get_weather", "arguments": {"city": "Paris"}}]}])
-    b = lm.encode_with_mask(tok, [{"role": "system", "content": lm.SYSTEM},
-                                  {"role": "user", "content": "Is it raining in Kyoto?"},
-                                  {"role": "assistant", "content": "", "tool_calls": [
-                                      {"name": "get_weather", "arguments": {"city": "Kyoto"}}]}])
+
+    def conv(q, city):
+        return lm.encode_with_mask(tok, [{"role": "system", "content": lm.SYSTEM},
+                                         {"role": "user", "content": q},
+                                         {"role": "assistant", "content": "", "tool_calls": [
+                                             {"name": "get_weather", "arguments": {"city": city}}]}])
+
+    a, b = conv("What is the weather in Paris?", "Paris"), conv("Is it raining in Kyoto?", "Kyoto")
     ids_a, ids_b = a[0], b[0]
     packed = torch.tensor([ids_a + ids_b])
     doc = torch.tensor([0] * len(ids_a) + [1] * len(ids_b))
@@ -121,19 +121,33 @@ if __name__ == "__main__":
         alone = forward_with_mask(model, torch.tensor([ids_b]), causal(len(ids_b)))[0]
         mixed = forward_with_mask(model, packed, causal(packed.shape[1]))[0, len(ids_a):]
         isolated = forward_with_mask(model, packed, document_mask(doc))[0, len(ids_a):]
-        same_as_ch10 = torch.allclose(model(torch.tensor([ids_b]))[0], alone, atol=1e-5)
+        same = torch.allclose(model(torch.tensor([ids_b]))[0], alone, atol=1e-5)
 
     def asst_loss(logits):
         y = torch.tensor(ids_b[1:])
         keep = torch.tensor(b[1][1:])
         return F.cross_entropy(logits[:-1][keep], y[keep]).item()
 
-    print(f"\n自己写的带 mask 前向与第 10 章 TinyLM.forward 一致：{same_as_ch10}")
+    r.update(same_as_ch10=bool(same), len_a=len(ids_a), len_b=len(ids_b),
+             loss_alone=asst_loss(alone), loss_mixed=asst_loss(mixed),
+             loss_isolated=asst_loss(isolated),
+             diff_mixed=float((mixed - alone).abs().max()),
+             diff_isolated=float((isolated - alone).abs().max()))
+    return r
+
+
+if __name__ == "__main__":
+    r = run()
+    print(f"{r['n']} 条对话，长度 {r['min']}–{r['max']} 个 token，合计 {r['real']}")
+    print(f"不打包（一条一行，补齐到 {r['window']}）：{r['n']} 行，真实 token 占 {r['pad_pct']:.0f}%")
+    print(f"首次适配打包：{r['n_bins']} 个窗口，真实 token 占 {r['pack_pct']:.0f}%，"
+          f"每个窗口平均装 {r['n'] / r['n_bins']:.1f} 条")
+    print(f"\n自己写的带 mask 前向与第 10 章 TinyLM.forward 一致：{r['same_as_ch10']}")
     print("对话 B（Kyoto）的助手 token loss：")
-    print(f"  单独一条                         {asst_loss(alone):.4f}")
-    print(f"  打包在 A（Paris）后面，普通因果 mask  {asst_loss(mixed):.4f}"
-          f"   logits 最大差 {(mixed - alone).abs().max():.2e}")
-    print(f"  打包在 A 后面，文档 mask          {asst_loss(isolated):.4f}"
-          f"   logits 最大差 {(isolated - alone).abs().max():.2e}")
-    print("（RoPE 只看相对位置，所以 B 在窗口里从第 {} 个位置开始也不影响结果——只要注意力被隔开）"
-          .format(len(ids_a)))
+    print(f"  单独一条                              {r['loss_alone']:.4f}")
+    print(f"  打包在 A（Paris）后面，普通因果 mask     {r['loss_mixed']:.4f}"
+          f"   logits 最大差 {r['diff_mixed']:.2e}")
+    print(f"  打包在 A 后面，文档 mask                {r['loss_isolated']:.4f}"
+          f"   logits 最大差 {r['diff_isolated']:.2e}")
+    print(f"（RoPE 只看相对位置，所以 B 在窗口里从第 {r['len_a']} 个位置开始也不影响结果——"
+          "只要注意力被隔开）")

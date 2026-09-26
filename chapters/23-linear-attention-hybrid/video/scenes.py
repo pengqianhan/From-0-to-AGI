@@ -141,8 +141,10 @@ def get_data() -> dict:
 
 
 D = get_data()
-NAMES = {"AAAA": "纯注意力", "LLLL": "纯线性", "GGGG": "纯 GDN", "GGGA": "3:1 混合"}
-PCOLORS = {"AAAA": theme.INPUT, "LLLL": theme.MUTED, "GGGG": theme.ATTN, "GGGA": theme.OUTPUT}
+NAMES = {"AAAA": "纯注意力", "LLLL": "纯线性", "GGGG": "纯 GDN", "GGGA": "3:1 混合",
+         "AA": "纯注意力", "LL": "纯线性", "GG": "纯 GDN", "GA": "混合"}
+PCOLORS = {"AAAA": theme.INPUT, "LLLL": theme.MUTED, "GGGG": theme.ATTN, "GGGA": theme.OUTPUT,
+           "AA": theme.INPUT, "LL": theme.MUTED, "GG": theme.ATTN, "GA": theme.OUTPUT}
 
 
 def mono(text: str, size: float = 24, color: str = theme.FG) -> Text:
