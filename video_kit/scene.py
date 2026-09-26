@@ -161,3 +161,22 @@ def polyline_in_axes(axes, points_xy, **style) -> VGroup:
         m.set_points_as_corners(np.array(run))
         group.add(m)
     return group
+
+
+MONO_FONT = "Noto Sans Mono"
+
+
+def code_block(source: str, size: float = 22, color: str = theme.FG,
+               line_buff: float = 0.18) -> VGroup:
+    """等宽字体的代码块，保留缩进（Manim 的 Text 会吞掉行首空格，这里换成不间断空格）。
+
+    返回每行一个 Text 的 VGroup，左对齐，方便逐行高亮：code_block(src)[2] 是第 3 行。
+    """
+    lines = source.strip("\n").splitlines()
+    group = VGroup()
+    for line in lines:
+        indent = len(line) - len(line.lstrip(" "))
+        shown = " " * indent + line.lstrip(" ") if line.strip() else " "
+        group.add(Text(shown, font=MONO_FONT, font_size=size, color=color))
+    group.arrange(DOWN, aligned_edge=LEFT, buff=line_buff)
+    return group

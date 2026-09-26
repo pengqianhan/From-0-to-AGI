@@ -87,6 +87,8 @@ API（见 `video_kit/scene.py`）：
 - `polyline_in_axes(axes, [(x, y), ...], color=..., stroke_width=...)`：只画坐标范围内的部分，等高线、轨迹用它，避免线条溢出。
 - `self.demo_badge()` / `self.show_badge()`：第 11–20 章用到极小配置数据的镜头，右上角必须带"极小配置演示"标注。
 - 片头第一镜用 `self.chapter_card()`。
+- 代码块用 `code_block(source, size)`（`from video_kit.scene import code_block`）：保留缩进，返回每行一个 Text 的 VGroup，便于逐行高亮。
+- scenes.py 里要重复跑的较慢计算（训练小网络等），用 `functools.lru_cache` 或把结果缓存到 `video/out/cache.json`，避免每次渲染都重跑。
 
 版式规则：
 
@@ -142,6 +144,7 @@ Spring 2026 讲次：1 概览与分词；2 PyTorch 与资源核算；3 架构与
 
 ## 7. 协作约定（多人/多个 agent 并行时）
 
+- 临时文件放在自己章节的 `video/out/` 或草稿目录下以章节命名的子目录里，不要和其他 agent 共用同名文件。
 - 只改自己负责的章节目录和对应的 Skill 文件；需要改 `video_kit/`、`zero/` 或别人的文件时，在汇报里提出，不要直接改。
 - **不要 git commit**（由主流程统一提交）。
 - 新找到的参考资料写进本章参考文献，并在汇报里列出，由主流程合并进 `references.md`。
