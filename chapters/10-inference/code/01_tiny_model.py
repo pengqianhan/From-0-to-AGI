@@ -161,6 +161,7 @@ class TinyLM(nn.Module):
         super().__init__()
         self.c = c
         self.emb = nn.Embedding(c.vocab_size, c.dim)
+        nn.init.normal_(self.emb.weight, std=0.02)  # 共享 embedding：初始 logits 要小
         self.blocks = nn.ModuleList(Block(c) for _ in range(c.n_layers))
         self.norm = RMSNorm(c.dim)
         cos, sin = rope_tables(c.head_dim, c.max_seq_len)

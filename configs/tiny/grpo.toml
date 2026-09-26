@@ -1,0 +1,60 @@
+# tiny GRPO 配置（第 19 章"极小配置演示"）：在 tiny DPO 之后的权重上，用 tool_env 的可验证奖励做 GRPO。
+#   uv run python -m zero.post.grpo --config configs/tiny/grpo.toml
+# 极小模型的奖励大多是 -1（格式错）或很低，曲线只说明"代码能跑通"，不说明方法的效果。
+
+[model]                  # 与 SFT 的 checkpoint 形状一致
+vocab_size = 2048
+dim = 128
+n_layers = 4
+n_heads = 4
+n_kv_heads = 2
+head_dim = 32
+ffn_dim = 384
+rope_theta = 10000.0
+max_seq_len = 1024
+tie_embeddings = false
+rope_scaling = { type = "yarn", factor = 8.0, original_max_position_embeddings = 128, beta_fast = 32.0, beta_slow = 1.0 }
+
+[train]
+seed = 1337
+max_steps = 20
+device = "cpu"
+dtype = "fp32"
+cpu_threads = 1
+out_dir = "out/tiny/grpo"
+init_from = "out/tiny/dpo/ckpt"
+
+[data]
+format = "none"
+tokenizer = "out/tiny/tokenizer.json"
+seq_len = 1024
+
+[grpo]
+group_size = 8           # G
+prompts_per_step = 4     # 每步 4 个任务 × 8 个回复 = 32 条
+max_new_tokens = 64
+temperature = 1.0
+clip_eps = 0.2
+kl_coef = 0.02           # 小的 KL 约束，演示参考模型的用法
+ppo_epochs = 1
+loss_agg = "token_mean"
+scale_rewards = true
+n_train_tasks = 500
+env_seed = 2
+forward_batch = 16
+
+[optim]
+lr = 2e-4
+weight_decay = 0.0
+grad_clip = 1.0
+
+[schedule]
+kind = "constant"
+warmup_steps = 2
+
+[checkpoint]
+every = 0
+keep_last = 1
+
+[logging]
+every = 1

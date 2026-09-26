@@ -27,6 +27,9 @@ from torch import nn
 HERE = Path(__file__).resolve().parent
 CORPUS = HERE.parents[2] / "assets" / "tiny_corpus" / "shakespeare.txt"
 
+# 这么小的模型，单线程反而最快（多线程的调度开销比计算还大，机器忙时尤其明显）
+torch.set_num_threads(1)
+
 _spec = importlib.util.spec_from_file_location("attn02", HERE / "02_attention_from_scratch.py")
 attn02 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(attn02)
@@ -35,7 +38,7 @@ BLOCK = 64       # 上下文长度 T
 C = 64           # 通道数
 HEADS = 4        # 头数，每头 d = 16
 BATCH = 32
-STEPS = 1500
+STEPS = 2000
 LR = 3e-3
 SAMPLE = "First Citizen:\nBefore we proceed any further, hear me speak."
 
@@ -160,7 +163,6 @@ def heatmap(w: torch.Tensor, text: str) -> str:
 
 
 def main() -> None:
-    torch.set_num_threads(max(1, torch.get_num_threads()))
     chars, _, _, val_data = load_data()
     print(f"语料：Tiny Shakespeare，{len(chars)} 种字符（全是 ASCII，1 字符 = 1 字节）；"
           f"上下文 T={BLOCK}，C={C}，H={HEADS}，训练 {STEPS} 步 × batch {BATCH}\n")

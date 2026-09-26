@@ -179,3 +179,100 @@ class PackedDataLoader:
 
     def reset(self) -> None:
         self.consumed = 0
+
+
+class MaskedWindowLoader:
+    """SFT 用：读"定长窗口 + loss mask"（对应第 16 章）。
+
+    zero/post/sft.py 把若干条对话打包进长度 seq_len+1 的窗口（不把一条对话切到两个窗口里，
+    剩余位置用 <|endoftext|> 填充），写成两份文件：
+
+        <name>.bin   np.uint32，n_windows × (seq_len+1) 个 token
+        <name>.mask  np.uint8， 同样长度；1 = 助手输出的 token（要算 loss），0 = 其余
+
+    `next_batch()` 返回 (x, y)：x = 窗口[:-1]，y = 窗口[1:]，mask 为 0 的目标位置换成 -100
+    （交叉熵的 ignore_index），于是 `Transformer.loss` / 训练循环不用改就只在助手 token 上算 loss。
+
+    顺序由 (seed, epoch) 决定，状态只有 `consumed` 一个整数，断点续训与 PackedDataLoader 一样精确；
+    多卡时第 g 个全局样本分给 rank g % world_size。
+    """
+
+    def __init__(
+        self,
+        paths: str | os.PathLike | Sequence[str | os.PathLike],
+        seq_len: int,
+        batch_size: int,
+        rank: int = 0,
+        world_size: int = 1,
+        seed: int = 0,
+        shuffle: bool = True,
+        device: torch.device | str = "cpu",
+        ignore_index: int = -100,
+    ) -> None:
+        self.paths = resolve_shards(paths)
+        self.seq_len = seq_len
+        self.batch_size = batch_size
+        self.rank = rank
+        self.world_size = world_size
+        self.seed = seed
+        self.shuffle = shuffle
+        self.device = device
+        self.ignore_index = ignore_index
+        w = seq_len + 1
+        toks, masks = [], []
+        for p in self.paths:
+            t = np.fromfile(p, dtype=np.uint32)
+            m = np.fromfile(p.with_suffix(".mask"), dtype=np.uint8)
+            if len(t) % w != 0 or len(m) != len(t):
+                raise ValueError(f"{p}: 长度 {len(t)} 不是窗口长度 {w} 的整数倍，或 mask 长度不符（seq_len 改过？）")
+            toks.append(t.reshape(-1, w))
+            masks.append(m.reshape(-1, w))
+        self.tokens = np.concatenate(toks)
+        self.masks = np.concatenate(masks).astype(bool)
+        self.total_chunks = len(self.tokens)
+        if self.total_chunks < world_size:
+            raise ValueError(f"SFT 窗口只有 {self.total_chunks} 个，不够分给 {world_size} 个 rank")
+        self.consumed = 0
+        self._perm: tuple[int, np.ndarray] | None = None
+
+    def _index(self, g: int) -> int:
+        epoch, pos = divmod(g, self.total_chunks)
+        if not self.shuffle:
+            return pos
+        if self._perm is None or self._perm[0] != epoch:
+            self._perm = (epoch, np.random.default_rng([self.seed, epoch, 7]).permutation(self.total_chunks))
+        return int(self._perm[1][pos])
+
+    def next_batch(self) -> tuple[torch.Tensor, torch.Tensor]:
+        idx = [
+            self._index((self.consumed + i) * self.world_size + self.rank)
+            for i in range(self.batch_size)
+        ]
+        self.consumed += self.batch_size
+        tok = self.tokens[idx].astype(np.int64)
+        y = np.where(self.masks[idx][:, 1:], tok[:, 1:], self.ignore_index)
+        x_t = torch.from_numpy(np.ascontiguousarray(tok[:, :-1]))
+        y_t = torch.from_numpy(np.ascontiguousarray(y))
+        device = torch.device(self.device)
+        return x_t.to(device), y_t.to(device)
+
+    def __iter__(self) -> MaskedWindowLoader:
+        return self
+
+    def __next__(self) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.next_batch()
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "consumed": self.consumed,
+            "seed": self.seed,
+            "seq_len": self.seq_len,
+            "world_size": self.world_size,
+            "total_chunks": self.total_chunks,
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        for key in ("seed", "seq_len", "world_size", "total_chunks"):
+            if state[key] != getattr(self, key):
+                raise ValueError(f"加载器状态不匹配：{key} 保存时是 {state[key]}，现在是 {getattr(self, key)}")
+        self.consumed = int(state["consumed"])

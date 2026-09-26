@@ -32,7 +32,7 @@ import torch
 from torch import nn
 
 from zero.config import Config
-from zero.data.loader import PackedDataLoader
+from zero.data.loader import MaskedWindowLoader, PackedDataLoader
 from zero.data.mixture import MixtureLoader
 from zero.model import Transformer, cross_entropy_loss
 from zero.train.checkpoint import find_latest, load_checkpoint, load_model_weights, save_checkpoint
@@ -67,9 +67,25 @@ def build_optimizer(model: nn.Module, cfg: Any, device: torch.device) -> torch.o
     return torch.optim.AdamW(groups, lr=cfg.lr, betas=(cfg.beta1, cfg.beta2), eps=cfg.eps, **kwargs)
 
 
-def build_train_loader(cfg: Config, info: DistInfo) -> PackedDataLoader | MixtureLoader:
+def build_train_loader(
+    cfg: Config, info: DistInfo
+) -> PackedDataLoader | MixtureLoader | MaskedWindowLoader:
     d = cfg.train.data
     bsz = cfg.train.micro_batch_size
+    if d.format == "sft":
+        # SFT：对话窗口 + loss mask（第 16 章）；多个来源直接拼在一起（权重不起作用）
+        return MaskedWindowLoader(
+            [s.path for s in d.sources],
+            d.seq_len,
+            bsz,
+            rank=info.rank,
+            world_size=info.world_size,
+            seed=cfg.train.seed,
+            shuffle=d.shuffle,
+            device=info.device,
+        )
+    if d.format != "packed":
+        raise ValueError(f"[data] format={d.format!r} 的数据不由通用训练循环读取")
     common = dict(
         seq_len=d.seq_len,
         rank=info.rank,
@@ -184,7 +200,8 @@ class Trainer:
         d = self.cfg.train.data
         if not d.val:
             return None
-        val = PackedDataLoader(
+        val_cls = MaskedWindowLoader if d.format == "sft" else PackedDataLoader
+        val = val_cls(
             d.val,
             seq_len=d.seq_len,
             batch_size=self.cfg.train.micro_batch_size,

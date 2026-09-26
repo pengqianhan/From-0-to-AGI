@@ -1,0 +1,65 @@
+# tiny SFT 配置（第 16 章"极小配置演示"）：在 tiny 中期训练的权重上，用 tool_env 生成的工具调用对话做 SFT。
+# 先跑 configs/tiny/pretrain.toml 和 midtrain.toml，再：
+#   uv run python -m zero.post.sft --config configs/tiny/sft.toml
+# 注意：
+# - 这个分词器（out/tiny/tokenizer.json）训练时没见过对话/JSON 格式，一条带工具说明的对话约 700 token，
+#   所以 seq_len 取 1024；`python -m zero.smoke` 会训练一个见过工具调用格式文本的分词器，同样的对话约 330 token，
+#   seq_len 改成 512（主线的分词器语料很大，不存在这个问题）。
+# - 极小模型 + 玩具数据，结果只说明"代码能跑通、loss 会降"。
+
+[model]                  # 必须与中期训练的 checkpoint 形状一致（只有 RoPE 字段和 max_seq_len 可以不同）
+vocab_size = 2048
+dim = 128
+n_layers = 4
+n_heads = 4
+n_kv_heads = 2
+head_dim = 32
+ffn_dim = 384
+rope_theta = 10000.0
+max_seq_len = 1024
+tie_embeddings = false
+# 原训练长度 128，扩到 1024（factor = 8）
+rope_scaling = { type = "yarn", factor = 8.0, original_max_position_embeddings = 128, beta_fast = 32.0, beta_slow = 1.0 }
+
+[train]
+seed = 1337
+max_steps = 150
+micro_batch_size = 4
+grad_accum_steps = 1
+device = "cpu"
+dtype = "fp32"
+cpu_threads = 1
+out_dir = "out/tiny/sft"
+init_from = "out/tiny/midtrain/ckpt"
+eval_every = 50
+eval_batches = 4
+
+[data]
+format = "sft"           # 读打包好的对话窗口 + loss mask（sources / val 由 zero.post.sft 自动填写）
+tokenizer = "out/tiny/tokenizer.json"
+seq_len = 1024
+
+[sft]
+train_jsonl = "out/tiny/sft/train.jsonl"
+val_jsonl = "out/tiny/sft/val.jsonl"
+shard_dir = "out/tiny/sft/data"
+generate_train = 1500    # 文件不存在时用 tool_env 生成（标准解答轨迹）
+generate_val = 64
+env_seed = 0
+
+[optim]
+lr = 1e-3
+weight_decay = 0.0       # SFT 步数少，不做权重衰减
+grad_clip = 1.0
+
+[schedule]
+kind = "cosine"
+warmup_steps = 10
+min_lr_ratio = 0.1
+
+[checkpoint]
+every = 50
+keep_last = 1
+
+[logging]
+every = 10

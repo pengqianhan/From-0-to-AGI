@@ -68,17 +68,16 @@ def count_bigrams(ids: list[int], V: int) -> np.ndarray:
     return np.bincount(flat, minlength=V * V).reshape(V, V).astype(np.float64)  # counts[前, 后]
 
 
-def bigram_probs(counts: np.ndarray, alpha: float = ALPHA) -> np.ndarray:
-    """每一行归一化：P[a, b] = p(下一个是 b | 当前是 a)。整行都是 0（没见过的 a）时退回均匀分布。"""
-    c = counts + alpha
-    rows = c.sum(axis=1, keepdims=True)
-    return np.where(rows > 0, c / np.maximum(rows, 1e-12), 1.0 / len(c))
+def bigram_prob(counts: np.ndarray, prev, nxt, alpha: float = ALPHA):
+    """p(下一个 = nxt | 当前 = prev) = (count + α) / (该行总数 + α·V)。prev、nxt 可以是数组。"""
+    V = counts.shape[0]
+    return (counts[prev, nxt] + alpha) / (counts.sum(axis=1)[prev] + alpha * V)
 
 
-def evaluate(P: np.ndarray, ids: list[int], n_bytes: list[int]) -> dict:
+def evaluate(counts: np.ndarray, ids: list[int], n_bytes: list[int]) -> dict:
     """在一段 token 序列上算交叉熵。n_bytes[i] 是第 i 个 token 在原文里占几个字节。"""
     x, y = np.array(ids[:-1]), np.array(ids[1:])
-    nats = -np.log(P[x, y])                                   # 每个位置的 −ln p(正确的下一个 token)
+    nats = -np.log(bigram_prob(counts, x, y))                 # 每个位置的 −ln p(正确的下一个 token)
     total_nats, total_bytes = nats.sum(), sum(n_bytes[1:])   # 只统计被预测的那些 token
     ce = total_nats / len(y)                                  # nats / token
     return {
@@ -92,15 +91,17 @@ def evaluate(P: np.ndarray, ids: list[int], n_bytes: list[int]) -> dict:
 
 def run(tok, train_text: str, val_text: str, n_bytes_fn) -> dict:
     tr, va = tok.encode(train_text), tok.encode(val_text)
-    P = bigram_probs(count_bigrams(tr, tok.V))
-    return evaluate(P, va, n_bytes_fn(va))
+    counts = count_bigrams(tr, tok.V)
+    return {**evaluate(counts, va, n_bytes_fn(va)), "counts": counts}
 
 
-def sample(P: np.ndarray, tok, start: int, n: int, seed: int = 0) -> str:
+def sample(counts: np.ndarray, tok, start: int, n: int, seed: int = 0) -> str:
+    """不平滑，直接按计数抽样：下一个 token 只可能是训练时在当前 token 后面出现过的。"""
     rng = np.random.default_rng(seed)
     ids = [start]
     for _ in range(n):
-        ids.append(int(rng.choice(len(P), p=P[ids[-1]])))    # 按 p(下一个 | 当前) 抽样
+        row = counts[ids[-1]]
+        ids.append(int(rng.choice(len(row), p=row / row.sum())))  # 按 p(下一个 | 当前) 抽样
     return b"".join(tok.token_bytes(i) for i in ids).decode("utf-8", errors="replace")
 
 
@@ -117,6 +118,7 @@ if __name__ == "__main__":
     print(f"bigram 训练：各语料除去最后 40,000 字符；验证：最后 20,000 字符。平滑 α = {ALPHA}\n")
     print(f"{'语料':<5}{'分词':<14}{'V':>6}{'val token数':>12}{'nats/tok':>10}{'bits/tok':>10}"
           f"{'困惑度':>9}{'bpb':>8}")
+    samples = {}
     for k in ["en", "zh", "code"]:
         tr, va = splits(k)
         char = CharTok(tr)
@@ -127,6 +129,8 @@ if __name__ == "__main__":
             else:
                 nb = lambda ids, t=tok: [len(t.token_bytes(i)) for i in ids]  # noqa: E731
             r = run(tok, tr, va, nb)
+            if name != "字节":
+                samples[(k, name)] = sample(r["counts"], tok, tok.encode("\n")[0], 50 if name == "字符" else 30, seed=1)
             print(f"{k:<6}{name:<12}{tok.V:>8,}{r['tokens']:>11,}{r['nats']:>10.3f}{r['bits']:>10.3f}"
                   f"{r['ppl']:>9.1f}{r['bpb']:>8.3f}")
         print(f"      （字符级：验证集里有 {n_unk} 个字符训练时没见过，都记成 <unk>）\n")
@@ -134,9 +138,6 @@ if __name__ == "__main__":
     print("对照：均匀乱猜一个字节 = 8 bits/byte。\n")
 
     print("从 bigram 里抽样（只看前 1 个 token；抽样用不平滑的计数）：")
-    for k in ["en", "zh"]:
-        tr, _ = splits(k)
-        for name, tok, n in [("字符", CharTok(tr), 50), ("BPE", BPETok(bpe), 30)]:
-            P = bigram_probs(count_bigrams(tok.encode(tr), tok.V), alpha=0.0)
-            s = sample(P, tok, tok.encode("\n")[0], n, seed=1)
-            print(f"  [{k} · {name}] {s.strip()!r}")
+    for (k, name), text in samples.items():
+        if k != "code":
+            print(f"  [{k} · {name}] {text.strip()!r}")

@@ -168,7 +168,7 @@ def eval_bpb(model, data, cfg, n_batches=20):
     return sum(losses) / len(losses) / math.log(2)  # nat/字节 → bit/字节
 
 
-def train(steps=1500, batch_size=32, lr=3e-3, warmup=100, seed=1337):
+def train(steps=1200, batch_size=32, lr=3e-3, warmup=100, seed=1337):
     torch.manual_seed(seed)
     cfg = Config()
     model = TinyTransformer(cfg)
@@ -185,7 +185,7 @@ def train(steps=1500, batch_size=32, lr=3e-3, warmup=100, seed=1337):
     g = torch.Generator().manual_seed(seed)
     history, train_curve, t0 = [], [], time.time()
     for step in range(steps + 1):
-        if step % 250 == 0 or step == steps:
+        if step % 200 == 0 or step == steps:
             model.eval()
             val = eval_bpb(model, val_data, cfg)
             model.train()
@@ -219,5 +219,5 @@ def load_trained():
 
 
 if __name__ == "__main__":
-    torch.set_num_threads(4)
+    torch.set_num_threads(1)  # 单线程：小模型上多线程收益小，机器繁忙时反而慢很多
     train()

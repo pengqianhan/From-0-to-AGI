@@ -166,6 +166,10 @@ class DataConfig:
     val: str = ""  # 验证集分片 glob；空表示不做评估
     shuffle: bool = True
     prepare: DataPrepareConfig | None = None
+    # 数据格式："packed" = 预训练分片（uint32 token 流，见 zero/data/loader.py 的 PackedDataLoader）；
+    # "sft" = 对话打包窗口 + loss mask（zero/post/sft.py 生成，MaskedWindowLoader 读取）；
+    # "none" = 训练循环自己管数据（DPO / GRPO / 蒸馏），[[data.sources]] 可以为空
+    format: str = "packed"
 
 
 @dataclass
@@ -247,7 +251,14 @@ class TrainConfig:
             f"[train] parallel 只能是 ddp/fsdp，当前 {self.parallel!r}",
         )
         need(self.data.seq_len > 0, "[data] seq_len 必须 > 0")
-        need(len(self.data.sources) > 0, "[data] 至少要有一个 [[data.sources]]")
+        need(
+            self.data.format in ("packed", "sft", "none"),
+            f"[data] format 只能是 packed/sft/none，当前 {self.data.format!r}",
+        )
+        need(
+            len(self.data.sources) > 0 or self.data.format != "packed",
+            "[data] 至少要有一个 [[data.sources]]",
+        )
         for s in self.data.sources:
             need(bool(s.name) and bool(s.path), "[[data.sources]] 每项都要有 name 和 path")
             need(s.weight > 0, f"[[data.sources]] {s.name} 的 weight 必须 > 0")

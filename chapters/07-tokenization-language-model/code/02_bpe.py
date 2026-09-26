@@ -44,6 +44,7 @@ class BPE:
         self.merges: dict[tuple[int, int], int] = {}          # (a, b) -> 新 id，按学习顺序
         self.vocab: dict[int, bytes] = {i: bytes([i]) for i in range(256)}
         self.history: list[tuple[int, bytes, int]] = []      # (新 id, 新 token 的字节, 合并时的次数)
+        self.cache: dict[str, list[int]] = {}                # 词块 → ids 的缓存（编码时同一个词块只算一次）
 
     def train(self, text: str, vocab_size: int) -> "BPE":
         words = Counter(pretokenize(text))                   # 相同词块只存一份，记次数
@@ -65,15 +66,19 @@ class BPE:
             self.merges[pair] = new_id
             self.vocab[new_id] = self.vocab[pair[0]] + self.vocab[pair[1]]
             self.history.append((new_id, self.vocab[new_id], count))
+            touched = set()
             for i in where.pop(pair):                        # 只更新受影响的词块
                 s, f = seqs[i], freqs[i]
                 for p in zip(s, s[1:]):
                     stats[p] -= f
+                    touched.add(p)
                 s = seqs[i] = merge(s, pair, new_id)
                 for p in zip(s, s[1:]):
                     stats[p] += f
                     where[p].add(i)
-            stats = +stats                                   # 丢掉次数 ≤ 0 的对
+            for p in touched:                                # 丢掉次数降到 0 的对
+                if stats[p] <= 0:
+                    del stats[p]
         return self
 
     def _encode_chunk(self, chunk: str) -> list[int]:
@@ -87,12 +92,11 @@ class BPE:
         return ids
 
     def encode(self, text: str) -> list[int]:
-        cache: dict[str, list[int]] = {}
         out: list[int] = []
         for chunk in pretokenize(text):
-            if chunk not in cache:
-                cache[chunk] = self._encode_chunk(chunk)
-            out.extend(cache[chunk])
+            if chunk not in self.cache:
+                self.cache[chunk] = self._encode_chunk(chunk)
+            out.extend(self.cache[chunk])
         return out
 
     def decode(self, ids: list[int]) -> str:

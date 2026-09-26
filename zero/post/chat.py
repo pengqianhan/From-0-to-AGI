@@ -100,7 +100,13 @@ def format_tool_call(tc: dict[str, Any]) -> str:
     tc = normalize_tool_call(tc)
     args = tc["arguments"]
     args_s = args if isinstance(args, str) else tojson(args)
-    return '<tool_call>\n{"name": ' + tojson(tc["name"]) + ', "arguments": ' + args_s + "}\n</tool_call>"
+    return (
+        '<tool_call>\n{"name": '
+        + tojson(tc["name"])
+        + ', "arguments": '
+        + args_s
+        + "}\n</tool_call>"
+    )
 
 
 def _content(msg: dict[str, Any]) -> str:
@@ -108,6 +114,21 @@ def _content(msg: dict[str, Any]) -> str:
     if c is None:
         return ""
     return c if isinstance(c, str) else tojson(c)
+
+
+def assistant_text(m: dict[str, Any], enable_thinking: bool = False) -> str:
+    """助手消息 → 模型应该生成的文本（不含 `<|im_start|>assistant\\n` 和 `<|im_end|>`）。"""
+    body = ""
+    reasoning = m.get("reasoning_content")
+    if enable_thinking and isinstance(reasoning, str) and reasoning:
+        body += "<think>\n" + reasoning.strip() + "\n</think>\n\n"
+    content = m.get("content") if isinstance(m.get("content"), str) else ""
+    body += content
+    for j, tc in enumerate(m.get("tool_calls") or []):
+        if (j == 0 and content) or j > 0:
+            body += "\n"
+        body += format_tool_call(tc)
+    return body
 
 
 def render_segments(
@@ -144,17 +165,7 @@ def render_segments(
             emit(f"{IM_START}{role}\n" + _content(m) + f"{IM_END}\n")
         elif role == "assistant":
             emit(f"{IM_START}assistant\n")
-            body = ""
-            reasoning = m.get("reasoning_content")
-            if enable_thinking and isinstance(reasoning, str) and reasoning:
-                body += "<think>\n" + reasoning.strip() + "\n</think>\n\n"
-            content = m.get("content") if isinstance(m.get("content"), str) else ""
-            body += content
-            for j, tc in enumerate(m.get("tool_calls") or []):
-                if (j == 0 and content) or j > 0:
-                    body += "\n"
-                body += format_tool_call(tc)
-            emit(body + IM_END, train=True)
+            emit(assistant_text(m, enable_thinking) + IM_END, train=True)
             emit("\n")
         elif role == "tool":
             if i == 0 or msgs[i - 1].get("role") != "tool":
@@ -203,7 +214,37 @@ def render_text(
     add_generation_prompt: bool = False,
     enable_thinking: bool = False,
 ) -> str:
-    return "".join(s for s, _ in render_segments(messages, tools, add_generation_prompt, enable_thinking))
+    return "".join(
+        s for s, _ in render_segments(messages, tools, add_generation_prompt, enable_thinking)
+    )
+
+
+def encode_prompt_response(
+    messages: Sequence[dict[str, Any]],
+    response: dict[str, Any] | Sequence[dict[str, Any]],
+    tokenizer: Tokenizer,
+    tools: Sequence[dict[str, Any]] | None = None,
+    enable_thinking: bool = False,
+) -> tuple[list[int], list[bool]]:
+    """提示词 + 回复（一条助手消息，或一串后续消息）→ (ids, mask)，mask 只标**回复部分**的助手 token。
+
+    DPO 的 chosen / rejected、蒸馏的学生样本都用它：提示词里历史轮次的助手 token 不算。
+    依据：render(提示词 + 回复) 的文本一定以 render(提示词, add_generation_prompt=True) 为前缀。"""
+    resp = [response] if isinstance(response, dict) else list(response)
+    prefix = render_text(
+        messages, tools, add_generation_prompt=True, enable_thinking=enable_thinking
+    )
+    segs = render_segments(list(messages) + resp, tools, False, enable_thinking)
+    text = "".join(s for s, _ in segs)
+    if not text.startswith(prefix):
+        raise ValueError("回复必须以助手消息开头")
+    char_mask: list[bool] = []
+    for s, train in segs:
+        char_mask.extend([train] * len(s))
+    for i in range(len(prefix)):
+        char_mask[i] = False
+    ids, offsets = tokenizer.encode_with_offsets(text)
+    return ids, [char_mask[a] if a < len(char_mask) else False for a, _ in offsets]
 
 
 # ---------------------------------------------------------------------------
