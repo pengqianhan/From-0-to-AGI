@@ -190,5 +190,5 @@ if __name__ == "__main__":
     print("\n分叉：y = x·x + x，x = 3 → ∂y/∂x =", x.grad, "（手算 2x + 1 = 7）")
 
     random.seed(0)
-    net = MLP(1, [16, 16, 1])
-    print(f"\nMLP(1, [16, 16, 1]) 共有 {len(net.parameters())} 个参数，每个都是一个 Value")
+    net = MLP(1, [8, 8, 1])
+    print(f"\nMLP(1, [8, 8, 1]) 共有 {len(net.parameters())} 个参数，每个都是一个 Value")

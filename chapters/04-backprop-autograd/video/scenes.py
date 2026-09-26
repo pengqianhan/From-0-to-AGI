@@ -525,7 +525,7 @@ class ChapterScene(NarratedScene):
                 "self.grad = 1.0",
                 "for v in reversed(topo):",
                 "    v._backward()",
-            ]).move_to([0, -1.95, 0])
+            ]).move_to([0, -1.85, 0])
             code[0][5:9].set_color(theme.HIGHLIGHT)
             per = (self.remaining() - 3) / len(order)
             grads = VGroup()
