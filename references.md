@@ -18,3 +18,4 @@
 - [Marin 535B-A23B 训练直播](https://wandb.ai/marin-community/marin_moe/reports/535B-A23B-18T-Token-Hero-Run-Scaling-Ladder--VmlldzoxNzc2MDM5Ng),[github details](https://github.com/marin-community/marin/issues/8435)，[data composition:](https://storage.googleapis.com/marin-public/held/harrier-k40-cluster-overview/2026.08.18/index.html?revision=uniform-sampling)
 - [UNDERSTANDING TRANSFORMERS AND ATTENTIONMECHANISMS: AN INTRODUCTION FOR APPLIEDMATHEMATICIANS](https://arxiv.org/pdf/2604.00965)
 - [Puro-2B](https://www.alphaxiv.org/abs/2608.27370):Puro-2B：穷实验室在RTX 5090上以5090美元预算训练的Qwen2-1.5B
+- [Awesome Claude Opus 5.5 Videos](https://github.com/athemeroy/awesome-opus-5-5-videos): 用 Claude Opus 5.5 做视频的案例合集，重点看"教育讲解片"路径（Manim/Remotion + TTS）和 [七类可复用提示词模板](https://github.com/athemeroy/awesome-opus-5-5-videos/blob/main/docs/prompt-playbook.zh-CN.md)，每章配套视频的制作流程参考这里。
