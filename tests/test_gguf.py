@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 import torch
 
@@ -28,13 +26,22 @@ def exported(tmp_path_factory, chat_tok):  # noqa: ANN001, ANN201
 
     torch.manual_seed(0)
     cfg = ModelConfig(
-        vocab_size=chat_tok.vocab_size, dim=64, n_layers=2, n_heads=4, n_kv_heads=2, ffn_dim=128,
-        max_seq_len=512, tie_embeddings=False, init_std=0.1,
+        vocab_size=chat_tok.vocab_size,
+        dim=64,
+        n_layers=2,
+        n_heads=4,
+        n_kv_heads=2,
+        ffn_dim=128,
+        max_seq_len=512,
+        tie_embeddings=False,
+        init_std=0.1,
         rope_scaling={"type": "yarn", "factor": 2.0, "original_max_position_embeddings": 256},
     )
     model = Transformer(cfg).eval()
     d = tmp_path_factory.mktemp("gguf")
-    hf = export_to_hf_qwen3(model, None, d / "hf", tokenizer=chat_tok, dtype=torch.float32, chat=True)
+    hf = export_to_hf_qwen3(
+        model, None, d / "hf", tokenizer=chat_tok, dtype=torch.float32, chat=True
+    )
     f32 = gguf.convert_hf_to_gguf(hf, d / "m-f32.gguf", "f32")
     return model, f32, d
 
@@ -47,9 +54,11 @@ def test_convert_produces_gguf(exported) -> None:  # noqa: ANN001
 @pytest.mark.skipif(gguf.find_binary("llama-tokenize") is None, reason="llama.cpp 未编译")
 def test_llama_cpp_tokenizer_matches_ours(exported, chat_tok) -> None:  # noqa: ANN001
     _, f32, _ = exported
-    for text in ["<|im_start|>user\n北京今天天气怎么样？ What's 3+4?<|im_end|>\n<|im_start|>assistant\n",
-                 '<tool_call>\n{"name": "calculator", "arguments": {"expression": "12 * (3 + 4)"}}\n</tool_call>',
-                 "  Hello,   world!\n\n\tdef f(x): return x**2  # 注释 1234567"]:
+    for text in [
+        "<|im_start|>user\n北京今天天气怎么样？ What's 3+4?<|im_end|>\n<|im_start|>assistant\n",
+        '<tool_call>\n{"name": "calculator", "arguments": {"expression": "12 * (3 + 4)"}}\n</tool_call>',
+        "  Hello,   world!\n\n\tdef f(x): return x**2  # 注释 1234567",
+    ]:
         assert gguf.llama_tokenize(f32, text) == chat_tok.encode(text), text
 
 

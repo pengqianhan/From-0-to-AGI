@@ -50,3 +50,31 @@
 - **分词器特殊 token**（id 固定在词表最前面）：0 `<|endoftext|>`、1 `<|im_start|>`、2 `<|im_end|>`、3 `<tool_call>`、4 `</tool_call>`、5 `<tool_response>`、6 `</tool_response>`、7 `<think>`、8 `</think>`、9–15 `<|reserved_0..6|>`。`Tokenizer.eos_id` 为 Base 模型的 `<|endoftext|>`；`Tokenizer.save_hf(out_dir)` 写出 `AutoTokenizer` 可读的文件。
 - **训练**：`Trainer(cfg, info=None).train(stop_at=None) -> list[dict]`；`run_training(cfg)` 是入口脚本用的封装（初始化分布式 → rank 0 准备数据 → 训练）。数据加载器 `PackedDataLoader(paths, seq_len, batch_size, rank, world_size, seed, shuffle, device)` 与 `MixtureLoader` 接口相同：`next_batch() -> (x, y)`、`state_dict()`、`load_state_dict()`。
 - **checkpoint**：`<ckpt_dir>/step_XXXXXXXX/{model.pt, optim.pt, meta.json, rank{r}.pt}` + `latest`；先写临时目录再原子改名。
+
+## 实现备注（后训练、评测、导出、demo 完成时补充）
+
+- **对话模板**（`zero/post/chat.py`）：`render(messages, tools=None, add_generation_prompt=False, tokenizer=None, enable_thinking=False)`
+  不给分词器返回 `(text, 逐字符 mask)`，给了返回 `(ids, 逐 token mask)`（整段一次编码，再用 `Tokenizer.encode_with_offsets` 的字符偏移查 mask）；
+  `render_text`、`render_segments`、`assistant_text(msg)`、`encode_prompt_response(messages, response, tok, tools)`（只标回复部分）、
+  `parse_assistant(text) -> ParsedAssistant(content, tool_calls, reasoning_content, errors)`、`format_tool_call`；
+  `CHAT_TEMPLATE` 是等价的 Jinja 模板。格式与 Qwen3 一致，差别只有一处：关闭思考时不在生成提示后塞空的 `<think></think>`。
+- **导出**：`export_to_hf_qwen3(..., chat=False, chat_template=None)`：给了分词器就把 `CHAT_TEMPLATE` 写进 `tokenizer_config.json`；
+  `chat=True` 时 eos 为 `<|im_end|>`（generation_config 里是 `[<|im_end|>, <|endoftext|>]`）。`Tokenizer.save_hf(..., chat_template=None)`。
+- **配置**：`DataConfig.format`：`"packed"`（默认，预训练分片）| `"sft"`（对话窗口 + mask，`zero.data.loader.MaskedWindowLoader`）| `"none"`
+  （DPO / GRPO 自己管数据，`[[data.sources]]` 可空）。各阶段自己的小节（`[sft]`、`[teacher]`、`[distill]`、`[dpo]`、`[grpo]`）由
+  `zero.post.common.load_post_config(src, {名: dataclass}, overrides)` 解析，`src` 可以是路径或 dict（冒烟测试用）。评测配置只有 `[eval]`
+  （`zero.eval.harness.load_eval_config`）。
+- **训练循环**：SFT 与蒸馏复用 `Trainer`（`format = "sft"` 时读 `MaskedWindowLoader`；新增钩子 `Trainer.extra_metrics()`，
+  蒸馏子类用它记 `ce` / `kd`）。DPO / GRPO / 在线蒸馏用 `zero.post.common.LoopState`（优化器、调度、裁剪、日志、checkpoint、续训），
+  目前是**单进程**实现（CPU / 单卡），多卡未实现。
+- **模型加载**：`zero.post.common.load_policy(path)` 同时支持 zero checkpoint（分词器路径从 meta.json 读）与 HF 目录。
+- **SFT 数据文件**：`<shard_dir>/{train,val}.bin`（uint32，n_windows × (seq_len+1)）+ 同名 `.mask`（uint8）+ `.json` 元数据。
+- **工具环境**（`zero/post/envs/tool_env.py`）：`TOOLS`、`execute_call`、`validate_arguments`、`Task`、`generate_tasks(n, seed, split)`、
+  `dev_tasks(n)`（固定 dev 集，训练任务自动排除同问题）、`make_splits`、`reference_messages(task)`、
+  `score_tool_calls(task, text) -> Reward`、`score_final_answer`、`run_episode(policy, task)`。冻结的 dev 集文件：`zero/eval/tasks/tool_dev.jsonl`。
+- **损失函数**：`zero.post.dpo.dpo_loss`、`zero.post.grpo.group_advantages` / `grpo_loss`、`zero.post.distill.kd_loss` / `reverse_kl_loss`。
+- **评测**：`zero.eval.harness`（`eval_multiple_choice`、`eval_exact_match`、`eval_tool_calls`、`run_eval`）、
+  `zero.eval.bootstrap.paired_bootstrap` / `compare_to_opponent`、`zero.eval.report.write_report`、`zero.eval.bfcl`（尚未验证）。
+- **GGUF**：`zero.export.gguf.convert_hf_to_gguf / build_llama_cpp / quantize / run_llama / llama_tokenize`。
+  调用官方 `convert_hf_to_gguf.py` 前打一个运行时补丁：预切分规则不认识时按 `qwen2` 处理（正则相同，`tests/test_gguf.py` 用 `llama-tokenize` 对拍）。
+- **demo**：`zero.demo.cli`（`chat_turn`、`search_files`、`execute_demo_tool`）。**冒烟测试**：`zero.smoke`。

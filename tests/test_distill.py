@@ -62,20 +62,38 @@ def test_license_guard() -> None:
     check_license(TeacherConfig(backend="local", path="x"), is_self=True)
     with pytest.raises(PermissionError):
         check_license(TeacherConfig(backend="openai", model="big"), is_self=False)
-    check_license(TeacherConfig(backend="openai", model="big", license="Apache-2.0", license_allows_distillation=True), is_self=False)
+    check_license(
+        TeacherConfig(
+            backend="openai", model="big", license="Apache-2.0", license_allows_distillation=True
+        ),
+        is_self=False,
+    )
 
 
 def test_openai_message_conversion() -> None:
     msgs = [
         {"role": "user", "content": "q"},
-        {"role": "assistant", "content": "", "tool_calls": [{"name": "calculator", "arguments": {"expression": "1+1"}}]},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"name": "calculator", "arguments": {"expression": "1+1"}}],
+        },
         {"role": "tool", "content": "2"},
     ]
     o = to_openai_messages(msgs)
     assert o[1]["tool_calls"][0]["function"]["arguments"] == '{"expression": "1+1"}'
     assert o[2]["tool_call_id"] == o[1]["tool_calls"][0]["id"]
     text = openai_message_to_text(
-        {"content": None, "tool_calls": [{"id": "c", "type": "function", "function": {"name": "calculator", "arguments": '{"expression": "1+1"}'}}]}
+        {
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "c",
+                    "type": "function",
+                    "function": {"name": "calculator", "arguments": '{"expression": "1+1"}'},
+                }
+            ],
+        }
     )
     assert text == format_tool_call({"name": "calculator", "arguments": {"expression": "1+1"}})
 
@@ -94,10 +112,21 @@ class _FakeOpenAI(BaseHTTPRequestHandler):
         if body["messages"][-1]["role"] == "tool" or not task.gold_calls:
             msg = {"role": "assistant", "content": task.gold_answer}
         else:
-            msg = {"role": "assistant", "content": None, "tool_calls": [
-                {"id": f"c{i}", "type": "function", "function": {"name": c["name"], "arguments": json.dumps(c["arguments"], ensure_ascii=False)}}
-                for i, c in enumerate(task.gold_calls)
-            ]}
+            msg = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": f"c{i}",
+                        "type": "function",
+                        "function": {
+                            "name": c["name"],
+                            "arguments": json.dumps(c["arguments"], ensure_ascii=False),
+                        },
+                    }
+                    for i, c in enumerate(task.gold_calls)
+                ],
+            }
         # 第二个样本故意给错
         bad = {"role": "assistant", "content": '<tool_call>{"name": "calculator"'}
         data = {"choices": [{"message": msg}] + [{"message": bad}] * (body["n"] - 1)}
@@ -120,17 +149,30 @@ def test_openai_teacher_with_fake_server(tmp_path: Path) -> None:
     th.start()
     try:
         tc = TeacherConfig(
-            backend="openai", base_url=f"http://127.0.0.1:{srv.server_port}/v1", model="fake-teacher",
-            name="FakeTeacher", version="v0", license="Apache-2.0", license_allows_distillation=True,
+            backend="openai",
+            base_url=f"http://127.0.0.1:{srv.server_port}/v1",
+            model="fake-teacher",
+            name="FakeTeacher",
+            version="v0",
+            license="Apache-2.0",
+            license_allows_distillation=True,
         )
-        dc = DistillConfig(out_jsonl=str(tmp_path / "kd.jsonl"), n_tasks=6, samples_per_task=2, env_seed=9)
+        dc = DistillConfig(
+            out_jsonl=str(tmp_path / "kd.jsonl"), n_tasks=6, samples_per_task=2, env_seed=9
+        )
         meta = generate_kd_data(OpenAITeacher(tc), tc, dc, log=lambda _: None)
     finally:
         srv.shutdown()
-    assert meta["n_candidates"] == 12 and meta["n_verified"] == 6  # 每个任务一对一错，错的被执行验证筛掉
+    assert (
+        meta["n_candidates"] == 12 and meta["n_verified"] == 6
+    )  # 每个任务一对一错，错的被执行验证筛掉
     assert meta["teacher"] == {
-        "name": "FakeTeacher", "version": "v0", "license": "Apache-2.0", "license_allows_distillation": True,
-        "backend": "openai", "path_or_model": "fake-teacher",
+        "name": "FakeTeacher",
+        "version": "v0",
+        "license": "Apache-2.0",
+        "license_allows_distillation": True,
+        "backend": "openai",
+        "path_or_model": "fake-teacher",
     }
     rows = [json.loads(x) for x in (tmp_path / "kd.jsonl").read_text().splitlines()]
     assert all(r["teacher"]["name"] == "FakeTeacher" for r in rows)
@@ -139,17 +181,27 @@ def test_openai_teacher_with_fake_server(tmp_path: Path) -> None:
 
 
 def test_run_distill_local_self_teacher(tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt) -> None:  # noqa: ANN001
-    from zero.post.sft import env_conversations
     from zero.post.common import write_jsonl
+    from zero.post.sft import env_conversations
 
     write_jsonl(tmp_path / "sft.jsonl", env_conversations(8, 0, "train"))
     d = post_config(
-        tmp_path, chat_tok_path, tiny_ckpt, chat_tok.vocab_size,
+        tmp_path,
+        chat_tok_path,
+        tiny_ckpt,
+        chat_tok.vocab_size,
         data={"format": "sft", "seq_len": 512},
         teacher={"backend": "local", "path": str(tiny_ckpt), "name": "self", "max_new_tokens": 12},
-        distill={"out_jsonl": str(tmp_path / "kd.jsonl"), "n_tasks": 3, "samples_per_task": 2,
-                 "mix_sft_jsonl": str(tmp_path / "sft.jsonl"), "mix_sft_max": 8, "kd_alpha": 0.5,
-                 "on_policy_steps": 1, "on_policy_batch": 2},
+        distill={
+            "out_jsonl": str(tmp_path / "kd.jsonl"),
+            "n_tasks": 3,
+            "samples_per_task": 2,
+            "mix_sft_jsonl": str(tmp_path / "sft.jsonl"),
+            "mix_sft_max": 8,
+            "kd_alpha": 0.5,
+            "on_policy_steps": 1,
+            "on_policy_batch": 2,
+        },
     )
     d["model"]["max_seq_len"] = 512
     s = run_distill(d, log=lambda _: None)
@@ -163,7 +215,9 @@ def test_run_distill_local_self_teacher(tmp_path: Path, chat_tok, chat_tok_path,
     assert find_latest(tmp_path / "run" / "ckpt").name == "step_00000003"
 
 
-def test_logits_kd_requires_same_tokenizer(tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt, tiny_texts) -> None:  # noqa: ANN001
+def test_logits_kd_requires_same_tokenizer(
+    tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt, tiny_texts
+) -> None:  # noqa: ANN001
     from zero.post.common import write_jsonl
     from zero.post.sft import env_conversations
     from zero.tokenizer import train_bpe
@@ -173,7 +227,10 @@ def test_logits_kd_requires_same_tokenizer(tmp_path: Path, chat_tok, chat_tok_pa
     write_jsonl(tmp_path / "kd.jsonl", env_conversations(3, 0, "train"))
     (tmp_path / "kd.jsonl.meta.json").write_text(json.dumps({"n_verified": 3}))
     d = post_config(
-        tmp_path, tmp_path / "other.json", tiny_ckpt, chat_tok.vocab_size,
+        tmp_path,
+        tmp_path / "other.json",
+        tiny_ckpt,
+        chat_tok.vocab_size,
         data={"format": "sft", "seq_len": 512},
         teacher={"backend": "local", "path": str(tiny_ckpt)},
         distill={"out_jsonl": str(tmp_path / "kd.jsonl")},

@@ -21,6 +21,8 @@ sys.path.insert(0, str(HERE.parents[2]))  # 让脚本能 import 仓库根目录�
 from zero.config import ModelConfig  # noqa: E402
 from zero.model import Attention  # noqa: E402
 
+torch.set_num_threads(1)  # 小张量单线程最快；构建机多任务共享 CPU（本机可删）
+
 _spec = importlib.util.spec_from_file_location("attn02", HERE / "02_attention_from_scratch.py")
 attn02 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(attn02)

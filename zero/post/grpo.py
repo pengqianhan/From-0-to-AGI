@@ -215,9 +215,15 @@ def run_grpo(
     tc = cfg.train
     set_threads(tc.cpu_threads)
     torch.manual_seed(tc.seed)
+    # 尚未在 GPU 上验证：CUDA 上用 BF16 autocast（与 Trainer 相同的规则）
     device = torch.device(
         "cuda" if tc.device in ("auto", "cuda") and torch.cuda.is_available() else "cpu"
     )
+    from zero.train.trainer import autocast_context
+
+    def ac():  # noqa: ANN202
+        return autocast_context(device, tc.dtype)
+
     tok = Tokenizer.load(tc.data.tokenizer)
     model = build_model_from_init(cfg, device)
     ref_model = None
@@ -271,7 +277,7 @@ def run_grpo(
 
         # π_old 与 π_ref 的 log 概率（不求梯度）
         model.eval()
-        with torch.no_grad():
+        with torch.no_grad(), ac():
             old = _logps_chunked(model, seqs, masks, tok.eot_id, device, gc.forward_batch)
             ref = (
                 _logps_chunked(ref_model, seqs, masks, tok.eot_id, device, gc.forward_batch)
@@ -291,7 +297,8 @@ def run_grpo(
             for ci, i in enumerate(range(0, len(seqs), gc.forward_batch)):
                 sl = slice(i, i + gc.forward_batch)
                 ids, mask = pad_batch(seqs[sl], masks[sl], tok.eot_id, device)
-                logp, tmask = sequence_token_logprobs(model, ids, mask)
+                with ac():
+                    logp, tmask = sequence_token_logprobs(model, ids, mask)
                 o_lp, _ = old[ci]
                 r_lp = ref[ci][0] if ref is not None else None
                 loss, m = grpo_loss(

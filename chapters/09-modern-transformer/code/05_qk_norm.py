@@ -14,6 +14,8 @@ import math
 
 import torch
 
+torch.set_num_threads(1)  # 构建环境多任务共享 CPU；本机可以删掉这行
+
 torch.manual_seed(0)
 T, D = 16, 32  # 16 个位置，head_dim = 32
 

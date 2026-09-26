@@ -14,12 +14,39 @@ REPO = Path(__file__).resolve().parent.parent
 ALL_CONFIGS = sorted((REPO / "configs").rglob("*.toml"))
 
 
+def _sections(stage: str):  # noqa: ANN202
+    from zero.post.distill import DistillConfig, TeacherConfig
+    from zero.post.dpo import DPOConfig
+    from zero.post.grpo import GRPOConfig
+    from zero.post.sft import SFTConfig
+
+    return {
+        "sft": {"sft": SFTConfig},
+        "distill": {"teacher": TeacherConfig, "distill": DistillConfig},
+        "dpo": {"dpo": DPOConfig},
+        "grpo": {"grpo": GRPOConfig},
+    }[stage]
+
+
+POST_SECTIONS = {s: (lambda s=s: _sections(s)) for s in ("sft", "distill", "dpo", "grpo")}
+
+
 @pytest.mark.parametrize("path", ALL_CONFIGS, ids=lambda p: str(p.relative_to(REPO)))
 def test_all_configs_load(path: Path) -> None:
     if path.name == "base.toml":
         load_model_config(path)  # 阶梯公共配置只有部分字段
         return
-    cfg = load_config(path)
+    if path.stem == "eval":  # 评测配置只有 [eval]（tests/test_post_configs.py 另测）
+        from zero.eval.harness import load_eval_config
+
+        load_eval_config(path)
+        return
+    if path.stem in POST_SECTIONS:  # 后训练配置多出各阶段自己的小节
+        from zero.post.common import load_post_config
+
+        cfg, _ = load_post_config(path, POST_SECTIONS[path.stem]())
+    else:
+        cfg = load_config(path)
     # 参数量公式 == 真实构建的模型（在 meta 设备上构建，不分配内存）
     with torch.device("meta"):
         model = Transformer(cfg.model)

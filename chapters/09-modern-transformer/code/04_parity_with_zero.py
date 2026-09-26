@@ -21,6 +21,7 @@ from pathlib import Path
 
 import torch
 
+torch.set_num_threads(1)  # 构建环境多任务共享 CPU；本机可以删掉这行
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from zero.config import ModelConfig  # noqa: E402

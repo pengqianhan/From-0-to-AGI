@@ -14,6 +14,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+torch.set_num_threads(1)  # 小张量单线程最快；构建机多任务共享 CPU（本机可删）
+
 VERBOSE = False  # MultiHeadAttention.forward 里打印每一步的形状
 
 

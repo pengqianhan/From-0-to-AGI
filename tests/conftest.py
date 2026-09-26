@@ -109,9 +109,7 @@ def chat_tok_path(tmp_path_factory, tiny_texts):  # noqa: ANN001, ANN201
     from zero.post.envs.tool_env import generate_tasks, reference_messages
     from zero.tokenizer import train_bpe
 
-    convs = [
-        render_text(reference_messages(t), t.tools) for t in generate_tasks(300, seed=5)
-    ]
+    convs = [render_text(reference_messages(t), t.tools) for t in generate_tasks(300, seed=5)]
     tok = train_bpe([tiny_texts["en"][:20000], tiny_texts["zh"][:10000], *convs], vocab_size=600)
     path = tmp_path_factory.mktemp("chat_tok") / "tokenizer.json"
     tok.save(path)

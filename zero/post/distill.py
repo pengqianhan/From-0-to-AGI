@@ -498,7 +498,9 @@ def run_distill(
     # 教师是不是"本项目自己的模型"（冒烟测试的替身）：local 后端 + zero checkpoint 目录
     is_self = tcfg.backend == "local" and not (Path(tcfg.path) / "config.json").exists()
     check_license(tcfg, is_self)
-    teacher = build_teacher(tcfg)
+    # 尚未在 GPU 上验证：有 CUDA 时本地教师放到 GPU 上
+    t_device = "cuda" if tc.device in ("auto", "cuda") and torch.cuda.is_available() else "cpu"
+    teacher = build_teacher(tcfg, t_device)
     # 先检查能不能做 logits 蒸馏（分词器不同就尽早报错，别等教师数据生成完）
     use_logits = dc.logits_kd and isinstance(teacher, LocalTeacher)
     if dc.logits_kd and not use_logits:

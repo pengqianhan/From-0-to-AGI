@@ -170,8 +170,8 @@ class Smoke:
         d = load_tiny("sft", self.o)
         _set_seq(d, 512, 4.0)
         d["train"]["micro_batch_size"] = 8
-        d["train"]["max_steps"] = 120
-        d["train"]["eval_every"] = 60
+        d["train"]["max_steps"] = 240
+        d["train"]["eval_every"] = 120
         hist = run_sft(d, log=self.log)
         return {
             "loss": round(hist[-1]["loss"], 4),

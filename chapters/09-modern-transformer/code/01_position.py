@@ -12,6 +12,8 @@ from pathlib import Path
 
 import torch
 
+torch.set_num_threads(1)  # 构建环境多任务共享 CPU；本机可以删掉这行
+
 _spec = importlib.util.spec_from_file_location(
     "tiny", Path(__file__).with_name("02_tiny_transformer.py"))
 tiny = importlib.util.module_from_spec(_spec)

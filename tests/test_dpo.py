@@ -49,15 +49,37 @@ def test_batch_logps_only_counts_response(chat_tok, tiny_ckpt) -> None:  # noqa:
         hand = sum(logp[t - 1, c_ids[t]] for t in range(1, len(c_ids)) if c_mask[t])
     assert c.item() == pytest.approx(float(hand), abs=1e-4)
     assert sum(c_mask) == len(tok.encode("hello<|im_end|>"))
-    assert encode_pair({"messages": msgs, "chosen": {"role": "assistant", "content": "x" * 50}, "rejected": {"role": "assistant", "content": "y"}}, tok, max_len=10) is None
+    assert (
+        encode_pair(
+            {
+                "messages": msgs,
+                "chosen": {"role": "assistant", "content": "x" * 50},
+                "rejected": {"role": "assistant", "content": "y"},
+            },
+            tok,
+            max_len=10,
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize("ref_mode", ["precompute", "online"])
-def test_run_dpo_end_to_end(tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt, ref_mode: str) -> None:  # noqa: ANN001
+def test_run_dpo_end_to_end(
+    tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt, ref_mode: str
+) -> None:  # noqa: ANN001
     d = post_config(
-        tmp_path, chat_tok_path, tiny_ckpt, chat_tok.vocab_size,
-        dpo={"train_jsonl": str(tmp_path / "prefs.jsonl"), "generate_pairs": 4, "samples_per_prompt": 2,
-             "max_new_tokens": 12, "beta": 0.1, "ref_mode": ref_mode},
+        tmp_path,
+        chat_tok_path,
+        tiny_ckpt,
+        chat_tok.vocab_size,
+        dpo={
+            "train_jsonl": str(tmp_path / "prefs.jsonl"),
+            "generate_pairs": 4,
+            "samples_per_prompt": 2,
+            "max_new_tokens": 12,
+            "beta": 0.1,
+            "ref_mode": ref_mode,
+        },
         train={"max_steps": 3},
     )
     hist = run_dpo(d, log=lambda _: None)

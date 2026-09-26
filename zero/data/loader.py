@@ -224,7 +224,9 @@ class MaskedWindowLoader:
             t = np.fromfile(p, dtype=np.uint32)
             m = np.fromfile(p.with_suffix(".mask"), dtype=np.uint8)
             if len(t) % w != 0 or len(m) != len(t):
-                raise ValueError(f"{p}: 长度 {len(t)} 不是窗口长度 {w} 的整数倍，或 mask 长度不符（seq_len 改过？）")
+                raise ValueError(
+                    f"{p}: 长度 {len(t)} 不是窗口长度 {w} 的整数倍，或 mask 长度不符（seq_len 改过？）"
+                )
             toks.append(t.reshape(-1, w))
             masks.append(m.reshape(-1, w))
         self.tokens = np.concatenate(toks)
@@ -240,7 +242,10 @@ class MaskedWindowLoader:
         if not self.shuffle:
             return pos
         if self._perm is None or self._perm[0] != epoch:
-            self._perm = (epoch, np.random.default_rng([self.seed, epoch, 7]).permutation(self.total_chunks))
+            self._perm = (
+                epoch,
+                np.random.default_rng([self.seed, epoch, 7]).permutation(self.total_chunks),
+            )
         return int(self._perm[1][pos])
 
     def next_batch(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -274,5 +279,7 @@ class MaskedWindowLoader:
     def load_state_dict(self, state: dict[str, Any]) -> None:
         for key in ("seed", "seq_len", "world_size", "total_chunks"):
             if state[key] != getattr(self, key):
-                raise ValueError(f"加载器状态不匹配：{key} 保存时是 {state[key]}，现在是 {getattr(self, key)}")
+                raise ValueError(
+                    f"加载器状态不匹配：{key} 保存时是 {state[key]}，现在是 {getattr(self, key)}"
+                )
         self.consumed = int(state["consumed"])

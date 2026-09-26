@@ -19,7 +19,11 @@ from zero.post.sft import encode_example, env_conversations, pack_examples, run_
 def test_masked_loss_matches_hand_computation() -> None:
     """y 里 -100 的位置不算：loss = 助手位置上 -log p 的平均。"""
     torch.manual_seed(0)
-    m = Transformer(ModelConfig(vocab_size=11, dim=16, n_layers=1, n_heads=2, n_kv_heads=1, ffn_dim=16, max_seq_len=16))
+    m = Transformer(
+        ModelConfig(
+            vocab_size=11, dim=16, n_layers=1, n_heads=2, n_kv_heads=1, ffn_dim=16, max_seq_len=16
+        )
+    )
     x = torch.tensor([[1, 5, 7, 2, 3, 4]])
     y_full = torch.tensor([[5, 7, 2, 3, 4, 9]])
     keep = torch.tensor([[False, True, True, False, False, True]])
@@ -31,10 +35,19 @@ def test_masked_loss_matches_hand_computation() -> None:
 
 
 def test_pack_examples_keeps_conversations_whole() -> None:
-    ex = [([1] * 5, [False, True, True, True, True]), ([2] * 7, [False] * 3 + [True] * 4),
-          ([3] * 4, [False, False, True, True]), ([4] * 20, [True] * 20), ([5] * 3, [False] * 3)]
+    ex = [
+        ([1] * 5, [False, True, True, True, True]),
+        ([2] * 7, [False] * 3 + [True] * 4),
+        ([3] * 4, [False, False, True, True]),
+        ([4] * 20, [True] * 20),
+        ([5] * 3, [False] * 3),
+    ]
     toks, masks, stats = pack_examples(ex, window=10, pad_id=0)
-    assert stats["dropped_too_long"] == 1 and stats["dropped_no_target"] == 1 and stats["examples"] == 3
+    assert (
+        stats["dropped_too_long"] == 1
+        and stats["dropped_no_target"] == 1
+        and stats["examples"] == 3
+    )
     assert toks.shape == (2, 10)
     # 第一个窗口：5 个 1 + 4 个 3 + 1 个填充；第二个窗口：7 个 2 + 3 个填充
     assert toks[0].tolist() == [1] * 5 + [3] * 4 + [0]
@@ -76,7 +89,10 @@ def test_encode_example_mask_matches_render(chat_tok) -> None:  # noqa: ANN001
 
 def test_run_sft_end_to_end_and_resume(tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt) -> None:  # noqa: ANN001
     d = post_config(
-        tmp_path, chat_tok_path, tiny_ckpt, chat_tok.vocab_size,
+        tmp_path,
+        chat_tok_path,
+        tiny_ckpt,
+        chat_tok.vocab_size,
         data={"format": "sft", "seq_len": 512},
         train={"max_steps": 2, "eval_every": 2, "eval_batches": 1},
         checkpoint={"every": 1, "keep_last": 0},
@@ -90,7 +106,9 @@ def test_run_sft_end_to_end_and_resume(tmp_path: Path, chat_tok, chat_tok_path, 
     )
     d["model"]["max_seq_len"] = 512
     hist = run_sft(d, log=lambda _: None)
-    assert hist[-1]["step"] == 2 and np.isfinite(hist[-1]["loss"]) and hist[-1]["val_loss"] is not None
+    assert (
+        hist[-1]["step"] == 2 and np.isfinite(hist[-1]["loss"]) and hist[-1]["val_loss"] is not None
+    )
     assert (tmp_path / "data" / "train.mask").exists()
     # 续训：同一目录把 max_steps 调到 3，只多训 1 步
     d["train"]["max_steps"] = 3

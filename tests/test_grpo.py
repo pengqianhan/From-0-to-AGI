@@ -68,10 +68,18 @@ def test_grpo_gradient_on_policy_and_chunking() -> None:
     n = mask.sum()
     torch.testing.assert_close(logp.grad, (-adv[:, None] / n) * mask)
     whole, _ = grpo_loss(logp, old, adv, mask)
-    parts = [grpo_loss(logp[s], old[s], adv[s], mask[s], num_tokens=float(n))[0] for s in (slice(0, 2), slice(2, 4))]
+    parts = [
+        grpo_loss(logp[s], old[s], adv[s], mask[s], num_tokens=float(n))[0]
+        for s in (slice(0, 2), slice(2, 4))
+    ]
     torch.testing.assert_close(sum(parts), whole)
-    parts = [grpo_loss(logp[s], old[s], adv[s], mask[s], loss_agg="seq_mean_token_mean", num_seqs=4.0)[0] for s in (slice(0, 2), slice(2, 4))]
-    torch.testing.assert_close(sum(parts), grpo_loss(logp, old, adv, mask, loss_agg="seq_mean_token_mean")[0])
+    parts = [
+        grpo_loss(logp[s], old[s], adv[s], mask[s], loss_agg="seq_mean_token_mean", num_seqs=4.0)[0]
+        for s in (slice(0, 2), slice(2, 4))
+    ]
+    torch.testing.assert_close(
+        sum(parts), grpo_loss(logp, old, adv, mask, loss_agg="seq_mean_token_mean")[0]
+    )
 
 
 def test_sample_group_appends_im_end(monkeypatch, chat_tok, tiny_ckpt) -> None:  # noqa: ANN001
@@ -88,13 +96,31 @@ def test_sample_group_appends_im_end(monkeypatch, chat_tok, tiny_ckpt) -> None: 
 
 def test_run_grpo_end_to_end(tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt) -> None:  # noqa: ANN001
     d = post_config(
-        tmp_path, chat_tok_path, tiny_ckpt, chat_tok.vocab_size,
-        grpo={"group_size": 4, "prompts_per_step": 2, "max_new_tokens": 12, "kl_coef": 0.05,
-              "n_train_tasks": 20, "ppo_epochs": 2, "forward_batch": 3},
+        tmp_path,
+        chat_tok_path,
+        tiny_ckpt,
+        chat_tok.vocab_size,
+        grpo={
+            "group_size": 4,
+            "prompts_per_step": 2,
+            "max_new_tokens": 12,
+            "kl_coef": 0.05,
+            "n_train_tasks": 20,
+            "ppo_epochs": 2,
+            "forward_batch": 3,
+        },
     )
     hist = run_grpo(d, log=lambda _: None)
     h = hist[-1]
     assert h["step"] == 2
-    for k in ("reward_mean", "format_rate", "call_rate", "resp_len", "kl", "clip_frac", "zero_std_groups"):
+    for k in (
+        "reward_mean",
+        "format_rate",
+        "call_rate",
+        "resp_len",
+        "kl",
+        "clip_frac",
+        "zero_std_groups",
+    ):
         assert k in h and math.isfinite(h[k])
     assert 0 < h["resp_len"] <= 13

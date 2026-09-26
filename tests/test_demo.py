@@ -35,7 +35,9 @@ def test_chat_turn_loop(tmp_path: Path) -> None:
     def fake_generate(messages, tools):  # noqa: ANN001, ANN202
         calls.append(messages[-1]["role"])
         if messages[-1]["role"] == "user":
-            return format_tool_call({"name": "calculator", "arguments": {"expression": "12 * (3 + 4)"}})
+            return format_tool_call(
+                {"name": "calculator", "arguments": {"expression": "12 * (3 + 4)"}}
+            )
         res = json.loads(messages[-1]["content"])
         return f"结果是 {res['result']}。"
 

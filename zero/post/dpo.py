@@ -225,9 +225,15 @@ def run_dpo(
     tc = cfg.train
     set_threads(tc.cpu_threads)
     torch.manual_seed(tc.seed)
+    # 尚未在 GPU 上验证：CUDA 上用 BF16 autocast（与 Trainer 相同的规则）
     device = torch.device(
         "cuda" if tc.device in ("auto", "cuda") and torch.cuda.is_available() else "cpu"
     )
+    from zero.train.trainer import autocast_context
+
+    def ac():  # noqa: ANN202
+        return autocast_context(device, tc.dtype)
+
     tok = Tokenizer.load(tc.data.tokenizer)
     model = build_model_from_init(cfg, device)
 
@@ -262,7 +268,8 @@ def run_dpo(
         with torch.no_grad():
             cs, rs = [], []
             for i in range(0, len(pairs), bsz):
-                c, r = batch_logps(model, pairs[i : i + bsz], tok.eot_id, device)
+                with ac():
+                    c, r = batch_logps(model, pairs[i : i + bsz], tok.eot_id, device)
                 cs.append(c)
                 rs.append(r)
         ref_c, ref_r = torch.cat(cs), torch.cat(rs)
@@ -288,10 +295,12 @@ def run_dpo(
             random.Random(tc.seed + epoch).shuffle(order)
             idx = [order[(start + j) % len(pairs)] for j in range(bsz)]
             batch = [pairs[j] for j in idx]
-            pc, pr = batch_logps(model, batch, tok.eot_id, device)
+            with ac():
+                pc, pr = batch_logps(model, batch, tok.eot_id, device)
             if ref_model is not None:
                 with torch.no_grad():
-                    rc, rr = batch_logps(ref_model, batch, tok.eot_id, device)
+                    with ac():
+                        rc, rr = batch_logps(ref_model, batch, tok.eot_id, device)
             else:
                 assert ref_c is not None and ref_r is not None
                 rc, rr = ref_c[idx], ref_r[idx]

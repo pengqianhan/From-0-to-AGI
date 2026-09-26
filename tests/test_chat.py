@@ -22,11 +22,18 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_weather",
-            "description": "查询 \"城市\" 天气",
-            "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]},
+            "description": '查询 "城市" 天气',
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
         },
     },
-    {"type": "function", "function": {"name": "calculator", "parameters": {"type": "object", "properties": {}}}},
+    {
+        "type": "function",
+        "function": {"name": "calculator", "parameters": {"type": "object", "properties": {}}},
+    },
 ]
 
 CONVERSATIONS = {
@@ -37,7 +44,10 @@ CONVERSATIONS = {
             "role": "assistant",
             "content": "",
             "tool_calls": [
-                {"type": "function", "function": {"name": "get_weather", "arguments": {"city": "北京"}}},
+                {
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": {"city": "北京"}},
+                },
                 {"name": "get_weather", "arguments": '{"city": "上海"}'},
             ],
         },
@@ -47,7 +57,11 @@ CONVERSATIONS = {
     ],
     "content_and_call": [
         {"role": "user", "content": "算一下 1+1"},
-        {"role": "assistant", "content": "好的，我来算。", "tool_calls": [{"name": "calculator", "arguments": {"expression": "1+1"}}]},
+        {
+            "role": "assistant",
+            "content": "好的，我来算。",
+            "tool_calls": [{"name": "calculator", "arguments": {"expression": "1+1"}}],
+        },
         {"role": "tool", "content": "2"},
         {"role": "assistant", "content": "等于 2。"},
         {"role": "user", "content": "谢谢"},
@@ -80,7 +94,10 @@ def test_rendered_format_is_qwen_style() -> None:
     text = render_text(CONVERSATIONS["tools_multi_call"], TOOLS)
     assert text.startswith("<|im_start|>system\n你是助手。\n\n# Tools\n")
     assert "<tools>\n" + json.dumps(TOOLS[0], ensure_ascii=False) + "\n" in text
-    assert '<tool_call>\n{"name": "get_weather", "arguments": {"city": "北京"}}\n</tool_call>\n<tool_call>' in text
+    assert (
+        '<tool_call>\n{"name": "get_weather", "arguments": {"city": "北京"}}\n</tool_call>\n<tool_call>'
+        in text
+    )
     # 两条连续的 tool 消息合并进同一个 user 轮
     assert text.count("<|im_start|>user\n<tool_response>") == 1
     assert '<tool_response>\n{"temp_c": 28}\n</tool_response><|im_end|>' in text
@@ -97,7 +114,9 @@ def test_render_parse_roundtrip(name: str) -> None:
         want = [
             {
                 "name": (tc.get("function") or tc)["name"],
-                "arguments": (lambda a: json.loads(a) if isinstance(a, str) else a)((tc.get("function") or tc)["arguments"]),
+                "arguments": (lambda a: json.loads(a) if isinstance(a, str) else a)(
+                    (tc.get("function") or tc)["arguments"]
+                ),
             }
             for tc in m.get("tool_calls", [])
         ]
@@ -121,12 +140,17 @@ def test_parse_think_and_malformed() -> None:
 
 
 def test_thinking_off_by_default() -> None:
-    msgs = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a", "reasoning_content": "r"}]
+    msgs = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "a", "reasoning_content": "r"},
+    ]
     assert "<think>" not in render_text(msgs)
     assert "<think>\nr\n</think>\n\na<|im_end|>" in render_text(msgs, enable_thinking=True)
     utils = pytest.importorskip("transformers.utils.chat_template_utils")
     tmpl = utils._compile_jinja_template(CHAT_TEMPLATE)
-    assert tmpl.render(messages=msgs, enable_thinking=True) == render_text(msgs, enable_thinking=True)
+    assert tmpl.render(messages=msgs, enable_thinking=True) == render_text(
+        msgs, enable_thinking=True
+    )
 
 
 def test_loss_mask_covers_only_assistant_tokens(chat_tok) -> None:  # noqa: ANN001
@@ -163,7 +187,17 @@ def test_export_writes_chat_template(tmp_path: Path, chat_tok) -> None:  # noqa:
     from zero.hf import export_to_hf_qwen3
     from zero.model import Transformer
 
-    m = Transformer(ModelConfig(vocab_size=chat_tok.vocab_size, dim=32, n_layers=1, n_heads=2, n_kv_heads=1, ffn_dim=32, max_seq_len=256))
+    m = Transformer(
+        ModelConfig(
+            vocab_size=chat_tok.vocab_size,
+            dim=32,
+            n_layers=1,
+            n_heads=2,
+            n_kv_heads=1,
+            ffn_dim=32,
+            max_seq_len=256,
+        )
+    )
     out = export_to_hf_qwen3(m, None, tmp_path / "hf", tokenizer=chat_tok, chat=True)
     cfg = json.loads((out / "tokenizer_config.json").read_text())
     assert cfg["chat_template"] == CHAT_TEMPLATE and cfg["eos_token"] == "<|im_end|>"

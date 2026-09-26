@@ -43,6 +43,7 @@ from manim import (
 from video_kit import theme
 from video_kit.scene import MONO_FONT, NarratedScene, code_block, zh
 
+torch.set_num_threads(1)
 HERE = Path(__file__).resolve().parent
 CODE = HERE.parent / "code"
 CACHE = HERE / "out" / "cache.json"
