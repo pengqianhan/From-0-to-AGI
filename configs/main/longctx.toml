@@ -1,0 +1,28 @@
+# 主线模型长上下文扩展到 32K（第 15 章）。
+# 做法参照 Qwen3 技术报告（arXiv:2505.09388）的长上下文阶段：用 ABF 把 RoPE 底数从 1e4 调到 1e6，
+# 在长文档比例更高的数据上用 32K 序列继续训练；推理时如需更长可再叠加 YaRN（model.rope_scaling）。
+# 具体步数与数据待第 15 章确定。
+base = "pretrain.toml"
+
+[model]
+rope_theta = 1000000.0
+max_seq_len = 32768
+
+[train]
+max_steps = 4000         # ≈ 4.2B token（每步 1 × 4 × 8 × 32768 = 1,048,576），待定
+micro_batch_size = 1
+grad_accum_steps = 4
+parallel = "fsdp"        # 32K 序列的激活很大，用 FSDP2 省显存（尚未在 GPU 上验证）
+out_dir = "out/main/longctx"
+init_from = "out/main/midtrain/ckpt"
+
+[data]
+seq_len = 32768
+
+[optim]
+lr = 1e-4
+
+[schedule]
+kind = "cosine"
+warmup_steps = 200
+min_lr_ratio = 0.1

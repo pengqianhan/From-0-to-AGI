@@ -7,6 +7,8 @@ dependencies = [
     "numpy>=1.24",
     "matplotlib>=3.7",
     "torch>=2.0",
+    "tokenizers>=0.21",
+    "safetensors>=0.4",
 ]
 
 [project.optional-dependencies]
@@ -30,7 +32,8 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
-ignore = ["E501", "E741"]
+ignore = ["E501", "E741", "B905"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]

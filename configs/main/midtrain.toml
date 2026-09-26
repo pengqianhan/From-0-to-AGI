@@ -1,0 +1,40 @@
+# 主线模型中期训练 / 退火（第 15 章）：接着预训练的 WSD 稳定段，换成高质量数据混合并把学习率衰减到 0。
+# 数据来源与比例待第 13、15 章确定；指令与工具调用格式数据的分片由 zero/post 生成（待实现）。
+#   uv run torchrun --standalone --nproc_per_node=8 -m zero.train.midtrain --config configs/main/midtrain.toml
+base = "pretrain.toml"
+
+[train]
+max_steps = 50000        # ≈ 26B token（每步 524,288），占预训练的约 5%，待定
+out_dir = "out/main/midtrain"
+init_from = "out/main/pretrain/ckpt"
+
+[[data.sources]]
+name = "fineweb-edu"
+path = "data/pretrain/fineweb-edu_*.bin"
+weight = 0.35
+
+[[data.sources]]
+name = "fineweb-2-zh"
+path = "data/pretrain/fineweb-2-zh_*.bin"
+weight = 0.25
+
+[[data.sources]]
+name = "stack-edu"
+path = "data/pretrain/stack-edu_*.bin"
+weight = 0.15
+
+[[data.sources]]
+name = "finemath"
+path = "data/pretrain/finemath_*.bin"
+weight = 0.15
+
+[[data.sources]]
+name = "instruct-toolcall"
+path = "data/midtrain/instruct-toolcall_*.bin"
+weight = 0.10
+
+[schedule]
+kind = "wsd"
+warmup_steps = 0
+decay_frac = 1.0         # 整段线性衰减：峰值 → 0
+min_lr_ratio = 0.0

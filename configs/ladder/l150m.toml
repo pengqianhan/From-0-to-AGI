@@ -1,0 +1,18 @@
+# 阶梯实验 l150m：总参数约 160.5M（含 embedding），按约 20 token/参数（Chinchilla 经验值）给 3.21B token。
+# 步数 = 3.21B / 262,144 token/步 ≈ 12245。学习率是起点，第 12 章做小范围扫描后确定。
+base = "base.toml"
+
+[model]
+dim = 768
+n_layers = 16
+n_heads = 12
+n_kv_heads = 4
+head_dim = 64
+ffn_dim = 2304
+
+[train]
+max_steps = 12245
+out_dir = "out/ladder/l150m"
+
+[optim]
+lr = 1.5e-3

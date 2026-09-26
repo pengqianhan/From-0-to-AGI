@@ -1,0 +1,4031 @@
+# ===== zero/__init__.py =====
+"""zero：本课主线模型的生产级代码（暂名）。
+
+模块总览见 `zero/DESIGN.md`。与各章 `code/` 里的极简代码讲同一件事，但要能真正训练 0.6–0.8B 的模型。
+"""
+
+__version__ = "0.1.0"
+
+
+# ===== zero/config.py =====
+"""配置：模型与训练的全部超参数（对应第 9、12 章）。
+
+所有超参都写在 `configs/*.toml` 里，代码里不写死。这个模块做三件事：
+
+1. 用 dataclass 定义配置的"形状"：`ModelConfig`（模型结构）、`TrainConfig`（训练流程，
+   内含 data / optim / schedule / checkpoint / logging 几个小节）；
+2. `load_config(path)` 用标准库 `tomllib` 读 TOML，支持 `base = "xxx.toml"` 继承另一份配置
+   （中期训练只写和预训练不同的地方）；
+3. 校验：未知字段、类型错误、互相矛盾的取值（比如 n_heads 不能被 n_kv_heads 整除），
+   都在读配置时就报错，并给出"你是不是想写 xxx"的提示，而不是训练到一半才崩。
+
+TOML 的布局（各节都是顶层表）：
+
+    base = "pretrain.toml"      # 可选：先读这份，再用本文件覆盖
+    [model]      -> ModelConfig
+    [train]      -> TrainConfig 的标量字段
+    [data]       -> DataConfig（含 [[data.sources]] 与可选的 [data.prepare]）
+    [optim]      -> OptimConfig
+    [schedule]   -> ScheduleConfig
+    [checkpoint] -> CheckpointConfig
+    [logging]    -> LoggingConfig
+
+路径字段一律相对于仓库根目录（也就是运行命令时的当前目录）。
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import difflib
+import tomllib
+import types
+import typing
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+
+class ConfigError(ValueError):
+    """配置文件有问题时抛出，信息里会指出是哪个字段。"""
+
+
+# ---------------------------------------------------------------------------
+# 模型结构
+# ---------------------------------------------------------------------------
+
+_ROPE_SCALING_KEYS = {
+    "type",
+    "factor",
+    "original_max_position_embeddings",
+    "beta_fast",
+    "beta_slow",
+    "attention_factor",
+}
+
+
+@dataclass
+class ModelConfig:
+    """Transformer 结构超参。字段含义与 Hugging Face `Qwen3Config` 一一对应（见 `zero/hf.py`）。"""
+
+    vocab_size: int = 32000
+    dim: int = 512  # 隐藏维度 d_model（HF: hidden_size）
+    n_layers: int = 8
+    n_heads: int = 8  # 查询头数
+    n_kv_heads: int = 4  # K/V 头数（GQA：若干个查询头共享一组 K/V）
+    head_dim: int | None = None  # 默认 dim // n_heads；Qwen3 允许 n_heads*head_dim != dim
+    ffn_dim: int = 1536  # SwiGLU 中间维度（HF: intermediate_size）
+    rope_theta: float = 10000.0
+    # YaRN 等 RoPE 缩放：{"type": "yarn", "factor": 4.0, "original_max_position_embeddings": 4096,
+    #                    "beta_fast": 32, "beta_slow": 1}；None 表示不缩放
+    rope_scaling: dict[str, Any] | None = None
+    max_seq_len: int = 2048  # RoPE 预计算的最大位置数，也是 KV cache 默认长度
+    norm_eps: float = 1e-6
+    qk_norm: bool = True  # Qwen3 的 QK-Norm：对每个头的 q、k 在 head_dim 上做 RMSNorm
+    tie_embeddings: bool = True  # 输入 embedding 与输出 lm_head 共享权重
+    init_std: float = 0.02
+
+    def __post_init__(self) -> None:
+        if self.head_dim is None and self.n_heads > 0:
+            self.head_dim = self.dim // self.n_heads
+
+    def validate(self) -> None:
+        def need(cond: bool, msg: str) -> None:
+            if not cond:
+                raise ConfigError(f"[model] {msg}")
+
+        for name in (
+            "vocab_size",
+            "dim",
+            "n_layers",
+            "n_heads",
+            "n_kv_heads",
+            "ffn_dim",
+            "max_seq_len",
+        ):
+            need(getattr(self, name) > 0, f"{name} 必须是正整数，当前 {getattr(self, name)}")
+        need(
+            self.n_heads % self.n_kv_heads == 0,
+            f"n_heads={self.n_heads} 必须能被 n_kv_heads={self.n_kv_heads} 整除（GQA 分组）",
+        )
+        assert self.head_dim is not None
+        need(
+            self.head_dim > 0 and self.head_dim % 2 == 0,
+            f"head_dim={self.head_dim} 必须是正偶数（RoPE 两两旋转）",
+        )
+        need(self.rope_theta > 0, "rope_theta 必须 > 0")
+        need(self.norm_eps > 0, "norm_eps 必须 > 0")
+        need(self.init_std > 0, "init_std 必须 > 0")
+        if self.rope_scaling is not None:
+            rs = self.rope_scaling
+            unknown = set(rs) - _ROPE_SCALING_KEYS
+            need(
+                not unknown,
+                f"rope_scaling 有未知字段 {sorted(unknown)}，可用 {sorted(_ROPE_SCALING_KEYS)}",
+            )
+            need(
+                rs.get("type") == "yarn",
+                f"rope_scaling.type 目前只支持 'yarn'，当前 {rs.get('type')!r}",
+            )
+            need(float(rs.get("factor", 0)) >= 1.0, "rope_scaling.factor 必须 >= 1")
+            need(
+                int(rs.get("original_max_position_embeddings", 0)) > 0,
+                "rope_scaling.original_max_position_embeddings 必须给出（预训练时的上下文长度）",
+            )
+
+    @property
+    def q_dim(self) -> int:
+        assert self.head_dim is not None
+        return self.n_heads * self.head_dim
+
+    @property
+    def kv_dim(self) -> int:
+        assert self.head_dim is not None
+        return self.n_kv_heads * self.head_dim
+
+
+# ---------------------------------------------------------------------------
+# 训练流程
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DataSourceConfig:
+    """一个数据来源：一组分片 + 采样权重（多来源时按权重混合，见 zero/data/mixture.py）。"""
+
+    name: str = ""
+    path: str = ""  # 分片的 glob，例如 "out/tiny/data/shakespeare_train_*.bin"
+    weight: float = 1.0
+
+
+@dataclass
+class DataPrepareConfig:
+    """可选：分片不存在时，从原始文本现场训练分词器并切分片（只用于 tiny 冒烟）。"""
+
+    raw_files: list[str] = field(default_factory=list)  # 原始文本 glob；文件名去掉扩展名就是来源名
+    out_dir: str = ""  # 分片输出目录
+    vocab_size: int = 2048  # 要训练的分词器词表大小（data.tokenizer 不存在时才训练）
+    val_fraction: float = 0.05  # 每个来源留多少比例的文档做验证集
+    doc_chars: int = 4000  # 把原始文本按空行切段后，再拼成约这么长的"文档"
+
+
+@dataclass
+class DataConfig:
+    tokenizer: str = ""  # tokenizer.json 路径
+    seq_len: int = 1024  # 训练序列长度（每个样本取 seq_len+1 个 token）
+    sources: list[DataSourceConfig] = field(default_factory=list)
+    val: str = ""  # 验证集分片 glob；空表示不做评估
+    shuffle: bool = True
+    prepare: DataPrepareConfig | None = None
+
+
+@dataclass
+class OptimConfig:
+    lr: float = 3e-4  # 峰值学习率
+    weight_decay: float = 0.1
+    beta1: float = 0.9
+    beta2: float = 0.95
+    eps: float = 1e-8
+    grad_clip: float = 1.0  # 全局梯度范数裁剪；<=0 表示不裁剪
+    decay_embeddings: bool = False  # embedding 是否做权重衰减（norm 的权重永远不衰减）
+
+
+@dataclass
+class ScheduleConfig:
+    kind: str = "cosine"  # "cosine" | "wsd" | "constant"
+    warmup_steps: int = 100
+    min_lr_ratio: float = 0.1  # 最低学习率 = lr * min_lr_ratio
+    decay_frac: float = 0.2  # WSD：最后多少比例的步数用来衰减
+    decay_shape: str = "linear"  # WSD 衰减段的形状："linear" | "cosine" | "sqrt"
+
+
+@dataclass
+class CheckpointConfig:
+    every: int = 1000  # 每多少步存一次；<=0 表示只在结束时存
+    keep_last: int = 3  # 只保留最近几个（<=0 全留）
+    resume: bool = True  # 目录里有 checkpoint 时自动续训
+    dir: str = ""  # 默认 <out_dir>/ckpt
+
+
+@dataclass
+class LoggingConfig:
+    every: int = 10  # 每多少步打印/记录一次
+    jsonl: str = ""  # 默认 <out_dir>/log.jsonl
+
+
+@dataclass
+class TrainConfig:
+    seed: int = 1337
+    max_steps: int = 1000
+    micro_batch_size: int = 8  # 每张卡每次前向的序列数
+    grad_accum_steps: int = 1  # 梯度累积：有效 batch = micro * accum * world_size
+    device: str = "auto"  # "auto" | "cpu" | "cuda"
+    dtype: str = "auto"  # "auto"（CUDA 用 bf16，CPU 用 fp32）| "bf16" | "fp32"
+    compile: bool = False  # torch.compile（尚未在 GPU 上验证）
+    cpu_threads: int = (
+        0  # CPU 上 PyTorch 的线程数；0 表示用默认值。机器被别的进程占满时设 1 反而最快
+    )
+    parallel: str = "ddp"  # 多进程时的并行方式："ddp" | "fsdp"；单进程忽略
+    out_dir: str = "out/run"
+    init_from: str = ""  # 中期训练：从这个 checkpoint 目录（或其父目录里最新的）加载模型权重
+    eval_every: int = 100  # 每多少步算一次验证 loss；<=0 不评估
+    eval_batches: int = 10
+    gpu_peak_tflops: float = 0.0  # 用于 MFU；0 表示按设备名自动查表（查不到就不报 MFU）
+    data: DataConfig = field(default_factory=DataConfig)
+    optim: OptimConfig = field(default_factory=OptimConfig)
+    schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
+    checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
+
+    def validate(self) -> None:
+        def need(cond: bool, msg: str) -> None:
+            if not cond:
+                raise ConfigError(msg)
+
+        need(self.max_steps > 0, "[train] max_steps 必须 > 0")
+        need(self.micro_batch_size > 0, "[train] micro_batch_size 必须 > 0")
+        need(self.grad_accum_steps > 0, "[train] grad_accum_steps 必须 > 0")
+        need(
+            self.device in ("auto", "cpu", "cuda"),
+            f"[train] device 只能是 auto/cpu/cuda，当前 {self.device!r}",
+        )
+        need(
+            self.dtype in ("auto", "bf16", "fp32"),
+            f"[train] dtype 只能是 auto/bf16/fp32，当前 {self.dtype!r}",
+        )
+        need(
+            self.parallel in ("ddp", "fsdp"),
+            f"[train] parallel 只能是 ddp/fsdp，当前 {self.parallel!r}",
+        )
+        need(self.data.seq_len > 0, "[data] seq_len 必须 > 0")
+        need(len(self.data.sources) > 0, "[data] 至少要有一个 [[data.sources]]")
+        for s in self.data.sources:
+            need(bool(s.name) and bool(s.path), "[[data.sources]] 每项都要有 name 和 path")
+            need(s.weight > 0, f"[[data.sources]] {s.name} 的 weight 必须 > 0")
+        names = [s.name for s in self.data.sources]
+        need(len(set(names)) == len(names), f"[[data.sources]] 名字重复：{names}")
+        need(
+            self.schedule.kind in ("cosine", "wsd", "constant"),
+            f"[schedule] kind 只能是 cosine/wsd/constant，当前 {self.schedule.kind!r}",
+        )
+        need(
+            self.schedule.decay_shape in ("linear", "cosine", "sqrt"),
+            f"[schedule] decay_shape 只能是 linear/cosine/sqrt，当前 {self.schedule.decay_shape!r}",
+        )
+        need(0.0 <= self.schedule.min_lr_ratio <= 1.0, "[schedule] min_lr_ratio 必须在 [0, 1]")
+        need(0.0 <= self.schedule.decay_frac <= 1.0, "[schedule] decay_frac 必须在 [0, 1]")
+        need(self.schedule.warmup_steps >= 0, "[schedule] warmup_steps 必须 >= 0")
+        need(self.optim.lr > 0, "[optim] lr 必须 > 0")
+        if self.data.prepare is not None:
+            p = self.data.prepare
+            need(bool(p.raw_files) and bool(p.out_dir), "[data.prepare] 需要 raw_files 和 out_dir")
+            need(0.0 < p.val_fraction < 1.0, "[data.prepare] val_fraction 必须在 (0, 1)")
+
+    @property
+    def checkpoint_dir(self) -> str:
+        return self.checkpoint.dir or str(Path(self.out_dir) / "ckpt")
+
+    @property
+    def log_path(self) -> str:
+        return self.logging.jsonl or str(Path(self.out_dir) / "log.jsonl")
+
+
+@dataclass
+class Config:
+    """一份完整配置：模型 + 训练。"""
+
+    model: ModelConfig = field(default_factory=ModelConfig)
+    train: TrainConfig = field(default_factory=TrainConfig)
+    source_path: str = ""  # 从哪个文件读来的（只用于日志）
+
+    def validate(self) -> None:
+        self.model.validate()
+        self.train.validate()
+        if self.train.data.seq_len > self.model.max_seq_len:
+            raise ConfigError(
+                f"[data] seq_len={self.train.data.seq_len} 超过了 [model] max_seq_len={self.model.max_seq_len}"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"model": dataclasses.asdict(self.model), "train": dataclasses.asdict(self.train)}
+
+
+# ---------------------------------------------------------------------------
+# 读 TOML：dict -> dataclass，带校验
+# ---------------------------------------------------------------------------
+
+
+def _type_name(tp: Any) -> str:
+    return getattr(tp, "__name__", str(tp))
+
+
+def _coerce(value: Any, tp: Any, where: str) -> Any:
+    """把 TOML 里读到的值按 dataclass 字段类型检查/转换。"""
+    origin = typing.get_origin(tp)
+    args = typing.get_args(tp)
+    # Optional[X] / X | None
+    if origin in (typing.Union, types.UnionType):
+        if value is None and type(None) in args:
+            return None
+        non_none = [a for a in args if a is not type(None)]
+        errors = []
+        for a in non_none:
+            try:
+                return _coerce(value, a, where)
+            except ConfigError as e:
+                errors.append(str(e))
+        raise ConfigError(errors[0] if errors else f"{where}: 类型不对")
+    if dataclasses.is_dataclass(tp):
+        if not isinstance(value, dict):
+            raise ConfigError(f"{where}: 应该是一个表（table），实际是 {type(value).__name__}")
+        return _from_dict(tp, value, where)
+    if origin is list:
+        if not isinstance(value, list):
+            raise ConfigError(f"{where}: 应该是列表，实际是 {type(value).__name__}")
+        (inner,) = args or (Any,)
+        return [_coerce(v, inner, f"{where}[{i}]") for i, v in enumerate(value)]
+    if origin is dict:
+        if not isinstance(value, dict):
+            raise ConfigError(f"{where}: 应该是表（dict），实际是 {type(value).__name__}")
+        return dict(value)
+    if tp is Any:
+        return value
+    if tp is bool:
+        if not isinstance(value, bool):
+            raise ConfigError(f"{where}: 应该是 true/false，实际是 {value!r}")
+        return value
+    if tp is int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            # 允许 1e6 这种写法表示整数
+            if isinstance(value, float) and value.is_integer():
+                return int(value)
+            raise ConfigError(f"{where}: 应该是整数，实际是 {value!r}")
+        return value
+    if tp is float:
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise ConfigError(f"{where}: 应该是数字，实际是 {value!r}")
+        return float(value)
+    if tp is str:
+        if not isinstance(value, str):
+            raise ConfigError(f"{where}: 应该是字符串，实际是 {value!r}")
+        return value
+    raise ConfigError(f"{where}: 不支持的字段类型 {_type_name(tp)}")
+
+
+def _from_dict(cls: type, data: dict[str, Any], where: str) -> Any:
+    hints = typing.get_type_hints(cls)
+    names = [f.name for f in dataclasses.fields(cls)]
+    kwargs = {}
+    for key, value in data.items():
+        if key not in hints:
+            close = difflib.get_close_matches(key, names, n=1)
+            hint = f"，你是不是想写 {close[0]!r}？" if close else f"。可用字段：{', '.join(names)}"
+            raise ConfigError(f"{where}: 未知字段 {key!r}{hint}")
+        kwargs[key] = _coerce(value, hints[key], f"{where}.{key}")
+    return cls(**kwargs)
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for k, v in override.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def _read_toml_with_base(path: Path, seen: tuple[Path, ...] = ()) -> dict[str, Any]:
+    path = path.resolve()
+    if path in seen:
+        raise ConfigError(f"配置继承出现循环：{' -> '.join(str(p) for p in (*seen, path))}")
+    if not path.exists():
+        raise ConfigError(f"找不到配置文件：{path}")
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(f"{path}: TOML 语法错误：{e}") from e
+    base = data.pop("base", None)
+    if base is not None:
+        parent = _read_toml_with_base((path.parent / base), (*seen, path))
+        data = _deep_merge(parent, data)
+    return data
+
+
+def _apply_override(data: dict[str, Any], item: str) -> None:
+    """命令行覆盖：`train.max_steps=10`、`model.rope_theta=1e6`、`data.seq_len=256`。"""
+    if "=" not in item:
+        raise ConfigError(f"覆盖项 {item!r} 格式应为 section.key=value")
+    key, raw = item.split("=", 1)
+    try:
+        value = tomllib.loads(f"v = {raw}")["v"]
+    except tomllib.TOMLDecodeError:
+        value = raw  # 当作裸字符串
+    parts = key.strip().split(".")
+    d = data
+    for p in parts[:-1]:
+        d = d.setdefault(p, {})
+    d[parts[-1]] = value
+
+
+def config_from_dict(data: dict[str, Any], source_path: str = "") -> Config:
+    """从一个（已经合并好的）dict 构建并校验 Config。"""
+    data = dict(data)
+    known = {"model", "train", "data", "optim", "schedule", "checkpoint", "logging"}
+    unknown = set(data) - known
+    if unknown:
+        k = sorted(unknown)[0]
+        close = difflib.get_close_matches(k, sorted(known), n=1)
+        hint = f"，你是不是想写 [{close[0]}]？" if close else ""
+        raise ConfigError(f"未知的配置节 [{k}]{hint}")
+    model = _from_dict(ModelConfig, data.get("model", {}), "[model]")
+    train_dict = dict(data.get("train", {}))
+    for sec in ("data", "optim", "schedule", "checkpoint", "logging"):
+        if sec in data:
+            if sec in train_dict:
+                raise ConfigError(f"[{sec}] 和 [train.{sec}] 不能同时出现")
+            train_dict[sec] = data[sec]
+    train = _from_dict(TrainConfig, train_dict, "[train]")
+    cfg = Config(model=model, train=train, source_path=source_path)
+    cfg.validate()
+    return cfg
+
+
+def load_config(path: str | Path, overrides: list[str] | None = None) -> Config:
+    """读取 TOML 配置（支持 base 继承与命令行覆盖）并校验。"""
+    data = _read_toml_with_base(Path(path))
+    for item in overrides or []:
+        _apply_override(data, item)
+    return config_from_dict(data, source_path=str(path))
+
+
+def read_toml(path: str | Path) -> dict[str, Any]:
+    """读 TOML 并展开 base 继承，返回原始 dict（不校验）。"""
+    return _read_toml_with_base(Path(path))
+
+
+def load_model_config(path: str | Path) -> ModelConfig:
+    """只读 [model] 一节（工具脚本用，比如数参数量、估算成本）。"""
+    data = _read_toml_with_base(Path(path))
+    cfg = _from_dict(ModelConfig, data.get("model", {}), "[model]")
+    cfg.validate()
+    return cfg
+
+
+# ===== zero/data/__init__.py =====
+"""数据流水线（对应第 13、14 章）：登记来源 → 清洗 → 去重 → 质量过滤 → 去污染 → 分词切片 → 打包加载。"""
+
+
+# ===== zero/data/clean.py =====
+"""文本清洗：规范化与简单的逐行处理（对应第 13 章）。
+
+清洗是流水线的第一步，目标是"同样的内容变成同样的字节"，这样后面的去重才有效：
+
+- Unicode NFC 规范化；全角空格等特殊空白统一成普通空格；
+- 换行统一为 \\n，去掉控制字符（保留 \\n 和 \\t）、零宽字符；
+- 每行去掉行尾空白，连续 3 个以上空行压成 2 个；
+- 去掉会和分词器特殊 token 撞车的字面字符串（如 "<|endoftext|>"），见 zero/tokenizer.py 的说明。
+
+这些规则都很保守——只改"格式"，不删"内容"。按内容删文档是 quality.py 的事。
+"""
+
+from __future__ import annotations
+
+import re
+import unicodedata
+
+# 控制字符：C0/C1 里除 \t \n 之外的全部
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+# 零宽字符与 BOM
+_ZERO_WIDTH_RE = re.compile(r"[​‌‍⁠﻿]")
+# 各种"看起来像空格"的字符 → 普通空格
+_SPACE_RE = re.compile(r"[   -   　]")
+_MANY_BLANK_LINES_RE = re.compile(r"\n{3,}")
+# 形如 <|xxx|> 的特殊 token 字面量
+_SPECIAL_TOKEN_RE = re.compile(r"<\|[a-zA-Z0-9_]+\|>")
+
+
+def normalize_text(text: str) -> str:
+    """规范化一段文本（幂等：再调用一次结果不变）。"""
+    text = unicodedata.normalize("NFC", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = _CONTROL_RE.sub("", text)
+    text = _ZERO_WIDTH_RE.sub("", text)
+    text = _SPACE_RE.sub(" ", text)
+    text = "\n".join(line.rstrip() for line in text.split("\n"))
+    text = _MANY_BLANK_LINES_RE.sub("\n\n", text)
+    return text.strip()
+
+
+def strip_special_tokens(text: str) -> str:
+    """去掉 <|endoftext|> 之类的特殊 token 字面量，避免被分词器当成真的特殊 token。"""
+    return _SPECIAL_TOKEN_RE.sub("", text)
+
+
+def clean_document(text: str, min_chars: int = 1) -> str | None:
+    """完整清洗一篇文档；清洗后太短（< min_chars）返回 None。"""
+    text = normalize_text(strip_special_tokens(text))
+    if len(text) < min_chars:
+        return None
+    return text
+
+
+def split_into_documents(text: str, doc_chars: int = 4000) -> list[str]:
+    """把一个没有文档边界的大文本（比如 tiny_corpus 的 .txt）按空行切段，再拼成约 doc_chars 长的"文档"。"""
+    paragraphs = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
+    docs: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
+    for p in paragraphs:
+        if cur and cur_len + len(p) > doc_chars:
+            docs.append("\n\n".join(cur))
+            cur, cur_len = [], 0
+        cur.append(p)
+        cur_len += len(p) + 2
+    if cur:
+        docs.append("\n\n".join(cur))
+    return docs
+
+
+# ===== zero/data/decontam.py =====
+"""去污染：训练数据与评测集的 n-gram 重叠检查（对应第 13 章，GOAL.md 3.2 第 6 条）。
+
+如果评测题目（或答案）出现在训练数据里，模型分数就不可信。标准做法（GPT-3、Llama 等都用过）：
+
+1. 把每道评测题切成 n-gram（默认 13 个"词"，GPT-3 论文的取值）；
+2. 扫描训练文档，只要某篇文档和某道题共享任何一个 n-gram，就认为"撞了"；
+3. 撞了的训练文档要么删掉，要么把重叠片段挖掉；统计结果写进模型卡。
+
+"词"的定义：先转小写、去掉标点，英文按空白切，中文每个汉字算一个词。
+中文题目往往很短，13 个汉字的窗口偏严格还是偏宽松需要实测（待核实），所以 n 可调。
+
+n-gram 用 blake2b 取 8 字节哈希存进 set，内存比存字符串小得多，而且跨进程稳定。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
+
+_TOKEN_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿]|[a-z0-9]+")
+
+
+def normalize_tokens(text: str) -> list[str]:
+    """小写 → 只保留字母数字串和单个汉字（标点、空白全部丢掉）。"""
+    return _TOKEN_RE.findall(text.lower())
+
+
+def _hash_gram(gram: Sequence[str]) -> int:
+    return int.from_bytes(
+        hashlib.blake2b(" ".join(gram).encode("utf-8"), digest_size=8).digest(), "little"
+    )
+
+
+def ngram_hashes(text: str, n: int = 13) -> set[int]:
+    toks = normalize_tokens(text)
+    if len(toks) < n:
+        # 比 n 还短的题目：整题作为一个 gram（否则永远查不出来）
+        return {_hash_gram(toks)} if toks else set()
+    return {_hash_gram(toks[i : i + n]) for i in range(len(toks) - n + 1)}
+
+
+@dataclass
+class ContaminationHit:
+    doc_index: int
+    eval_set: str
+    eval_index: int
+    overlap: int  # 共享的 n-gram 个数
+
+
+@dataclass
+class ContaminationReport:
+    n: int
+    num_docs: int
+    hits: list[ContaminationHit] = field(default_factory=list)
+
+    @property
+    def contaminated_docs(self) -> list[int]:
+        return sorted({h.doc_index for h in self.hits})
+
+    def eval_items_hit(self, eval_set: str) -> list[int]:
+        return sorted({h.eval_index for h in self.hits if h.eval_set == eval_set})
+
+    def summary(self) -> str:
+        sets = sorted({h.eval_set for h in self.hits})
+        parts = [f"{s}: {len(self.eval_items_hit(s))} 题" for s in sets]
+        return (
+            f"{self.n}-gram 去污染：{len(self.contaminated_docs)}/{self.num_docs} 篇训练文档与评测集重叠"
+            + (f"（{'，'.join(parts)}）" if parts else "")
+        )
+
+
+class NgramIndex:
+    """评测集的 n-gram 索引：hash -> [(评测集名, 题号), ...]。
+
+    长度 >= n 的评测题存 n-gram 哈希；更短的题目（整题不足 n 个词）存规范化后的整句，
+    检查时用子串包含判断（否则短题永远查不出来）。
+    """
+
+    def __init__(self, n: int = 13) -> None:
+        self.n = n
+        self.index: dict[int, list[tuple[str, int]]] = {}
+        self.short: list[tuple[str, int, str]] = []
+
+    def add_eval_set(self, name: str, texts: Iterable[str]) -> None:
+        for i, t in enumerate(texts):
+            toks = normalize_tokens(t)
+            if len(toks) >= self.n:
+                for h in ngram_hashes(t, self.n):
+                    self.index.setdefault(h, []).append((name, i))
+            elif toks:
+                self.short.append((name, i, " ".join(toks)))
+
+    def check(self, text: str) -> dict[tuple[str, int], int]:
+        """返回这篇文档撞到的 {(评测集, 题号): 共享 n-gram 数}。"""
+        toks = normalize_tokens(text)
+        hits: dict[tuple[str, int], int] = {}
+        if len(toks) >= self.n:
+            grams = {_hash_gram(toks[i : i + self.n]) for i in range(len(toks) - self.n + 1)}
+            for g in grams:
+                for key in self.index.get(g, ()):
+                    hits[key] = hits.get(key, 0) + 1
+        if self.short:
+            joined = " " + " ".join(toks) + " "
+            for name, i, s in self.short:
+                if f" {s} " in joined:
+                    hits[(name, i)] = hits.get((name, i), 0) + 1
+        return hits
+
+
+def find_contamination(
+    train_texts: Sequence[str], eval_sets: dict[str, Sequence[str]], n: int = 13
+) -> ContaminationReport:
+    """检查每篇训练文档与各评测集的 n-gram 重叠。"""
+    index = NgramIndex(n)
+    for name, texts in eval_sets.items():
+        index.add_eval_set(name, texts)
+    report = ContaminationReport(n=n, num_docs=len(train_texts))
+    for d, text in enumerate(train_texts):
+        for (name, i), overlap in index.check(text).items():
+            report.hits.append(ContaminationHit(d, name, i, overlap))
+    return report
+
+
+def decontaminate(
+    train_texts: Sequence[str], eval_sets: dict[str, Sequence[str]], n: int = 13
+) -> tuple[list[int], ContaminationReport]:
+    """删掉所有与评测集有重叠的训练文档，返回 (保留的下标, 报告)。"""
+    report = find_contamination(train_texts, eval_sets, n)
+    bad = set(report.contaminated_docs)
+    return [i for i in range(len(train_texts)) if i not in bad], report
+
+
+# ===== zero/data/dedup.py =====
+"""去重：精确哈希 + MinHash LSH 近似去重（对应第 13 章）。
+
+网页语料里重复极多（转载、模板页、镜像站）。重复数据会让模型"背书"、浪费算力，还会放大
+评测污染。两层去重：
+
+1. **精确去重**：规范化后的全文做哈希，相同哈希只留第一篇。便宜，但差一个字就认不出来。
+2. **近似去重（MinHash + LSH）**：
+   - 把文档切成字符 n-gram 集合（shingles），两篇文档的相似度用 Jaccard = |A∩B| / |A∪B| 衡量；
+   - MinHash：用 num_perm 个随机哈希函数，每个函数取集合里的最小哈希值，得到一个签名向量。
+     两个签名某一位相等的概率恰好等于 Jaccard（这是 MinHash 的核心性质）；
+   - LSH：把签名切成 bands 段、每段 rows 位。只要有一段完全相同就成为"候选对"。
+     相似度为 s 的一对成为候选的概率是 1 - (1 - s^rows)^bands，是一条 S 形曲线，
+     拐点大约在 (1/bands)^(1/rows)，这就是有效阈值；
+   - 候选对再用签名估计的 Jaccard 复核，超过阈值的用并查集连成簇，每簇只留一篇。
+
+用字符 n-gram 而不是词 n-gram，是为了让中文（没有空格分词）和英文用同一套代码。
+纯 NumPy 实现，适合讲解和中小规模；第二步处理 TB 级数据时用 datatrove 等工具的同款算法。
+"""
+
+from __future__ import annotations
+
+import hashlib
+from collections import defaultdict
+from collections.abc import Sequence
+
+import numpy as np
+
+from zero.data.clean import normalize_text
+
+_MERSENNE_PRIME = np.uint64((1 << 61) - 1)
+_MAX_HASH = np.uint64((1 << 32) - 1)
+
+
+def text_hash(text: str, normalize: bool = True) -> str:
+    if normalize:
+        text = normalize_text(text)
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def exact_dedup(texts: Sequence[str], normalize: bool = True) -> list[int]:
+    """返回要保留的下标（每组完全相同的文档只留第一篇）。"""
+    seen: set[str] = set()
+    keep = []
+    for i, t in enumerate(texts):
+        h = text_hash(t, normalize)
+        if h not in seen:
+            seen.add(h)
+            keep.append(i)
+    return keep
+
+
+def shingles(text: str, ngram: int = 5) -> set[str]:
+    """字符 n-gram 集合（先规范化、转小写、压缩空白）。"""
+    t = " ".join(normalize_text(text).lower().split())
+    if len(t) <= ngram:
+        return {t} if t else set()
+    return {t[i : i + ngram] for i in range(len(t) - ngram + 1)}
+
+
+def jaccard(a: set[str], b: set[str]) -> float:
+    if not a and not b:
+        return 1.0
+    return len(a & b) / len(a | b)
+
+
+def _hash32(s: str) -> int:
+    # 稳定的 32 位哈希（Python 自带的 hash() 每个进程加盐不同，不能用）
+    return int.from_bytes(hashlib.blake2b(s.encode("utf-8"), digest_size=4).digest(), "little")
+
+
+class MinHasher:
+    """MinHash 签名：h_i(x) = ((a_i * x + b_i) mod p) & 0xFFFFFFFF，取集合上的最小值。
+
+    a_i < 2^31、x < 2^32，乘积 < 2^63，在 uint64 里不会溢出。
+    """
+
+    def __init__(self, num_perm: int = 128, ngram: int = 5, seed: int = 0) -> None:
+        rng = np.random.default_rng(seed)
+        self.num_perm = num_perm
+        self.ngram = ngram
+        self.a = rng.integers(1, 1 << 31, size=num_perm, dtype=np.uint64)
+        self.b = rng.integers(0, 1 << 31, size=num_perm, dtype=np.uint64)
+
+    def signature(self, text: str) -> np.ndarray:
+        sh = shingles(text, self.ngram)
+        if not sh:
+            return np.full(self.num_perm, _MAX_HASH, dtype=np.uint64)
+        x = np.fromiter((_hash32(s) for s in sh), dtype=np.uint64, count=len(sh))
+        hv = (x[:, None] * self.a[None, :] + self.b[None, :]) % _MERSENNE_PRIME
+        return (hv & _MAX_HASH).min(axis=0)
+
+
+def estimate_jaccard(sig_a: np.ndarray, sig_b: np.ndarray) -> float:
+    return float(np.mean(sig_a == sig_b))
+
+
+def lsh_threshold(bands: int, rows: int) -> float:
+    """LSH S 形曲线的近似拐点 (1/b)^(1/r)。"""
+    return (1.0 / bands) ** (1.0 / rows)
+
+
+class _UnionFind:
+    def __init__(self, n: int) -> None:
+        self.parent = list(range(n))
+
+    def find(self, x: int) -> int:
+        while self.parent[x] != x:
+            self.parent[x] = self.parent[self.parent[x]]
+            x = self.parent[x]
+        return x
+
+    def union(self, a: int, b: int) -> None:
+        ra, rb = self.find(a), self.find(b)
+        if ra != rb:
+            # 让下标小的当根：每簇保留最早出现的那篇
+            if ra < rb:
+                self.parent[rb] = ra
+            else:
+                self.parent[ra] = rb
+
+
+def near_dedup(
+    texts: Sequence[str],
+    threshold: float = 0.8,
+    num_perm: int = 128,
+    bands: int = 16,
+    ngram: int = 5,
+    seed: int = 0,
+) -> tuple[list[int], list[list[int]]]:
+    """MinHash LSH 近似去重。
+
+    返回 (keep, clusters)：keep 是保留的下标；clusters 是所有大小 >= 2 的重复簇（每簇第一个是被保留的）。
+    """
+    if num_perm % bands != 0:
+        raise ValueError(f"num_perm={num_perm} 必须能被 bands={bands} 整除")
+    rows = num_perm // bands
+    hasher = MinHasher(num_perm=num_perm, ngram=ngram, seed=seed)
+    sigs = (
+        np.stack([hasher.signature(t) for t in texts])
+        if texts
+        else np.zeros((0, num_perm), np.uint64)
+    )
+
+    uf = _UnionFind(len(texts))
+    for band in range(bands):
+        buckets: dict[bytes, list[int]] = defaultdict(list)
+        chunk = sigs[:, band * rows : (band + 1) * rows]
+        for i in range(len(texts)):
+            buckets[chunk[i].tobytes()].append(i)
+        for members in buckets.values():
+            if len(members) < 2:
+                continue
+            # 桶内两两复核（桶一般很小）；已经在同一簇的跳过
+            for jj, j in enumerate(members[1:], start=1):
+                for i in members[:jj]:
+                    if uf.find(i) != uf.find(j) and estimate_jaccard(sigs[i], sigs[j]) >= threshold:
+                        uf.union(i, j)
+
+    groups: dict[int, list[int]] = defaultdict(list)
+    for i in range(len(texts)):
+        groups[uf.find(i)].append(i)
+    keep = sorted(groups)
+    clusters = [sorted(g) for g in groups.values() if len(g) > 1]
+    return keep, clusters
+
+
+def dedup(texts: Sequence[str], near: bool = True, **near_kwargs: float) -> list[int]:
+    """先精确去重，再（可选）近似去重；返回保留的原始下标。"""
+    keep = exact_dedup(texts)
+    if not near:
+        return keep
+    sub = [texts[i] for i in keep]
+    keep2, _ = near_dedup(sub, **near_kwargs)  # type: ignore[arg-type]
+    return [keep[i] for i in keep2]
+
+
+# ===== zero/data/loader.py =====
+"""打包数据加载器：从 uint32 分片里切出定长训练样本（对应第 14 章）。
+
+**打包（packing）**：预训练不按文档对齐，而是把所有 token 看成一条长河，切成长度 seq_len+1 的片段，
+x = 片段[:-1]，y = 片段[1:]。相邻片段重叠 1 个 token（步长 seq_len），所以每个 token 恰好当一次
+"预测目标"。文档边界处的 <|endoftext|> 让模型知道上下文换了，一个片段里可能包含好几篇文档的结尾和开头。
+
+**确定性与断点续训**：样本的顺序完全由 (seed, epoch) 决定：
+- 每个 epoch 先打乱分片顺序，再打乱每个分片内部的片段顺序（两级打乱，不需要给全部片段建一个巨大的排列）；
+- 于是"第 g 个全局样本是哪个分片的哪个片段"可以直接算出来（随机访问）。
+加载器的全部状态就是一个整数 `consumed`（本 rank 已经取了多少个样本），`state_dict()` 存它，
+`load_state_dict()` 恢复它，续训后的 batch 与不中断时逐字节相同。
+
+**分布式**：第 g 个全局样本分给 rank = g % world_size。每步所有 rank 合起来正好取走连续的
+batch_size * world_size 个全局样本，所以"2 卡各 B 条"与"1 卡 2B 条"看到的是同一批数据
+（`tests/test_ddp_cpu.py` 用这一点来对拍 DDP）。
+"""
+
+from __future__ import annotations
+
+import glob
+import os
+from collections import OrderedDict
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import torch
+
+from zero.data.shard import read_shard
+
+
+def resolve_shards(paths: str | os.PathLike | Sequence[str | os.PathLike]) -> list[Path]:
+    """glob 或路径列表 → 排好序的 .bin 文件列表。"""
+    items = [paths] if isinstance(paths, str | os.PathLike) else list(paths)
+    out: list[Path] = []
+    for item in items:
+        matches = sorted(glob.glob(str(item)))
+        if not matches:
+            raise FileNotFoundError(f"找不到分片：{item}")
+        out.extend(Path(m) for m in matches if m.endswith(".bin"))
+    if not out:
+        raise FileNotFoundError(f"没有 .bin 分片：{paths}")
+    return out
+
+
+def to_torch_batch(
+    arr: np.ndarray, device: torch.device | str
+) -> tuple[torch.Tensor, torch.Tensor]:
+    t = torch.from_numpy(arr.astype(np.int64))
+    device = torch.device(device)
+    if device.type == "cuda":
+        t = t.pin_memory().to(device, non_blocking=True)
+    else:
+        t = t.to(device)
+    return t[:, :-1], t[:, 1:]
+
+
+class PackedDataLoader:
+    def __init__(
+        self,
+        paths: str | os.PathLike | Sequence[str | os.PathLike],
+        seq_len: int,
+        batch_size: int,
+        rank: int = 0,
+        world_size: int = 1,
+        seed: int = 0,
+        shuffle: bool = True,
+        device: torch.device | str = "cpu",
+    ) -> None:
+        self.paths = resolve_shards(paths)
+        self.seq_len = seq_len
+        self.batch_size = batch_size
+        self.rank = rank
+        self.world_size = world_size
+        self.seed = seed
+        self.shuffle = shuffle
+        self.device = device
+        self.shards = [read_shard(p) for p in self.paths]
+        # 每个分片能切出多少个 (seq_len+1) 片段（步长 seq_len）
+        self.n_chunks = np.array(
+            [max((len(s) - 1) // seq_len, 0) for s in self.shards], dtype=np.int64
+        )
+        self.total_chunks = int(self.n_chunks.sum())
+        if self.total_chunks < world_size:
+            raise ValueError(
+                f"数据太少：{self.total_chunks} 个长度 {seq_len}+1 的片段，不够分给 {world_size} 个 rank"
+            )
+        self.consumed = 0
+        self._epoch_cache: tuple[int, np.ndarray, np.ndarray] | None = None
+        self._perm_cache: OrderedDict[tuple[int, int], np.ndarray] = OrderedDict()
+
+    # ---- 索引计算 ----
+    def _epoch_layout(self, epoch: int) -> tuple[np.ndarray, np.ndarray]:
+        if self._epoch_cache is None or self._epoch_cache[0] != epoch:
+            if self.shuffle:
+                order = np.random.default_rng([self.seed, epoch]).permutation(len(self.shards))
+            else:
+                order = np.arange(len(self.shards))
+            cum = np.cumsum(self.n_chunks[order])
+            self._epoch_cache = (epoch, order, cum)
+        return self._epoch_cache[1], self._epoch_cache[2]
+
+    def _chunk_perm(self, epoch: int, shard: int) -> np.ndarray | None:
+        if not self.shuffle:
+            return None
+        key = (epoch, shard)
+        if key not in self._perm_cache:
+            perm = np.random.default_rng([self.seed, epoch, shard, 1]).permutation(
+                int(self.n_chunks[shard])
+            )
+            self._perm_cache[key] = perm
+            if len(self._perm_cache) > 8:
+                self._perm_cache.popitem(last=False)
+        return self._perm_cache[key]
+
+    def locate(self, global_index: int) -> tuple[int, int, int]:
+        """第 global_index 个全局样本 → (epoch, 分片号, 片段号)。"""
+        epoch, pos = divmod(global_index, self.total_chunks)
+        order, cum = self._epoch_layout(epoch)
+        j = int(np.searchsorted(cum, pos, side="right"))
+        shard = int(order[j])
+        within = pos - (int(cum[j - 1]) if j > 0 else 0)
+        perm = self._chunk_perm(epoch, shard)
+        chunk = int(perm[within]) if perm is not None else within
+        return epoch, shard, chunk
+
+    def sample(self, local_index: int) -> np.ndarray:
+        """本 rank 的第 local_index 个样本（长度 seq_len+1 的 token 数组）。"""
+        g = local_index * self.world_size + self.rank
+        _, shard, chunk = self.locate(g)
+        start = chunk * self.seq_len
+        return np.asarray(self.shards[shard][start : start + self.seq_len + 1])
+
+    # ---- 取数据 ----
+    def next_samples(self, n: int) -> np.ndarray:
+        out = np.stack([self.sample(self.consumed + i) for i in range(n)])
+        self.consumed += n
+        return out
+
+    def next_batch(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """返回 (x, y)，形状都是 (batch_size, seq_len)，int64。"""
+        return to_torch_batch(self.next_samples(self.batch_size), self.device)
+
+    def __iter__(self) -> PackedDataLoader:
+        return self
+
+    def __next__(self) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.next_batch()
+
+    @property
+    def epoch(self) -> int:
+        return (self.consumed * self.world_size + self.rank) // self.total_chunks
+
+    @property
+    def num_tokens(self) -> int:
+        return int(sum(len(s) for s in self.shards))
+
+    # ---- 断点续训 ----
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "consumed": self.consumed,
+            "seed": self.seed,
+            "seq_len": self.seq_len,
+            "rank": self.rank,
+            "world_size": self.world_size,
+            "total_chunks": self.total_chunks,
+            "shards": [p.name for p in self.paths],
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        for key in ("seed", "seq_len", "world_size", "total_chunks"):
+            if state[key] != getattr(self, key):
+                raise ValueError(
+                    f"加载器状态不匹配：{key} 保存时是 {state[key]}，现在是 {getattr(self, key)}。"
+                    "改了数据、序列长度或卡数之后不能精确续训。"
+                )
+        self.consumed = int(state["consumed"])
+
+    def reset(self) -> None:
+        self.consumed = 0
+
+
+# ===== zero/data/mixture.py =====
+"""多来源按比例混合采样（对应第 13、15 章）。
+
+预训练要把网页、代码、数学、中文等来源按一定比例混在一起；中期训练会换一套比例
+（加大高质量数据、加入指令和工具调用格式数据）。这里的做法是"逐行抽签"：
+
+- batch 里的每一行，先按权重抽一个来源，再从那个来源的 `PackedDataLoader` 取下一个样本；
+- 抽签结果只由 (seed, rank, 行号) 决定：行号每 1024 行一组，每组用 `default_rng([seed, rank, 组号])`
+  一次抽完。于是状态只需要记"已经抽了多少行" + 各来源加载器自己的状态，续训逐字节一致。
+
+每个来源的加载器都按 rank 分好了片（见 loader.py），不同 rank 各自抽签、互不重复。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
+
+import numpy as np
+import torch
+
+from zero.data.loader import PackedDataLoader, to_torch_batch
+
+_BLOCK = 1024
+
+
+class MixtureSampler:
+    """确定性的加权抽签：第 i 次抽签的结果只取决于 (seed, rank, i)。"""
+
+    def __init__(self, weights: Mapping[str, float], seed: int = 0, rank: int = 0) -> None:
+        if not weights:
+            raise ValueError("weights 不能为空")
+        self.names = list(weights)
+        w = np.array([float(weights[n]) for n in self.names])
+        if (w <= 0).any():
+            raise ValueError(f"权重必须 > 0：{dict(weights)}")
+        self.probs = w / w.sum()
+        self.seed = seed
+        self.rank = rank
+        self.drawn = 0
+        self._block: tuple[int, np.ndarray] | None = None
+
+    def choice_at(self, i: int) -> str:
+        b, off = divmod(i, _BLOCK)
+        if self._block is None or self._block[0] != b:
+            rng = np.random.default_rng([self.seed, self.rank, b])
+            self._block = (b, rng.choice(len(self.names), size=_BLOCK, p=self.probs))
+        return self.names[int(self._block[1][off])]
+
+    def draw(self, n: int) -> list[str]:
+        out = [self.choice_at(self.drawn + k) for k in range(n)]
+        self.drawn += n
+        return out
+
+
+class MixtureLoader:
+    """把多个 `PackedDataLoader` 按权重混成一个加载器，接口与 PackedDataLoader 相同。"""
+
+    def __init__(
+        self,
+        loaders: Mapping[str, PackedDataLoader],
+        weights: Mapping[str, float],
+        batch_size: int,
+        seed: int = 0,
+        rank: int = 0,
+        device: torch.device | str = "cpu",
+    ) -> None:
+        missing = set(weights) - set(loaders)
+        if missing:
+            raise ValueError(f"这些来源有权重但没有加载器：{sorted(missing)}")
+        self.loaders = dict(loaders)
+        self.sampler = MixtureSampler(weights, seed=seed, rank=rank)
+        self.batch_size = batch_size
+        self.device = device
+        seq_lens = {ld.seq_len for ld in self.loaders.values()}
+        if len(seq_lens) != 1:
+            raise ValueError(f"各来源的 seq_len 必须相同，实际 {seq_lens}")
+        self.seq_len = seq_lens.pop()
+        self.counts: dict[str, int] = dict.fromkeys(self.loaders, 0)  # 各来源已取的样本数（统计用）
+
+    def next_samples(self, n: int) -> np.ndarray:
+        rows = []
+        for name in self.sampler.draw(n):
+            rows.append(self.loaders[name].next_samples(1)[0])
+            self.counts[name] += 1
+        return np.stack(rows)
+
+    def next_batch(self) -> tuple[torch.Tensor, torch.Tensor]:
+        return to_torch_batch(self.next_samples(self.batch_size), self.device)
+
+    def __iter__(self) -> MixtureLoader:
+        return self
+
+    def __next__(self) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.next_batch()
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "drawn": self.sampler.drawn,
+            "seed": self.sampler.seed,
+            "names": self.sampler.names,
+            "probs": self.sampler.probs.tolist(),
+            "counts": dict(self.counts),
+            "loaders": {k: v.state_dict() for k, v in self.loaders.items()},
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        if state["names"] != self.sampler.names or not np.allclose(
+            state["probs"], self.sampler.probs
+        ):
+            raise ValueError(
+                "混合比例和保存时不同，不能精确续训（中期训练换比例请从新的加载器状态开始）"
+            )
+        self.sampler.drawn = int(state["drawn"])
+        self.counts = dict(state["counts"])
+        for k, v in state["loaders"].items():
+            self.loaders[k].load_state_dict(v)
+
+
+# ===== zero/data/prepare.py =====
+"""从原始文本一步做出"分词器 + 训练/验证分片"（对应第 13、14 章；主要给 tiny 冒烟用）。
+
+正式训练的数据流水线是：下载 → clean → dedup → quality → decontam → shard，每步单独跑、单独检查。
+tiny 配置为了"一条命令就能训练"，把这些步骤串成 `prepare_data(cfg.train.data)`：
+
+1. 读 `[data.prepare] raw_files` 里的每个文本文件（文件名 = 来源名），按空行切段拼成文档；
+2. 清洗、精确去重；
+3. `data.tokenizer` 不存在时，用全部原始文件训练一个 byte-level BPE；
+4. 每个来源按固定种子打乱文档，切出 val_fraction 做验证集，写成
+   `<out_dir>/<来源>_train_*.bin` 和 `<out_dir>/<来源>_val_*.bin`。
+
+分片已经存在时直接跳过（分词器哈希不一致会报错）。
+"""
+
+from __future__ import annotations
+
+import glob
+import random
+from collections.abc import Callable
+from pathlib import Path
+
+from zero.config import DataConfig
+from zero.data.clean import clean_document, split_into_documents
+from zero.data.dedup import exact_dedup
+from zero.data.shard import load_metadata, write_shards
+from zero.tokenizer import Tokenizer, train_bpe
+
+
+def _raw_files(patterns: list[str]) -> list[Path]:
+    files: list[Path] = []
+    for pat in patterns:
+        matches = sorted(glob.glob(pat))
+        if not matches:
+            raise FileNotFoundError(f"[data.prepare] raw_files 找不到：{pat}")
+        files.extend(Path(m) for m in matches)
+    return files
+
+
+def prepare_data(cfg: DataConfig, seed: int = 0, log: Callable[[str], None] = print) -> None:
+    p = cfg.prepare
+    if p is None:
+        return
+    files = _raw_files(p.raw_files)
+    out = Path(p.out_dir)
+    tok_path = Path(cfg.tokenizer)
+
+    if tok_path.exists():
+        tok = Tokenizer.load(tok_path)
+    else:
+        log(f"[prepare] 训练分词器 vocab_size={p.vocab_size}，语料 {[f.name for f in files]}")
+        tok = train_bpe(files, vocab_size=p.vocab_size)
+        tok.save(tok_path)
+        log(f"[prepare] 分词器已保存到 {tok_path}")
+
+    for f in files:
+        name = f.stem
+        meta_path = out / f"{name}_train.json"
+        if meta_path.exists() and (out / f"{name}_val.json").exists():
+            meta = load_metadata(meta_path)
+            if meta["tokenizer_hash"] != tok.hash():
+                raise ValueError(f"{meta_path} 是用另一个分词器切的，请删掉 {out} 后重新生成")
+            continue
+        docs = [
+            d
+            for d in (
+                clean_document(x) for x in split_into_documents(f.read_text("utf-8"), p.doc_chars)
+            )
+            if d
+        ]
+        docs = [docs[i] for i in exact_dedup(docs)]
+        random.Random(f"{seed}-{name}").shuffle(docs)
+        n_val = max(1, int(len(docs) * p.val_fraction))
+        val, train = docs[:n_val], docs[n_val:]
+        write_shards(train, tok, out, f"{name}_train", source=str(f))
+        write_shards(val, tok, out, f"{name}_val", source=str(f))
+        log(f"[prepare] {name}: {len(train)} 篇训练文档, {len(val)} 篇验证文档")
+
+
+# ===== zero/data/quality.py =====
+"""质量过滤：启发式规则 + 分类器接口（对应第 13 章）。
+
+两类方法，业界通常叠加使用：
+
+1. **启发式规则**（这里实现）：参考 Gopher（Rae et al. 2021, arXiv:2112.11446, 附录 A）的
+   质量与重复规则，以及 FineWeb（Penedo et al. 2024, arXiv:2406.17557）新增的三条规则。
+   每条规则都是一个便宜的统计量 + 阈值，专门干掉"明显不是正常文章"的页面：导航栏、
+   关键词堆砌、乱码、大段重复。中文没有空格分词，"词"按 CJK 单字计，停用词用中文常用虚词。
+   阈值是英文网页上调出来的，用在中文上之前需要在第 13 章的实验里复核（待核实）。
+
+2. **分类器打分**（这里只定义接口）：FineWeb-Edu 的做法是让大模型给几十万个网页的
+   "教育价值"打 0–5 分，再训练一个小分类器给全量数据打分，只留高分页面。第一步没有 GPU，
+   这里只提供 `QualityClassifier` 协议和一个按关键词打分的玩具实现 `KeywordClassifier`，
+   第二步再接入真正的分类器（例如 fastText 或小型 BERT）。
+"""
+
+from __future__ import annotations
+
+import re
+from collections import Counter
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from typing import Protocol
+
+_CJK_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
+_WORD_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿]|[^\s㐀-䶿一-鿿豈-﫿]+")
+_ALPHA_RE = re.compile(r"[^\W\d_]", re.UNICODE)
+
+EN_STOP_WORDS = frozenset(
+    {"the", "be", "to", "of", "and", "that", "have", "with"}
+)  # Gopher 用的 8 个
+ZH_STOP_WORDS = frozenset("的了是在和有也就不都而与之其以")  # 中文常用虚词（本课自定，待核实）
+_END_PUNCT = (".", "!", "?", '"', "'", "。", "！", "？", "”", "’", "…", "」", "』")
+
+
+def words(text: str) -> list[str]:
+    """把文本切成"词"：CJK 按单字，其他按空白分隔。"""
+    return _WORD_RE.findall(text)
+
+
+def cjk_ratio(text: str) -> float:
+    non_space = sum(1 for c in text if not c.isspace())
+    return len(_CJK_RE.findall(text)) / max(non_space, 1)
+
+
+@dataclass
+class QualityThresholds:
+    """默认值取自 Gopher 附录 A 与 FineWeb 论文第 3 节。"""
+
+    min_words: int = 50
+    max_words: int = 100_000
+    min_mean_word_len: float = 3.0  # 只对非 CJK 文本生效
+    max_mean_word_len: float = 10.0
+    max_symbol_word_ratio: float = 0.1  # "#" 与 "..." 的数量 / 词数
+    max_bullet_lines_frac: float = 0.9  # 以项目符号开头的行占比
+    max_ellipsis_lines_frac: float = 0.3  # 以省略号结尾的行占比
+    min_alpha_words_frac: float = 0.8  # 至少含一个字母的词占比
+    min_stop_words: int = 2
+    # Gopher 重复规则
+    max_dup_line_frac: float = 0.3
+    max_dup_line_char_frac: float = 0.2
+    max_top_2gram_char_frac: float = 0.2
+    # FineWeb 新增规则
+    min_line_punct_frac: float = 0.12  # 以标点结尾的行占比
+    max_short_line_frac: float = 0.67  # 长度 <= 30 字符的行占比
+    short_line_chars: int = 30
+
+
+@dataclass
+class QualityResult:
+    keep: bool
+    reasons: list[str] = field(default_factory=list)
+    stats: dict[str, float] = field(default_factory=dict)
+
+
+def _top_ngram_char_frac(ws: list[str], n: int) -> float:
+    if len(ws) < n:
+        return 0.0
+    grams = Counter(tuple(ws[i : i + n]) for i in range(len(ws) - n + 1))
+    ((gram, count),) = grams.most_common(1)
+    total_chars = sum(len(w) for w in ws)
+    return count * sum(len(w) for w in gram) / max(total_chars, 1)
+
+
+def quality_check(text: str, th: QualityThresholds | None = None) -> QualityResult:
+    """对一篇文档跑全部启发式规则，返回是否保留、未通过的规则名和统计量。"""
+    th = th or QualityThresholds()
+    reasons: list[str] = []
+    ws = words(text)
+    n = len(ws)
+    lines = [ln for ln in text.split("\n") if ln.strip()]
+    n_lines = max(len(lines), 1)
+    is_cjk = cjk_ratio(text) > 0.3
+
+    stats: dict[str, float] = {"words": n, "lines": len(lines), "cjk_ratio": cjk_ratio(text)}
+
+    if n < th.min_words:
+        reasons.append("too_few_words")
+    if n > th.max_words:
+        reasons.append("too_many_words")
+    if not is_cjk and n:
+        mean_len = sum(len(w) for w in ws) / n
+        stats["mean_word_len"] = mean_len
+        if not (th.min_mean_word_len <= mean_len <= th.max_mean_word_len):
+            reasons.append("mean_word_length")
+    symbols = text.count("#") + text.count("...") + text.count("…")
+    stats["symbol_word_ratio"] = symbols / max(n, 1)
+    if stats["symbol_word_ratio"] > th.max_symbol_word_ratio:
+        reasons.append("symbol_word_ratio")
+    bullets = sum(1 for ln in lines if ln.lstrip().startswith(("•", "-", "*", "·", "●", "▪")))
+    if bullets / n_lines > th.max_bullet_lines_frac:
+        reasons.append("bullet_lines")
+    ellipsis = sum(1 for ln in lines if ln.rstrip().endswith(("...", "…")))
+    if ellipsis / n_lines > th.max_ellipsis_lines_frac:
+        reasons.append("ellipsis_lines")
+    alpha = sum(1 for w in ws if _ALPHA_RE.search(w))
+    stats["alpha_words_frac"] = alpha / max(n, 1)
+    if n and stats["alpha_words_frac"] < th.min_alpha_words_frac:
+        reasons.append("alpha_words")
+    stop = ZH_STOP_WORDS if is_cjk else EN_STOP_WORDS
+    n_stop = sum(1 for w in ws if w.lower() in stop)
+    if n_stop < th.min_stop_words:
+        reasons.append("stop_words")
+
+    # 重复
+    line_counts = Counter(lines)
+    dup_lines = sum(c for c in line_counts.values() if c > 1)
+    dup_line_chars = sum(len(ln) * c for ln, c in line_counts.items() if c > 1)
+    stats["dup_line_frac"] = dup_lines / n_lines
+    if stats["dup_line_frac"] > th.max_dup_line_frac:
+        reasons.append("dup_lines")
+    if dup_line_chars / max(sum(len(ln) for ln in lines), 1) > th.max_dup_line_char_frac:
+        reasons.append("dup_line_chars")
+    stats["top_2gram_char_frac"] = _top_ngram_char_frac(ws, 2)
+    if stats["top_2gram_char_frac"] > th.max_top_2gram_char_frac:
+        reasons.append("top_2gram")
+
+    # FineWeb
+    punct_lines = sum(1 for ln in lines if ln.rstrip().endswith(_END_PUNCT))
+    stats["line_punct_frac"] = punct_lines / n_lines
+    if stats["line_punct_frac"] < th.min_line_punct_frac:
+        reasons.append("line_punct")
+    short = sum(1 for ln in lines if len(ln.strip()) <= th.short_line_chars)
+    stats["short_line_frac"] = short / n_lines
+    if not is_cjk and stats["short_line_frac"] > th.max_short_line_frac:
+        # 中文一行 30 个字符信息量已经很大，这条规则只用于非 CJK 文本
+        reasons.append("short_lines")
+
+    return QualityResult(keep=not reasons, reasons=reasons, stats=stats)
+
+
+def quality_filter(texts: Sequence[str], th: QualityThresholds | None = None) -> list[int]:
+    """返回通过全部规则的下标。"""
+    return [i for i, t in enumerate(texts) if quality_check(t, th).keep]
+
+
+# ---------------------------------------------------------------------------
+# 分类器接口（第二步接入真实模型）
+# ---------------------------------------------------------------------------
+
+
+class QualityClassifier(Protocol):
+    """质量分类器协议：给每篇文档打一个分（越高越好）。
+
+    第二步的计划（参照 FineWeb-Edu）：
+    1. 用许可证允许的开放权重大模型给约 50 万篇样本打 0–5 分"教育价值"；
+    2. 在其 embedding 上训练一个线性回归头（或 fastText），对全量数据打分；
+    3. 保留分数 >= 3 的文档（阈值由第 13 章的小模型消融实验决定）。
+    """
+
+    def score(self, texts: Sequence[str]) -> list[float]: ...
+
+
+class KeywordClassifier:
+    """玩具分类器：按"教育类关键词"出现频率打分，只用于测试和演示接口。"""
+
+    def __init__(
+        self, keywords: Sequence[str] = ("定理", "证明", "例如", "because", "therefore", "example")
+    ):
+        self.keywords = [k.lower() for k in keywords]
+
+    def score(self, texts: Sequence[str]) -> list[float]:
+        out = []
+        for t in texts:
+            low = t.lower()
+            hits = sum(low.count(k) for k in self.keywords)
+            out.append(min(5.0, 5.0 * hits / max(len(words(t)) / 50, 1)))
+        return out
+
+
+def filter_by_classifier(
+    texts: Sequence[str], classifier: QualityClassifier, threshold: float = 3.0
+) -> list[int]:
+    scores = classifier.score(texts)
+    return [i for i, s in enumerate(scores) if s >= threshold]
+
+
+# ===== zero/data/shard.py =====
+"""分片：把文本分词后写成 uint32 的二进制分片（对应第 14 章）。
+
+预训练时不能每步现场分词（太慢），所以先把全部文本分好词，按顺序写成一串 token id：
+
+    文档1的token … <|endoftext|> 文档2的token … <|endoftext|> …
+
+每篇文档后面跟一个 <|endoftext|>，模型由此学会"一篇文章到这里结束"。
+这串 token 切成若干个文件 `<name>_<idx>.bin`（`np.uint32`，没有文件头，可以直接 memmap），
+另写一个 `<name>.json` 记录元数据：分词器哈希、每个分片的 token 数、来源等。
+
+为什么用 uint32 而不是 uint16：uint16 最多表示 65535，而本课的词表可能超过 64K（第 13 章实测决定）。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from collections.abc import Iterable
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+from zero.tokenizer import Tokenizer
+
+TOKEN_DTYPE = np.uint32
+
+
+def write_shards(
+    texts: Iterable[str],
+    tokenizer: Tokenizer,
+    out_dir: str | os.PathLike,
+    name: str,
+    shard_tokens: int = 100_000_000,
+    source: str = "",
+    batch_docs: int = 256,
+    extra_meta: dict[str, Any] | None = None,
+) -> list[Path]:
+    """分词并写分片；每个分片最多 shard_tokens 个 token（文档可能跨分片，加载器不在意文档边界）。
+
+    返回写出的 .bin 路径列表，同时写 `<out_dir>/<name>.json`。
+    """
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    eot = tokenizer.eot_id
+    paths: list[Path] = []
+    shard_meta: list[dict[str, Any]] = []
+    buf = np.empty(shard_tokens, dtype=TOKEN_DTYPE)
+    fill = 0
+    n_docs = 0
+    total = 0
+
+    def flush() -> None:
+        nonlocal fill
+        if fill == 0:
+            return
+        p = out / f"{name}_{len(paths):05d}.bin"
+        tmp = p.with_suffix(".bin.tmp")
+        buf[:fill].tofile(tmp)
+        os.replace(tmp, p)  # 原子写入：要么是完整文件，要么没有
+        paths.append(p)
+        shard_meta.append({"file": p.name, "num_tokens": int(fill)})
+        fill = 0
+
+    def add(ids: list[int]) -> None:
+        nonlocal fill, total
+        arr = np.asarray(ids, dtype=TOKEN_DTYPE)
+        pos = 0
+        while pos < len(arr):
+            take = min(len(arr) - pos, shard_tokens - fill)
+            buf[fill : fill + take] = arr[pos : pos + take]
+            fill += take
+            pos += take
+            if fill == shard_tokens:
+                flush()
+        total += len(arr)
+
+    batch: list[str] = []
+
+    def process(batch: list[str]) -> None:
+        nonlocal n_docs
+        for ids in tokenizer.encode_batch(batch):
+            add([*ids, eot])
+            n_docs += 1
+
+    for t in texts:
+        batch.append(t)
+        if len(batch) >= batch_docs:
+            process(batch)
+            batch = []
+    if batch:
+        process(batch)
+    flush()
+
+    meta = {
+        "name": name,
+        "dtype": "uint32",
+        "tokenizer_hash": tokenizer.hash(),
+        "vocab_size": tokenizer.vocab_size,
+        "eot_id": eot,
+        "num_tokens": int(total),
+        "num_documents": n_docs,
+        "source": source,
+        "shards": shard_meta,
+        **(extra_meta or {}),
+    }
+    tmp = out / f"{name}.json.tmp"
+    with open(tmp, "w") as f:
+        json.dump(meta, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, out / f"{name}.json")
+    return paths
+
+
+def read_shard(path: str | os.PathLike) -> np.memmap:
+    """只读 memmap 打开一个分片（不会把整个文件读进内存）。"""
+    return np.memmap(path, dtype=TOKEN_DTYPE, mode="r")
+
+
+def load_metadata(path: str | os.PathLike) -> dict[str, Any]:
+    """读取 <name>.json；也可以传某个 .bin，自动找同名前缀的 json。"""
+    p = Path(path)
+    if p.suffix == ".bin":
+        stem = p.stem.rsplit("_", 1)[0]
+        p = p.with_name(f"{stem}.json")
+    with open(p) as f:
+        return json.load(f)
+
+
+# ===== zero/data/sources.py =====
+"""数据集登记表：名称、地址、许可证、语言（对应第 13 章）。
+
+GOAL.md 3.3 要求"只用许可证允许的公开数据，每个数据集都记录来源和许可证"。这里就是那张表：
+预训练前先在这里登记，模型卡里的数据清单也从这里生成。
+
+许可证一栏的来源：Hugging Face 数据集页面的 license 元数据（2026-09-26 查询）。
+页面没有标注、或者数据集本身混合了多种上游许可证的，写"待核实"，第二步下载前人工确认。
+这个模块只是元数据，不做任何下载。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+
+@dataclass(frozen=True)
+class DatasetSource:
+    name: str
+    url: str
+    license: str  # SPDX 风格的标识；拿不准写"待核实"
+    languages: tuple[str, ...]
+    stage: str  # "pretrain" | "midtrain" | "tiny"
+    description: str = ""
+    notes: str = ""
+    tags: tuple[str, ...] = field(default_factory=tuple)
+
+
+SOURCES: dict[str, DatasetSource] = {
+    s.name: s
+    for s in [
+        DatasetSource(
+            name="fineweb-edu",
+            url="https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu",
+            license="ODC-By-1.0",
+            languages=("en",),
+            stage="pretrain",
+            description="FineWeb 经教育价值分类器筛选后的英文网页，约 1.3T token（arXiv:2406.17557）。",
+            notes="ODC-By 要求署名；同时受 CommonCrawl 使用条款约束。",
+            tags=("web", "edu"),
+        ),
+        DatasetSource(
+            name="dclm-baseline",
+            url="https://huggingface.co/datasets/mlfoundations/dclm-baseline-1.0",
+            license="CC-BY-4.0",
+            languages=("en",),
+            stage="pretrain",
+            description="DCLM-baseline 1.0：约 4T token 的英文网页（arXiv:2406.11794）。",
+            tags=("web",),
+        ),
+        DatasetSource(
+            name="fineweb-2-zh",
+            url="https://huggingface.co/datasets/HuggingFaceFW/fineweb-2",
+            license="ODC-By-1.0",
+            languages=("zh",),
+            stage="pretrain",
+            description="FineWeb2 多语言网页中的中文子集（cmn_Hani），arXiv:2506.20920。",
+            notes="子集名称以下载时的数据集卡为准（待核实）。",
+            tags=("web",),
+        ),
+        DatasetSource(
+            name="ultra-fineweb",
+            url="https://huggingface.co/datasets/openbmb/Ultra-FineWeb",
+            license="Apache-2.0",
+            languages=("en", "zh"),
+            stage="pretrain",
+            description="对 FineWeb 与中文 FineWeb-edu-v2 做验证式高质量过滤后的中英网页（arXiv:2505.05427）。",
+            notes="页面标注 Apache-2.0，但中文部分来自多个上游语料，上游许可证待核实。",
+            tags=("web", "edu"),
+        ),
+        DatasetSource(
+            name="stack-edu",
+            url="https://huggingface.co/datasets/HuggingFaceTB/stack-edu",
+            license="待核实",
+            languages=("code",),
+            stage="pretrain",
+            description="从 The Stack v2（StarCoder2Data）中用教育价值分类器筛出的代码，约 125B token。",
+            notes="数据集页面未标注 license 元数据；内容来自 The Stack v2，受其条款与各仓库原始许可证约束。",
+            tags=("code", "edu"),
+        ),
+        DatasetSource(
+            name="finemath",
+            url="https://huggingface.co/datasets/HuggingFaceTB/finemath",
+            license="ODC-By-1.0",
+            languages=("en",),
+            stage="pretrain",
+            description="从 CommonCrawl 中用数学分类器筛出的数学教育内容，FineMath-3+ 约 34B token。",
+            tags=("math",),
+        ),
+        # ---- 仓库内置的极小语料（离线冒烟测试用，见 assets/tiny_corpus/LICENSES.md）----
+        DatasetSource(
+            name="tiny-shakespeare",
+            url="https://github.com/karpathy/char-rnn/blob/master/data/tinyshakespeare/input.txt",
+            license="Public-Domain",
+            languages=("en",),
+            stage="tiny",
+            description="莎士比亚作品选段，约 1.1MB。",
+        ),
+        DatasetSource(
+            name="tiny-chinese-poetry",
+            url="https://github.com/chinese-poetry/chinese-poetry",
+            license="MIT",
+            languages=("zh",),
+            stage="tiny",
+            description="chinese-poetry 仓库中论语、诗经、四书、蒙学、唐诗、宋词的一部分，转成纯文本。",
+        ),
+        DatasetSource(
+            name="tiny-code",
+            url="https://github.com/pengqianhan/From-0-to-AGI",
+            license="待核实",
+            languages=("code",),
+            stage="tiny",
+            description="本仓库自己的 Python 代码（zero/ 下的部分文件）。",
+            notes="本仓库尚未声明许可证，待仓库作者确定。",
+        ),
+    ]
+}
+
+
+def get_source(name: str) -> DatasetSource:
+    if name not in SOURCES:
+        raise KeyError(f"未登记的数据集：{name}。已登记：{', '.join(SOURCES)}")
+    return SOURCES[name]
+
+
+def list_sources(stage: str | None = None, language: str | None = None) -> list[DatasetSource]:
+    out = list(SOURCES.values())
+    if stage is not None:
+        out = [s for s in out if s.stage == stage]
+    if language is not None:
+        out = [s for s in out if language in s.languages]
+    return out
+
+
+def unverified_licenses() -> list[str]:
+    """许可证还没核实的数据集——第二步下载之前必须清零。"""
+    return [s.name for s in SOURCES.values() if "待核实" in s.license]
+
+
+# ===== zero/generate.py =====
+"""文本生成：采样 + 带 KV cache 的自回归解码（对应第 10 章）。
+
+- `sample_next(logits, temperature, top_p)`：从最后一个位置的 logits 里选下一个 token。
+  temperature=0 表示贪心（取最大值）；top_p < 1 表示 nucleus 采样：按概率从大到小排，
+  只在累计概率刚好达到 top_p 的那一小撮 token 里抽。
+- `generate(model, prompt_ids, max_new_tokens, ...)`：先把整段提示词喂进去（prefill），
+  之后每步只喂一个新 token（decode），K/V 从缓存里读。`use_cache=False` 时每一步都重算整段序列，
+  速度慢但逻辑最简单——`tests/test_kv_cache.py` 用它来验证缓存版的输出完全一致。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator, Sequence
+
+import torch
+
+from zero.kv_cache import KVCache
+from zero.model import Transformer
+
+
+def sample_next(
+    logits: torch.Tensor,
+    temperature: float = 1.0,
+    top_p: float = 1.0,
+    generator: torch.Generator | None = None,
+) -> torch.Tensor:
+    """logits: (B, V) → 下一个 token 的 id，形状 (B,)。"""
+    if temperature <= 0:
+        return logits.argmax(dim=-1)
+    probs = torch.softmax(logits.float() / temperature, dim=-1)
+    if top_p < 1.0:
+        sorted_probs, sorted_idx = torch.sort(probs, dim=-1, descending=True)
+        cum = torch.cumsum(sorted_probs, dim=-1)
+        # 保留"加上自己之前的累计概率 < top_p"的 token：保证至少留下概率最大的那个
+        keep = (cum - sorted_probs) < top_p
+        sorted_probs = sorted_probs * keep
+        sorted_probs = sorted_probs / sorted_probs.sum(dim=-1, keepdim=True)
+        choice = torch.multinomial(sorted_probs, 1, generator=generator)
+        return sorted_idx.gather(-1, choice).squeeze(-1)
+    return torch.multinomial(probs, 1, generator=generator).squeeze(-1)
+
+
+def _as_batch(
+    prompt_ids: Sequence[int] | torch.Tensor, device: torch.device
+) -> tuple[torch.Tensor, bool]:
+    if isinstance(prompt_ids, torch.Tensor):
+        t = prompt_ids.to(device=device, dtype=torch.long)
+        if t.dim() == 1:
+            return t[None, :], True
+        return t, False
+    return torch.tensor([list(prompt_ids)], dtype=torch.long, device=device), True
+
+
+@torch.no_grad()
+def generate_stream(
+    model: Transformer,
+    prompt_ids: Sequence[int] | torch.Tensor,
+    max_new_tokens: int,
+    temperature: float = 1.0,
+    top_p: float = 1.0,
+    use_cache: bool = True,
+    eos_id: int | None = None,
+    seed: int | None = None,
+) -> Iterator[torch.Tensor]:
+    """逐步产出新 token（形状 (B,)），适合命令行里边生成边打印。遇到 eos（batch=1 时）停止。"""
+    device = next(model.parameters()).device
+    tokens, _ = _as_batch(prompt_ids, device)
+    bsz, prompt_len = tokens.shape
+    max_len = model.config.max_seq_len
+    if prompt_len + max_new_tokens > max_len:
+        max_new_tokens = max_len - prompt_len
+    generator = None
+    if seed is not None:
+        generator = torch.Generator(device=device)
+        generator.manual_seed(seed)
+
+    was_training = model.training
+    model.eval()
+    try:
+        cache = None
+        if use_cache:
+            dtype = next(model.parameters()).dtype
+            cache = KVCache.from_config(
+                model.config,
+                bsz,
+                max_seq_len=prompt_len + max_new_tokens,
+                device=device,
+                dtype=dtype,
+            )
+        finished = torch.zeros(bsz, dtype=torch.bool, device=device)
+        seq = tokens
+        pos = 0
+        next_input = tokens
+        for _ in range(max_new_tokens):
+            if use_cache:
+                logits = model(next_input, kv_cache=cache, start_pos=pos)
+                pos += next_input.shape[1]
+            else:
+                logits = model(seq)
+            nxt = sample_next(logits[:, -1, :], temperature, top_p, generator)
+            if eos_id is not None:
+                nxt = torch.where(finished, torch.full_like(nxt, eos_id), nxt)
+                finished |= nxt == eos_id
+            yield nxt
+            seq = torch.cat([seq, nxt[:, None]], dim=1)
+            next_input = nxt[:, None]
+            if eos_id is not None and bool(finished.all()):
+                break
+    finally:
+        model.train(was_training)
+
+
+def generate(
+    model: Transformer,
+    prompt_ids: Sequence[int] | torch.Tensor,
+    max_new_tokens: int,
+    temperature: float = 1.0,
+    top_p: float = 1.0,
+    use_cache: bool = True,
+    eos_id: int | None = None,
+    seed: int | None = None,
+) -> list[int] | list[list[int]]:
+    """生成并返回**新 token**（不含提示词，也不含 eos）。
+
+    prompt_ids 是 list[int] 或一维张量时返回 list[int]；是 (B, T) 张量时返回 list[list[int]]。
+    """
+    _, single = _as_batch(prompt_ids, torch.device("cpu"))
+    steps = list(
+        generate_stream(
+            model, prompt_ids, max_new_tokens, temperature, top_p, use_cache, eos_id, seed
+        )
+    )
+    if not steps:
+        return [] if single else [[] for _ in range(len(prompt_ids))]
+    out = torch.stack(steps, dim=1).tolist()
+    results = []
+    for row in out:
+        if eos_id is not None and eos_id in row:
+            row = row[: row.index(eos_id)]
+        results.append(row)
+    return results[0] if single else results
+
+
+# ===== zero/hf.py =====
+"""与 Hugging Face Qwen3 格式互转（对应第 9、20 章）。
+
+`zero` 的模型结构与 `Qwen3ForCausalLM`（稠密版）一一对应，所以可以：
+
+- `load_from_hf_qwen3`：把官方实现的权重搬进 `zero.Transformer`，用来做 logits 对拍
+  （`tests/test_model_hf_parity.py`）；
+- `export_to_hf_qwen3`：把训练好的 `zero` 模型导出成 transformers / vLLM / llama.cpp 都认识的
+  目录（`config.json` + `model.safetensors` + 可选的分词器文件）。
+
+导出本身只依赖 `safetensors`，不需要安装 transformers；加载 HF 模型对象时才需要。
+
+参数名对照（i 为层号）：
+
+| zero | Hugging Face Qwen3 |
+|---|---|
+| tok_emb.weight | model.embed_tokens.weight |
+| layers.i.attn_norm.weight | model.layers.i.input_layernorm.weight |
+| layers.i.attn.wq/wk/wv/wo.weight | model.layers.i.self_attn.q_proj/k_proj/v_proj/o_proj.weight |
+| layers.i.attn.q_norm/k_norm.weight | model.layers.i.self_attn.q_norm/k_norm.weight |
+| layers.i.ffn_norm.weight | model.layers.i.post_attention_layernorm.weight |
+| layers.i.ffn.w_gate/w_up/w_down.weight | model.layers.i.mlp.gate_proj/up_proj/down_proj.weight |
+| norm.weight | model.norm.weight |
+| lm_head.weight | lm_head.weight（共享 embedding 时不单独保存） |
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import torch
+
+from zero.config import ModelConfig
+from zero.model import Transformer
+
+if TYPE_CHECKING:
+    from zero.tokenizer import Tokenizer
+
+_LAYER_MAP = {
+    "attn_norm.weight": "input_layernorm.weight",
+    "attn.wq.weight": "self_attn.q_proj.weight",
+    "attn.wk.weight": "self_attn.k_proj.weight",
+    "attn.wv.weight": "self_attn.v_proj.weight",
+    "attn.wo.weight": "self_attn.o_proj.weight",
+    "attn.q_norm.weight": "self_attn.q_norm.weight",
+    "attn.k_norm.weight": "self_attn.k_norm.weight",
+    "ffn_norm.weight": "post_attention_layernorm.weight",
+    "ffn.w_gate.weight": "mlp.gate_proj.weight",
+    "ffn.w_up.weight": "mlp.up_proj.weight",
+    "ffn.w_down.weight": "mlp.down_proj.weight",
+}
+
+
+def zero_to_hf_name(name: str) -> str:
+    """zero 参数名 → HF 参数名。"""
+    if name == "tok_emb.weight":
+        return "model.embed_tokens.weight"
+    if name == "norm.weight":
+        return "model.norm.weight"
+    if name == "lm_head.weight":
+        return "lm_head.weight"
+    if name.startswith("layers."):
+        _, idx, rest = name.split(".", 2)
+        if rest in _LAYER_MAP:
+            return f"model.layers.{idx}.{_LAYER_MAP[rest]}"
+    raise KeyError(f"无法映射的参数名：{name}")
+
+
+# ---------------------------------------------------------------------------
+# 配置互转
+# ---------------------------------------------------------------------------
+
+
+def config_to_hf_qwen3(config: ModelConfig, **extra: Any) -> dict[str, Any]:
+    """ModelConfig → Qwen3 的 config.json 内容（dict）。
+
+    同时写新旧两种 RoPE 字段：transformers>=5 读 `rope_parameters`，旧版本读 `rope_theta`/`rope_scaling`。
+    """
+    rope_parameters: dict[str, Any] = {
+        "rope_type": "default",
+        "rope_theta": float(config.rope_theta),
+    }
+    rope_scaling = None
+    if config.rope_scaling is not None:
+        rs = {k: v for k, v in config.rope_scaling.items() if k != "type"}
+        rope_parameters = {"rope_type": "yarn", "rope_theta": float(config.rope_theta), **rs}
+        rope_scaling = {"rope_type": "yarn", "type": "yarn", **rs}
+    d: dict[str, Any] = {
+        "architectures": ["Qwen3ForCausalLM"],
+        "model_type": "qwen3",
+        "vocab_size": config.vocab_size,
+        "hidden_size": config.dim,
+        "intermediate_size": config.ffn_dim,
+        "num_hidden_layers": config.n_layers,
+        "num_attention_heads": config.n_heads,
+        "num_key_value_heads": config.n_kv_heads,
+        "head_dim": config.head_dim,
+        "hidden_act": "silu",
+        "max_position_embeddings": config.max_seq_len,
+        "initializer_range": config.init_std,
+        "rms_norm_eps": config.norm_eps,
+        "tie_word_embeddings": config.tie_embeddings,
+        "rope_theta": float(config.rope_theta),
+        "rope_scaling": rope_scaling,
+        "rope_parameters": rope_parameters,
+        "attention_bias": False,
+        "attention_dropout": 0.0,
+        "use_sliding_window": False,
+        "sliding_window": None,
+        "max_window_layers": config.n_layers,
+        "use_cache": True,
+    }
+    d.update(extra)
+    return d
+
+
+def config_from_hf_qwen3(hf_config: Any) -> ModelConfig:
+    """HF 的 Qwen3Config（对象或 dict）→ ModelConfig。"""
+    get = (
+        hf_config.get
+        if isinstance(hf_config, dict)
+        else (lambda k, default=None: getattr(hf_config, k, default))
+    )
+    rope = get("rope_parameters") or {}
+    rope_scaling_old = get("rope_scaling") or {}
+    theta = rope.get("rope_theta", get("rope_theta", 10000.0))
+    rope_type = (
+        rope.get("rope_type")
+        or rope_scaling_old.get("rope_type")
+        or rope_scaling_old.get("type")
+        or "default"
+    )
+    scaling = None
+    if rope_type == "yarn":
+        src = rope if rope.get("rope_type") == "yarn" else rope_scaling_old
+        scaling = {"type": "yarn"}
+        for k in (
+            "factor",
+            "original_max_position_embeddings",
+            "beta_fast",
+            "beta_slow",
+            "attention_factor",
+        ):
+            if src.get(k) is not None:
+                scaling[k] = src[k]
+    elif rope_type != "default":
+        raise ValueError(f"暂不支持的 rope_type：{rope_type}")
+    if get("attention_bias", False):
+        raise ValueError("zero 的模型没有 bias，不能加载 attention_bias=True 的模型")
+    return ModelConfig(
+        vocab_size=get("vocab_size"),
+        dim=get("hidden_size"),
+        n_layers=get("num_hidden_layers"),
+        n_heads=get("num_attention_heads"),
+        n_kv_heads=get("num_key_value_heads") or get("num_attention_heads"),
+        head_dim=get("head_dim") or get("hidden_size") // get("num_attention_heads"),
+        ffn_dim=get("intermediate_size"),
+        rope_theta=float(theta),
+        rope_scaling=scaling,
+        max_seq_len=get("max_position_embeddings"),
+        norm_eps=get("rms_norm_eps", 1e-6),
+        qk_norm=True,
+        tie_embeddings=bool(get("tie_word_embeddings", False)),
+        init_std=get("initializer_range", 0.02),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 加载
+# ---------------------------------------------------------------------------
+
+
+def _read_hf_dir(path: Path) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
+    from safetensors.torch import load_file
+
+    with open(path / "config.json") as f:
+        cfg = json.load(f)
+    sd: dict[str, torch.Tensor] = {}
+    files = sorted(path.glob("*.safetensors"))
+    if not files:
+        raise FileNotFoundError(f"{path} 里没有 .safetensors 文件")
+    for fp in files:
+        sd.update(load_file(str(fp)))
+    return sd, cfg
+
+
+def load_from_hf_qwen3(
+    hf_model_or_state_dict: Any, config: ModelConfig | None = None, strict: bool = True
+) -> Transformer:
+    """从 HF Qwen3 加载权重，返回 `zero.Transformer`。
+
+    参数可以是：`Qwen3ForCausalLM` 对象、它的 state_dict、或一个导出的目录路径（含 config.json 与 safetensors）。
+    传 state_dict 时必须同时给 config。
+    """
+    if isinstance(hf_model_or_state_dict, str | os.PathLike):
+        sd, hf_cfg = _read_hf_dir(Path(hf_model_or_state_dict))
+        config = config or config_from_hf_qwen3(hf_cfg)
+    elif isinstance(hf_model_or_state_dict, dict):
+        sd = hf_model_or_state_dict
+        if config is None:
+            raise ValueError("传 state_dict 时需要同时传 config")
+    else:
+        sd = hf_model_or_state_dict.state_dict()
+        config = config or config_from_hf_qwen3(hf_model_or_state_dict.config)
+
+    model = Transformer(config)
+    new_sd = {}
+    for name in model.state_dict():
+        if name == "lm_head.weight" and config.tie_embeddings:
+            continue  # 共享权重：跟着 tok_emb 走
+        hf_name = zero_to_hf_name(name)
+        if hf_name not in sd:
+            if name == "lm_head.weight" and "model.embed_tokens.weight" in sd:
+                new_sd[name] = sd["model.embed_tokens.weight"]
+                continue
+            raise KeyError(f"HF 权重里缺少 {hf_name}（对应 zero 的 {name}）")
+        new_sd[name] = sd[hf_name]
+    missing, unexpected = model.load_state_dict(new_sd, strict=False)
+    missing = [m for m in missing if not (m == "lm_head.weight" and config.tie_embeddings)]
+    if strict and (missing or unexpected):
+        raise RuntimeError(f"加载不完整：missing={missing} unexpected={unexpected}")
+    return model
+
+
+# ---------------------------------------------------------------------------
+# 导出
+# ---------------------------------------------------------------------------
+
+
+def export_to_hf_qwen3(
+    model: Transformer,
+    config: ModelConfig | None,
+    out_dir: str | os.PathLike,
+    tokenizer: Tokenizer | None = None,
+    dtype: torch.dtype = torch.bfloat16,
+) -> Path:
+    """导出成 HF 目录：config.json、generation_config.json、model.safetensors，以及（给了分词器时）
+    tokenizer.json / tokenizer_config.json / special_tokens_map.json。返回目录路径。"""
+    from safetensors.torch import save_file
+
+    config = config or model.config
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    tensors: dict[str, torch.Tensor] = {}
+    for name, tensor in model.state_dict().items():
+        if name == "lm_head.weight" and config.tie_embeddings:
+            continue  # safetensors 不允许共享存储；HF 通过 tie_word_embeddings=true 自动绑回去
+        tensors[zero_to_hf_name(name)] = tensor.detach().to("cpu", dtype).contiguous()
+    save_file(tensors, str(out / "model.safetensors"), metadata={"format": "pt"})
+
+    extra: dict[str, Any] = {
+        "torch_dtype": str(dtype).removeprefix("torch."),
+        "dtype": str(dtype).removeprefix("torch."),
+    }
+    gen: dict[str, Any] = {"do_sample": True, "temperature": 0.7, "top_p": 0.8}
+    if tokenizer is not None:
+        eos = tokenizer.eos_id
+        extra.update({"eos_token_id": eos, "bos_token_id": None, "pad_token_id": tokenizer.eot_id})
+        gen.update({"eos_token_id": eos, "pad_token_id": tokenizer.eot_id})
+    with open(out / "config.json", "w") as f:
+        json.dump(config_to_hf_qwen3(config, **extra), f, indent=2, ensure_ascii=False)
+    with open(out / "generation_config.json", "w") as f:
+        json.dump(gen, f, indent=2)
+    if tokenizer is not None:
+        tokenizer.save_hf(out, model_max_length=config.max_seq_len)
+    return out
+
+
+# ===== zero/kv_cache.py =====
+"""KV cache：推理时把算过的 K/V 存起来，下一个 token 不用重算（对应第 10、21 章）。
+
+自回归生成时，第 t 步的注意力要用到前面所有位置的 K 和 V。不缓存的话每一步都要把整段
+序列重新过一遍模型，代价是 O(T^2)；缓存以后每一步只算新 token 的 q/k/v，代价 O(T)。
+
+这里的实现是"预分配"的：一开始就按 (层数, batch, kv 头数, 最大长度, head_dim) 分配好
+显存，之后只往里写，不做拼接（`torch.cat` 每步都会重新分配内存）。注意缓存的是 **K/V 头**
+的数量（GQA 下比查询头少），这正是 GQA 能省 KV cache 的原因，第 21 章会算这笔账。
+
+写入的 K 是已经做过 QK-Norm 和 RoPE 旋转的，所以读出来可以直接用。
+"""
+
+from __future__ import annotations
+
+import torch
+
+from zero.config import ModelConfig
+
+
+class KVCache:
+    """每层一块预分配的 K/V 缓存。
+
+    形状：k[layer], v[layer] 都是 (batch, n_kv_heads, max_seq_len, head_dim)。
+    位置由调用方的 `start_pos` 决定（和 `Transformer.forward(tokens, kv_cache, start_pos)` 一致）。
+    """
+
+    def __init__(
+        self,
+        n_layers: int,
+        batch_size: int,
+        max_seq_len: int,
+        n_kv_heads: int,
+        head_dim: int,
+        device: torch.device | str = "cpu",
+        dtype: torch.dtype = torch.float32,
+    ) -> None:
+        shape = (n_layers, batch_size, n_kv_heads, max_seq_len, head_dim)
+        self.k = torch.zeros(shape, device=device, dtype=dtype)
+        self.v = torch.zeros(shape, device=device, dtype=dtype)
+        self.max_seq_len = max_seq_len
+        self.batch_size = batch_size
+        self.seq_len = 0  # 已经写入的最大位置 + 1（仅作记录，方便调试）
+
+    @classmethod
+    def from_config(
+        cls,
+        config: ModelConfig,
+        batch_size: int,
+        max_seq_len: int | None = None,
+        device: torch.device | str = "cpu",
+        dtype: torch.dtype = torch.float32,
+    ) -> KVCache:
+        assert config.head_dim is not None
+        return cls(
+            n_layers=config.n_layers,
+            batch_size=batch_size,
+            max_seq_len=max_seq_len or config.max_seq_len,
+            n_kv_heads=config.n_kv_heads,
+            head_dim=config.head_dim,
+            device=device,
+            dtype=dtype,
+        )
+
+    def update(
+        self, layer_idx: int, start_pos: int, k: torch.Tensor, v: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """把新算出的 k/v（形状 (B, n_kv_heads, T, head_dim)）写到 [start_pos, start_pos+T)，
+        返回这一层从 0 到 start_pos+T 的全部 K/V（视图，不拷贝）。"""
+        bsz, _, t, _ = k.shape
+        end = start_pos + t
+        if end > self.max_seq_len:
+            raise ValueError(f"KV cache 溢出：需要 {end} 个位置，只预分配了 {self.max_seq_len}")
+        if bsz > self.batch_size:
+            raise ValueError(f"batch={bsz} 超过了 KV cache 的 batch_size={self.batch_size}")
+        self.k[layer_idx, :bsz, :, start_pos:end] = k.to(self.k.dtype)
+        self.v[layer_idx, :bsz, :, start_pos:end] = v.to(self.v.dtype)
+        self.seq_len = max(self.seq_len, end)
+        return self.k[layer_idx, :bsz, :, :end], self.v[layer_idx, :bsz, :, :end]
+
+    def reset(self) -> None:
+        self.seq_len = 0
+
+    def nbytes(self) -> int:
+        """缓存占用的字节数（K 和 V 合计）。"""
+        return self.k.numel() * self.k.element_size() * 2
+
+
+# ===== zero/model.py =====
+"""主线模型：与 Qwen3 稠密模型结构兼容的 Decoder-only Transformer（对应第 8、9、10、15 章）。
+
+组件（都是"共识技术"，见 GOAL.md 3.3）：
+
+- `RMSNorm`：只做缩放不做平移的归一化，Pre-Norm 放在每个子层之前；
+- `RotaryEmbedding`：RoPE 旋转位置编码，含 YaRN 长上下文缩放（第 15 章）；
+- `Attention`：GQA（多个查询头共享一组 K/V）+ QK-Norm（对每个头的 q、k 做 RMSNorm）
+  + PyTorch 的 `scaled_dot_product_attention`（在 GPU 上会自动选 FlashAttention 内核）
+  + 可选 KV cache（第 10 章）；
+- `SwiGLU`：门控前馈网络 down(silu(gate(x)) * up(x))；
+- `Block`：x + attn(norm(x))，再 x + ffn(norm(x))；
+- `Transformer`：embedding → N 个 Block → 最后的 RMSNorm → lm_head（可与 embedding 共享权重）。
+
+所有线性层都没有 bias。参数命名与 Hugging Face `Qwen3ForCausalLM` 的对应关系见 `zero/hf.py`，
+`tests/test_model_hf_parity.py` 保证两者的 logits 一致。
+"""
+
+from __future__ import annotations
+
+import math
+from typing import Any
+
+import torch
+import torch.nn.functional as F
+from torch import nn
+
+from zero.config import ModelConfig
+from zero.kv_cache import KVCache
+
+# ---------------------------------------------------------------------------
+# RMSNorm
+# ---------------------------------------------------------------------------
+
+
+class RMSNorm(nn.Module):
+    """y = x / sqrt(mean(x^2) + eps) * weight。
+
+    与 HF 的 Qwen3RMSNorm 完全一致：先转 float32 算归一化，转回输入精度后再乘权重。
+    """
+
+    def __init__(self, dim: int, eps: float = 1e-6) -> None:
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        dtype = x.dtype
+        x = x.float()
+        x = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+        return self.weight * x.to(dtype)
+
+
+# ---------------------------------------------------------------------------
+# RoPE（含 YaRN）
+# ---------------------------------------------------------------------------
+
+
+def compute_rope_inv_freq(
+    head_dim: int, theta: float, scaling: dict[str, Any] | None = None
+) -> tuple[torch.Tensor, float]:
+    """返回 (inv_freq, attention_scaling)。
+
+    默认 RoPE：inv_freq_i = theta^(-2i/d)，i = 0..d/2-1。
+
+    YaRN（Peng et al. 2023, arXiv:2309.00071），实现与 transformers 的 `_compute_yarn_parameters` 一致：
+    - 高频维度（波长远小于原训练长度，转了很多圈）保持原频率 —— "外推"；
+    - 低频维度（波长比原训练长度还长）把频率除以 factor —— "内插"；
+    - 中间用线性斜坡过渡，边界由 beta_fast / beta_slow（单位：圈数）决定；
+    - cos/sin 额外乘 attention_scaling = 0.1 * ln(factor) + 1，补偿内插后注意力分布变"平"。
+    """
+    dim = head_dim
+    pos_freqs = theta ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim)
+    if scaling is None:
+        return 1.0 / pos_freqs, 1.0
+
+    factor = float(scaling["factor"])
+    orig_max = int(scaling["original_max_position_embeddings"])
+    beta_fast = float(scaling.get("beta_fast") or 32)
+    beta_slow = float(scaling.get("beta_slow") or 1)
+    attention_factor = scaling.get("attention_factor")
+    if attention_factor is None:
+        attention_factor = 1.0 if factor <= 1 else 0.1 * math.log(factor) + 1.0
+
+    def correction_dim(num_rotations: float) -> float:
+        # 在原训练长度内恰好转 num_rotations 圈的维度编号（可以是小数）
+        return (dim * math.log(orig_max / (num_rotations * 2 * math.pi))) / (2 * math.log(theta))
+
+    low = max(math.floor(correction_dim(beta_fast)), 0)
+    high = min(math.ceil(correction_dim(beta_slow)), dim - 1)
+    if low == high:
+        high += 0.001  # 防止除零
+    ramp = torch.clamp((torch.arange(dim // 2, dtype=torch.float32) - low) / (high - low), 0, 1)
+    extrapolation_weight = 1 - ramp  # 1 = 完全保持原频率（高频），0 = 完全内插（低频）
+
+    inv_freq_extrapolation = 1.0 / pos_freqs
+    inv_freq_interpolation = 1.0 / (factor * pos_freqs)
+    inv_freq = (
+        inv_freq_interpolation * (1 - extrapolation_weight)
+        + inv_freq_extrapolation * extrapolation_weight
+    )
+    return inv_freq, float(attention_factor)
+
+
+class RotaryEmbedding(nn.Module):
+    """预计算 [0, max_seq_len) 每个位置的 cos/sin，形状 (max_seq_len, head_dim)。
+
+    采用 HF/Qwen 的"前后两半配对"写法：维度 i 与 i + d/2 组成一对旋转（而不是相邻两维），
+    这样才能和官方权重对上。
+    """
+
+    def __init__(
+        self,
+        head_dim: int,
+        max_seq_len: int,
+        theta: float = 10000.0,
+        scaling: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__()
+        self.head_dim = head_dim
+        self.max_seq_len = max_seq_len
+        self.theta = theta
+        self.scaling = scaling
+        cos, sin = self._build()
+        # 非持久 buffer：不进 state_dict，改了 theta / YaRN 之后重新构建即可（第 15 章长上下文扩展）
+        self.register_buffer("cos", cos, persistent=False)
+        self.register_buffer("sin", sin, persistent=False)
+
+    def _build(self) -> tuple[torch.Tensor, torch.Tensor]:
+        inv_freq, attn_scaling = compute_rope_inv_freq(self.head_dim, self.theta, self.scaling)
+        t = torch.arange(self.max_seq_len, dtype=torch.float32)
+        freqs = torch.outer(t, inv_freq)  # (T, d/2)
+        emb = torch.cat((freqs, freqs), dim=-1)  # (T, d)
+        return emb.cos() * attn_scaling, emb.sin() * attn_scaling
+
+    def reset_buffers(self, device: torch.device | str) -> None:
+        """在真实设备上重新计算 cos/sin（模型在 meta 设备上构建、to_empty 之后调用）。"""
+        with torch.device(device):
+            cos, sin = self._build()
+        self.cos, self.sin = cos, sin
+
+    def forward(self, start_pos: int, seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
+        end = start_pos + seq_len
+        if end > self.max_seq_len:
+            raise ValueError(f"位置 {end} 超过了 RoPE 预计算的 max_seq_len={self.max_seq_len}")
+        return self.cos[start_pos:end], self.sin[start_pos:end]
+
+
+def rotate_half(x: torch.Tensor) -> torch.Tensor:
+    x1, x2 = x.chunk(2, dim=-1)
+    return torch.cat((-x2, x1), dim=-1)
+
+
+def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    """x: (B, H, T, D)；cos/sin: (T, D)。"""
+    cos = cos.to(x.dtype)
+    sin = sin.to(x.dtype)
+    return x * cos + rotate_half(x) * sin
+
+
+# ---------------------------------------------------------------------------
+# Attention / FFN / Block
+# ---------------------------------------------------------------------------
+
+
+class Attention(nn.Module):
+    """GQA + QK-Norm + SDPA，可选 KV cache。"""
+
+    def __init__(self, config: ModelConfig) -> None:
+        super().__init__()
+        assert config.head_dim is not None
+        self.n_heads = config.n_heads
+        self.n_kv_heads = config.n_kv_heads
+        self.head_dim = config.head_dim
+        self.wq = nn.Linear(config.dim, config.q_dim, bias=False)
+        self.wk = nn.Linear(config.dim, config.kv_dim, bias=False)
+        self.wv = nn.Linear(config.dim, config.kv_dim, bias=False)
+        self.wo = nn.Linear(config.q_dim, config.dim, bias=False)
+        # QK-Norm：在每个头的 head_dim 上做 RMSNorm（权重各头共享），在 RoPE 之前
+        self.q_norm = RMSNorm(self.head_dim, config.norm_eps) if config.qk_norm else nn.Identity()
+        self.k_norm = RMSNorm(self.head_dim, config.norm_eps) if config.qk_norm else nn.Identity()
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        kv_cache: KVCache | None = None,
+        layer_idx: int = 0,
+        start_pos: int = 0,
+    ) -> torch.Tensor:
+        bsz, seqlen, _ = x.shape
+        q = self.q_norm(self.wq(x).view(bsz, seqlen, self.n_heads, self.head_dim)).transpose(1, 2)
+        k = self.k_norm(self.wk(x).view(bsz, seqlen, self.n_kv_heads, self.head_dim)).transpose(
+            1, 2
+        )
+        v = self.wv(x).view(bsz, seqlen, self.n_kv_heads, self.head_dim).transpose(1, 2)
+        q = apply_rope(q, cos, sin)
+        k = apply_rope(k, cos, sin)
+
+        if kv_cache is not None:
+            k, v = kv_cache.update(layer_idx, start_pos, k, v)
+            k, v = k.to(q.dtype), v.to(q.dtype)
+
+        kv_len = k.shape[2]
+        past = kv_len - seqlen
+        if past == 0:
+            # 没有历史：标准因果掩码
+            attn_mask, is_causal = None, seqlen > 1
+        elif seqlen == 1:
+            # 只有一个新 token：它可以看见全部历史，不需要掩码
+            attn_mask, is_causal = None, False
+        else:
+            # 有历史又一次喂多个 token（例如分块 prefill）：第 i 个新 token 能看见位置 <= past + i
+            i = torch.arange(seqlen, device=x.device)[:, None]
+            j = torch.arange(kv_len, device=x.device)[None, :]
+            attn_mask, is_causal = j <= (past + i), False
+
+        # GQA：enable_gqa 让 SDPA 自己广播 K/V 头，不必 repeat_interleave 出多份拷贝
+        out = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=attn_mask,
+            is_causal=is_causal,
+            enable_gqa=self.n_kv_heads != self.n_heads,
+        )
+        out = out.transpose(1, 2).reshape(bsz, seqlen, self.n_heads * self.head_dim)
+        return self.wo(out)
+
+
+class SwiGLU(nn.Module):
+    """FFN(x) = W_down( silu(W_gate x) * (W_up x) )。"""
+
+    def __init__(self, dim: int, ffn_dim: int) -> None:
+        super().__init__()
+        self.w_gate = nn.Linear(dim, ffn_dim, bias=False)
+        self.w_up = nn.Linear(dim, ffn_dim, bias=False)
+        self.w_down = nn.Linear(ffn_dim, dim, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.w_down(F.silu(self.w_gate(x)) * self.w_up(x))
+
+
+class Block(nn.Module):
+    """Pre-Norm 残差块：x = x + attn(norm(x))；x = x + ffn(norm(x))。"""
+
+    def __init__(self, config: ModelConfig, layer_idx: int) -> None:
+        super().__init__()
+        self.layer_idx = layer_idx
+        self.attn_norm = RMSNorm(config.dim, config.norm_eps)
+        self.attn = Attention(config)
+        self.ffn_norm = RMSNorm(config.dim, config.norm_eps)
+        self.ffn = SwiGLU(config.dim, config.ffn_dim)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        kv_cache: KVCache | None = None,
+        start_pos: int = 0,
+    ) -> torch.Tensor:
+        x = x + self.attn(self.attn_norm(x), cos, sin, kv_cache, self.layer_idx, start_pos)
+        x = x + self.ffn(self.ffn_norm(x))
+        return x
+
+
+# ---------------------------------------------------------------------------
+# Transformer
+# ---------------------------------------------------------------------------
+
+
+class Transformer(nn.Module):
+    def __init__(self, config: ModelConfig) -> None:
+        super().__init__()
+        config.validate()
+        assert config.head_dim is not None
+        self.config = config
+        self.tok_emb = nn.Embedding(config.vocab_size, config.dim)
+        self.layers = nn.ModuleList([Block(config, i) for i in range(config.n_layers)])
+        self.norm = RMSNorm(config.dim, config.norm_eps)
+        self.lm_head = nn.Linear(config.dim, config.vocab_size, bias=False)
+        if config.tie_embeddings:
+            self.lm_head.weight = self.tok_emb.weight
+        self.rope = RotaryEmbedding(
+            config.head_dim, config.max_seq_len, config.rope_theta, config.rope_scaling
+        )
+        self.init_weights()
+
+    # ---- 初始化 ----
+    @torch.no_grad()
+    def init_weights(self) -> None:
+        """正态初始化 N(0, init_std)；两个"写回残差流"的投影（wo、w_down）再除以 sqrt(2 * n_layers)，
+        让残差流的方差不随层数增长（GPT-2 / OLMo 等的常见做法）。RMSNorm 权重为 1。"""
+        std = self.config.init_std
+        out_std = std / math.sqrt(2 * self.config.n_layers)
+        for name, module in self.named_modules():
+            if isinstance(module, nn.Linear):
+                s = out_std if name.endswith(("attn.wo", "ffn.w_down")) else std
+                nn.init.normal_(module.weight, mean=0.0, std=s)
+            elif isinstance(module, nn.Embedding):
+                nn.init.normal_(module.weight, mean=0.0, std=std)
+            elif isinstance(module, RMSNorm):
+                nn.init.ones_(module.weight)
+
+    # ---- 前向 ----
+    def forward(
+        self, tokens: torch.Tensor, kv_cache: KVCache | None = None, start_pos: int = 0
+    ) -> torch.Tensor:
+        """tokens: (B, T) int64 → logits: (B, T, vocab_size)。
+
+        有 kv_cache 时，tokens 是从位置 start_pos 开始的新 token，历史 K/V 从缓存里读。
+        """
+        _, seqlen = tokens.shape
+        cos, sin = self.rope(start_pos, seqlen)
+        h = self.tok_emb(tokens)
+        for layer in self.layers:
+            h = layer(h, cos, sin, kv_cache, start_pos)
+        h = self.norm(h)
+        return self.lm_head(h)
+
+    def loss(
+        self, tokens: torch.Tensor, targets: torch.Tensor, ignore_index: int = -100
+    ) -> torch.Tensor:
+        """语言模型交叉熵（在 float32 上算）。targets 里等于 ignore_index 的位置不计入（SFT 的 loss mask 用）。"""
+        logits = self(tokens)
+        return cross_entropy_loss(logits, targets, ignore_index)
+
+    # ---- 统计 ----
+    def num_params(self, non_embedding: bool = False) -> int:
+        """参数量（共享权重只算一次）。non_embedding=True 时去掉 token embedding
+        （以及不共享时的 lm_head），即 Kaplan 等人 scaling law 里的 N。"""
+        n = sum(p.numel() for p in self.parameters())
+        if non_embedding:
+            n -= self.tok_emb.weight.numel()
+            if not self.config.tie_embeddings:
+                n -= self.lm_head.weight.numel()
+        return n
+
+    def flops_per_token(self, seq_len: int | None = None) -> float:
+        return estimate_flops_per_token(self.config, seq_len or self.config.max_seq_len)
+
+
+def cross_entropy_loss(
+    logits: torch.Tensor, targets: torch.Tensor, ignore_index: int = -100
+) -> torch.Tensor:
+    return F.cross_entropy(
+        logits.float().view(-1, logits.size(-1)), targets.reshape(-1), ignore_index=ignore_index
+    )
+
+
+def count_params(config: ModelConfig) -> dict[str, int]:
+    """不分配内存地数参数：返回 total / embedding / non_embedding 以及各部分明细。"""
+    assert config.head_dim is not None
+    d, L = config.dim, config.n_layers
+    attn = d * config.q_dim + 2 * d * config.kv_dim + config.q_dim * d
+    qk_norm = 2 * config.head_dim if config.qk_norm else 0
+    ffn = 3 * d * config.ffn_dim
+    norms = 2 * d
+    per_layer = attn + qk_norm + ffn + norms
+    emb = config.vocab_size * d
+    head = 0 if config.tie_embeddings else config.vocab_size * d
+    total = emb + head + L * per_layer + d
+    return {
+        "total": total,
+        "embedding": emb + head,
+        "non_embedding": total - emb - head,
+        "per_layer": per_layer,
+        "attention_per_layer": attn + qk_norm,
+        "ffn_per_layer": ffn,
+    }
+
+
+def estimate_flops_per_token(config: ModelConfig, seq_len: int) -> float:
+    """训练时每个 token 的浮点运算量（前向 + 反向），用于 MFU 和成本估算。
+
+    = 6 * N_matmul + 12 * L * q_dim * T
+
+    - N_matmul：所有参与矩阵乘法的参数，包括 lm_head（即使与 embedding 共享，输出投影的乘法照样要算），
+      不包括 embedding 查表和 RMSNorm；前向每个参数 2 FLOPs、反向 4 FLOPs，合计 6（Kaplan 2020）；
+    - 注意力里 QK^T 和 AV 两次矩阵乘：前向每 token 4 * q_dim * T，乘 3 得前向+反向 12 * q_dim * T
+      （PaLM 附录 B 的写法；这里没有为因果掩码减半，与 PaLM / nanochat 的口径一致）。
+    """
+    assert config.head_dim is not None
+    d, L = config.dim, config.n_layers
+    n_matmul = L * (
+        d * config.q_dim + 2 * d * config.kv_dim + config.q_dim * d + 3 * d * config.ffn_dim
+    )
+    n_matmul += d * config.vocab_size
+    return 6.0 * n_matmul + 12.0 * L * config.q_dim * seq_len
+
+
+# ===== zero/tokenizer.py =====
+"""分词器：byte-level BPE（对应第 7、13 章）。
+
+基于 Hugging Face 的 `tokenizers` 库（Rust 实现，训练 GB 级语料也只要几分钟）。设计与 GPT-4 / Qwen
+系列一致：
+
+1. **规范化**：Unicode NFC（把"é = e + ◌́"这类组合字符合成一个码位）；
+2. **预切分**：先用正则把文本切成"词"（字母串、单个数字、标点串、空白），BPE 合并不跨越这些边界。
+   数字按单个切（`\\p{N}`），这对算术有帮助（Qwen、Llama 3 都这么做）；
+3. **字节级**：每个"词"先变成 UTF-8 字节，256 个字节都在初始词表里，所以任何文本都能编码，
+   永远不会出现 [UNK]；
+4. **BPE 合并**：反复把语料里最常见的相邻两个符号合成一个新符号，直到词表达到 vocab_size。
+
+特殊 token（对话、工具调用、预留位）放在词表最前面，id 固定：
+
+    0 <|endoftext|>  文档分隔 / 预训练的 EOS
+    1 <|im_start|>   2 <|im_end|>          对话模板（ChatML，与 Qwen 一致）
+    3 <tool_call>    4 </tool_call>        工具调用
+    5 <tool_response> 6 </tool_response>   工具返回
+    7 <think>        8 </think>            思考
+    9–15 <|reserved_0|> … <|reserved_6|>  预留，以后要加新特殊 token 时不用改词表大小
+
+注意：特殊 token 在 encode 时会从原文里直接匹配出来（`tokenizers` 的行为）。预训练网页里偶尔会出现
+"<|endoftext|>" 这样的字面字符串，数据清洗时应当先去掉（见 zero/data/clean.py）。
+
+`bytes_per_token(texts)` 统计压缩率：平均每个 token 覆盖多少个 UTF-8 字节，越大说明越省 token，
+第 13 章用它比较不同词表大小在中文、英文、代码上的表现。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from collections.abc import Iterable, Sequence
+from pathlib import Path
+
+from tokenizers import Regex, decoders, models, normalizers, pre_tokenizers, trainers
+from tokenizers import Tokenizer as HFTokenizer
+
+ENDOFTEXT = "<|endoftext|>"
+IM_START = "<|im_start|>"
+IM_END = "<|im_end|>"
+TOOL_CALL_START = "<tool_call>"
+TOOL_CALL_END = "</tool_call>"
+TOOL_RESPONSE_START = "<tool_response>"
+TOOL_RESPONSE_END = "</tool_response>"
+THINK_START = "<think>"
+THINK_END = "</think>"
+NUM_RESERVED = 7
+
+DEFAULT_SPECIAL_TOKENS: list[str] = [
+    ENDOFTEXT,
+    IM_START,
+    IM_END,
+    TOOL_CALL_START,
+    TOOL_CALL_END,
+    TOOL_RESPONSE_START,
+    TOOL_RESPONSE_END,
+    THINK_START,
+    THINK_END,
+] + [f"<|reserved_{i}|>" for i in range(NUM_RESERVED)]
+
+# 与 Qwen2/Qwen3 分词器相同的预切分正则（来自其 tokenizer.json）
+PRETOKENIZE_REGEX = (
+    r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*"
+    r"|\s*[\r\n]+|\s+(?!\S)|\s+"
+)
+
+
+def _build_empty_bpe() -> HFTokenizer:
+    tok = HFTokenizer(models.BPE(byte_fallback=False))
+    tok.normalizer = normalizers.NFC()
+    tok.pre_tokenizer = pre_tokenizers.Sequence(
+        [
+            pre_tokenizers.Split(Regex(PRETOKENIZE_REGEX), behavior="isolated", invert=False),
+            pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False),
+        ]
+    )
+    tok.decoder = decoders.ByteLevel()
+    return tok
+
+
+class Tokenizer:
+    """对 `tokenizers.Tokenizer` 的薄封装：只暴露本课需要的接口。"""
+
+    def __init__(self, hf_tokenizer: HFTokenizer) -> None:
+        self._tok = hf_tokenizer
+        self.special_tokens: dict[str, int] = {
+            t.content: i for i, t in hf_tokenizer.get_added_tokens_decoder().items() if t.special
+        }
+
+    # ---- 编解码 ----
+    def encode(self, text: str) -> list[int]:
+        return self._tok.encode(text, add_special_tokens=False).ids
+
+    def encode_batch(self, texts: Sequence[str]) -> list[list[int]]:
+        return [e.ids for e in self._tok.encode_batch(list(texts), add_special_tokens=False)]
+
+    def decode(self, ids: Sequence[int], skip_special_tokens: bool = False) -> str:
+        return self._tok.decode(list(ids), skip_special_tokens=skip_special_tokens)
+
+    def id_to_token(self, idx: int) -> str | None:
+        return self._tok.id_to_token(idx)
+
+    def token_to_id(self, token: str) -> int | None:
+        return self._tok.token_to_id(token)
+
+    def special_id(self, token: str) -> int:
+        if token not in self.special_tokens:
+            raise KeyError(f"不是特殊 token：{token}（已有：{list(self.special_tokens)}）")
+        return self.special_tokens[token]
+
+    @property
+    def vocab_size(self) -> int:
+        return self._tok.get_vocab_size(with_added_tokens=True)
+
+    @property
+    def eot_id(self) -> int:
+        """<|endoftext|>：预训练文档之间的分隔符。"""
+        return self.special_id(ENDOFTEXT)
+
+    @property
+    def eos_id(self) -> int:
+        """Base 模型的生成结束符（与 Qwen3 Base 一致用 <|endoftext|>；对话模型用 <|im_end|>）。"""
+        return self.eot_id
+
+    @property
+    def im_start_id(self) -> int:
+        return self.special_id(IM_START)
+
+    @property
+    def im_end_id(self) -> int:
+        return self.special_id(IM_END)
+
+    # ---- 统计 ----
+    def bytes_per_token(self, texts: Iterable[str]) -> float:
+        """压缩率：总 UTF-8 字节数 / 总 token 数。"""
+        texts = list(texts)
+        n_bytes = sum(len(t.encode("utf-8")) for t in texts)
+        n_tokens = sum(len(ids) for ids in self.encode_batch(texts))
+        return n_bytes / max(n_tokens, 1)
+
+    def hash(self) -> str:
+        """分词器内容的哈希（写进分片元数据，防止拿 A 分词器切的数据去训 B 分词器的模型）。"""
+        return hashlib.sha256(self._tok.to_str().encode("utf-8")).hexdigest()[:16]
+
+    # ---- 存取 ----
+    def save(self, path: str | os.PathLike) -> Path:
+        """存成 tokenizer.json。path 是目录时写到 path/tokenizer.json。"""
+        p = Path(path)
+        if p.suffix != ".json":
+            p.mkdir(parents=True, exist_ok=True)
+            p = p / "tokenizer.json"
+        else:
+            p.parent.mkdir(parents=True, exist_ok=True)
+        self._tok.save(str(p))
+        return p
+
+    @classmethod
+    def load(cls, path: str | os.PathLike) -> Tokenizer:
+        p = Path(path)
+        if p.is_dir():
+            p = p / "tokenizer.json"
+        return cls(HFTokenizer.from_file(str(p)))
+
+    def save_hf(
+        self, out_dir: str | os.PathLike, model_max_length: int = 32768, eos_token: str = ENDOFTEXT
+    ) -> None:
+        """写出 transformers 的 `AutoTokenizer` 能直接读的文件。"""
+        out = Path(out_dir)
+        self.save(out / "tokenizer.json")
+        added = {
+            str(i): {
+                "content": t,
+                "lstrip": False,
+                "normalized": False,
+                "rstrip": False,
+                "single_word": False,
+                "special": True,
+            }
+            for t, i in sorted(self.special_tokens.items(), key=lambda kv: kv[1])
+        }
+        tok_cfg = {
+            "tokenizer_class": "PreTrainedTokenizerFast",
+            "added_tokens_decoder": added,
+            "additional_special_tokens": [
+                t for t in self.special_tokens if t not in (ENDOFTEXT, eos_token)
+            ],
+            "bos_token": None,
+            "eos_token": eos_token,
+            "pad_token": ENDOFTEXT,
+            "unk_token": None,
+            "model_max_length": model_max_length,
+            "clean_up_tokenization_spaces": False,
+            "split_special_tokens": False,
+        }
+        with open(out / "tokenizer_config.json", "w") as f:
+            json.dump(tok_cfg, f, indent=2, ensure_ascii=False)
+        with open(out / "special_tokens_map.json", "w") as f:
+            json.dump({"eos_token": eos_token, "pad_token": ENDOFTEXT}, f, indent=2)
+
+
+def train_bpe(
+    texts_or_files: Iterable[str | os.PathLike],
+    vocab_size: int,
+    special_tokens: Sequence[str] | None = None,
+    min_frequency: int = 2,
+) -> Tokenizer:
+    """训练 byte-level BPE。
+
+    texts_or_files：可迭代对象，元素是 `pathlib.Path`（当作文本文件读）或 `str`（当作文本本身）。
+    vocab_size：最终词表大小（含 256 个字节和特殊 token）。
+    special_tokens：默认 `DEFAULT_SPECIAL_TOKENS`，放在词表最前面。
+    """
+    special = list(special_tokens) if special_tokens is not None else list(DEFAULT_SPECIAL_TOKENS)
+    if ENDOFTEXT not in special:
+        special = [ENDOFTEXT, *special]
+    if vocab_size < 256 + len(special):
+        raise ValueError(
+            f"vocab_size={vocab_size} 太小，至少要 256 个字节 + {len(special)} 个特殊 token"
+        )
+
+    tok = _build_empty_bpe()
+    trainer = trainers.BpeTrainer(
+        vocab_size=vocab_size,
+        min_frequency=min_frequency,
+        special_tokens=special,
+        initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
+        show_progress=False,
+    )
+
+    def iterate() -> Iterable[str]:
+        for item in texts_or_files:
+            if isinstance(item, os.PathLike):
+                with open(item, encoding="utf-8") as f:
+                    # 按块读，避免一次把大文件读进内存
+                    while chunk := f.read(1 << 20):
+                        yield chunk
+            else:
+                yield item
+
+    tok.train_from_iterator(iterate(), trainer=trainer)
+    return Tokenizer(tok)
+
+
+# ===== zero/tools/__init__.py =====
+"""命令行小工具（对应第 12、21 章）：成本估算、参数量统计等。"""
+
+
+# ===== zero/tools/count_params.py =====
+"""统计模型参数量（对应第 12 章）。
+
+    uv run python -m zero.tools.count_params configs/main/pretrain.toml [configs/ladder/*.toml ...]
+
+按公式计算，不分配内存，0.8B 的配置也是瞬间出结果；`tests/test_config.py` 会用真实构建的模型核对公式。
+"""
+
+from __future__ import annotations
+
+import argparse
+
+from zero.config import load_model_config
+from zero.model import count_params, estimate_flops_per_token
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(description="统计配置对应的参数量")
+    ap.add_argument("configs", nargs="+")
+    args = ap.parse_args(argv)
+    header = f"{'配置':<40}{'总参数':>12}{'embedding':>12}{'非embedding':>13}{'每层':>10}{'FLOPs/token@max_seq':>22}"
+    print(header)
+    for path in args.configs:
+        cfg = load_model_config(path)
+        c = count_params(cfg)
+        fpt = estimate_flops_per_token(cfg, cfg.max_seq_len)
+        print(
+            f"{path:<40}{c['total'] / 1e6:>11.2f}M{c['embedding'] / 1e6:>11.2f}M"
+            f"{c['non_embedding'] / 1e6:>12.2f}M{c['per_layer'] / 1e6:>9.2f}M{fpt:>22.4g}"
+        )
+
+
+if __name__ == "__main__":
+    main()
+
+
+# ===== zero/tools/estimate_cost.py =====
+"""训练成本估算：FLOPs → 卡时 → 美元（对应第 12 章，GOAL.md 9.1"第二步就绪"）。
+
+    总 FLOPs  = 每 token FLOPs × token 数                （每 token FLOPs = 6N + 注意力项，见 zero/model.py）
+    卡时      = 总 FLOPs / (单卡峰值 FLOPs/s × MFU) / 3600
+    费用      = 卡时 × 每卡时单价
+    墙钟时间  = 卡时 / 卡数
+
+MFU（Model FLOPs Utilization）= 实际有效算力 / 硬件峰值。稠密 Transformer 在 H100 上训练，
+调得好的开源实现一般在 0.3–0.5 之间，默认取 0.4；第二步阶段 6 的 GPU 验证运行会实测后更新。
+
+用法：
+
+    uv run python -m zero.tools.estimate_cost --config configs/main/pretrain.toml \\
+        --tokens 500B --gpu h100-sxm --price 2.5 --num-gpus 8 --mfu 0.4
+
+GPU 峰值表：只收"稠密 BF16 Tensor Core"算力（不含 2:4 结构化稀疏的翻倍数字）。NVIDIA 数据手册里
+BF16 一栏标注的是"带稀疏"的数值，稠密值是它的一半。本表数值出自下列官方页面，但编写时的环境
+无法访问 nvidia.com 逐条复核，所以每一项都标了 `verified=False`（待核实）——第二步花钱之前请对照
+数据手册确认，并用实测 MFU 校正。
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+from dataclasses import dataclass
+
+from zero.config import ModelConfig, load_model_config, read_toml
+from zero.model import count_params, estimate_flops_per_token
+
+
+@dataclass(frozen=True)
+class GPUSpec:
+    name: str
+    bf16_dense_tflops: float
+    source: str
+    verified: bool = False  # 是否已对照官方数据手册核实
+    note: str = ""
+
+
+GPUS: dict[str, GPUSpec] = {
+    "h100-sxm": GPUSpec(
+        "NVIDIA H100 SXM5",
+        989.5,
+        "https://www.nvidia.com/en-us/data-center/h100/（手册 BF16 1,979 TFLOPS 带稀疏 → 稠密 989.5）",
+        note="待核实",
+    ),
+    "h100-pcie": GPUSpec(
+        "NVIDIA H100 PCIe",
+        756.5,
+        "https://www.nvidia.com/en-us/data-center/h100/（手册 BF16 1,513 TFLOPS 带稀疏 → 稠密 756.5）",
+        note="待核实",
+    ),
+    "h200-sxm": GPUSpec(
+        "NVIDIA H200 SXM",
+        989.5,
+        "https://www.nvidia.com/en-us/data-center/h200/（手册 BF16 1,979 TFLOPS 带稀疏 → 稠密 989.5）",
+        note="待核实",
+    ),
+    "a100": GPUSpec(
+        "NVIDIA A100 (SXM/PCIe)",
+        312.0,
+        "https://www.nvidia.com/en-us/data-center/a100/（手册 BF16 312 TFLOPS，带稀疏 624）",
+        note="待核实",
+    ),
+    "l40s": GPUSpec(
+        "NVIDIA L40S",
+        366.0,
+        "https://www.nvidia.com/en-us/data-center/l40s/（手册 BF16 带稀疏 733 TFLOPS → 稠密约 366）",
+        note="待核实：手册的稠密值是否为 362 或 366 需复核",
+    ),
+    "rtx4090": GPUSpec(
+        "NVIDIA GeForce RTX 4090",
+        165.2,
+        "NVIDIA Ada Lovelace 架构白皮书（BF16 Tensor、FP32 累加 165.2 TFLOPS，带稀疏 330.4）",
+        note="待核实",
+    ),
+}
+
+
+def peak_tflops_for_device_name(device_name: str) -> float | None:
+    """根据 `torch.cuda.get_device_name()` 的返回值粗略匹配峰值（MFU 日志用）；匹配不上返回 None。"""
+    n = device_name.lower()
+    if "h100" in n:
+        return GPUS["h100-pcie" if "pcie" in n else "h100-sxm"].bf16_dense_tflops
+    if "h200" in n:
+        return GPUS["h200-sxm"].bf16_dense_tflops
+    if "a100" in n:
+        return GPUS["a100"].bf16_dense_tflops
+    if "l40s" in n:
+        return GPUS["l40s"].bf16_dense_tflops
+    if "4090" in n:
+        return GPUS["rtx4090"].bf16_dense_tflops
+    return None
+
+
+_SUFFIX = {"k": 1e3, "m": 1e6, "b": 1e9, "g": 1e9, "t": 1e12}
+
+
+def parse_count(s: str) -> float:
+    """'500B' / '1.2T' / '3e11' → 数字。"""
+    m = re.fullmatch(r"\s*([0-9.eE+-]+)\s*([kKmMbBgGtT]?)\s*", s)
+    if not m:
+        raise ValueError(f"看不懂的数量：{s!r}（例：500B、1.2T、3e11）")
+    return float(m.group(1)) * _SUFFIX.get(m.group(2).lower(), 1.0)
+
+
+@dataclass
+class CostEstimate:
+    params_total: int
+    params_non_embedding: int
+    flops_per_token: float
+    total_flops: float
+    gpu_hours: float
+    wall_hours: float
+    cost_usd: float
+
+
+def estimate_cost(
+    config: ModelConfig,
+    tokens: float,
+    seq_len: int,
+    gpu: str = "h100-sxm",
+    price_per_gpu_hour: float = 2.5,
+    mfu: float = 0.4,
+    num_gpus: int = 8,
+    peak_tflops: float | None = None,
+) -> CostEstimate:
+    if not 0 < mfu <= 1:
+        raise ValueError("mfu 必须在 (0, 1]")
+    peak = peak_tflops if peak_tflops is not None else GPUS[gpu].bf16_dense_tflops
+    fpt = estimate_flops_per_token(config, seq_len)
+    total = fpt * tokens
+    gpu_hours = total / (peak * 1e12 * mfu) / 3600
+    counts = count_params(config)
+    return CostEstimate(
+        params_total=counts["total"],
+        params_non_embedding=counts["non_embedding"],
+        flops_per_token=fpt,
+        total_flops=total,
+        gpu_hours=gpu_hours,
+        wall_hours=gpu_hours / num_gpus,
+        cost_usd=gpu_hours * price_per_gpu_hour,
+    )
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(description="估算训练的 FLOPs、卡时和费用")
+    ap.add_argument("--config", required=True, help="含 [model] 的 TOML 配置")
+    ap.add_argument("--tokens", required=True, help="训练 token 数，如 500B、1T")
+    ap.add_argument(
+        "--seq-len",
+        type=int,
+        default=0,
+        help="序列长度（默认读配置里的 data.seq_len，否则 max_seq_len）",
+    )
+    ap.add_argument("--gpu", default="h100-sxm", choices=sorted(GPUS))
+    ap.add_argument(
+        "--peak-tflops", type=float, default=None, help="手动指定单卡稠密 BF16 峰值，覆盖查表"
+    )
+    ap.add_argument(
+        "--price", type=float, default=2.5, help="每卡时美元单价（默认 2.5，GOAL.md 3.4 的假设）"
+    )
+    ap.add_argument("--mfu", type=float, default=0.4)
+    ap.add_argument("--num-gpus", type=int, default=8)
+    args = ap.parse_args(argv)
+
+    cfg = load_model_config(args.config)
+    seq_len = args.seq_len
+    if not seq_len:
+        seq_len = read_toml(args.config).get("data", {}).get("seq_len", cfg.max_seq_len)
+    tokens = parse_count(args.tokens)
+    est = estimate_cost(
+        cfg, tokens, seq_len, args.gpu, args.price, args.mfu, args.num_gpus, args.peak_tflops
+    )
+    spec = GPUS[args.gpu]
+    peak = args.peak_tflops or spec.bf16_dense_tflops
+    print(f"配置            {args.config}")
+    print(
+        f"参数量          {est.params_total / 1e6:,.1f}M（非 embedding {est.params_non_embedding / 1e6:,.1f}M）"
+    )
+    print(f"token 数        {tokens:,.3g}（{tokens / est.params_total:,.1f} token/参数）")
+    print(f"序列长度        {seq_len}")
+    print(f"每 token FLOPs  {est.flops_per_token:,.4g}")
+    print(f"总 FLOPs        {est.total_flops:,.4g}")
+    print(
+        f"GPU             {spec.name}，稠密 BF16 峰值 {peak} TFLOPS{'' if spec.verified else '（待核实）'}"
+    )
+    print(f"MFU             {args.mfu}")
+    print(f"卡时            {est.gpu_hours:,.1f} GPU·h")
+    print(
+        f"墙钟时间        {est.wall_hours:,.1f} h（{args.num_gpus} 卡）= {est.wall_hours / 24:,.2f} 天"
+    )
+    print(f"费用            ${est.cost_usd:,.0f}（${args.price}/卡时）")
+
+
+if __name__ == "__main__":
+    main()
+
+
+# ===== zero/train/__init__.py =====
+"""训练（对应第 6、12、14、15 章）：分布式初始化、学习率调度、checkpoint、通用训练循环与入口脚本。"""
+
+
+# ===== zero/train/checkpoint.py =====
+"""Checkpoint：保存与恢复训练的全部状态（对应第 14 章）。
+
+要做到"断点续训后的 loss 与不中断时一致"（GOAL.md 9.1），光存模型权重不够，还要存：
+
+| 内容 | 文件 | 谁来写 |
+|---|---|---|
+| 模型权重 | model.pt | rank 0 |
+| 优化器状态（AdamW 的一阶、二阶矩） | optim.pt | rank 0 |
+| 步数、已训练 token 数、配置、学习率调度状态 | meta.json | rank 0 |
+| 数据加载器位置 + 各种随机数发生器状态 | rank{r}.pt | 每个 rank 各写一份 |
+
+目录结构：
+
+    <ckpt_dir>/step_00001000/{model.pt, optim.pt, meta.json, rank0.pt, rank1.pt, ...}
+    <ckpt_dir>/latest            # 文本文件，内容是最新一个 checkpoint 的目录名
+
+**原子写入**：先写到临时目录 `.tmp_step_xxx`，全部写完再 `os.replace` 改名成正式目录，最后更新 `latest`。
+训练在写 checkpoint 的中途被杀掉（抢占式实例常有），留下的只是一个临时目录，`latest` 仍然指向
+上一个完整的 checkpoint，不会读到写了一半的文件。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import random
+import shutil
+import time
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import torch
+from torch import nn
+
+from zero.train.dist import DistInfo, barrier, unwrap_model
+
+
+def _step_dir_name(step: int) -> str:
+    return f"step_{step:08d}"
+
+
+def rng_state() -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()  # 尚未在 GPU 上验证
+    return state
+
+
+def set_rng_state(state: dict[str, Any]) -> None:
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"])
+    if "cuda" in state and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(state["cuda"])  # 尚未在 GPU 上验证
+
+
+def _model_state_dict(model: nn.Module, parallel: str, info: DistInfo) -> dict[str, torch.Tensor]:
+    if info.is_distributed and parallel == "fsdp":
+        # 尚未在 GPU 上验证：FSDP2 下每个 rank 只有一片参数，要先聚合成完整的 state_dict（集合通信，所有 rank 都要调用）
+        from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
+
+        return get_model_state_dict(
+            model, options=StateDictOptions(full_state_dict=True, cpu_offload=True)
+        )
+    return {k: v.detach().cpu() for k, v in unwrap_model(model).state_dict().items()}
+
+
+def _optim_state_dict(
+    model: nn.Module, optimizer: torch.optim.Optimizer, parallel: str, info: DistInfo
+) -> Any:
+    if info.is_distributed and parallel == "fsdp":
+        # 尚未在 GPU 上验证
+        from torch.distributed.checkpoint.state_dict import (
+            StateDictOptions,
+            get_optimizer_state_dict,
+        )
+
+        return get_optimizer_state_dict(
+            model, optimizer, options=StateDictOptions(full_state_dict=True, cpu_offload=True)
+        )
+    return optimizer.state_dict()
+
+
+def save_checkpoint(
+    ckpt_dir: str | os.PathLike,
+    step: int,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer | None = None,
+    scheduler: Any | None = None,
+    loader: Any | None = None,
+    meta: dict[str, Any] | None = None,
+    info: DistInfo | None = None,
+    parallel: str = "ddp",
+    keep_last: int = 0,
+) -> Path:
+    """保存一个 checkpoint，返回最终目录。多进程时所有 rank 都要调用。"""
+    info = info or DistInfo()
+    root = Path(ckpt_dir)
+    final = root / _step_dir_name(step)
+    tmp = root / f".tmp_{_step_dir_name(step)}"
+    if info.is_main:
+        root.mkdir(parents=True, exist_ok=True)
+        if tmp.exists():
+            shutil.rmtree(tmp)
+        tmp.mkdir(parents=True)
+    barrier()
+
+    model_sd = _model_state_dict(model, parallel, info)
+    optim_sd = (
+        _optim_state_dict(model, optimizer, parallel, info) if optimizer is not None else None
+    )
+    if info.is_main:
+        torch.save(model_sd, tmp / "model.pt")
+        if optim_sd is not None:
+            torch.save(optim_sd, tmp / "optim.pt")
+        full_meta = {
+            "step": step,
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "world_size": info.world_size,
+            "scheduler": scheduler.state_dict() if scheduler is not None else None,
+            **(meta or {}),
+        }
+        with open(tmp / "meta.json", "w") as f:
+            json.dump(full_meta, f, indent=2, ensure_ascii=False, default=str)
+    rank_state = {"rng": rng_state(), "loader": loader.state_dict() if loader is not None else None}
+    torch.save(rank_state, tmp / f"rank{info.rank}.pt")
+    barrier()
+
+    if info.is_main:
+        if final.exists():
+            shutil.rmtree(final)
+        os.replace(tmp, final)
+        latest_tmp = root / "latest.tmp"
+        latest_tmp.write_text(final.name)
+        os.replace(latest_tmp, root / "latest")
+        if keep_last > 0:
+            prune_checkpoints(root, keep_last)
+    barrier()
+    return final
+
+
+def list_checkpoints(ckpt_dir: str | os.PathLike) -> list[Path]:
+    root = Path(ckpt_dir)
+    if not root.exists():
+        return []
+    return sorted(p for p in root.iterdir() if p.is_dir() and p.name.startswith("step_"))
+
+
+def prune_checkpoints(ckpt_dir: str | os.PathLike, keep_last: int) -> None:
+    for p in list_checkpoints(ckpt_dir)[:-keep_last]:
+        shutil.rmtree(p, ignore_errors=True)
+
+
+def find_latest(ckpt_dir: str | os.PathLike) -> Path | None:
+    """ckpt_dir 可以是 checkpoint 根目录（读 latest）或者某个 step_xxx 目录本身。"""
+    root = Path(ckpt_dir)
+    if (root / "model.pt").exists():
+        return root
+    latest = root / "latest"
+    if latest.exists():
+        p = root / latest.read_text().strip()
+        if (p / "meta.json").exists():
+            return p
+    ckpts = [p for p in list_checkpoints(root) if (p / "meta.json").exists()]
+    return ckpts[-1] if ckpts else None
+
+
+def load_model_weights(
+    path: str | os.PathLike, model: nn.Module, strict: bool = True
+) -> dict[str, Any]:
+    """只加载模型权重（中期训练从预训练 checkpoint 接着训时用），返回 meta。"""
+    ckpt = find_latest(path)
+    if ckpt is None:
+        raise FileNotFoundError(f"在 {path} 找不到 checkpoint")
+    sd = torch.load(ckpt / "model.pt", map_location="cpu", weights_only=True)
+    unwrap_model(model).load_state_dict(sd, strict=strict)
+    with open(ckpt / "meta.json") as f:
+        return json.load(f)
+
+
+def load_checkpoint(
+    path: str | os.PathLike,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer | None = None,
+    scheduler: Any | None = None,
+    loader: Any | None = None,
+    info: DistInfo | None = None,
+    parallel: str = "ddp",
+    restore_rng: bool = True,
+) -> dict[str, Any]:
+    """恢复全部训练状态，返回 meta（含 step）。"""
+    info = info or DistInfo()
+    ckpt = find_latest(path)
+    if ckpt is None:
+        raise FileNotFoundError(f"在 {path} 找不到 checkpoint")
+    with open(ckpt / "meta.json") as f:
+        meta = json.load(f)
+    if meta.get("world_size", 1) != info.world_size and loader is not None:
+        raise ValueError(
+            f"checkpoint 是 {meta.get('world_size')} 卡存的，现在是 {info.world_size} 卡，数据位置无法精确恢复"
+        )
+
+    model_sd = torch.load(ckpt / "model.pt", map_location="cpu", weights_only=True)
+    if info.is_distributed and parallel == "fsdp":
+        # 尚未在 GPU 上验证
+        from torch.distributed.checkpoint.state_dict import (
+            StateDictOptions,
+            set_model_state_dict,
+            set_optimizer_state_dict,
+        )
+
+        opts = StateDictOptions(full_state_dict=True, broadcast_from_rank0=False)
+        set_model_state_dict(model, model_sd, options=opts)
+        if optimizer is not None and (ckpt / "optim.pt").exists():
+            optim_sd = torch.load(ckpt / "optim.pt", map_location="cpu", weights_only=False)
+            set_optimizer_state_dict(model, optimizer, optim_sd, options=opts)
+    else:
+        unwrap_model(model).load_state_dict(model_sd)
+        if optimizer is not None and (ckpt / "optim.pt").exists():
+            optimizer.load_state_dict(
+                torch.load(ckpt / "optim.pt", map_location="cpu", weights_only=False)
+            )
+    if scheduler is not None and meta.get("scheduler") is not None:
+        scheduler.load_state_dict(meta["scheduler"])
+
+    rank_file = ckpt / f"rank{info.rank}.pt"
+    if rank_file.exists():
+        rank_state = torch.load(rank_file, map_location="cpu", weights_only=False)
+        if loader is not None and rank_state.get("loader") is not None:
+            loader.load_state_dict(rank_state["loader"])
+        if restore_rng:
+            set_rng_state(rank_state["rng"])
+    meta["path"] = str(ckpt)
+    return meta
+
+
+# ===== zero/train/dist.py =====
+"""分布式训练的初始化与封装（对应第 14 章）。
+
+用 `torchrun --nproc_per_node=8 -m zero.train.pretrain --config ...` 启动时，torchrun 会给每个进程
+设置环境变量 RANK / LOCAL_RANK / WORLD_SIZE / MASTER_ADDR / MASTER_PORT。这里读这些变量：
+
+- 没有这些变量：单进程，world_size = 1；
+- 有 GPU：后端用 NCCL，每个进程绑定一张卡（LOCAL_RANK）；
+- 只有 CPU：后端用 gloo（`tests/test_ddp_cpu.py` 就是这样在 CPU 上测 DDP 的）。
+
+两种数据并行：
+- **DDP**：每张卡一份完整模型，反向传播时对梯度做 all-reduce 求平均。0.6–0.8B 的模型 + AdamW
+  在 80GB 卡上放得下，DDP 最简单；
+- **FSDP2**（`torch.distributed.fsdp.fully_shard`）：把参数、梯度、优化器状态切分到各卡，
+  省显存，代价是更多通信。模型更大或上下文更长时用。
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+import torch
+import torch.distributed as dist
+from torch import nn
+
+
+@dataclass
+class DistInfo:
+    rank: int = 0
+    local_rank: int = 0
+    world_size: int = 1
+    device: torch.device = torch.device("cpu")
+    backend: str = ""
+
+    @property
+    def is_main(self) -> bool:
+        return self.rank == 0
+
+    @property
+    def is_distributed(self) -> bool:
+        return self.world_size > 1
+
+
+def pick_device(pref: str = "auto", local_rank: int = 0) -> torch.device:
+    if pref == "cpu" or (pref == "auto" and not torch.cuda.is_available()):
+        return torch.device("cpu")
+    if not torch.cuda.is_available():
+        raise RuntimeError("配置要求 device=cuda，但这台机器没有可用的 CUDA")
+    return torch.device("cuda", local_rank)
+
+
+def init_distributed(device_pref: str = "auto") -> DistInfo:
+    """根据 torchrun 的环境变量初始化进程组；单进程时什么都不做。"""
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    rank = int(os.environ.get("RANK", "0"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    device = pick_device(device_pref, local_rank)
+    backend = ""
+    if world_size > 1:
+        backend = "nccl" if device.type == "cuda" else "gloo"
+        if device.type == "cuda":
+            torch.cuda.set_device(device)  # 尚未在 GPU 上验证
+        if not dist.is_initialized():
+            dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
+    return DistInfo(
+        rank=rank, local_rank=local_rank, world_size=world_size, device=device, backend=backend
+    )
+
+
+def cleanup() -> None:
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def barrier() -> None:
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
+
+
+def all_reduce_mean(t: torch.Tensor) -> torch.Tensor:
+    """跨 rank 求平均（单进程时原样返回）。"""
+    if dist.is_available() and dist.is_initialized():
+        t = t.clone()
+        dist.all_reduce(t, op=dist.ReduceOp.SUM)
+        t /= dist.get_world_size()
+    return t
+
+
+def wrap_model(model: nn.Module, info: DistInfo, parallel: str = "ddp") -> nn.Module:
+    """多进程时用 DDP 或 FSDP2 包装模型；单进程原样返回。"""
+    if not info.is_distributed:
+        return model
+    if parallel == "ddp":
+        from torch.nn.parallel import DistributedDataParallel as DDP
+
+        device_ids = [info.local_rank] if info.device.type == "cuda" else None
+        return DDP(model, device_ids=device_ids)
+    if parallel == "fsdp":
+        # 尚未在 GPU 上验证：FSDP2 按 Block 逐层切分，再对整个模型切分剩余参数（embedding、最后的 norm）。
+        # 混合精度：参数以 bf16 参与计算，梯度 reduce 用 fp32。
+        from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
+
+        mp = None
+        if info.device.type == "cuda":
+            mp = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
+        kwargs = {"mp_policy": mp} if mp is not None else {}
+        for layer in model.layers:  # type: ignore[attr-defined]
+            fully_shard(layer, **kwargs)
+        fully_shard(model, **kwargs)
+        return model
+    raise ValueError(f"未知的并行方式：{parallel}")
+
+
+def unwrap_model(model: nn.Module) -> nn.Module:
+    """去掉 DDP / torch.compile 的包装，拿到原始的 Transformer。"""
+    if hasattr(model, "module"):
+        model = model.module  # DDP
+    if hasattr(model, "_orig_mod"):
+        model = model._orig_mod  # torch.compile
+    return model
+
+
+# ===== zero/train/midtrain.py =====
+"""中期训练 / 退火 / 长上下文扩展入口（对应第 15 章）。
+
+中期训练在预训练权重的基础上接着训，和预训练共用 `zero/train/trainer.py`，靠配置表达三类变化：
+
+1. **换数据混合**：`[[data.sources]]` 换一套来源和权重（加大高质量数据、加入指令与工具调用格式数据）；
+2. **学习率衰减段**：`[schedule] kind = "wsd"`、`decay_frac = 1.0` 就是"从峰值线性降到最低"
+   的纯衰减段——配合预训练的 WSD 稳定段，相当于把 WSD 的最后一段单独拿出来做；
+3. **长上下文扩展**：加大 `data.seq_len` 与 `model.max_seq_len`，同时改 RoPE：
+   - 调大 `rope_theta`（ABF，adjusted base frequency），或
+   - 加 `model.rope_scaling = {type = "yarn", factor = ..., original_max_position_embeddings = ...}`。
+   RoPE 的 cos/sin 不是可训练参数，按新配置重新计算即可，其余权重原样加载。
+
+必须设置 `train.init_from`（预训练的 checkpoint 目录）。模型形状（层数、维度、词表）必须与之一致，
+只有 RoPE 相关字段和 max_seq_len 可以不同。中断后重跑同一条命令，会从本次运行自己的 checkpoint 续训。
+
+    uv run python -m zero.train.midtrain --config configs/tiny/midtrain.toml
+"""
+
+from __future__ import annotations
+
+import json
+
+from zero.config import Config, ConfigError, load_config
+from zero.train.checkpoint import find_latest
+from zero.train.pretrain import parse_args
+from zero.train.trainer import run_training
+
+# 中期训练允许改变的模型字段
+_MUTABLE_MODEL_FIELDS = {"rope_theta", "rope_scaling", "max_seq_len"}
+
+
+def check_compatible(cfg: Config) -> list[str]:
+    """检查与 init_from 的模型结构是否兼容，返回"变化了什么"的说明列表。"""
+    if not cfg.train.init_from:
+        raise ConfigError("中期训练需要设置 [train] init_from（预训练 checkpoint 目录）")
+    ckpt = find_latest(cfg.train.init_from)
+    if ckpt is None:
+        raise ConfigError(f"init_from={cfg.train.init_from} 里找不到 checkpoint，先跑预训练")
+    with open(ckpt / "meta.json") as f:
+        old = json.load(f).get("config", {})
+    changes = []
+    old_model = old.get("model", {})
+    new_model = cfg.to_dict()["model"]
+    for k, v in new_model.items():
+        if k in old_model and old_model[k] != v:
+            if k not in _MUTABLE_MODEL_FIELDS:
+                raise ConfigError(
+                    f"[model] {k} 与预训练 checkpoint 不同（{old_model[k]} → {v}），中期训练不能改变模型形状"
+                )
+            changes.append(f"model.{k}: {old_model[k]} → {v}")
+    old_data = old.get("train", {}).get("data", {})
+    new_data = cfg.to_dict()["train"]["data"]
+    if old_data.get("seq_len") != new_data["seq_len"]:
+        changes.append(f"data.seq_len: {old_data.get('seq_len')} → {new_data['seq_len']}")
+    old_mix = {s["name"]: s["weight"] for s in old_data.get("sources", [])}
+    new_mix = {s["name"]: s["weight"] for s in new_data["sources"]}
+    if old_mix != new_mix:
+        changes.append(f"数据混合: {old_mix} → {new_mix}")
+    return changes
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv, description="中期训练 / 长上下文扩展")
+    cfg = load_config(args.config, args.set)
+    if args.print_config:
+        print(json.dumps(cfg.to_dict(), indent=2, ensure_ascii=False))
+        return
+    for c in check_compatible(cfg):
+        print(f"[midtrain] {c}")
+    run_training(cfg)
+
+
+if __name__ == "__main__":
+    main()
+
+
+# ===== zero/train/pretrain.py =====
+"""预训练入口（对应第 14 章）。
+
+单进程（CPU 冒烟）：
+
+    uv run python -m zero.train.pretrain --config configs/tiny/pretrain.toml
+
+单机多卡（第二步）：
+
+    uv run torchrun --standalone --nproc_per_node=8 -m zero.train.pretrain --config configs/main/pretrain.toml
+
+`--set section.key=value` 可以临时覆盖配置，例如 `--set train.max_steps=20 --set data.seq_len=64`。
+中断后用同一条命令重跑，会自动从 `<out_dir>/ckpt` 里最新的 checkpoint 续训。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+
+from zero.config import load_config
+from zero.train.trainer import run_training
+
+
+def parse_args(argv: list[str] | None = None, description: str = "预训练") -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description=description)
+    ap.add_argument("--config", required=True, help="TOML 配置文件")
+    ap.add_argument(
+        "--set", action="append", default=[], metavar="KEY=VALUE", help="覆盖配置项，可重复"
+    )
+    ap.add_argument("--print-config", action="store_true", help="只打印合并后的配置，不训练")
+    return ap.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    cfg = load_config(args.config, args.set)
+    if args.print_config:
+        print(json.dumps(cfg.to_dict(), indent=2, ensure_ascii=False))
+        return
+    run_training(cfg)
+
+
+if __name__ == "__main__":
+    main()
+
+
+# ===== zero/train/schedule.py =====
+"""学习率调度：cosine 与 WSD（对应第 6、12、15 章）。
+
+所有调度都返回一个"倍率" m(step) ∈ [0, 1]，实际学习率 = 峰值 lr × m(step)。
+
+- **warmup**：前 warmup_steps 步从接近 0 线性升到 1。刚开始参数是随机的，梯度方向很乱，
+  直接用大学习率容易发散；
+- **cosine**：warmup 之后按余弦曲线从 1 降到 min_lr_ratio（GPT-3、Llama 的默认选择）。
+  缺点：总步数必须事先定好，中途想多训一些就得重来；
+- **WSD（Warmup-Stable-Decay）**：warmup → 长时间保持峰值 → 最后 decay_frac 比例的步数快速衰减。
+  好处是"稳定段"的任何 checkpoint 都可以接一小段衰减得到一个可用模型，想多训就从稳定段接着训，
+  很适合阶梯实验和"预训练 → 中期训练（退火）"的分阶段做法（由 MiniCPM 提出，arXiv:2404.06395；
+  采用方见第 12 章的来源列表）。
+"""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Callable
+from typing import Any
+
+from zero.config import ScheduleConfig
+
+
+def warmup_factor(step: int, warmup_steps: int) -> float:
+    if warmup_steps <= 0:
+        return 1.0
+    return min(1.0, (step + 1) / warmup_steps)
+
+
+def cosine_with_warmup(
+    step: int, warmup_steps: int, total_steps: int, min_lr_ratio: float = 0.1
+) -> float:
+    if step < warmup_steps:
+        return warmup_factor(step, warmup_steps)
+    decay_steps = max(total_steps - warmup_steps, 1)
+    progress = min(1.0, (step - warmup_steps) / decay_steps)
+    return min_lr_ratio + (1 - min_lr_ratio) * 0.5 * (1 + math.cos(math.pi * progress))
+
+
+def wsd(
+    step: int,
+    warmup_steps: int,
+    total_steps: int,
+    decay_frac: float = 0.2,
+    min_lr_ratio: float = 0.0,
+    decay_shape: str = "linear",
+) -> float:
+    decay_steps = int(round(total_steps * decay_frac))
+    decay_start = total_steps - decay_steps
+    if step < warmup_steps:
+        return warmup_factor(step, warmup_steps)
+    if step < decay_start or decay_steps == 0:
+        return 1.0
+    progress = min(1.0, (step - decay_start + 1) / decay_steps)
+    if decay_shape == "linear":
+        f = 1 - progress
+    elif decay_shape == "cosine":
+        f = 0.5 * (1 + math.cos(math.pi * progress))
+    elif decay_shape == "sqrt":
+        f = 1 - math.sqrt(progress)
+    else:
+        raise ValueError(f"未知的 decay_shape：{decay_shape}")
+    return min_lr_ratio + (1 - min_lr_ratio) * f
+
+
+def lr_multiplier_fn(cfg: ScheduleConfig, total_steps: int) -> Callable[[int], float]:
+    if cfg.kind == "cosine":
+        return lambda s: cosine_with_warmup(s, cfg.warmup_steps, total_steps, cfg.min_lr_ratio)
+    if cfg.kind == "wsd":
+        return lambda s: wsd(
+            s, cfg.warmup_steps, total_steps, cfg.decay_frac, cfg.min_lr_ratio, cfg.decay_shape
+        )
+    if cfg.kind == "constant":
+        return lambda s: warmup_factor(s, cfg.warmup_steps)
+    raise ValueError(f"未知的调度：{cfg.kind}")
+
+
+class LRScheduler:
+    """给优化器的每个参数组设置 lr = base_lr × m(step)。状态只有 step，存进 checkpoint。"""
+
+    def __init__(
+        self, optimizer: Any, cfg: ScheduleConfig, base_lr: float, total_steps: int
+    ) -> None:
+        self.optimizer = optimizer
+        self.base_lr = base_lr
+        self.fn = lr_multiplier_fn(cfg, total_steps)
+        self.step_count = 0
+
+    def lr_at(self, step: int) -> float:
+        return self.base_lr * self.fn(step)
+
+    def apply(self, step: int) -> float:
+        """把第 step 步的学习率写进优化器，返回这个学习率。"""
+        self.step_count = step
+        lr = self.lr_at(step)
+        for group in self.optimizer.param_groups:
+            group["lr"] = lr * group.get("lr_scale", 1.0)
+        return lr
+
+    def state_dict(self) -> dict[str, Any]:
+        return {"step_count": self.step_count, "base_lr": self.base_lr}
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        self.step_count = int(state["step_count"])
+
+
+# ===== zero/train/trainer.py =====
+"""通用训练循环（对应第 6、12、14、15 章）。
+
+预训练和中期训练共用这一个循环，区别只在配置（数据混合、学习率调度、序列长度、RoPE）和
+是否从已有权重开始（`train.init_from`）。一步训练做的事：
+
+1. 按调度设置学习率；
+2. 梯度累积：连续取 grad_accum_steps 个 micro-batch，各自前向 + 反向，梯度累加
+   （每个 loss 先除以累积步数，累加结果等于大 batch 的平均梯度）。DDP 下只在最后一个 micro-batch
+   做梯度同步（`no_sync`），省掉多余的通信；
+3. 梯度裁剪：全局梯度范数超过 grad_clip 就整体按比例缩小，防止偶发的大梯度把训练带崩；
+4. AdamW 更新。权重衰减只作用于矩阵权重，RMSNorm 的权重不衰减（衰减会把它们往 0 拉，
+   等于削弱归一化）；embedding 默认也不衰减（decay_embeddings 可改）；
+5. 定期：打印/记录日志（loss、学习率、token 数、吞吐、MFU），算验证 loss，存 checkpoint。
+
+精度：CUDA 上用 BF16 autocast（矩阵乘在 BF16 里算，参数和优化器状态保持 FP32）；CPU 上默认 FP32。
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import math
+import os
+import random
+import time
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import torch
+from torch import nn
+
+from zero.config import Config
+from zero.data.loader import PackedDataLoader
+from zero.data.mixture import MixtureLoader
+from zero.model import Transformer, cross_entropy_loss
+from zero.train.checkpoint import find_latest, load_checkpoint, load_model_weights, save_checkpoint
+from zero.train.dist import DistInfo, all_reduce_mean, init_distributed, unwrap_model, wrap_model
+from zero.train.schedule import LRScheduler
+
+
+def seed_everything(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
+def build_optimizer(model: nn.Module, cfg: Any, device: torch.device) -> torch.optim.AdamW:
+    """AdamW，按"是否做权重衰减"分两组参数。"""
+    decay, no_decay = [], []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        is_embedding = "tok_emb" in name or "lm_head" in name
+        if p.dim() < 2 or (is_embedding and not cfg.decay_embeddings):
+            no_decay.append(p)
+        else:
+            decay.append(p)
+    groups = [
+        {"params": decay, "weight_decay": cfg.weight_decay},
+        {"params": no_decay, "weight_decay": 0.0},
+    ]
+    kwargs: dict[str, Any] = {}
+    if device.type == "cuda":
+        kwargs["fused"] = True  # 尚未在 GPU 上验证：fused AdamW 内核
+    return torch.optim.AdamW(groups, lr=cfg.lr, betas=(cfg.beta1, cfg.beta2), eps=cfg.eps, **kwargs)
+
+
+def build_train_loader(cfg: Config, info: DistInfo) -> PackedDataLoader | MixtureLoader:
+    d = cfg.train.data
+    bsz = cfg.train.micro_batch_size
+    common = dict(
+        seq_len=d.seq_len,
+        rank=info.rank,
+        world_size=info.world_size,
+        shuffle=d.shuffle,
+        device=info.device,
+    )
+    if len(d.sources) == 1:
+        s = d.sources[0]
+        return PackedDataLoader(s.path, batch_size=bsz, seed=cfg.train.seed, **common)  # type: ignore[arg-type]
+    loaders = {
+        s.name: PackedDataLoader(s.path, batch_size=1, seed=cfg.train.seed + i, **common)  # type: ignore[arg-type]
+        for i, s in enumerate(d.sources)
+    }
+    weights = {s.name: s.weight for s in d.sources}
+    return MixtureLoader(
+        loaders, weights, batch_size=bsz, seed=cfg.train.seed, rank=info.rank, device=info.device
+    )
+
+
+def autocast_context(device: torch.device, dtype_pref: str) -> contextlib.AbstractContextManager:
+    if device.type == "cuda" and dtype_pref in ("auto", "bf16"):
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    if device.type == "cpu" and dtype_pref == "bf16":
+        return torch.autocast(device_type="cpu", dtype=torch.bfloat16)
+    return contextlib.nullcontext()
+
+
+class Trainer:
+    def __init__(
+        self, cfg: Config, info: DistInfo | None = None, log: Callable[[str], None] | None = None
+    ) -> None:
+        self.cfg = cfg
+        self.info = info or init_distributed(cfg.train.device)
+        self._print = log or print
+        tc = cfg.train
+        if tc.cpu_threads > 0:
+            torch.set_num_threads(tc.cpu_threads)
+        seed_everything(tc.seed)  # 所有 rank 用同一个种子初始化模型，参数一开始就相同
+        self.device = self.info.device
+
+        model = Transformer(cfg.model).to(self.device)
+        self.init_meta: dict[str, Any] | None = None
+        resume_path = find_latest(tc.checkpoint_dir) if tc.checkpoint.resume else None
+        if tc.init_from and resume_path is None:
+            # 中期训练：只加载权重。RoPE 的 cos/sin 是非持久 buffer，按新配置（新 theta / YaRN）重新计算
+            self.init_meta = load_model_weights(tc.init_from, model)
+            self.log(f"从 {tc.init_from} 加载模型权重（step {self.init_meta.get('step')}）")
+        self.raw_model = model
+        if tc.compile:
+            model = torch.compile(model)  # type: ignore[assignment]  # 尚未在 GPU 上验证
+        self.model = wrap_model(model, self.info, tc.parallel)
+        self.optimizer = build_optimizer(self.model, tc.optim, self.device)
+        self.scheduler = LRScheduler(self.optimizer, tc.schedule, tc.optim.lr, tc.max_steps)
+        self.loader = build_train_loader(cfg, self.info)
+        self.autocast = lambda: autocast_context(self.device, tc.dtype)
+
+        self.step = 0
+        self.tokens_seen = 0
+        self.history: list[dict[str, Any]] = []
+        if resume_path is not None:
+            meta = load_checkpoint(
+                resume_path,
+                self.model,
+                self.optimizer,
+                self.scheduler,
+                self.loader,
+                self.info,
+                tc.parallel,
+            )
+            self.step = int(meta["step"])
+            self.tokens_seen = int(meta.get("tokens_seen", 0))
+            self.log(f"从 {meta['path']} 续训（step {self.step}）")
+
+        self.tokens_per_step = (
+            tc.micro_batch_size * tc.grad_accum_steps * self.info.world_size * tc.data.seq_len
+        )
+        self.flops_per_token = unwrap_model(self.raw_model).flops_per_token(tc.data.seq_len)  # type: ignore[operator]
+        self.peak_flops = self._peak_flops()
+
+    # ---- 工具 ----
+    def log(self, msg: str) -> None:
+        if self.info.is_main:
+            self._print(msg)
+
+    def _peak_flops(self) -> float | None:
+        if self.cfg.train.gpu_peak_tflops > 0:
+            return self.cfg.train.gpu_peak_tflops * 1e12
+        if self.device.type == "cuda":
+            from zero.tools.estimate_cost import peak_tflops_for_device_name
+
+            t = peak_tflops_for_device_name(torch.cuda.get_device_name(self.device))
+            return t * 1e12 if t else None
+        return None  # CPU 上不报 MFU
+
+    def _write_jsonl(self, record: dict[str, Any]) -> None:
+        if not self.info.is_main:
+            return
+        path = Path(self.cfg.train.log_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    def _forward_loss(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        with self.autocast():
+            logits = self.model(x)
+        return cross_entropy_loss(logits, y)
+
+    # ---- 评估 ----
+    @torch.no_grad()
+    def evaluate(self) -> float | None:
+        d = self.cfg.train.data
+        if not d.val:
+            return None
+        val = PackedDataLoader(
+            d.val,
+            seq_len=d.seq_len,
+            batch_size=self.cfg.train.micro_batch_size,
+            rank=self.info.rank,
+            world_size=self.info.world_size,
+            shuffle=False,
+            device=self.device,
+        )
+        self.model.eval()
+        losses = []
+        n = min(
+            self.cfg.train.eval_batches,
+            max(val.total_chunks // (val.batch_size * self.info.world_size), 1),
+        )
+        for _ in range(n):
+            x, y = val.next_batch()
+            losses.append(self._forward_loss(x, y).float())
+        self.model.train()
+        loss = all_reduce_mean(torch.stack(losses).mean())
+        return float(loss.item())
+
+    def save(self) -> Path:
+        tc = self.cfg.train
+        return save_checkpoint(
+            tc.checkpoint_dir,
+            self.step,
+            self.model,
+            self.optimizer,
+            self.scheduler,
+            self.loader,
+            meta={"tokens_seen": self.tokens_seen, "config": self.cfg.to_dict()},
+            info=self.info,
+            parallel=tc.parallel,
+            keep_last=tc.checkpoint.keep_last,
+        )
+
+    # ---- 主循环 ----
+    def train(self, stop_at: int | None = None) -> list[dict[str, Any]]:
+        """训练到 max_steps。stop_at 用于测试"训练到一半被打断"：到这一步就返回（不额外存 checkpoint）。"""
+        tc = self.cfg.train
+        accum = tc.grad_accum_steps
+        use_no_sync = self.info.is_distributed and tc.parallel == "ddp"
+        self.model.train()
+        if self.step == 0 and self.info.is_main:
+            m = self.raw_model
+            self.log(
+                f"模型参数 {m.num_params() / 1e6:.2f}M（非 embedding {m.num_params(non_embedding=True) / 1e6:.2f}M），"
+                f"每步 {self.tokens_per_step} token，共 {tc.max_steps} 步，设备 {self.device}，world_size={self.info.world_size}"
+            )
+        t_last = time.perf_counter()
+        steps_since_log = 0
+        t_start = time.perf_counter()
+        while self.step < tc.max_steps:
+            if stop_at is not None and self.step >= stop_at:
+                break
+            lr = self.scheduler.apply(self.step)
+            loss_sum = torch.zeros((), device=self.device)
+            for micro in range(accum):
+                x, y = self.loader.next_batch()
+                sync_ctx = (
+                    self.model.no_sync()
+                    if use_no_sync and micro < accum - 1
+                    else contextlib.nullcontext()  # type: ignore[operator]
+                )
+                with sync_ctx:
+                    loss = self._forward_loss(x, y)
+                    (loss / accum).backward()
+                loss_sum += loss.detach()
+            if tc.optim.grad_clip > 0:
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), tc.optim.grad_clip
+                )
+            else:
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), float("inf"))
+            self.optimizer.step()
+            self.optimizer.zero_grad(set_to_none=True)
+            self.step += 1
+            self.tokens_seen += self.tokens_per_step
+            steps_since_log += 1
+
+            is_last = self.step == tc.max_steps
+            do_log = self.step % tc.logging.every == 0 or is_last or self.step == 1
+            do_eval = tc.eval_every > 0 and (self.step % tc.eval_every == 0 or is_last)
+            record: dict[str, Any] | None = None
+            if do_log or do_eval:
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize()
+                dt = time.perf_counter() - t_last
+                loss_val = float(all_reduce_mean(loss_sum / accum).item())
+                tok_per_s = self.tokens_per_step * steps_since_log / max(dt, 1e-9)
+                mfu = (
+                    self.flops_per_token * tok_per_s / (self.peak_flops * self.info.world_size)
+                    if self.peak_flops
+                    else None
+                )
+                record = {
+                    "step": self.step,
+                    "loss": loss_val,
+                    "lr": lr,
+                    "grad_norm": float(grad_norm),
+                    "tokens": self.tokens_seen,
+                    "tok_per_s": tok_per_s,
+                    "mfu": mfu,
+                    "elapsed_s": time.perf_counter() - t_start,
+                }
+                if isinstance(self.loader, MixtureLoader):
+                    record["mixture_counts"] = dict(self.loader.counts)
+                if do_eval:
+                    record["val_loss"] = self.evaluate()
+                if not math.isfinite(loss_val):
+                    self.log(f"step {self.step}: loss 变成 {loss_val}，停止训练")
+                    raise FloatingPointError(f"loss 发散：{loss_val}")
+                self.history.append(record)
+                self._write_jsonl(record)
+                msg = (
+                    f"step {self.step:>6}/{tc.max_steps} | loss {loss_val:.4f} | lr {lr:.2e} | "
+                    f"gnorm {float(grad_norm):.2f} | {tok_per_s:,.0f} tok/s"
+                )
+                if mfu is not None:
+                    msg += f" | MFU {mfu:.1%}"
+                if record.get("val_loss") is not None:
+                    msg += f" | val {record['val_loss']:.4f}"
+                self.log(msg)
+                t_last = time.perf_counter()
+                steps_since_log = 0
+
+            every = tc.checkpoint.every
+            if (every > 0 and self.step % every == 0) or is_last:
+                path = self.save()
+                self.log(f"checkpoint 已保存：{path}")
+                t_last = time.perf_counter()
+        return self.history
+
+
+def run_training(cfg: Config, log: Callable[[str], None] | None = None) -> list[dict[str, Any]]:
+    """入口脚本用：初始化分布式 → 准备数据（仅 rank 0）→ 训练 → 清理。"""
+    from zero.data.prepare import prepare_data
+    from zero.train.dist import barrier, cleanup
+
+    info = init_distributed(cfg.train.device)
+    try:
+        if cfg.train.data.prepare is not None:
+            if info.is_main:
+                prepare_data(cfg.train.data, seed=cfg.train.seed, log=log or print)
+            barrier()
+        os.makedirs(cfg.train.out_dir, exist_ok=True)
+        trainer = Trainer(cfg, info, log)
+        return trainer.train()
+    finally:
+        cleanup()
