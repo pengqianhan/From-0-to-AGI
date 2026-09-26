@@ -20,7 +20,8 @@
    长回复里的每个 token 和短回复里的权重一样（DAPO 的做法，避免"长回复的 token 被稀释"）；
    `"seq_mean_token_mean"` 是原始 GRPO 论文的写法：先在每条回复内平均，再在回复之间平均。
 
-日志：平均奖励、格式正确率（format_ok 的比例）、回复长度、KL、裁剪比例、"零方差组"比例。
+日志：平均奖励、格式正确率（没有格式错误的回复比例；不调用工具的纯文本也算格式正确）、
+调用率（含至少一个格式正确的工具调用的比例）、回复长度、KL、裁剪比例、"零方差组"比例。
 
 **与 verl 对拍（第二步，尚未进行）**：吞吐不够时可换用 verl（见 references.md：XiaomiMiMo/verl）。
 对拍方法：同一个导出的 HF 模型、同一批 tool_env 任务（固定种子导出 JSONL）、同样的 G / ε / β /
@@ -152,6 +153,7 @@ class Rollout:
     text: str
     reward: float
     format_ok: bool
+    n_calls: int = 0
 
 
 @torch.no_grad()
@@ -255,7 +257,7 @@ def run_grpo(
             for r in resps:
                 text = tok.decode([t for t in r if t != tok.im_end_id])
                 rw = score_tool_calls(task, text)
-                rollouts.append(Rollout(ti, p_ids, r, text, rw.total, rw.format_ok))
+                rollouts.append(Rollout(ti, p_ids, r, text, rw.total, rw.format_ok, rw.n_calls))
         t_gen = time.perf_counter() - t0
 
         # 3. 组内优势
@@ -313,7 +315,10 @@ def run_grpo(
                     metrics[k] = metrics.get(k, 0.0) + v * w
         gnorm = loop.end_step()
 
-        fmt_rate = sum(r.format_ok for r in rollouts) / len(rollouts)
+        fmt_rate = sum(r.format_ok for r in rollouts) / len(
+            rollouts
+        )  # 纯文本（没调用）也算格式正确
+        call_rate = sum(r.n_calls > 0 and r.format_ok for r in rollouts) / len(rollouts)
         zero_std = float((rewards.std(dim=1) == 0).float().mean())
         loop.record(
             {
@@ -321,6 +326,7 @@ def run_grpo(
                 "reward_mean": float(rewards.mean()),
                 "reward_max": float(rewards.max()),
                 "format_rate": fmt_rate,
+                "call_rate": call_rate,
                 "resp_len": n_tok / len(rollouts),
                 "zero_std_groups": zero_std,
                 **metrics,
@@ -329,7 +335,7 @@ def run_grpo(
                 "gen_s": t_gen,
                 "step_s": time.perf_counter() - t0,
             },
-            "step {step:>4} | reward {reward_mean:+.3f} | format {format_rate:.2f} | len {resp_len:.1f} "
+            "step {step:>4} | reward {reward_mean:+.3f} | format {format_rate:.2f} | call {call_rate:.2f} | len {resp_len:.1f} "
             "| kl {kl:.4f} | clip {clip_frac:.2f} | loss {loss:+.4f} | {step_s:.1f}s",
         )
     return loop.history

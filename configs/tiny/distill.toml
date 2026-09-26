@@ -1,0 +1,77 @@
+# tiny 蒸馏配置（第 17 章"极小配置演示"）。
+#   uv run python -m zero.post.distill --config configs/tiny/distill.toml
+#
+# 教师是替身：这个环境下载不了任何开源权重（huggingface.co 不可达），所以用 tiny SFT 模型自己当教师
+# （自蒸馏 / 拒绝采样微调）。只验证"教师采样 → 执行验证 → 打包 → 序列级 + logits 蒸馏"这条通路。
+# 第二步换成真教师：见 configs/main/distill.toml。
+
+[model]                  # 学生：与 SFT 的 checkpoint 形状一致
+vocab_size = 2048
+dim = 128
+n_layers = 4
+n_heads = 4
+n_kv_heads = 2
+head_dim = 32
+ffn_dim = 384
+rope_theta = 10000.0
+max_seq_len = 1024
+tie_embeddings = false
+rope_scaling = { type = "yarn", factor = 8.0, original_max_position_embeddings = 128, beta_fast = 32.0, beta_slow = 1.0 }
+
+[train]
+seed = 1337
+max_steps = 30
+micro_batch_size = 4
+device = "cpu"
+dtype = "fp32"
+cpu_threads = 1
+out_dir = "out/tiny/distill"
+init_from = "out/tiny/sft/ckpt"   # 学生从 SFT 出发
+eval_every = 0
+
+[data]
+format = "sft"           # 教师轨迹按 SFT 的方式打包（只在助手 token 上算损失）
+tokenizer = "out/tiny/tokenizer.json"
+seq_len = 1024
+
+[teacher]
+backend = "local"
+path = "out/tiny/sft/ckpt"        # 替身教师：tiny SFT 模型自己
+name = "zero-tiny-sft (self-distillation stand-in)"
+version = "local"
+license = "same as this repository"
+temperature = 0.7
+top_p = 0.95
+max_new_tokens = 96
+
+[distill]
+out_jsonl = "out/tiny/distill/teacher.jsonl"
+shard_dir = "out/tiny/distill/data"
+n_tasks = 48
+samples_per_task = 4
+keep_per_task = 1
+env_seed = 3
+mix_sft_jsonl = "out/tiny/sft/train.jsonl"   # 教师数据很少时混入原 SFT 数据，防止遗忘
+mix_sft_max = 200
+logits_kd = true
+kd_alpha = 0.5
+kd_temperature = 1.0
+kd_topk = 0
+on_policy_steps = 0      # 在线策略蒸馏：待核实（GOAL.md 2.1），默认关
+
+[optim]
+lr = 3e-4
+weight_decay = 0.0
+grad_clip = 1.0
+
+[schedule]
+kind = "cosine"
+warmup_steps = 3
+min_lr_ratio = 0.1
+
+[checkpoint]
+every = 0
+keep_last = 1
+
+[logging]
+every = 5

@@ -1,0 +1,33 @@
+# 主线模型的内部评测（第 11、20 章）：后训练各阶段在 tool_env dev 集和玩具集上的对比，配对 bootstrap。
+#   uv run python -m zero.eval.harness --config configs/main/eval.toml
+# 正式基准（BFCL、MMLU-Redux、C-Eval、GSM8K……）不在这里：按 eval/PREREGISTRATION.md 用官方框架跑，
+# BFCL 见 zero/eval/bfcl.py（尚未验证）。
+
+[eval]
+mc_tasks = ["toy_mc.jsonl"]
+gen_tasks = ["toy_gen.jsonl"]
+tool_tasks = "tool_dev.jsonl"
+fewshot = 3
+max_items = 0
+max_new_tokens = 512
+max_turns = 4
+out_dir = "out/main/eval"
+baseline = "sft"
+n_boot = 10000
+seed = 0
+
+[[eval.models]]
+name = "sft"
+path = "out/main/sft/ckpt"
+
+[[eval.models]]
+name = "distill"
+path = "out/main/distill/ckpt"
+
+[[eval.models]]
+name = "dpo"
+path = "out/main/dpo/ckpt"
+
+[[eval.models]]
+name = "grpo"
+path = "out/main/grpo/ckpt"

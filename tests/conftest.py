@@ -96,3 +96,96 @@ def small_train_config(
 @pytest.fixture
 def make_config():  # noqa: ANN201
     return small_train_config
+
+
+# ---------------------------------------------------------------------------
+# 后训练测试共用：见过对话 / 工具调用格式的小分词器 + 随机初始化的极小模型 checkpoint
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def chat_tok_path(tmp_path_factory, tiny_texts):  # noqa: ANN001, ANN201
+    from zero.post.chat import render_text
+    from zero.post.envs.tool_env import generate_tasks, reference_messages
+    from zero.tokenizer import train_bpe
+
+    convs = [
+        render_text(reference_messages(t), t.tools) for t in generate_tasks(300, seed=5)
+    ]
+    tok = train_bpe([tiny_texts["en"][:20000], tiny_texts["zh"][:10000], *convs], vocab_size=600)
+    path = tmp_path_factory.mktemp("chat_tok") / "tokenizer.json"
+    tok.save(path)
+    return path
+
+
+@pytest.fixture(scope="session")
+def chat_tok(chat_tok_path):  # noqa: ANN001, ANN201
+    from zero.tokenizer import Tokenizer
+
+    return Tokenizer.load(chat_tok_path)
+
+
+TINY_POST_MODEL = {
+    "dim": 32,
+    "n_layers": 2,
+    "n_heads": 4,
+    "n_kv_heads": 2,
+    "ffn_dim": 64,
+    "max_seq_len": 1024,
+    "tie_embeddings": False,
+}
+
+
+@pytest.fixture(scope="session")
+def tiny_ckpt(tmp_path_factory, chat_tok, chat_tok_path):  # noqa: ANN001, ANN201
+    """随机初始化的极小模型，存成 zero checkpoint（meta 里记着分词器路径，load_policy 能直接读）。"""
+    from zero.config import ModelConfig
+    from zero.model import Transformer
+    from zero.train.checkpoint import save_checkpoint
+
+    torch.manual_seed(0)
+    cfg = ModelConfig(vocab_size=chat_tok.vocab_size, **TINY_POST_MODEL)
+    model = Transformer(cfg)
+    root = tmp_path_factory.mktemp("tiny_ckpt") / "ckpt"
+    import dataclasses
+
+    save_checkpoint(
+        root,
+        0,
+        model,
+        meta={
+            "config": {
+                "model": dataclasses.asdict(cfg),
+                "train": {"data": {"tokenizer": str(chat_tok_path)}},
+            }
+        },
+    )
+    return root
+
+
+def post_config(tmp_path: Path, tok_path: Path, init_from: Path, vocab: int, **sections):  # noqa: ANN003, ANN201
+    """构造后训练阶段用的配置 dict（模型形状与 tiny_ckpt 一致）。"""
+    d = {
+        "model": {"vocab_size": vocab, **TINY_POST_MODEL},
+        "train": {
+            "seed": 0,
+            "max_steps": 2,
+            "micro_batch_size": 2,
+            "device": "cpu",
+            "dtype": "fp32",
+            "out_dir": str(tmp_path / "run"),
+            "init_from": str(init_from),
+            "eval_every": 0,
+        },
+        "data": {"format": "none", "tokenizer": str(tok_path), "seq_len": 1024},
+        "optim": {"lr": 1e-3, "weight_decay": 0.0},
+        "schedule": {"kind": "constant", "warmup_steps": 0},
+        "checkpoint": {"every": 0, "keep_last": 1},
+        "logging": {"every": 1},
+    }
+    for k, v in sections.items():
+        if k in d and isinstance(v, dict):
+            d[k].update(v)
+        else:
+            d[k] = v
+    return d

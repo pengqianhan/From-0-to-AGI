@@ -1,4 +1,4 @@
-# tiny DPO 配置（第 18 章"极小配置演示"）：在 tiny SFT（或蒸馏）之后的权重上做 DPO。
+# tiny DPO 配置（第 18 章"极小配置演示"）：在 tiny 蒸馏之后的权重上做 DPO。
 #   uv run python -m zero.post.dpo --config configs/tiny/dpo.toml
 # 偏好数据不存在时，用工具环境 + 当前策略现场造（见 zero/post/dpo.py 的 make_env_preferences）。
 
@@ -24,7 +24,7 @@ device = "cpu"
 dtype = "fp32"
 cpu_threads = 1
 out_dir = "out/tiny/dpo"
-init_from = "out/tiny/sft/ckpt"
+init_from = "out/tiny/distill/ckpt"   # 流水线顺序：SFT → 蒸馏 → DPO
 
 [data]
 format = "none"          # 数据由 [dpo] 管

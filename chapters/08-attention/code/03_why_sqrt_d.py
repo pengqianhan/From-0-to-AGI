@@ -11,8 +11,8 @@ q、k 的每个分量都是均值 0、方差 1 的随机数时，点积 q·k = �
 import numpy as np
 
 DIMS = [16, 64, 256, 1024]
-T = 16          # 每个查询面对 16 个键
-TRIALS = 2000   # 重复次数
+T = 16  # 每个查询面对 16 个键
+TRIALS = 2000  # 重复次数
 
 
 def softmax(z: np.ndarray) -> np.ndarray:
@@ -24,7 +24,7 @@ def softmax(z: np.ndarray) -> np.ndarray:
 def stats(d: int, scale: bool, rng: np.random.Generator) -> dict:
     q = rng.normal(size=(TRIALS, 1, d))
     k = rng.normal(size=(TRIALS, T, d))
-    scores = (q * k).sum(-1)                   # (TRIALS, T)：每行是一个查询对 T 个键的分数
+    scores = (q * k).sum(-1)  # (TRIALS, T)：每行是一个查询对 T 个键的分数
     if scale:
         scores = scores / np.sqrt(d)
     p = softmax(scores)
@@ -33,8 +33,8 @@ def stats(d: int, scale: bool, rng: np.random.Generator) -> dict:
     jac = np.einsum("ni,ij->nij", p, np.eye(T)) - np.einsum("ni,nj->nij", p, p)
     return {
         "var": scores.var(),
-        "max_w": p.max(-1).mean(),              # 最大权重（越接近 1 越像 one-hot）
-        "eff_n": np.exp(entropy).mean(),        # "有效关注个数" = e^熵，均匀时 = T
+        "max_w": p.max(-1).mean(),  # 最大权重（越接近 1 越像 one-hot）
+        "eff_n": np.exp(entropy).mean(),  # "有效关注个数" = e^熵，均匀时 = T
         "jac": np.linalg.norm(jac, axis=(1, 2)).mean(),
     }
 
@@ -48,9 +48,13 @@ def main() -> None:
         print(header)
         for d in DIMS:
             s = stats(d, scale, rng)
-            print(f"{d:>6} | {s['var']:>10.1f} {s['max_w']:>10.3f} {s['eff_n']:>10.2f} {s['jac']:>10.3f}")
-    print("\n（有效个数 = e^熵：权重均匀分给 16 个位置时是 16，全压在一个位置上时是 1。"
-          "梯度大小 = softmax 雅可比矩阵的 Frobenius 范数。）")
+            print(
+                f"{d:>6} | {s['var']:>10.1f} {s['max_w']:>10.3f} {s['eff_n']:>10.2f} {s['jac']:>10.3f}"
+            )
+    print(
+        "\n（有效个数 = e^熵：权重均匀分给 16 个位置时是 16，全压在一个位置上时是 1。"
+        "梯度大小 = softmax 雅可比矩阵的 Frobenius 范数。）"
+    )
 
 
 if __name__ == "__main__":

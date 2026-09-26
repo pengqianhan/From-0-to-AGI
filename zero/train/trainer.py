@@ -189,6 +189,10 @@ class Trainer:
         with open(path, "a") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
+    def extra_metrics(self) -> dict[str, Any]:
+        """子类（如蒸馏）要额外记进日志的指标。"""
+        return {}
+
     def _forward_loss(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         with self.autocast():
             logits = self.model(x)
@@ -309,6 +313,8 @@ class Trainer:
                 }
                 if isinstance(self.loader, MixtureLoader):
                     record["mixture_counts"] = dict(self.loader.counts)
+                extra = self.extra_metrics()
+                record.update(extra)
                 if do_eval:
                     record["val_loss"] = self.evaluate()
                 if not math.isfinite(loss_val):
@@ -322,6 +328,8 @@ class Trainer:
                 )
                 if mfu is not None:
                     msg += f" | MFU {mfu:.1%}"
+                for k, v in extra.items():
+                    msg += f" | {k} {v:.4f}"
                 if record.get("val_loss") is not None:
                     msg += f" | val {record['val_loss']:.4f}"
                 self.log(msg)

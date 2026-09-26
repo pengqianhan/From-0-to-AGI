@@ -37,13 +37,21 @@ GRPO 需要一个"能自动判对错"的环境。这里的一切都是确定性�
 5. **安全执行**：calculator 只接受 AST 白名单节点，幂指数和数值大小有上限，防止 `9**9**9` 卡死判分器；
 6. **最终答案**：要点必须全部出现，且答案里出现的数字个数有上限（`_too_many_numbers`），
    防止把一堆候选数字全列出来碰运气；
-7. **schema 校验**：参数缺字段、多字段、类型不对都算不合 schema，不能执行，也不能得分。
+7. **schema 校验**：参数缺字段、多字段、类型不对都算不合 schema，不能执行，也不能得分；
+8. **不带标签的调用算格式错误**：标签外面出现 `{"name": ...` / `"arguments":` 这样的 JSON 判 -1。
+   这一条是冒烟测试里**真实观察到**的作弊：最初的奖励只检查 `<tool_call>` 标签里的内容，tiny 模型的
+   调用几乎都是坏 JSON（-1 分），GRPO 十步之内就学会了"去掉标签、照样输出 JSON"——不再有格式错误，
+   得分从 -1 升到 0，平均奖励曲线漂亮地上升，而模型一个调用都不会了。加上这条之后这种输出回到 -1。
+   另外，"不该调用工具"的任务回复为空时得 0 分而不是 1 分。
+
+局限：不需要工具的任务只检查"有没有乱调用"，不判断回答内容好不好（需要奖励模型或规则判分）。
 """
 
 from __future__ import annotations
 
 import ast
 import datetime as dt
+import functools
 import json
 import math
 import operator
@@ -539,36 +547,54 @@ def make_task(rng: random.Random, idx: int, split: str) -> Task:
     )
 
 
-def generate_tasks(
-    n: int, seed: int = 0, split: str = "train", exclude: set[str] | None = None
-) -> list[Task]:
-    """生成 n 个任务；问题文本在 exclude 里的跳过（保证 train / dev 不重叠）。"""
+# 固定的 dev 集：种子固定，所有训练任务都排除与它问题文本相同的任务（防止评测集泄漏进训练）。
+# 例外：天气（约 30 种问法）和打招呼（6 种）的问题空间太小，无法与 dev 不重叠——这两类在 dev 里
+# 只考"会不会用对工具 / 该不该调用"，报告里单列。
+DEV_SEED = 0
+N_DEV_MAX = 300
+SMALL_SPACE_KINDS = frozenset({"weather", "no_tool"})
+
+
+def _generate(n: int, seed: int, split: str, exclude: frozenset[str], dedup: bool) -> list[Task]:
     rng = random.Random(f"tool_env-{split}-{seed}")
-    exclude = exclude or set()
     out: list[Task] = []
     seen: set[str] = set()
     tries = 0
     while len(out) < n:
         tries += 1
-        if tries > n * 50:
+        if tries > n * 50 + 1000:
             raise RuntimeError("生成不出足够多的不重复任务")
         t = make_task(rng, len(out), split)
-        key = t.query
-        if t.kind != "no_tool" and (key in exclude or key in seen):
-            continue
-        if t.kind == "no_tool" and split != "train" and key in exclude:
-            continue
-        seen.add(key)
+        if t.kind not in SMALL_SPACE_KINDS:
+            if t.query in exclude or (dedup and t.query in seen):
+                continue
+        seen.add(t.query)
         out.append(t)
     return out
 
 
+def dev_tasks(n: int = 200) -> list[Task]:
+    """固定的 dev 集（前 n 个；n 越大，结果是更小 n 的超集）。"""
+    if n > N_DEV_MAX:
+        raise ValueError(f"dev 集最多 {N_DEV_MAX} 个任务")
+    return _generate(n, DEV_SEED, "dev", frozenset(), dedup=True)
+
+
+@functools.lru_cache(maxsize=1)
+def _dev_queries() -> frozenset[str]:
+    return frozenset(t.query for t in dev_tasks(N_DEV_MAX) if t.kind not in SMALL_SPACE_KINDS)
+
+
+def generate_tasks(n: int, seed: int = 0, split: str = "train") -> list[Task]:
+    """生成 n 个任务。split="train" 时排除所有与固定 dev 集问题相同的任务；split="dev" 返回固定 dev 集。"""
+    if split == "dev":
+        return dev_tasks(n)
+    return _generate(n, seed, split, _dev_queries(), dedup=False)
+
+
 def make_splits(n_train: int, n_dev: int, seed: int = 0) -> tuple[list[Task], list[Task]]:
-    """dev 先生成；train 跳过与 dev 同问题的任务（"打招呼"类问题只有几种，不去重）。"""
-    dev = generate_tasks(n_dev, seed, "dev")
-    dev_keys = {t.query for t in dev if t.kind != "no_tool"}
-    train = generate_tasks(n_train, seed, "train", exclude=dev_keys)
-    return train, dev
+    """(训练任务, 固定 dev 集的前 n_dev 个)。"""
+    return generate_tasks(n_train, seed, "train"), dev_tasks(n_dev)
 
 
 def reference_messages(task: Task) -> list[dict[str, Any]]:
@@ -665,6 +691,16 @@ def _forged(text: str) -> str | None:
     return None
 
 
+_BARE_CALL_RE = re.compile(r'\{\s*"(?:name|arguments)\b|"arguments"\s*:')
+
+
+def _bare_call(content: str) -> str | None:
+    """标签外面出现了工具调用样子的 JSON：判格式错误（否则去掉标签就能躲开 -1 的格式分）。"""
+    if _BARE_CALL_RE.search(content):
+        return "工具调用缺少 <tool_call> 标签（标签外出现了 name / arguments JSON）"
+    return None
+
+
 def score_tool_calls(task: Task, text: str) -> Reward:
     """给"助手的第一轮输出"打分：该调用哪些工具、参数对不对。"""
     if len(text) > MAX_OUTPUT_CHARS:
@@ -675,6 +711,9 @@ def score_tool_calls(task: Task, text: str) -> Reward:
     parsed = parse_assistant(text)
     if parsed.errors:
         return Reward(-1.0, False, n_calls=len(parsed.tool_calls), details=list(parsed.errors))
+    bare = _bare_call(parsed.content)
+    if bare:
+        return Reward(-1.0, False, n_calls=len(parsed.tool_calls), details=[bare])
     calls = parsed.tool_calls
     if len(calls) > MAX_CALLS:
         return Reward(-1.0, False, n_calls=len(calls), details=[f"调用超过 {MAX_CALLS} 个"])
@@ -694,6 +733,8 @@ def score_tool_calls(task: Task, text: str) -> Reward:
     gold = task.gold_calls
     if not gold:
         if not calls:
+            if not parsed.content.strip():
+                return Reward(0.0, True, 0, details=["空回答"])
             return Reward(1.0, True, 0, 1.0, 1.0, details=["正确地没有调用工具"])
         return Reward(-0.5, format_ok, len(calls), details=["不需要工具却调用了", *details])
     if not calls:
@@ -762,6 +803,9 @@ def score_final_answer(task: Task, text: str) -> Reward:
         return Reward(
             0.0, True, len(parsed.tool_calls), answer_ok=False, details=["最终回答里还在调用工具"]
         )
+    bare = _bare_call(parsed.content)
+    if bare:
+        return Reward(-1.0, False, answer_ok=False, details=[bare])
     ans = parsed.content.strip()
     if not ans:
         return Reward(0.0, True, answer_ok=False, details=["空回答"])

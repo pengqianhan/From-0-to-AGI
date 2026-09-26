@@ -34,9 +34,9 @@ _spec = importlib.util.spec_from_file_location("attn02", HERE / "02_attention_fr
 attn02 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(attn02)
 
-BLOCK = 64       # 上下文长度 T
-C = 64           # 通道数
-HEADS = 4        # 头数，每头 d = 16
+BLOCK = 64  # 上下文长度 T
+C = 64  # 通道数
+HEADS = 4  # 头数，每头 d = 16
 BATCH = 32
 STEPS = 2000
 LR = 3e-3
@@ -64,7 +64,7 @@ class TinyLM(nn.Module):
         super().__init__()
         self.mode = mode
         self.tok = nn.Embedding(vocab, C)
-        self.pos = nn.Embedding(BLOCK, C)   # 位置向量（第 9 章换成 RoPE）
+        self.pos = nn.Embedding(BLOCK, C)  # 位置向量（第 9 章换成 RoPE）
         if mode == "attention":
             self.mix = attn02.MultiHeadAttention(C, HEADS)
         elif mode == "average":
@@ -78,10 +78,10 @@ class TinyLM(nn.Module):
         w = None
         if self.mode == "attention":
             out, w = self.mix(h, return_weights=True)
-            h = h + out                                        # 残差连接（第 6 章）
+            h = h + out  # 残差连接（第 6 章）
         elif self.mode == "average":
             W = torch.tril(torch.ones(T, T))
-            W = W / W.sum(1, keepdim=True)                     # 固定的均匀权重
+            W = W / W.sum(1, keepdim=True)  # 固定的均匀权重
             h = h + self.wo(W @ self.wv(h))
         logits = self.head(h)
         return (logits, w) if return_weights else logits
@@ -90,7 +90,7 @@ class TinyLM(nn.Module):
 @torch.no_grad()
 def evaluate(model: TinyLM, data: torch.Tensor, batches: int = 40) -> float:
     model.eval()
-    g = torch.Generator().manual_seed(1234)   # 三个模型用同一批验证数据
+    g = torch.Generator().manual_seed(1234)  # 三个模型用同一批验证数据
     losses = []
     for _ in range(batches):
         x, y = get_batch(data, g)
@@ -136,11 +136,11 @@ def head_profile(model: TinyLM, data: torch.Tensor, batches: int = 20) -> torch.
     g = torch.Generator().manual_seed(99)
     acc = torch.zeros(HEADS, 4)
     T = BLOCK
-    offset = torch.arange(T)[:, None] - torch.arange(T)[None, :]   # 查询位置 − 键位置
+    offset = torch.arange(T)[:, None] - torch.arange(T)[None, :]  # 查询位置 − 键位置
     for _ in range(batches):
         x, _ = get_batch(data, g)
-        _, w = model(x, return_weights=True)                         # (B, H, T, T)
-        w = w[:, :, 8:, :].mean(0)                                   # 跳过开头 8 个位置（前文太短）
+        _, w = model(x, return_weights=True)  # (B, H, T, T)
+        w = w[:, :, 8:, :].mean(0)  # 跳过开头 8 个位置（前文太短）
         off = offset[8:]
         for k in range(3):
             acc[:, k] += (w * (off == k)).sum(-1).mean(-1)
@@ -157,15 +157,19 @@ def heatmap(w: torch.Tensor, text: str) -> str:
     shades = " .:-=+*#%@"
     lines = ["    " + "".join(show_char(c) for c in text)]
     for i, c in enumerate(text):
-        row = "".join(shades[min(9, int(w[i, j] * 10))] if j <= i else " " for j in range(len(text)))
+        row = "".join(
+            shades[min(9, int(w[i, j] * 10))] if j <= i else " " for j in range(len(text))
+        )
         lines.append(f"  {show_char(c)} {row}")
     return "\n".join(lines)
 
 
 def main() -> None:
     chars, _, _, val_data = load_data()
-    print(f"语料：Tiny Shakespeare，{len(chars)} 种字符（全是 ASCII，1 字符 = 1 字节）；"
-          f"上下文 T={BLOCK}，C={C}，H={HEADS}，训练 {STEPS} 步 × batch {BATCH}\n")
+    print(
+        f"语料：Tiny Shakespeare，{len(chars)} 种字符（全是 ASCII，1 字符 = 1 字节）；"
+        f"上下文 T={BLOCK}，C={C}，H={HEADS}，训练 {STEPS} 步 × batch {BATCH}\n"
+    )
     models, results = {}, []
     for mode in ("bigram", "average", "attention"):
         t0 = time.time()
@@ -194,16 +198,22 @@ def main() -> None:
     w = attention_on(model, SAMPLE)
     text = SAMPLE
     for h in range(HEADS):
-        print(f"\n头 {h} 在样例文本上的注意力（行 = 当前字符，列 = 被看的字符；越深越重，␣ 是空格，⏎ 是换行）")
-        print(heatmap(w[h, 15:, 15:], text[15:]))   # 只画第二行，保持宽度可读
+        print(
+            f"\n头 {h} 在样例文本上的注意力（行 = 当前字符，列 = 被看的字符；越深越重，␣ 是空格，⏎ 是换行）"
+        )
+        print(heatmap(w[h, 15:, 15:], text[15:]))  # 只画第二行，保持宽度可读
     # 几个具体位置：看得最重的前 3 个字符
-    print("\n几个位置最关注的前 3 个字符（全部 4 个头平均）：")
-    wm = w.mean(0)
-    for pos in [text.index("proceed") + 6, text.index("further") + 6, len(text) - 2]:
-        top = torch.topk(wm[pos, : pos + 1], 3)
-        desc = "，".join(f"{pos - int(j)} 前「{show_char(text[int(j)])}」{float(v):.2f}"
-                        for v, j in zip(top.values, top.indices))
-        print(f"  位置 {pos}「{show_char(text[pos])}」（前文 …{text[max(0, pos - 12): pos + 1]!r}）：{desc}")
+    # 逐个位置：头 1、头 0 在最后 16 个字符上权重最大的位置（"k 前" = 往前数 k 个）
+    for h in (1, 0):
+        print(f"\n头 {h} 在 {text[-16:]!r} 上每个位置权重最大的字符：")
+        items = []
+        for i in range(len(text) - 16, len(text)):
+            j = int(torch.argmax(w[h, i, : i + 1]))
+            items.append(
+                f"{show_char(text[i])}→{i - j}前「{show_char(text[j])}」{float(w[h, i, j]):.2f}"
+            )
+        for k in range(0, 16, 4):
+            print("  " + "   ".join(items[k : k + 4]))
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@
 数据：assets/tiny_corpus/shakespeare.txt，按字节（byte）切分 → 词表 256，
       损失（nat/字节）÷ ln2 就是第 7 章的 bits-per-byte。
 运行：uv run python chapters/09-modern-transformer/code/02_tiny_transformer.py
-      （约 3–5 分钟；训练结果存到 code/out/tiny_transformer.pt，第 3、4 个脚本和视频会读它）
+      （单线程约 11 分钟 CPU 时间；赶时间加 --steps 400。训练结果存到 code/out/tiny_transformer.pt，第 3、4 个脚本和视频会读它）
 """
 
 import math
@@ -219,5 +219,10 @@ def load_trained():
 
 
 if __name__ == "__main__":
-    torch.set_num_threads(1)  # 单线程：小模型上多线程收益小，机器繁忙时反而慢很多
-    train()
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--steps", type=int, default=1200, help="训练步数；赶时间可以用 400")
+    ap.add_argument("--threads", type=int, default=1, help="机器空闲时可以调大")
+    args = ap.parse_args()
+    torch.set_num_threads(args.threads)  # 默认单线程：机器繁忙时多线程反而慢很多
+    train(steps=args.steps)

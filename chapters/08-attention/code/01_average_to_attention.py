@@ -83,12 +83,16 @@ def main() -> None:
     print("   每行的和：", w_dot.sum(axis=1))
     last = TOKENS[-1]
     top = int(np.argmax(w_dot[-1]))
-    print(f"   最后一个位置「{last}」最关注「{TOKENS[top]}」，权重 {w_dot[-1, top]:.2f}"
-          f"（均匀平均时每个都是 {w_uni[-1, 0]:.2f}）")
+    print(
+        f"   最后一个位置「{last}」最关注「{TOKENS[top]}」，权重 {w_dot[-1, top]:.2f}"
+        f"（均匀平均时每个都是 {w_uni[-1, 0]:.2f}）"
+    )
     print("   加权平均后的输出 w_dot @ x 的最后一行：", (w_dot @ x)[-1])
     self_top = sum(int(np.argmax(w_dot[t]) == t) for t in range(T))
-    print(f"   {self_top}/{T} 个位置权重最大的都是自己：x·x = |x|² 往往最大，"
-          "所以要用 Q、K 两个不同的投影")
+    print(
+        f"   {self_top}/{T} 个位置权重最大的都是自己：x·x = |x|² 往往最大，"
+        "所以要用 Q、K 两个不同的投影"
+    )
 
 
 if __name__ == "__main__":

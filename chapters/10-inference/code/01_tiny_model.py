@@ -5,7 +5,7 @@
   - forward(ids, cache)：传入 KVCache 时，只算新 token 的 q/k/v，旧的 K/V 从缓存里读；
   - n_kv_heads：K/V 头数可以少于查询头数（GQA / MQA），多个查询头共享一组 K/V。
 
-数据：assets/tiny_corpus/shakespeare.txt，字符级（词表 65 个字符），CPU 上训练约一分钟。
+数据：assets/tiny_corpus/shakespeare.txt，字符级（词表 65 个字符），CPU 单线程训练 600 步约一两分钟。
 训练好的权重缓存在 code/out/*.pt（*.pt 已被 .gitignore 忽略），后面几个脚本直接加载。
 运行：uv run python chapters/10-inference/code/01_tiny_model.py
 """
@@ -24,6 +24,8 @@ import torch.nn.functional as F
 ROOT = Path(__file__).resolve().parents[3]
 CORPUS = ROOT / "assets" / "tiny_corpus" / "shakespeare.txt"
 OUT = Path(__file__).resolve().parent / "out"
+# 单线程：极小模型上多线程收益很小，单线程的计时更稳定、结果也更容易复现
+torch.set_num_threads(1)
 
 
 # ── 数据：字符级 ────────────────────────────────────────────────────────────
@@ -179,7 +181,7 @@ class TinyLM(nn.Module):
 
 
 # ── 训练（带缓存：训练过的权重直接加载）─────────────────────────────────────
-def train(c: Config, steps: int = 1500, bsz: int = 32, seq: int = 128, lr: float = 3e-3,
+def train(c: Config, steps: int = 600, bsz: int = 16, seq: int = 64, lr: float = 3e-3,
           seed: int = 0, verbose: bool = True):
     data = CharData()
     torch.manual_seed(seed)
@@ -197,13 +199,13 @@ def train(c: Config, steps: int = 1500, bsz: int = 32, seq: int = 128, lr: float
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
-        if verbose and step % 250 == 0:
+        if verbose and step % 100 == 0:
             print(f"  step {step:5d}  train loss {loss.item():.3f}  ({time.time() - t0:.0f}s)")
     return model.eval()
 
 
 @torch.no_grad()
-def val_loss(model: TinyLM, n_batches: int = 20, seq: int = 128) -> float:
+def val_loss(model: TinyLM, n_batches: int = 20, seq: int = 64) -> float:
     data = CharData()
     g = torch.Generator().manual_seed(1234)
     tot = 0.0
@@ -213,17 +215,18 @@ def val_loss(model: TinyLM, n_batches: int = 20, seq: int = 128) -> float:
     return tot / n_batches
 
 
-def load_or_train(n_kv_heads: int = 4, steps: int = 1500, verbose: bool = True) -> TinyLM:
-    torch.set_num_threads(max(1, torch.get_num_threads()))
+def load_or_train(n_kv_heads: int = 4, steps: int = 600, seed: int = 0,
+                  verbose: bool = True) -> TinyLM:
     c = Config(vocab_size=CharData().vocab_size, n_kv_heads=n_kv_heads)
-    path = OUT / f"tiny_kv{n_kv_heads}_s{steps}.pt"
+    path = OUT / (f"tiny_kv{n_kv_heads}_s{steps}" + ("" if seed == 0 else f"_seed{seed}") + ".pt")
     if path.exists():
         model = TinyLM(c)
         model.load_state_dict(torch.load(path, weights_only=True))
         return model.eval()
     if verbose:
-        print(f"训练 n_kv_heads={n_kv_heads} 的小模型（{steps} 步，只需一次，之后从 {path.name} 加载）")
-    model = train(c, steps=steps, verbose=verbose)
+        print(f"训练 n_kv_heads={n_kv_heads}、种子 {seed} 的小模型（{steps} 步，只需一次，"
+              f"之后从 {path.name} 加载）")
+    model = train(c, steps=steps, seed=seed, verbose=verbose)
     OUT.mkdir(exist_ok=True)
     torch.save(model.state_dict(), path)
     return model

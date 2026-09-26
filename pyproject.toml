@@ -23,6 +23,7 @@ video = [
 dev = [
     "pytest>=8.4.2",
     "ruff>=0.16.9",
+    "sentencepiece>=0.2.0",
     "transformers>=4.57.6",
 ]
 

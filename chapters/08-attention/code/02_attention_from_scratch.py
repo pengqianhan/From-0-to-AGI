@@ -20,13 +20,13 @@ VERBOSE = False  # MultiHeadAttention.forward 里打印每一步的形状
 def attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, causal: bool = True):
     """缩放点积注意力。q, k, v: (..., T, d) → 输出 (..., T, d)，权重 (..., T, T)。"""
     d = q.shape[-1]
-    scores = q @ k.transpose(-2, -1) / math.sqrt(d)            # QKᵀ / √d
+    scores = q @ k.transpose(-2, -1) / math.sqrt(d)  # QKᵀ / √d
     if causal:
         T = q.shape[-2]
         future = torch.triu(torch.ones(T, T, dtype=torch.bool), diagonal=1)
-        scores = scores.masked_fill(future, float("-inf"))      # 未来位置 → −∞
-    weights = torch.softmax(scores, dim=-1)                     # 每行和为 1
-    return weights @ v, weights                                 # 加权平均 V
+        scores = scores.masked_fill(future, float("-inf"))  # 未来位置 → −∞
+    weights = torch.softmax(scores, dim=-1)  # 每行和为 1
+    return weights @ v, weights  # 加权平均 V
 
 
 def show(name: str, t: torch.Tensor, dims: str) -> None:
@@ -57,7 +57,7 @@ class MultiHeadAttention(nn.Module):
         out, w = attention(q, k, v, causal=True)
         show("权重 softmax(QKᵀ/√d)", w, "(B, H, T, T)")
         show("每个头的输出 w @ v", out, "(B, H, T, d)")
-        out = out.transpose(1, 2).reshape(B, T, C)               # 拼回去
+        out = out.transpose(1, 2).reshape(B, T, C)  # 拼回去
         show("拼接各头", out, "(B, T, C)")
         out = self.wo(out)
         show("输出 = 拼接 @ Wo", out, "(B, T, C)")
@@ -95,15 +95,19 @@ def main() -> None:
 
     with torch.no_grad():
         ref = mha_with_sdpa(m, x)
-    print(f"\n和 F.scaled_dot_product_attention(is_causal=True) 的最大差：{(ours - ref).abs().max():.1e}")
+    print(
+        f"\n和 F.scaled_dot_product_attention(is_causal=True) 的最大差：{(ours - ref).abs().max():.1e}"
+    )
 
     # 因果性检验：改掉最后 3 个 token，前 5 个位置的输出必须一字不变
     x2 = x.clone()
     x2[:, 5:] = torch.randn(B, 3, C)
     with torch.no_grad():
         out2 = m(x2)
-    print(f"改掉位置 5–7 的输入后，位置 0–4 输出的最大变化：{(out2[:, :5] - ours[:, :5]).abs().max():.1e}"
-          f"；位置 5–7 的最大变化：{(out2[:, 5:] - ours[:, 5:]).abs().max():.2f}")
+    print(
+        f"改掉位置 5–7 的输入后，位置 0–4 输出的最大变化：{(out2[:, :5] - ours[:, :5]).abs().max():.1e}"
+        f"；位置 5–7 的最大变化：{(out2[:, 5:] - ours[:, 5:]).abs().max():.2f}"
+    )
 
     n_params = sum(p.numel() for p in m.parameters())
     print(f"参数量：{n_params} = 4 × C² = 4 × {C}²（Wq、Wk、Wv、Wo，和头数无关）")

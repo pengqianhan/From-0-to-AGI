@@ -1,0 +1,54 @@
+# 主线模型 DPO（第 18 章）。第二步默认值，待调。
+#   uv run python -m zero.post.dpo --config configs/main/dpo.toml
+# zero 的 DPO 目前是单进程实现（一张卡即可放下 0.7B 的策略 + 预先算好的参考 log 概率）；
+# 多卡版本尚未实现，也尚未在 GPU 上验证。
+
+[model]                  # 与 configs/main/longctx.toml 的 checkpoint 形状一致（689.5M 参数）
+vocab_size = 65536
+dim = 1280
+n_layers = 28
+n_heads = 16
+n_kv_heads = 8
+head_dim = 128
+ffn_dim = 3584
+rope_theta = 1000000.0   # 长上下文阶段调大后的底数
+max_seq_len = 32768
+tie_embeddings = true
+
+[train]
+seed = 1337
+max_steps = 1000
+micro_batch_size = 8     # 8 对 = 16 条序列
+grad_accum_steps = 8     # 每步 64 对
+device = "auto"
+dtype = "auto"
+out_dir = "out/main/dpo"
+init_from = "out/main/distill/ckpt"
+
+[data]
+format = "none"
+tokenizer = "data/tokenizer/tokenizer.json"
+seq_len = 8192
+
+[dpo]
+train_jsonl = "data/dpo/prefs.jsonl"   # 在线造偏好对：generate_pairs > 0 且文件不存在时用当前策略 + tool_env
+beta = 0.1
+ref_mode = "precompute"
+generate_pairs = 0
+samples_per_prompt = 8
+gen_temperature = 1.0
+max_new_tokens = 512
+
+[optim]
+lr = 5e-7                # DPO 常用 5e-7 ~ 1e-6，待调
+weight_decay = 0.0
+grad_clip = 1.0
+
+[schedule]
+kind = "cosine"
+warmup_steps = 50
+min_lr_ratio = 0.0
+
+[checkpoint]
+every = 200
+keep_last = 2
