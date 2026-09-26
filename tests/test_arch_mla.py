@@ -10,11 +10,19 @@ from zero.config import ModelConfig
 
 def _cfgs(q_lora_rank: int | None = None) -> tuple[ModelConfig, MLAConfig]:
     mc = ModelConfig(
-        vocab_size=97, dim=64, n_layers=2, n_heads=4, n_kv_heads=4, head_dim=16,
-        ffn_dim=128, max_seq_len=96, init_std=0.1,
+        vocab_size=97,
+        dim=64,
+        n_layers=2,
+        n_heads=4,
+        n_kv_heads=4,
+        head_dim=16,
+        ffn_dim=128,
+        max_seq_len=96,
+        init_std=0.1,
     )
-    return mc, MLAConfig.from_model_config(mc, kv_lora_rank=24, qk_rope_head_dim=8,
-                                           q_lora_rank=q_lora_rank)
+    return mc, MLAConfig.from_model_config(
+        mc, kv_lora_rank=24, qk_rope_head_dim=8, q_lora_rank=q_lora_rank
+    )
 
 
 def test_absorbed_equals_naive() -> None:
@@ -36,9 +44,11 @@ def test_chunked_prefill_with_cache_matches_full_forward() -> None:
     tokens = torch.randint(0, mc.vocab_size, (1, 30))
     full = model(tokens)
     cache = MLACache.from_config(cfg, mc.n_layers, 1, 30)
-    parts = [model(tokens[:, :12], kv_cache=cache, start_pos=0),
-             model(tokens[:, 12:13], kv_cache=cache, start_pos=12),
-             model(tokens[:, 13:], kv_cache=cache, start_pos=13)]
+    parts = [
+        model(tokens[:, :12], kv_cache=cache, start_pos=0),
+        model(tokens[:, 12:13], kv_cache=cache, start_pos=12),
+        model(tokens[:, 13:], kv_cache=cache, start_pos=13),
+    ]
     assert torch.allclose(full, torch.cat(parts, dim=1), atol=1e-5)
 
 

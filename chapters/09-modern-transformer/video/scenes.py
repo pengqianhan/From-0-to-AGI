@@ -22,6 +22,7 @@ from manim import (
     LEFT,
     RIGHT,
     UP,
+    UR,
     Arc,
     Arrow,
     Axes,
@@ -235,8 +236,10 @@ class ChapterScene(NarratedScene):
             self.play(Create(b2), FadeIn(l2), run_time=self.fit(2))
             self.wait(self.remaining() * 0.25)
             self.play(Write(f), run_time=self.fit(2))
-            hl = SurroundingRectangle(VGroup(b1[2], b2[2]), color=theme.HIGHLIGHT, buff=0.1)
-            pn = zh("Pre-Norm：归一化放在子层入口", 22, theme.HIGHLIGHT).move_to([0, 1.55, 0])
+            hl = VGroup(SurroundingRectangle(b1[2], color=theme.HIGHLIGHT, buff=0.08),
+                        SurroundingRectangle(b2[2], color=theme.HIGHLIGHT, buff=0.08))
+            pn = zh("Pre-Norm：归一化放在子层入口，主干道上不做归一化", 22,
+                    theme.HIGHLIGHT).move_to([0, -2.35, 0])
             self.wait(self.remaining() * 0.45)
             self.play(Create(hl), FadeIn(pn), run_time=self.fit(1))
             self.wait(self.remaining() - 0.6)
@@ -328,8 +331,10 @@ class ChapterScene(NarratedScene):
                       run_time=self.fit(2.5))
             self.play(t.animate.set_value(47), run_time=self.fit(3))
             self.wait(self.remaining() - 0.6)
-            self.remove(q_arrow, k_arrow, ang, labels)
-            self.play(*[FadeOut(m) for m in (circ, rot, key, rows, head)], run_time=self.fit(0.6))
+            for mob in (q_arrow, k_arrow, ang, labels):
+                mob.clear_updaters()
+            self.play(*[FadeOut(m) for m in (circ, rot, key, rows, head, q_arrow, k_arrow, ang, labels)],
+                      run_time=self.fit(0.6))
 
         # ── S06 不同的转速 ───────────────────────────────────────────────
         with self.shot("S06"):
@@ -355,10 +360,12 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(dials), *[Create(n) for n in needles], FadeIn(counter), Write(formula),
                       run_time=self.fit(1.5))
             self.add(*needles, counter)
-            self.play(p.animate.set_value(60), run_time=self.fit(self.remaining() - 1.2),
+            self.play(p.animate.set_value(60), run_time=self.fit(self.remaining() - 1.0),
                       rate_func=lambda x: x)
-            self.remove(*needles, counter)
-            self.play(FadeOut(dials), FadeOut(formula), run_time=self.fit(0.6))
+            for mob in (*needles, counter):
+                mob.clear_updaters()
+            self.play(FadeOut(dials), FadeOut(formula), *[FadeOut(n) for n in needles], FadeOut(counter),
+                      run_time=self.fit(0.6))
 
         # ── S07 SwiGLU ───────────────────────────────────────────────────
         with self.shot("S07"):
@@ -389,11 +396,11 @@ class ChapterScene(NarratedScene):
             grid = VGroup()
             for name, vals, col in (("门", gv, theme.GRAD), ("内容", u, theme.PARAM), ("相乘", pv, theme.OUTPUT)):
                 cells = VGroup(*[
-                    Rectangle(width=0.32, height=0.32, stroke_width=1, stroke_color=theme.MUTED,
+                    Rectangle(width=0.26, height=0.26, stroke_width=1, stroke_color=theme.MUTED,
                               fill_color=col, fill_opacity=min(1.0, abs(v) / 2.2))
                     for v in vals.tolist()]).arrange(RIGHT, buff=0.04)
                 grid.add(VGroup(zh(name, 20, col), cells).arrange(RIGHT, buff=0.2))
-            grid.arrange(DOWN, aligned_edge=RIGHT, buff=0.2).move_to([5.4, 0.2, 0])
+            grid.arrange(DOWN, aligned_edge=RIGHT, buff=0.2).move_to([5.25, 0.2, 0])
             gnote = zh("门≈0 的维度被关掉", 20, theme.MUTED).next_to(grid, DOWN, 0.2)
             params = zh("d = 1280：4d 的 MLP 13.11M 参数　vs　8/3·d 的 SwiGLU 13.11M 参数",
                         22, theme.HIGHLIGHT).move_to([0, -2.2, 0])
@@ -461,8 +468,8 @@ class ChapterScene(NarratedScene):
         # ── S09 共享 embedding ───────────────────────────────────────────
         with self.shot("S09"):
             self.play(*self.set_heading("共享 embedding：一张表，两头用"), run_time=self.fit(0.8))
-            emb = VGroup(Rectangle(width=1.2, height=3.0, color=theme.PARAM, fill_opacity=0.25),
-                         zh("输入表\nV × d", 22, theme.FG)).move_to([-5.6, 0.6, 0])
+            emb = VGroup(Rectangle(width=1.6, height=3.0, color=theme.PARAM, fill_opacity=0.25),
+                         zh("输入表\nV × d", 22, theme.FG)).move_to([-5.4, 0.6, 0])
             emb[1].move_to(emb[0])
             head = VGroup(Rectangle(width=3.0, height=1.2, color=theme.PARAM, fill_opacity=0.25),
                           zh("输出头 d × V", 22, theme.FG)).move_to([-2.4, 0.6, 0])
@@ -470,7 +477,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(emb), FadeIn(head), run_time=self.fit(1))
             self.wait(self.remaining() * 0.15)
             same = zh("同一个矩阵：lm_head.weight = tok_emb.weight", 22, theme.HIGHLIGHT).move_to([-3.6, -1.6, 0])
-            self.play(head.animate.rotate(math.pi / 2).move_to(emb), run_time=self.fit(1.2))
+            self.play(Transform(head[0], emb[0].copy()), FadeOut(head[1]), run_time=self.fit(1.2))
             self.play(FadeIn(same), run_time=self.fit(0.8))
             # 右侧：参数账本（由 zero.model.count_params 计算）
             rows = []
@@ -498,7 +505,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() * 0.5)
             self.play(FadeIn(rule), run_time=self.fit(0.8))
             self.wait(self.remaining() - 0.6)
-            self.play(*[FadeOut(m) for m in (emb, head, same, chart, rule)], run_time=self.fit(0.6))
+            self.play(*[FadeOut(m) for m in (emb, head[0], same, chart, rule)], run_time=self.fit(0.6))
 
         # ── S10 张量形状数据流 ───────────────────────────────────────────
         with self.shot("S10"):
@@ -508,8 +515,8 @@ class ChapterScene(NarratedScene):
             for a, b in flow:
                 lines.add(VGroup(zh(a, 20, theme.MUTED), mono(b, 20, theme.FG)))
             for ln in lines:
-                ln[1].move_to([1.6, 0, 0], aligned_edge=LEFT)
-                ln[0].move_to([-1.0, 0, 0], aligned_edge=RIGHT)
+                ln[1].move_to([-1.9, 0, 0], aligned_edge=LEFT)
+                ln[0].move_to([-2.4, 0, 0], aligned_edge=RIGHT)
             ys = np.linspace(2.45, -2.4, len(lines))
             for ln, y in zip(lines, ys):
                 ln.shift(UP * (y - ln.get_center()[1]))
@@ -543,25 +550,28 @@ class ChapterScene(NarratedScene):
                       run_time=self.fit(0.8))
             ax = Axes(x_range=[0, 1200, 400], y_range=[0, 9, 2], x_length=5.4, y_length=3.8,
                       axis_config={"color": theme.MUTED, "include_numbers": True, "font_size": 18},
-                      tips=False).move_to([-3.9, 0.0, 0])
+                      tips=False).move_to([-3.5, -0.1, 0])
             xl = zh("步数", 18, theme.MUTED).next_to(ax.x_axis, DOWN, 0.35)
-            yl = zh("验证集 bit/字节", 18, theme.MUTED).next_to(ax.y_axis, UP, 0.1)
+            yl = zh("验证集 bit/字节", 18, theme.MUTED).next_to(ax.y_axis, UP, 0.15)
+            yl.shift(RIGHT * (ax.y_axis.get_left()[0] + 0.1 - yl.get_left()[0]))
             pts = [(h["step"], h["val_bpb"]) for h in hist]
             curve = polyline_in_axes(ax, pts, color=theme.GRAD, stroke_width=4)
             dots = VGroup(*[Dot(ax.c2p(x, y), radius=0.05, color=theme.GRAD) for x, y in pts])
-            lbls = VGroup(*[zh(f"{y:.2f}", 16, theme.FG).next_to(ax.c2p(x, y), UP, 0.1)
+            lbls = VGroup(*[zh(f"{y:.2f}", 16, theme.FG).next_to(ax.c2p(x, y), UR, 0.08)
                             for x, y in pts if x in (0, 200, 1200)])
             self.play(Create(ax), FadeIn(xl), FadeIn(yl), run_time=self.fit(1))
             self.play(Create(curve), FadeIn(dots), run_time=self.fit(3))
             self.play(FadeIn(lbls), run_time=self.fit(0.8))
-            before = VGroup(*[mono(s, 16, theme.MUTED) for s in printable(ck["before"], 34, 6)])
+            before = VGroup(*[mono(s or ".", 16, theme.MUTED if s else theme.BG)
+                              for s in printable(ck["before"], 34, 6)])
             before.arrange(DOWN, aligned_edge=LEFT, buff=0.08)
             btitle = zh("训练前（· = 非法字节 / 控制字符）", 20, theme.GRAD)
             bgrp = VGroup(btitle, before).arrange(DOWN, aligned_edge=LEFT, buff=0.2).move_to([3.5, 0.9, 0])
             self.wait(self.remaining() * 0.12)
             self.play(FadeIn(bgrp), run_time=self.fit(1))
             self.wait(self.remaining() * 0.2)
-            after = VGroup(*[mono(s, 16, theme.FG) for s in printable(ck["after"], 44, 11)])
+            after = VGroup(*[mono(s or ".", 16, theme.FG if s else theme.BG)
+                             for s in printable(ck["after"], 44, 12)])
             after.arrange(DOWN, aligned_edge=LEFT, buff=0.06)
             atitle = zh("训练后（温度 0.8 采样）", 20, theme.OUTPUT)
             agrp = VGroup(atitle, after).arrange(DOWN, aligned_edge=LEFT, buff=0.15).move_to([3.4, 0.05, 0])
@@ -573,19 +583,19 @@ class ChapterScene(NarratedScene):
         diff, same = parity_numbers()
         with self.shot("S12"):
             self.play(*self.set_heading("两层对拍：极简版 = zero = Qwen3"), run_time=self.fit(0.8))
-            b1 = VGroup(box("极简模型", theme.INPUT, w=3.4, h=1.1, size=26),
+            b1 = VGroup(box("极简模型", theme.INPUT, w=3.0, h=1.0, size=26),
                         mono("code/02_tiny_transformer.py", 14, theme.MUTED))
-            b2 = VGroup(box("zero.Transformer", theme.PARAM, w=3.4, h=1.1, size=26),
+            b2 = VGroup(box("zero.Transformer", theme.PARAM, w=3.0, h=1.0, size=26),
                         mono("zero/model.py", 14, theme.MUTED))
-            b3 = VGroup(box("官方 Qwen3", theme.OUTPUT, w=3.4, h=1.1, size=26),
+            b3 = VGroup(box("官方 Qwen3", theme.OUTPUT, w=3.0, h=1.0, size=26),
                         mono("transformers", 14, theme.MUTED))
             for b, x in ((b1, -4.8), (b2, 0.0), (b3, 4.8)):
                 b[0].move_to([x, 1.4, 0])
                 b[1].next_to(b[0], DOWN, 0.12)
             a1 = Arrow(b1[0].get_right(), b2[0].get_left(), buff=0.1, color=theme.MUTED)
             a2 = Arrow(b2[0].get_right(), b3[0].get_left(), buff=0.1, color=theme.MUTED)
-            t1 = zh("权重原样搬运", 18, theme.MUTED).next_to(a1, UP, 0.1)
-            t2 = zh("导出 HF 格式", 18, theme.MUTED).next_to(a2, UP, 0.1)
+            t1 = zh("权重原样搬运", 16, theme.MUTED).next_to(a1, UP, 0.15)
+            t2 = zh("导出 HF 格式", 16, theme.MUTED).next_to(a2, UP, 0.15)
             self.play(FadeIn(b1), run_time=self.fit(0.8))
             self.wait(self.remaining() * 0.08)
             self.play(GrowArrow(a1), FadeIn(t1), FadeIn(b2), run_time=self.fit(1.2))
@@ -623,15 +633,17 @@ class ChapterScene(NarratedScene):
             for r, y in zip(table, np.linspace(2.0, 0.2, len(table))):
                 r.shift(UP * (y - r.get_center()[1]))
             same_bone = zh("骨架不变：查表 → N 个 Block → 打分", 24, theme.HIGHLIGHT).move_to([0, -0.6, 0])
-            self.play(LaggedStart(*[FadeIn(r) for r in table], lag_ratio=0.5),
-                      run_time=self.fit(self.remaining() * 0.3))
+            total = self.remaining()
+            self.play(LaggedStart(*[FadeIn(r) for r in table], lag_ratio=0.6),
+                      run_time=self.fit(total * 0.3))
             self.play(FadeIn(same_bone), run_time=self.fit(0.8))
-            self.wait(self.remaining() * 0.12)
-            self.play(FadeOut(table), FadeOut(same_bone), run_time=self.fit(0.6))
+            self.wait(max(0.1, self.remaining() - total * 0.45))
+            self.play(FadeOut(table), FadeOut(same_bone), *self.set_heading("为什么生成这么慢？"),
+                      run_time=self.fit(0.6))
             # 生成：每出一个字节都把整段重算一遍
             text = "ROMEO:  And yield for what be"
-            chars = VGroup(*[mono(ch if ch != " " else "·", 30, theme.FG) for ch in text])
-            chars.arrange(RIGHT, buff=0.08).move_to([0, 0.8, 0])
+            line = mono(text.replace(" ", "·"), 30, theme.FG).move_to([0, 0.8, 0])
+            chars = VGroup(*line.submobjects)
             pre = 7
             self.add(*chars[:pre])
             rec = zh("每生成 1 个字节，整段重新算一遍", 24, theme.GRAD).move_to([0, -0.3, 0])

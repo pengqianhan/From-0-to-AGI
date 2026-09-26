@@ -42,7 +42,7 @@ max_new_tokens = 64
 env_seed = 1
 
 [optim]
-lr = 5e-4
+lr = 5e-5                # 实测：5e-4 时 24 步 margin 冲到 4.8，接下来 GRPO 的格式正确率从 0.16 掉到 0；5e-5 较稳
 weight_decay = 0.0
 grad_clip = 1.0
 

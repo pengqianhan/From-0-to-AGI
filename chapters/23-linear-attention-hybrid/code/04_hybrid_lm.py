@@ -213,6 +213,39 @@ def cache_bytes(pattern: str, T: int, dim: int = 128, n_heads: int = 4, conv: in
 
 PATTERNS = ["AAAA", "LLLL", "GGGG", "GGGA"]
 
+# Qwen3.5-0.8B 的真实配置（huggingface.co/Qwen/Qwen3.5-0.8B 的 config.json，text_config，2026-09 读取）
+QWEN35_08B = {
+    "layer_types": ["linear_attention"] * 3 + ["full_attention"],  # × 6，full_attention_interval = 4
+    "repeat": 6,
+    "num_key_value_heads": 2,
+    "head_dim": 256,
+    "linear_num_value_heads": 16,
+    "linear_num_key_heads": 16,
+    "linear_key_head_dim": 128,
+    "linear_value_head_dim": 128,
+    "linear_conv_kernel_dim": 4,
+}
+
+
+def qwen35_cache_mib(T: int, all_full: bool = False) -> tuple[float, float]:
+    """Qwen3.5-0.8B 一条序列的缓存（MiB）：KV 用 BF16，递推状态用 FP32（config 里 mamba_ssm_dtype）。
+    all_full=True：假设 24 层全换成同样配置的全注意力层，作对照。返回 (KV, 线性层状态)。"""
+    c = QWEN35_08B
+    types = c["layer_types"] * c["repeat"]
+    if all_full:
+        types = ["full_attention"] * len(types)
+    n_full = types.count("full_attention")
+    n_lin = len(types) - n_full
+    kv = n_full * 2 * c["num_key_value_heads"] * c["head_dim"] * T * 2
+    conv_dim = 2 * c["linear_num_key_heads"] * c["linear_key_head_dim"] + (
+        c["linear_num_value_heads"] * c["linear_value_head_dim"]
+    )
+    state = n_lin * (
+        c["linear_num_value_heads"] * c["linear_key_head_dim"] * c["linear_value_head_dim"] * 4
+        + conv_dim * (c["linear_conv_kernel_dim"] - 1) * 2
+    )
+    return kv / 2**20, state / 2**20
+
 
 def main() -> None:
     rows = []
@@ -230,6 +263,13 @@ def main() -> None:
     print(f"{'结构':>6} | " + " | ".join(f"T={T:>6}" for T in Ts))
     for p in PATTERNS:
         print(f"{p:>6} | " + " | ".join(f"{cache_bytes(p, T) / 1024:>8.0f}" for T in Ts))
+
+    print("\n== 真实模型：Qwen3.5-0.8B（24 层 = 6 × [3 层 Gated DeltaNet + 1 层全注意力]）一条序列的缓存 ==")
+    print(f"{'上下文':>8} | {'KV(6 层)':>9} | {'线性状态(18 层)':>14} | {'合计':>8} | {'假如 24 层全注意力':>16}")
+    for T in (4096, 32768, 262144):
+        kv, st = qwen35_cache_mib(T)
+        full = sum(qwen35_cache_mib(T, all_full=True))
+        print(f"{T:>8,} | {kv:>6.0f} MiB | {st:>10.1f} MiB | {kv + st:>4.0f} MiB | {full:>12,.0f} MiB")
 
 
 if __name__ == "__main__":

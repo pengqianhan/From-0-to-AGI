@@ -44,7 +44,7 @@ env_seed = 2
 forward_batch = 16
 
 [optim]
-lr = 2e-4
+lr = 5e-5
 weight_decay = 0.0
 grad_clip = 1.0
 
