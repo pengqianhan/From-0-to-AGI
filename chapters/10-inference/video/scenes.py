@@ -227,8 +227,8 @@ class ChapterScene(NarratedScene):
             self.play(*self.set_heading("贪心：每一步都挑概率最大的"), run_time=self.fit(0.8))
 
             def panel(title, text, stat, color, y):
-                lines = text[:96].split("\n")
-                body = VGroup(*[mono(ln if ln else " ", 22, theme.FG) for ln in lines[:3]]).arrange(
+                lines = [ln for ln in text[:96].split("\n") if ln.strip()]
+                body = VGroup(*[mono(ln, 22, theme.FG) for ln in lines[:2]]).arrange(
                     DOWN, aligned_edge=LEFT, buff=0.12)
                 head = zh(title, 26, color)
                 st = zh(stat, 24, color)
@@ -251,9 +251,9 @@ class ChapterScene(NarratedScene):
     def s04(self):
         with self.shot("S04"):
             self.play(*self.set_heading("温度：先把分布调尖或调平"), run_time=self.fit(0.8))
-            formula = MathTex(r"p_i=\mathrm{softmax}(z/T)_i", font_size=40).move_to([3.6, 2.4, 0])
-            ctx = zh("提示词 “I will ” 之后，下一个字符的真实分布（前 8 名）", 22,
-                     theme.MUTED).move_to([-2.2, 2.4, 0])
+            formula = MathTex(r"p_i=\mathrm{softmax}(z/T)_i", font_size=40).move_to([4.4, 2.3, 0])
+            ctx = zh("“I will ” 之后下一个字符的真实分布（前 8 名）", 22,
+                     theme.MUTED).move_to([-2.6, 2.3, 0])
             chars = [show(c) for c in D["dist_chars"]]
             vmax = max(D["dist"]["0.5"])
 
@@ -288,8 +288,8 @@ class ChapterScene(NarratedScene):
             groups = VGroup()
             for (name, c), cx in zip(D["contexts"].items(), (-3.55, 3.55)):
                 probs, n90 = c["probs"], c["n90"]
-                g = bars(probs, [show(ch) for ch in c["chars"]], width=0.24, max_h=2.6, vmax=0.6,
-                         color=theme.MUTED, gap=0.08, label_size=14, base_y=-1.9)
+                g = bars(probs, [show(ch) for ch in c["chars"]], width=0.22, max_h=2.6, vmax=0.6,
+                         color=theme.MUTED, gap=0.07, label_size=14, base_y=-1.9)
                 g.move_to([cx, -0.55, 0])
                 title = zh(f"{name}：“{c['ctx'].split(chr(10))[-1] or c['ctx'].strip()}”", 24,
                            theme.FG).move_to([cx, 2.35, 0])
@@ -307,8 +307,8 @@ class ChapterScene(NarratedScene):
                 cut = DashedLine([right, -1.9, 0], [right, 1.3, 0], color=theme.HIGHLIGHT)
                 lbl = zh(f"top-p 0.9：留 {g.n90} 个", 24, theme.OUTPUT).move_to([g.cx, 1.65, 0])
                 k_right = g[0][4].get_right()[0] + 0.04
-                kcut = DashedLine([k_right, -1.9, 0], [k_right, 0.9, 0], color=theme.PARAM)
-                klbl = zh("top-k 5", 20, theme.PARAM).next_to(kcut, UP, 0.05)
+                kcut = DashedLine([k_right, -1.9, 0], [k_right, 0.7, 0], color=theme.PARAM)
+                klbl = zh("top-k 5", 20, theme.PARAM).next_to(kcut.get_top(), LEFT, 0.1)
                 marks.add(cut, lbl, kcut, klbl)
             self.play(*anims, run_time=self.fit(1.2))
             self.play(*[Create(m) for m in marks[0::4]], *[FadeIn(m) for m in marks[1::4]],
@@ -347,8 +347,10 @@ class ChapterScene(NarratedScene):
                      label_size=18, base_y=-2.2)
             g[0][0].set_fill(theme.GRAD)
             nums = VGroup(*[mono(f"{v:.2f}", 18).next_to(r, UP, 0.06) for v, r in zip(vals, g[0])])
-            chart = VGroup(g, nums).move_to([4.6, -0.6, 0])
+            chart = VGroup(g, nums).move_to([4.5, -0.6, 0])
             cap = zh("不重复 4-gram 占比（小模型实测）", 20, theme.MUTED).next_to(chart, UP, 0.2)
+            if cap.get_right()[0] > 6.8:
+                cap.shift(LEFT * (cap.get_right()[0] - 6.8))
             self.play(FadeIn(chart), FadeIn(cap), run_time=self.fit(1.5))
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(table), FadeOut(chart), FadeOut(cap), run_time=self.fit(0.6))
@@ -365,12 +367,12 @@ class ChapterScene(NarratedScene):
                 for pos in range(P + step):
                     r = Rectangle(width=s * 0.9, height=s * 0.9, stroke_width=0,
                                   fill_color=theme.INPUT, fill_opacity=0.85)
-                    r.move_to([-6.4 + pos * s, 2.2 - step * s, 0])
+                    r.move_to([-5.5 + pos * s, 2.2 - step * s, 0])
                     row.add(r)
                     cells.append((step, pos, r))
                 grid.add(row)
             xl = zh("位置 →", 20, theme.MUTED).next_to(grid, UP, 0.1).align_to(grid, LEFT)
-            yl = zh("第几步 ↓", 20, theme.MUTED).next_to(grid, LEFT, 0.1).shift(UP * 1.2)
+            yl = zh("步 ↓", 20, theme.MUTED).next_to(grid, LEFT, 0.15).align_to(grid, UP)
             note = zh("示意：提示词 4 个，生成 12 个", 20, theme.MUTED).next_to(grid, DOWN, 0.2)\
                 .align_to(grid, LEFT)
             self.play(FadeIn(xl), FadeIn(yl), run_time=self.fit(0.5))
@@ -403,17 +405,17 @@ class ChapterScene(NarratedScene):
         with self.shot("S08"):
             self.play(*self.set_heading("KV cache：把算过的 K、V 存起来"), run_time=self.fit(0.8))
             s = 0.46
-            k_lbl = MathTex("K", font_size=38, color=theme.INPUT).move_to([-6.3, 1.5, 0])
-            v_lbl = MathTex("V", font_size=38, color=theme.OUTPUT).move_to([-6.3, 0.6, 0])
-            cache_title = zh("缓存（每层一份）", 22, theme.MUTED).move_to([-3.6, 2.35, 0])
+            k_lbl = MathTex("K", font_size=38, color=theme.INPUT).move_to([-6.3, 0.6, 0])
+            v_lbl = MathTex("V", font_size=38, color=theme.OUTPUT).move_to([-6.3, -0.3, 0])
+            cache_title = zh("缓存（每层一份，只存 K 和 V）", 22, theme.MUTED).move_to([-3.6, -1.0, 0])
 
             def cell(i, row_y, color):
                 return Rectangle(width=s * 0.9, height=s * 0.9, stroke_color=color, stroke_width=2,
                                  fill_color=color, fill_opacity=0.35).move_to([-5.7 + i * s, row_y, 0])
 
             n0 = 6
-            ks = VGroup(*[cell(i, 1.5, theme.INPUT) for i in range(n0)])
-            vs = VGroup(*[cell(i, 0.6, theme.OUTPUT) for i in range(n0)])
+            ks = VGroup(*[cell(i, 0.6, theme.INPUT) for i in range(n0)])
+            vs = VGroup(*[cell(i, -0.3, theme.OUTPUT) for i in range(n0)])
             self.play(FadeIn(k_lbl), FadeIn(v_lbl), FadeIn(cache_title), FadeIn(ks), FadeIn(vs),
                       run_time=self.fit(1.2))
             info = VGroup(
@@ -428,14 +430,14 @@ class ChapterScene(NarratedScene):
             for t in range(steps):
                 i = n0 + t
                 x = -5.7 + i * s
-                tok = token_box("?", theme.HIGHLIGHT, 0.46).move_to([x, -1.2, 0])
-                q = MathTex("q", font_size=34, color=theme.HIGHLIGHT).move_to([x - 0.45, -0.35, 0])
-                nk, nv = cell(i, 1.5, theme.HIGHLIGHT), cell(i, 0.6, theme.HIGHLIGHT)
-                self.play(FadeIn(tok, shift=UP * 0.2), *([FadeIn(info[1])] if t == 0 else []),
+                tok = token_box("?", theme.HIGHLIGHT, 0.46).move_to([x, 2.3, 0])
+                q = MathTex("q", font_size=34, color=theme.HIGHLIGHT).move_to([x, 1.55, 0])
+                nk, nv = cell(i, 0.6, theme.HIGHLIGHT), cell(i, -0.3, theme.HIGHLIGHT)
+                self.play(FadeIn(tok, shift=DOWN * 0.2), *([FadeIn(info[1])] if t == 0 else []),
                           run_time=self.fit(per * 0.25))
-                self.play(FadeIn(q), FadeIn(nk, shift=UP * 0.3), FadeIn(nv, shift=UP * 0.3),
+                self.play(FadeIn(q), FadeIn(nk, shift=DOWN * 0.3), FadeIn(nv, shift=DOWN * 0.3),
                           *([FadeIn(info[2])] if t == 0 else []), run_time=self.fit(per * 0.25))
-                lines = VGroup(*[Line(q.get_top(), c.get_bottom(), color=theme.ATTN, stroke_width=1.5,
+                lines = VGroup(*[Line(q.get_bottom(), c.get_top(), color=theme.ATTN, stroke_width=1.5,
                                       stroke_opacity=0.7) for c in list(ks) + [nk]])
                 self.play(Create(lines), *([FadeIn(info[3])] if t == 0 else []),
                           run_time=self.fit(per * 0.3))
@@ -607,7 +609,7 @@ class ChapterScene(NarratedScene):
                                 fill_opacity=0.9).move_to([-2.7 + w / 2, y, 0])
                 num = mono(f"{v:.2f} GiB", 20).next_to(bar, RIGHT, 0.15)
                 bars_g.add(VGroup(lab, bar, num))
-            cap = zh("主线模型 32K 上下文", 20, theme.MUTED).move_to([4.8, -1.55, 0])
+            cap = zh("主线模型 32K 上下文", 20, theme.MUTED).move_to([4.6, -2.1, 0])
             self.wait(self.remaining() * 0.2)
             self.play(FadeOut(ql), FadeIn(cap), *[FadeIn(b) for b in bars_g], run_time=self.fit(1.5))
             self.wait(max(0.1, self.remaining() - 0.6))
@@ -664,7 +666,7 @@ class ChapterScene(NarratedScene):
                                fill_opacity=0.5).move_to([-3.4 + wm / 2, y + 0.13, 0])
                 bg = Rectangle(width=wg, height=0.24, stroke_width=0, fill_color=theme.INPUT,
                                fill_opacity=0.95).move_to([-3.4 + wg / 2, y - 0.15, 0])
-                nm = mono(f"{mha:.1f}", 16, theme.MUTED).next_to(bm, RIGHT, 0.1)
+                nm = mono(f"{mha:g}", 16, theme.MUTED).next_to(bm, RIGHT, 0.1)
                 ng = mono(f"{gqa:.2f} GiB", 16).next_to(bg, RIGHT, 0.1)
                 rows.add(VGroup(lab, sub, bm, bg, nm, ng))
             leg = zh("灰：若不共享（MHA）　蓝：实际配置　32K 上下文、BF16、按公式计", 18,
@@ -689,7 +691,7 @@ k = zeros(n_layers, B, n_kv_heads, max_len, head_dim)
 # zero/model.py  GQA 不复制 K/V
 F.scaled_dot_product_attention(q, k, v,
     enable_gqa=n_kv_heads != n_heads)"""
-            code = code_block(src, 20).move_to([-2.4, 0.6, 0])
+            code = code_block(src, 19).to_edge(LEFT, buff=0.5).shift(UP * 0.6)
             for i in (0, 3, 5):
                 code[i].set_color(theme.MUTED)
             self.play(LaggedStart(*[FadeIn(ln) for ln in code], lag_ratio=0.2),
@@ -701,7 +703,7 @@ F.scaled_dot_product_attention(q, k, v,
             side = VGroup(test, test2, vllm, vllm2).arrange(DOWN, aligned_edge=LEFT, buff=0.2)
             side[2].shift(DOWN * 0.3)
             side[3].shift(DOWN * 0.3)
-            side.move_to([4.6, 0.4, 0])
+            side.to_edge(RIGHT, buff=0.4).shift(UP * 0.4)
             self.wait(self.remaining() * 0.35)
             self.play(FadeIn(side[:2]), run_time=self.fit(0.8))
             self.wait(self.remaining() * 0.4)
