@@ -52,6 +52,8 @@ ROOT = HERE.parents[2]
 CACHE = HERE / "out" / "cache.json"
 MONO = "Noto Sans Mono"
 
+NIAH_LENGTHS, NIAH_DEPTHS = (64, 128, 240), (0.0, 0.5, 1.0)
+
 # tiny 配置的真实运行日志（README"主线进度"的两条命令；out/tiny/ch15/）
 TINY_RUN = {
     "pre_val": [(100, 6.0048), (200, 5.7116)],
@@ -118,7 +120,7 @@ def compute() -> dict:
     from zero.tools.needle import run_grid
 
     torch.set_num_threads(1)
-    model, tok = load_policy(ROOT / "out/tiny/ch15/midtrain/ckpt")
+    model, tok = load_policy(ROOT / "out/tiny/ch15/midtrain/ckpt", ROOT / "out/tiny/tokenizer.json")
     res = run_grid(model.eval(), tok, NIAH_LENGTHS, NIAH_DEPTHS, n=5)
     d["niah"] = {f"{r.length}_{r.depth}": [r.accuracy, r.nll_gain] for r in res}
     return d
@@ -153,7 +155,6 @@ def fmt_len(x: float) -> str:
     return f"{x:.0f}" if x >= 100 else f"{x:.1f}"
 
 
-NIAH_LENGTHS, NIAH_DEPTHS = (64, 128, 240), (0.0, 0.5, 1.0)
 VARIANT_COLOR = {"none": theme.GRAD, "pi": theme.PARAM, "yarn": theme.OUTPUT, "abf": theme.INPUT}
 VARIANT_NAME = {"none": "不改", "pi": "PI", "yarn": "YaRN", "abf": "调大基频"}
 
@@ -173,7 +174,7 @@ class ChapterScene(NarratedScene):
             sub = zh("最后一段怎么训，读不长怎么办", 30, theme.HIGHLIGHT).next_to(card, DOWN, 0.6)
             self.play(FadeIn(card, shift=UP * 0.3), run_time=self.fit(1.5))
             self.play(Write(sub), run_time=self.fit(1.5))
-            self.wait(self.remaining() - 0.8)
+            self.wait(max(0.05, self.remaining() - 0.8))
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
     # ── S02 两个问题：时间线 ─────────────────────────────────────────────
@@ -195,9 +196,9 @@ class ChapterScene(NarratedScene):
             self.play(LaggedStart(*[GrowFromEdge(g[0], LEFT) for g in bars], lag_ratio=0.3),
                       run_time=self.fit(1.5))
             self.play(*[FadeIn(g[1:]) for g in bars], FadeIn(base), run_time=self.fit(0.8))
-            q1 = zh("问题一：学习率最低的那一段，喂什么数据？", 28).move_to([0, -0.5, 0])
+            q1 = zh("问题一：学习率最低的那一段，喂什么数据？", 28, t2c={"喂什么数据": theme.PARAM}
+                    ).move_to([0, -0.5, 0])
             q2 = zh("问题二：只见过 4K 的模型，怎么读 32K？", 28).move_to([0, -1.4, 0])
-            q1.set_color_by_text("喂什么数据", theme.PARAM)
             arr1 = Line(q1.get_top() + UP * 0.1, bars[1][2].get_bottom() + DOWN * 0.05,
                         color=theme.PARAM, stroke_width=2)
             self.wait(self.remaining() * 0.15)
@@ -206,7 +207,7 @@ class ChapterScene(NarratedScene):
             arr2 = Line(q2.get_right() + RIGHT * 0.1, bars[2][2].get_bottom() + DOWN * 0.05,
                         color=theme.ATTN, stroke_width=2)
             self.play(FadeIn(q2), Create(arr2), run_time=self.fit(1))
-            self.wait(self.remaining() - 0.6)
+            self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(bars, base, q1, q2, arr1, arr2)), run_time=self.fit(0.6))
 
     # ── S03 WSD 曲线 + 衰减段换数据 ─────────────────────────────────────
@@ -258,7 +259,7 @@ class ChapterScene(NarratedScene):
             who = zh("OLMo 2 · Llama 3 · SmolLM3 · MiniCPM · Qwen3 · MobileLLM-R1", 22,
                      theme.FG).move_to([0, -1.6, 0])
             self.play(FadeIn(who), run_time=self.fit(0.8))
-            self.wait(self.remaining() - 0.6)
+            self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(ax, xl, yl, stable, decay, band, lab, m1, m2, t1, t2, who)),
                       run_time=self.fit(0.6))
 
@@ -291,7 +292,7 @@ class ChapterScene(NarratedScene):
             src = zh("OLMo 2 7B（报告表 9）", 18, theme.MUTED).next_to(leg, DOWN, 0.25)
             self.play(LaggedStart(*[FadeIn(r) for r in g], lag_ratio=0.3), FadeIn(leg), FadeIn(src),
                       run_time=self.fit(1.5))
-            self.wait(self.remaining() - 0.6)
+            self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(pts, g, leg, src)), run_time=self.fit(0.6))
 
     # ── S05 小实验：分叉衰减 × 换数据 ───────────────────────────────────
@@ -334,7 +335,7 @@ class ChapterScene(NarratedScene):
             best = SurroundingRectangle(chart[3], color=theme.HIGHLIGHT, buff=0.08)
             self.wait(self.remaining() * 0.4)
             self.play(Create(best), run_time=self.fit(0.6))
-            self.wait(self.remaining() - 0.6)
+            self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(trunk, tl, brs, bls, note, chart, ttl, tb, best, badge)),
                       run_time=self.fit(0.6))
 
@@ -391,7 +392,7 @@ class ChapterScene(NarratedScene):
             self.play(pos.animate.set_value(32768), run_time=self.fit(4, reserve=2), rate_func=lambda t: t)
             l2 = zh("红色：读到 32K 时才转到的角度", 20, theme.GRAD).move_to([3.2, -2.2, 0])
             self.play(FadeIn(l2), run_time=self.fit(0.6))
-            self.wait(self.remaining() - 0.6)
+            self.wait(max(0.05, self.remaining() - 0.6))
             self.remove(seen, unseen, hands, counter)
             self.play(FadeOut(VGroup(clocks, l1, l2)), run_time=self.fit(0.6))
 
@@ -424,7 +425,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(facts[:2]), run_time=self.fit(0.8))
             self.wait(self.remaining() * 0.35)
             self.play(FadeIn(facts[2:]), run_time=self.fit(0.8))
-            self.wait(self.remaining() - 0.6)
+            self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(f, table, facts)), run_time=self.fit(0.6))
 
     # ── S08 调大基频 ─────────────────────────────────────────────────────
@@ -449,7 +450,7 @@ class ChapterScene(NarratedScene):
             who = zh("Qwen3：长上下文阶段 1 万 → 100 万 · SmolLM3：150 万 → 500 万 · Llama 3：50 万",
                      20, theme.FG).move_to([0, -2.45, 0])
             self.play(FadeIn(who), run_time=self.fit(0.8))
-            self.wait(self.remaining() - 0.6)
+            self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(f, g, cap, who)), run_time=self.fit(0.6))
 
     # ── S09 位置内插 PI ─────────────────────────────────────────────────
@@ -477,7 +478,7 @@ class ChapterScene(NarratedScene):
             note = zh("不越界了，但近处的位置挤在一起、难以分辨", 24, theme.HIGHLIGHT).move_to([0, -2.3, 0])
             self.wait(self.remaining() * 0.25)
             self.play(FadeIn(note), run_time=self.fit(0.8))
-            self.wait(self.remaining() - 0.6)
+            self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(f, groups, sub, note)), run_time=self.fit(0.6))
 
     # ── S10 YaRN：三段 + 温度 ───────────────────────────────────────────
@@ -513,7 +514,7 @@ class ChapterScene(NarratedScene):
             tv = zh(f"s = 4 时 = {D['mscale4']:.3f}：logits 乘它的平方，注意力更“尖”", 18
                     ).next_to(temp, DOWN, 0.2)
             self.play(Write(temp), FadeIn(tv), run_time=self.fit(1.2))
-            self.wait(self.remaining() - 0.6)
+            self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(bars, yl, xl, legend, temp, tv)), run_time=self.fit(0.6))
 
     # ── S11 从零实现 + 对拍 ─────────────────────────────────────────────
@@ -537,7 +538,7 @@ mscale = 0.1 * math.log(s) + 1.0"""
             self.wait(self.remaining() * 0.2)
             self.play(FadeIn(chain), run_time=self.fit(1))
             self.play(FadeIn(diff), run_time=self.fit(0.8))
-            self.wait(self.remaining() - 0.6)
+            self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(code, frame, chain, diff)), run_time=self.fit(0.6))
 
     # ── S12 小实验：loss vs 长度 ─────────────────────────────────────────
@@ -578,7 +579,7 @@ mscale = 0.1 * math.log(s) + 1.0"""
             ax2, l2, t2, ln2 = panel("finetuned", 3.1, "再用长度 256 微调 150 步")
             self.play(Create(ax2), FadeIn(l2), FadeIn(t2), run_time=self.fit(0.8))
             self.play(LaggedStart(*[Create(g) for g in ln2], lag_ratio=0.2), run_time=self.fit(1.6))
-            self.wait(self.remaining() - 0.6)
+            self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(ax1, l1, t1, ln1, ylab, leg, ax2, l2, t2, ln2, badge)),
                       run_time=self.fit(0.6))
 
@@ -608,7 +609,7 @@ mscale = 0.1 * math.log(s) + 1.0"""
             for p in data:
                 self.play(FadeIn(p), run_time=self.fit(0.6, reserve=2))
                 self.wait(min(2.0, self.remaining() * 0.15))
-            self.wait(self.remaining() - 0.6)
+            self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(g, cap, data)), run_time=self.fit(0.6))
 
     # ── S14 怎么评：大海捞针与 RULER ────────────────────────────────────
@@ -643,7 +644,7 @@ mscale = 0.1 * math.log(s) + 1.0"""
                 zh("声称 ≥32K 的模型，一半在 32K 不达标", 20),
             ).arrange(DOWN, aligned_edge=LEFT, buff=0.2).move_to([3.2, 0.6, 0])
             self.play(LaggedStart(*[FadeIn(x) for x in ruler], lag_ratio=0.3), run_time=self.fit(2.5))
-            self.wait(self.remaining() - 0.6)
+            self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(grid, rl, cl, ttl, note, ruler, badge)), run_time=self.fit(0.6))
 
     # ── S15 生产级 + 主线进度 ───────────────────────────────────────────
@@ -674,7 +675,7 @@ parallel = "fsdp\"""", 18).move_to([-3.9, 1.45, 0])
             ).arrange(DOWN, aligned_edge=LEFT, buff=0.16).move_to([0, -1.35, 0])
             frame = SurroundingRectangle(gate, color=theme.HIGHLIGHT, buff=0.18, corner_radius=0.1)
             self.play(Create(frame), FadeIn(gate), run_time=self.fit(1.2))
-            self.wait(self.remaining() - 0.6)
+            self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(cfg, ct, log, gate, frame, badge)), run_time=self.fit(0.6))
 
     # ── S16 小结 + 下一章 ────────────────────────────────────────────────
@@ -692,7 +693,7 @@ parallel = "fsdp\"""", 18).move_to([-3.9, 1.45, 0])
                 self.wait(min(1.8, self.remaining() * 0.12))
             nxt = zh("下一章：SFT——让 Base 模型学会对话和调用工具", 26, theme.HIGHLIGHT).move_to([0, -2.1, 0])
             self.play(FadeIn(nxt), run_time=self.fit(0.8))
-            self.wait(self.remaining() - 0.8)
+            self.wait(max(0.05, self.remaining() - 0.8))
             self.play(FadeOut(VGroup(pts, nxt)), *self.set_heading(None), run_time=self.fit(0.8))
 
 

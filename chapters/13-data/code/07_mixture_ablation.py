@@ -4,7 +4,7 @@
 真实做法（Llama 3、OLMo 2、Puro-2B、MobileLLM-R1……）也是这样：用小得多的代理模型（proxy）在候选配比上
 做对照实验，看各项能力的变化，再决定大模型的配比。这里的代理模型只有约 50 万参数、训练几十万 token。
 
-    uv run python chapters/13-data/code/07_mixture_ablation.py     # CPU 约 5 分钟
+    uv run python chapters/13-data/code/07_mixture_ablation.py     # 单线程约 8 分钟 CPU 时间（3 种配比 × 2 个种子）
 """
 
 from __future__ import annotations
@@ -48,10 +48,14 @@ def run() -> dict:
     tb = abl.token_byte_lengths(tok)
     train_arr = {k: abl.pack(tok, v) for k, v in train_docs.items()}
     val_arr = {k: abl.pack(tok, v) for k, v in val_docs.items()}
-    res = {"train_tokens": {k: len(v) for k, v in train_arr.items()}, "bpb": {}}
+    res = {"train_tokens": {k: len(v) for k, v in train_arr.items()}, "bpb": {}, "bpb_seeds": {}}
     for name, w in MIXTURES.items():
-        model, _ = abl.train(train_arr, w, tok.vocab_size, seed=0, tag=name)
-        res["bpb"][name] = abl.evaluate(model, val_arr, tb)
+        runs = []
+        for seed in abl.SEEDS:  # 同一个种子下三种配比的初始化相同：配对比较
+            model, _ = abl.train(train_arr, w, tok.vocab_size, seed=seed, tag=f"{name} seed {seed}")
+            runs.append(abl.evaluate(model, val_arr, tb))
+        res["bpb_seeds"][name] = {k: [r[k] for r in runs] for k in runs[0]}
+        res["bpb"][name] = {k: sum(r[k] for r in runs) / len(runs) for k in runs[0]}  # 种子平均
     return res
 
 
@@ -69,7 +73,10 @@ def main() -> None:
     abl = _load("06_quality_ablation")
     total = abl.STEPS * abl.BATCH * abl.SEQ
     print(f"\n可用的训练 token：{res['train_tokens']}；每个模型训练 {total:,} 个 token")
-    print(f"\n{'配比（英/中/代码）':<22}{'英文 bpb':>9}{'中文 bpb':>9}{'代码 bpb':>9}{'按均衡权重的平均':>16}")
+    print("\n各种子的 bpb（种子 0 / 1）：")
+    for name, b in res["bpb_seeds"].items():
+        print(f"  {name}：" + "，".join(f"{k} " + " / ".join(f"{v:.3f}" for v in vs) for k, vs in b.items()))
+    print(f"\n两个种子的平均：\n{'配比（英/中/代码）':<22}{'英文 bpb':>9}{'中文 bpb':>9}{'代码 bpb':>9}{'按均衡权重的平均':>16}")
     target = MIXTURES["均衡"]
     for name, w in MIXTURES.items():
         b = res["bpb"][name]
@@ -82,8 +89,8 @@ def main() -> None:
     print("\n每个来源被看了几遍（epoch）：")
     for name, e in epochs.items():
         print(f"  {name}：" + "，".join(f"{k} {v:.2f}" for k, v in e.items()))
-    print("\n注意：三个模型用同一个随机种子（同样的初始化），差别来自配比；"
-          "只训练了一个种子，小于约 0.03 的差别不要当真（参考 06 的配对差值）")
+    print("\n注意：同一个种子下三种配比的初始化相同，但每步抽到的窗口不同；"
+          "种子之间能差 0.1 bpb（见 06），只看两个种子方向一致的差别")
 
 
 if __name__ == "__main__":

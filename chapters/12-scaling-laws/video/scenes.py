@@ -240,7 +240,7 @@ class ChapterScene(NarratedScene):
                 opt_pts.append(ax.c2p(np.log10(n_opt), y))
                 mins.add(Dot(opt_pts[-1], color=theme.HIGHLIGHT, radius=0.07))
                 exp = int(np.log10(C))
-                clabels.add(tex(rf"C=10^{{{exp}}}", 20, c).next_to(opt_pts[-1], DOWN, 0.18))
+                clabels.add(tex(rf"C=10^{{{exp}}}", 20, c).next_to(opt_pts[-1], LEFT, 0.15))
             self.play(LaggedStart(*[Create(p) for p in parabolas], lag_ratio=0.3), run_time=self.fit(2.5))
             self.play(FadeIn(mins), FadeIn(clabels), run_time=self.fit(1))
             link = Line(opt_pts[0], opt_pts[-1], color=theme.HIGHLIGHT, stroke_width=3)
@@ -250,7 +250,8 @@ class ChapterScene(NarratedScene):
                           zh(f"例：C = 1.65e21 → {n1 / 1e9:.1f}B 参数、{d1 / 1e9:.0f}B token", 22),
                           zh("Kaplan 2020：N_opt ∝ C^0.73（模型长得更快）", 20, theme.MUTED),
                           zh("后来发现：差别来自小模型超参没调好、算力口径", 20, theme.MUTED)
-                          ).arrange(DOWN, aligned_edge=LEFT, buff=0.28).move_to([3.9, 0.4, 0])
+                          ).arrange(DOWN, aligned_edge=LEFT, buff=0.28)
+            info.scale_to_fit_width(min(info.width, 5.8)).move_to([3.6, 0.4, 0])
             self.wait(self.remaining() * 0.15)
             self.play(FadeIn(info[0]), FadeIn(info[1]), run_time=self.fit(1))
             self.wait(self.remaining() * 0.3)
@@ -267,23 +268,23 @@ class ChapterScene(NarratedScene):
             x0, scale = -2.2, 1.55  # 每 10 倍 1.55 个单位
             bars, names, vals = VGroup(), VGroup(), VGroup()
             for i, (name, r, c) in enumerate(models):
-                y = 2.1 - i * 0.72
+                y = 2.2 - i * 0.6
                 w = scale * np.log10(r)
                 bar = Rectangle(width=w, height=0.46, fill_color=c, fill_opacity=0.85, stroke_width=0)
                 bar.move_to([x0 + w / 2, y, 0])
                 bars.add(bar)
                 names.add(zh(name, 22).next_to([x0, y, 0], LEFT, 0.2))
                 vals.add(zh(f"{r:,}", 22, c).next_to(bar, RIGHT, 0.15))
-            ref = DashedLine([x0 + scale * np.log10(20), 2.5, 0], [x0 + scale * np.log10(20), -1.8, 0],
+            ref = DashedLine([x0 + scale * np.log10(20), 2.55, 0], [x0 + scale * np.log10(20), -1.0, 0],
                              color=theme.GRAD, stroke_width=2)
             ref_l = zh("20：Chinchilla 最优", 20, theme.GRAD).next_to(ref, DOWN, 0.1)
-            cap = zh("训练 token ÷ 参数（对数长度）", 22, theme.MUTED).move_to([3.0, -2.35, 0])
+            cap = zh("训练 token ÷ 参数（对数长度）", 22, theme.MUTED).move_to([3.3, -1.25, 0])
             self.play(LaggedStart(*[GrowFromEdge(b, LEFT) for b in bars], lag_ratio=0.2), FadeIn(names),
                       run_time=self.fit(2.5))
             self.play(FadeIn(vals), Create(ref), FadeIn(ref_l), FadeIn(cap), run_time=self.fit(1))
             self.wait(self.remaining() * 0.35)
             why = VGroup(zh("训练：6N × D（一次）", 22, theme.PARAM), zh("推理：2N × 每个生成的 token（上亿次）", 22, theme.OUTPUT))
-            why.arrange(DOWN, aligned_edge=LEFT, buff=0.2).move_to([4.2, -0.7, 0])
+            why.arrange(RIGHT, buff=0.8).move_to([0, -2.1, 0])
             self.play(FadeIn(why), run_time=self.fit(1))
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in [bars, names, vals, ref, ref_l, cap, why]], run_time=self.fit(0.6))
@@ -520,8 +521,12 @@ class ChapterScene(NarratedScene):
                 a_.move_to([-5.4, 1.9 - 0.62 * i, 0])
                 b_.move_to([-2.6, 1.9 - 0.62 * i, 0])
             cost500 = 500e9 * fpt / (plan.PEAK * 0.4) / 3600 * plan.PRICE
-            over = zh(f"原计划 500B（MFU 0.4）要 ${cost500:,.0f}：超线", 22, theme.GRAD).move_to([-3.6, -0.7, 0])
-            wsd = zh("WSD 稳定段随时可停：实测吞吐后再定 400–500B", 20, theme.FG).move_to([-3.6, -1.35, 0])
+            over = zh(f"原计划 500B（MFU 0.4）要 ${cost500:,.0f}：超线", 22, theme.GRAD)
+            wsd = VGroup(zh("WSD 稳定段随时可停：", 20, theme.FG), zh("实测吞吐后再定 400–500B", 20, theme.FG)).arrange(DOWN, aligned_edge=LEFT, buff=0.12)
+            for m_ in (over, wsd):
+                m_.scale_to_fit_width(min(m_.width, 5.4))
+            over.move_to([-4.0, -0.7, 0]).align_to(table, LEFT)
+            wsd.next_to(over, DOWN, 0.3).align_to(table, LEFT)
             self.play(FadeIn(table), run_time=self.fit(1.2))
             self.play(FadeIn(over), run_time=self.fit(0.8))
             self.wait(self.remaining() * 0.2)
@@ -533,10 +538,12 @@ class ChapterScene(NarratedScene):
                 gain = [best_m[n]["val_bpb"] - BEST[n]["val_bpb"] for n in ("s2", "s3")]
                 muon_line.add(zh(f"迷你阶梯：比调好的 AdamW 低 {-gain[0]:.2f}、{-gain[1]:.2f} bit/字节", 20, theme.OUTPUT))
             muon_line.add(zh("→ 第二步阶梯里与 AdamW 正面对比后再定", 20, theme.MUTED))
-            muon_line.arrange(DOWN, aligned_edge=LEFT, buff=0.18).move_to([3.3, 1.0, 0])
+            muon_line.arrange(DOWN, aligned_edge=LEFT, buff=0.18)
+            muon_line.scale_to_fit_width(min(muon_line.width, 6.0)).move_to([3.7, 1.0, 0])
             fp8 = VGroup(zh("FP8：DeepSeek-V3、Llama 4、Nemotron-H 采用 → 共识", 20, theme.FG),
                          zh("zero 尚未实现、未在 GPU 上验证 → 不计入预算", 20, theme.MUTED)
-                         ).arrange(DOWN, aligned_edge=LEFT, buff=0.18).move_to([3.3, -1.0, 0])
+                         ).arrange(DOWN, aligned_edge=LEFT, buff=0.18)
+            fp8.scale_to_fit_width(min(fp8.width, 6.0)).move_to([3.7, -1.1, 0])
             badge = self.demo_badge()
             self.play(FadeIn(muon_line), FadeIn(badge), run_time=self.fit(1))
             self.play(FadeIn(fp8), run_time=self.fit(1))

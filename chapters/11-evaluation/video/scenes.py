@@ -211,18 +211,17 @@ class ChapterScene(NarratedScene):
             ylabels = VGroup(*[zh(f"{v:.2f}", 20, theme.MUTED).next_to(ax.c2p(0, v), LEFT, buff=0.15)
                                for v in (0.45, 0.50, 0.55)])
             base = DashedLine(ax.c2p(0, 0.5), ax.c2p(4, 0.5), color=theme.MUTED)
-            base_t = zh("真实水平 0.5", 20, theme.MUTED).next_to(ax.c2p(4, 0.5), UP, buff=0.08)
-            base_t.align_to(ax.c2p(4, 0.5), RIGHT)
+            base_t = zh("虚线 = 真实水平 0.5", 20, theme.MUTED).move_to([5.3, 0.25, 0])
             self.play(Create(ax), FadeIn(ylabels), Create(base), FadeIn(base_t),
                       run_time=self.fit(1.0))
             bars = VGroup()
             for i, (k, on_test, on_dev) in enumerate(d["pick"]):
                 for j, (v, col) in enumerate(((on_test, theme.PARAM), (on_dev, theme.OUTPUT))):
-                    x0 = i + 0.22 + j * 0.3
+                    x0 = i + 0.1 + j * 0.42
                     r = Rectangle(width=ax.x_length / 4 * 0.26, height=(ax.c2p(0, v) - ax.c2p(0, 0.45))[1],
                                   stroke_width=0, fill_color=col, fill_opacity=0.9)
                     r.move_to(ax.c2p(x0 + 0.13, 0.45), aligned_edge=DOWN)
-                    val = zh(f"{v:.3f}", 18, col).next_to(r, UP, buff=0.06)
+                    val = zh(f"{v:.3f}", 16, col).next_to(r, UP, buff=0.06)
                     bars.add(VGroup(r, val))
                 klab = zh(f"K = {k}", 22).next_to(ax.c2p(i + 0.5, 0.45), DOWN, buff=0.2)
                 bars.add(klab)
@@ -235,7 +234,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(legend), LaggedStart(*[FadeIn(b_) for b_ in bars], lag_ratio=0.15),
                       run_time=self.fit(3.0))
             k10 = next(r for r in d["pick"] if r[0] == 10)
-            note = zh(f"K = 10：虚高 {k10[1] - 0.5:+.3f}", 26, theme.HIGHLIGHT).move_to([5.3, -0.4, 0])
+            note = zh(f"K = 10：虚高 {k10[1] - 0.5:+.3f}", 26, theme.HIGHLIGHT).move_to([5.3, -0.6, 0])
             self.wait(self.remaining() * 0.35)
             self.play(FadeIn(note), run_time=self.fit(0.6))
             self.wait(self.remaining() - 0.6)
@@ -256,8 +255,8 @@ class ChapterScene(NarratedScene):
                 cards.add(VGroup(box, txt))
             self.play(LaggedStart(*[FadeIn(c_) for c_ in cards], lag_ratio=0.3),
                       run_time=self.fit(self.remaining() * 0.55))
-            lock = zh("test 答案不公开 → 用 val", 18, theme.HIGHLIGHT)
-            lock.next_to(cards[2][0], DOWN, buff=0.06)
+            lock = zh("C-Eval：test 答案不公开 → 只能用 val（1,346 题）", 22, theme.HIGHLIGHT)
+            lock.move_to([0, -2.4, 0])
             hl = SurroundingRectangle(cards[2][0], color=theme.HIGHLIGHT, buff=0.04)
             self.play(Create(hl), FadeIn(lock), run_time=self.fit(0.6))
             self.wait(self.remaining() - 0.6)
@@ -552,8 +551,8 @@ class ChapterScene(NarratedScene):
                       run_time=self.fit(1.2))
             n = 13
             starts = [0, 5, 10, 15, len(toks) - n]
-            win_t = zh("窗口 = 连续 13 个词；训练文档里出现任意一个窗口 → 撞了", 20, theme.GRAD)
-            win_t.move_to([-3.0, y - 0.6, 0])
+            win_t = zh("窗口 = 连续 13 个词；训练文档里出现任意一个 → 撞了", 18, theme.GRAD)
+            win_t.move_to([-6.5, y - 0.6, 0], aligned_edge=LEFT)
             self.play(FadeIn(win_t), run_time=self.fit(0.5))
             for s in starts:
                 box = SurroundingRectangle(VGroup(*words[s:s + n]), color=theme.GRAD, buff=0.05)

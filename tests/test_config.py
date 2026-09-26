@@ -36,6 +36,11 @@ def test_all_configs_load(path: Path) -> None:
     if path.name == "base.toml":
         load_model_config(path)  # 阶梯公共配置只有部分字段
         return
+    if path.stem == "data":  # 数据流水线配置（第 13 章，zero/data/pipeline.py；tests/test_pipeline.py 另测）
+        from zero.data.pipeline import load_pipeline_config
+
+        load_pipeline_config(path)
+        return
     if path.stem == "eval":  # 评测配置只有 [eval]（tests/test_post_configs.py 另测）
         from zero.eval.harness import load_eval_config
 
