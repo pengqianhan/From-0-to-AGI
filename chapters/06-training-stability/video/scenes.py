@@ -137,28 +137,37 @@ def sci(v: float, digits: int = 2) -> str:
     return rf"{m:.{digits}f}\times10^{{{e}}}"
 
 
-def log_axes(y_min: int, y_max: int, step: int, x_len=7.0, y_len=4.9, center=(-2.7, 0.2),
+def log_axes(y_min: int, y_max: int, step: int, x_len=7.0, y_len=4.4, center=(-2.7, -0.1),
              n_layers: int = 30) -> tuple[Axes, VGroup]:
-    """横轴层号 1..n，纵轴 log10 刻度（标签写成 10^k）。"""
-    ax = Axes(x_range=[0, n_layers + 1, 5], y_range=[y_min, y_max, step], x_length=x_len,
+    """横轴层号 1..n，纵轴 log10 刻度（标签写成 10^k）。
+
+    坐标内部整体平移了 -y_min，让横轴落在图的底部（柱子可以向下长而不压住层号）。
+    用 ly(ax, log10 值) 把对数值换成纵坐标。
+    """
+    ax = Axes(x_range=[0, n_layers + 1, 5], y_range=[0, y_max - y_min, step], x_length=x_len,
               y_length=y_len, tips=False,
               axis_config={"color": theme.MUTED, "stroke_width": 2},
               x_axis_config={"include_numbers": True, "font_size": 18,
                              "numbers_to_include": list(range(5, n_layers + 1, 5))})
     ax.move_to([*center, 0])
+    ax.log_min = y_min
     labels = VGroup(*[MathTex(rf"10^{{{k}}}", font_size=20, color=theme.MUTED)
-                      .next_to(ax.c2p(0, k), LEFT, 0.12)
+                      .next_to(ax.c2p(0, k - y_min), LEFT, 0.12)
                       for k in range(y_min, y_max + 1, step)])
     return ax, labels
 
 
+def ly(ax: Axes, logv: float) -> float:
+    return logv - ax.log_min
+
+
 def log_bars(ax: Axes, values, color, width=0.16, offset=0.0) -> VGroup:
     """每层一根柱子，从 10^0 画到 log10(value)；超出坐标范围的截断。"""
-    y0, y1 = ax.y_range[0], ax.y_range[1]
+    y1 = ax.y_range[1]
     bars = VGroup()
     for i, v in enumerate(values, start=1):
-        lv = max(y0, min(y1, math.log10(v)))
-        bottom, top = ax.c2p(i + offset, 0), ax.c2p(i + offset, lv)
+        lv = max(0.0, min(y1, ly(ax, math.log10(v))))
+        bottom, top = ax.c2p(i + offset, ly(ax, 0)), ax.c2p(i + offset, lv)
         h = abs(top[1] - bottom[1])
         bar = Rectangle(width=width, height=max(h, 0.005), stroke_width=0, fill_color=color,
                         fill_opacity=0.9)
@@ -194,7 +203,7 @@ class ChapterScene(NarratedScene):
         # ── S02 30 层之后，信号去哪了 ────────────────────────────────────
         with self.shot("S02"):
             ax, ylab = log_axes(-30, 30, 10)
-            xl = zh("层号", 20, theme.MUTED).next_to(ax.x_axis, DOWN, 0.35).shift(RIGHT * 3.0)
+            xl = zh("层号", 20, theme.MUTED).next_to(ax.x_axis, RIGHT, 0.15)
             yt = zh("激活值的标准差（对数刻度）", 20, theme.MUTED).next_to(ax, UP, 0.12)
             self.play(*self.set_heading("30 层之后，信号去哪了"), Create(ax), FadeIn(ylab),
                       FadeIn(xl), FadeIn(yt), run_time=self.fit(1.5))
@@ -370,7 +379,7 @@ class ChapterScene(NarratedScene):
                       "Kaiming": theme.OUTPUT}
             lines, tags = VGroup(), VGroup()
             for name, (act, _) in NORMED.items():
-                pts = [(i + 1, math.log10(v)) for i, v in enumerate(act)]
+                pts = [(i + 1, ly(ax, math.log10(v))) for i, v in enumerate(act)]
                 ln_ = polyline_in_axes(ax, pts, color=colors[name], stroke_width=4)
                 lines.add(ln_)
                 tags.add(zh(name, 20, colors[name]).next_to(ax.c2p(30, pts[-1][1]), RIGHT, 0.12))
@@ -378,8 +387,9 @@ class ChapterScene(NarratedScene):
             for ln_, tg in zip(lines, tags):
                 self.play(Create(ln_), FadeIn(tg), run_time=self.fit(1.2, reserve=3))
             ratio = NORMED["std = 1.0"][1][0] / NORMED["std = 1.0"][1][-1]
-            note = zh(f"误差信号 第 1 层 / 第 30 层：四种初始化都是 {ratio:.2f}", 22, theme.HIGHLIGHT)
-            note.move_to([0.6, -2.35, 0])
+            note = VGroup(zh("误差信号 第 1 层 / 第 30 层", 22, theme.HIGHLIGHT),
+                          zh(f"四种初始化都是 {ratio:.2f}", 22, theme.HIGHLIGHT)
+                          ).arrange(DOWN, aligned_edge=LEFT, buff=0.12).move_to([4.6, -1.0, 0])
             self.play(FadeIn(note), run_time=self.fit(0.8))
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in [ax, ylab, yt, lines, tags, note]],
@@ -442,21 +452,21 @@ class ChapterScene(NarratedScene):
 
         # ── S09 残差连接 ─────────────────────────────────────────────────
         with self.shot("S09"):
-            blocks = VGroup(*[RoundedRectangle(width=0.55, height=0.55, corner_radius=0.08,
+            blocks = VGroup(*[RoundedRectangle(width=0.45, height=0.45, corner_radius=0.08,
                                                color=theme.PARAM) for _ in range(10)])
-            blocks.arrange(RIGHT, buff=0.25).move_to([-1.2, 1.9, 0])
+            blocks.arrange(RIGHT, buff=0.2).move_to([-3.4, 2.1, 0])
             dots = zh("… 30 块", 22, theme.MUTED).next_to(blocks, RIGHT, 0.25)
             links = VGroup(*[Arrow(blocks[i].get_right(), blocks[i + 1].get_left(), buff=0.02,
                                    color=theme.MUTED, stroke_width=2, max_tip_length_to_length_ratio=0.4)
                              for i in range(9)])
-            eq = MathTex(r"h\leftarrow h+f(h)", font_size=40).move_to([4.8, 1.9, 0])
+            eq = MathTex(r"h\leftarrow h+f(h)", font_size=40).move_to([4.6, 2.1, 0])
             self.play(*self.set_heading("第三招：残差连接"), FadeIn(blocks), FadeIn(links),
                       FadeIn(dots), Write(eq), run_time=self.fit(1.5))
-            hw = Arrow(blocks[0].get_left() + DOWN * 0.55, blocks[-1].get_right() + DOWN * 0.55 + RIGHT * 1.3,
+            hw = Arrow(blocks[0].get_left() + DOWN * 0.5, blocks[-1].get_right() + DOWN * 0.5 + RIGHT * 1.1,
                        buff=0, color=theme.OUTPUT, stroke_width=7)
             hw_t = zh("梯度的直通高速路", 22, theme.OUTPUT).next_to(hw, DOWN, 0.1)
             jac = MathTex(r"\frac{\partial h_{l+1}}{\partial h_l}=", r"I", r"+\frac{\partial f}{\partial h_l}",
-                          font_size=36).move_to([4.8, 0.75, 0])
+                          font_size=36).move_to([4.6, 0.85, 0])
             jac[1].set_color(theme.OUTPUT)
             self.wait(self.remaining() * 0.08)
             self.play(Write(jac), run_time=self.fit(1.2))
@@ -554,9 +564,9 @@ class ChapterScene(NarratedScene):
                       axis_config={"color": theme.MUTED, "include_numbers": False},
                       y_axis_config={"include_numbers": True, "font_size": 18,
                                      "decimal_number_config": {"num_decimal_places": 2}})
-            ax.move_to([-1.0, -0.95, 0])
-            vals = [(WD["Adam + L2"][0], theme.GRAD, "L2：A 组"), (WD["Adam + L2"][1], theme.GRAD, "L2：B 组"),
-                    (WD["AdamW"][0], theme.OUTPUT, "AdamW：A"), (WD["AdamW"][1], theme.OUTPUT, "AdamW：B")]
+            ax.move_to([-1.0, -0.75, 0])
+            vals = [(WD["Adam + L2"][0], theme.GRAD, "A 组"), (WD["Adam + L2"][1], theme.GRAD, "B 组"),
+                    (WD["AdamW"][0], theme.OUTPUT, "A 组"), (WD["AdamW"][1], theme.OUTPUT, "B 组")]
             bars, labels = VGroup(), VGroup()
             for i, (v, color, lab) in enumerate(vals):
                 top, bot = ax.c2p(i + 1, max(v, 0.004)), ax.c2p(i + 1, 0)
@@ -567,9 +577,10 @@ class ChapterScene(NarratedScene):
             theory = (1 - 0.01 * 0.1) ** 3000
             dl = DashedLine(ax.c2p(0.3, theory), ax.c2p(4.7, theory), color=theme.HIGHLIGHT)
             dt = zh(f"理论值 {theory:.3f}", 20, theme.HIGHLIGHT).next_to(dl, RIGHT, 0.1)
-            note = VGroup(zh("A 组梯度噪声 0.01", 20, theme.MUTED), zh("B 组梯度噪声 10", 20, theme.MUTED),
+            note = VGroup(zh("红：Adam + L2", 20, theme.GRAD), zh("绿：AdamW", 20, theme.OUTPUT),
+                          zh("A 组梯度噪声 0.01", 20, theme.MUTED), zh("B 组梯度噪声 10", 20, theme.MUTED),
                           zh("同一个 λ = 0.1", 20, theme.MUTED)).arrange(DOWN, aligned_edge=LEFT, buff=0.12)
-            note.move_to([4.9, -0.2, 0])
+            note.move_to([5.1, 0.0, 0])
             self.wait(self.remaining() * 0.15)
             self.play(Create(ax), FadeIn(note), run_time=self.fit(1))
             self.play(LaggedStart(*[GrowFromEdge(b, DOWN) for b in bars[:2]], lag_ratio=0.3),
@@ -577,7 +588,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() * 0.25)
             self.play(LaggedStart(*[GrowFromEdge(b, DOWN) for b in bars[2:]], lag_ratio=0.3),
                       FadeIn(labels[2:]), Create(dl), FadeIn(dt), run_time=self.fit(1.5, reserve=2))
-            nodecay = zh("RMSNorm 的 γ、偏置：通常不做衰减", 22, theme.PARAM).move_to([4.2, -1.9, 0])
+            nodecay = zh("RMSNorm 的 γ、偏置：通常不做衰减", 22, theme.PARAM).move_to([-1.0, 0.95, 0])
             self.wait(self.remaining() * 0.4)
             self.play(FadeIn(nodecay), run_time=self.fit(0.8))
             self.wait(self.remaining() - 0.6)
@@ -602,7 +613,7 @@ class ChapterScene(NarratedScene):
                                   height=ax.c2p(0, 3.5)[1] - ax.c2p(0, 0)[1],
                                   stroke_width=0, fill_color=theme.HIGHLIGHT, fill_opacity=0.18)
             warm_zone.move_to(ax.c2p(warm / 2, 1.75))
-            wz_t = zh("warmup", 20, theme.HIGHLIGHT).next_to(warm_zone, UP, 0.05).shift(RIGHT * 0.3)
+            wz_t = zh("warmup", 20, theme.HIGHLIGHT).move_to(ax.c2p(200, 0.35))
             cos_l = polyline_in_axes(ax, cos_pts, color=theme.PARAM, stroke_width=4)
             wsd_l = polyline_in_axes(ax, wsd_pts, color=theme.OUTPUT, stroke_width=4)
             self.wait(self.remaining() * 0.18)
@@ -631,9 +642,9 @@ class ChapterScene(NarratedScene):
                     out.append(sum(w) / len(w))
                 return out
 
-            ax = Axes(x_range=[0, 900, 100], y_range=[0.6, 1.4, 0.2], x_length=7.4, y_length=4.2,
+            ax = Axes(x_range=[0, 900, 100], y_range=[0.6, 1.4, 0.2], x_length=7.4, y_length=3.8,
                       tips=False, axis_config={"color": theme.MUTED, "include_numbers": True,
-                                               "font_size": 18}).move_to([-2.5, 0.1, 0])
+                                               "font_size": 18}).move_to([-2.5, 0.35, 0])
             yl = zh("训练损失（滑动平均）", 20, theme.MUTED).next_to(ax, UP, 0.1).align_to(ax, LEFT)
             self.play(*self.set_heading("WSD：随时都能收尾"), Create(ax), FadeIn(yl),
                       run_time=self.fit(1))
@@ -682,7 +693,8 @@ class ChapterScene(NarratedScene):
             self.play(*self.set_heading("第六招：梯度裁剪"), GrowArrow(long_a), FadeIn(la),
                       run_time=self.fit(1.2))
             self.wait(self.remaining() * 0.2)
-            self.play(Transform(long_a, short_a), Transform(la, lb), Write(rule), run_time=self.fit(1.5))
+            self.play(long_a.animate.set_opacity(0.3), la.animate.set_opacity(0.4), GrowArrow(short_a),
+                      FadeIn(lb), Write(rule), run_time=self.fit(1.5))
             ax = Axes(x_range=[250, 420, 50], y_range=[0.6, 2.2, 0.4], x_length=5.6, y_length=3.6,
                       tips=False, axis_config={"color": theme.MUTED, "include_numbers": True,
                                                "font_size": 18}).move_to([3.4, 0.2, 0])
@@ -690,7 +702,7 @@ class ChapterScene(NarratedScene):
             bad_zone = Rectangle(width=ax.c2p(305, 0.6)[0] - ax.c2p(300, 0.6)[0],
                                  height=ax.c2p(0, 2.2)[1] - ax.c2p(0, 0.6)[1], stroke_width=0,
                                  fill_color=theme.GRAD, fill_opacity=0.3).move_to(ax.c2p(302.5, 1.4))
-            bz = zh("坏数据", 18, theme.GRAD).next_to(bad_zone, UP, 0.05)
+            bz = zh("坏数据", 18, theme.GRAD).next_to(ax.c2p(305, 2.05), RIGHT, 0.08)
             self.wait(self.remaining() * 0.12)
             self.play(Create(ax), FadeIn(yl), FadeIn(bad_zone), FadeIn(bz), run_time=self.fit(1))
             curves = VGroup()
@@ -704,7 +716,8 @@ class ChapterScene(NarratedScene):
             self.play(Create(curves[0]), FadeIn(leg[0]), run_time=self.fit(1.5, reserve=2))
             self.play(Create(curves[1]), FadeIn(leg[1]), run_time=self.fit(1.5))
             self.wait(self.remaining() - 0.6)
-            self.play(*[FadeOut(m) for m in [long_a, la, rule, ax, yl, bad_zone, bz, curves, leg]],
+            self.play(*[FadeOut(m) for m in [long_a, la, short_a, lb, rule, ax, yl, bad_zone, bz, curves,
+                                             leg]],
                       run_time=self.fit(0.6))
 
         # ── S15 对比实验 ─────────────────────────────────────────────────
@@ -722,16 +735,14 @@ class ChapterScene(NarratedScene):
                     row = hbar(n, r["val"], vmax, length, color, size=20)
                 rows.add(row)
             rows.add(hbar("全套去掉残差", H["loo"]["no_res"], vmax, length, theme.GRAD, size=20))
-            x_lab, x_bar = -5.0, -2.6
+            x_lab, x_bar = -6.2, -2.2
             for i, row in enumerate(rows):
                 y = 2.3 - i * 0.55 - (0.2 if i == 7 else 0)
                 row[0].move_to([x_lab, y, 0], aligned_edge=LEFT)
                 row[1].move_to([x_bar, y, 0], aligned_edge=LEFT)
                 row[2].next_to(row[1], RIGHT, 0.15)
             head = zh("验证损失（24 层网络，800 步；随机猜 ≈ 2.30）", 20, theme.MUTED).move_to([-2.2, 2.85, 0])
-            ref = DashedLine([x_bar + length * math.log(10) / vmax, 2.6, 0],
-                             [x_bar + length * math.log(10) / vmax, -1.95, 0], color=theme.MUTED)
-            self.play(*self.set_heading(None), FadeIn(head), Create(ref), run_time=self.fit(0.8))
+            self.play(*self.set_heading(None), FadeIn(head), run_time=self.fit(0.8))
             for i in range(7):
                 self.play(FadeIn(rows[i][0]), GrowFromEdge(rows[i][1], LEFT), FadeIn(rows[i][2]),
                           run_time=self.fit(0.9, reserve=9 - i))
@@ -747,13 +758,14 @@ class ChapterScene(NarratedScene):
                             MathTex(r"\text{no RMSNorm}:\ " + sci(st["no_norm"], 1), font_size=28,
                                     color=theme.GRAD)).arrange(DOWN, aligned_edge=LEFT, buff=0.14)
             frame = SurroundingRectangle(stress, color=theme.HIGHLIGHT, buff=0.2, corner_radius=0.1)
-            VGroup(stress, frame).move_to([5.0, -0.3, 0])
+            box_w = frame.width
+            VGroup(stress, frame).move_to([7.0 - box_w / 2, -0.3, 0])
             nz = zh("去掉 RMSNorm", 20, theme.GRAD).move_to(stress[4]).align_to(stress[4], LEFT)
             self.wait(self.remaining() * 0.35)
             self.play(FadeIn(frame), FadeIn(stress[:4]), FadeIn(nz), run_time=self.fit(1))
             self.play(Transform(nz, stress[4]), run_time=self.fit(0.8))
             self.wait(self.remaining() - 0.6)
-            self.play(*[FadeOut(m) for m in [head, ref, rows, stress[:4], nz, frame]],
+            self.play(*[FadeOut(m) for m in [head, rows, stress[:4], nz, frame]],
                       run_time=self.fit(0.6))
 
         # ── S16 从极简到生产级 ───────────────────────────────────────────

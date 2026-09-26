@@ -44,6 +44,7 @@ chapters/NN-slug/
 - 单文件、几十到一两百行、只依赖 NumPy 或 PyTorch（加 matplotlib 也可以）。
 - `uv run python chapters/NN-slug/code/xx.py` 在 CPU 上几分钟内跑完（最好几秒），并打印可读的结果。
 - 固定随机种子，保证正文里贴的数字可复现。
+- PyTorch 脚本开头加 `torch.set_num_threads(1)`：构建环境里多个任务共享 CPU，多线程反而慢上百倍（读者本机上可以删掉这行）。
 - 不要写文件到仓库里；如需输出图片，写到 `chapters/NN-slug/code/out/`（已被 .gitignore 忽略的话再用；否则只打印）。
 - 需要数据时：优先代码内造数据；需要真实文本时用 `data/tiny/` 里的小语料（由 `zero` 核心代码提供，见 `zero/DESIGN.md`），**不要**依赖 Hugging Face 下载（本构建环境访问不了 huggingface.co）。
 - 章节之间可以复用：用 `importlib` 按路径加载其他章节的文件（见第 1 章 `02_learning_rate.py`）。
