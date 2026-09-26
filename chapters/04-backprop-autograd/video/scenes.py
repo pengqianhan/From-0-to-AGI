@@ -138,6 +138,16 @@ def mono(text: str, size: float = 20, color: str = theme.FG) -> Text:
     return Text(text, font=MONO, font_size=size, color=color)
 
 
+def code_block(lines: list[str], size: float = 20, buff: float = 0.14) -> VGroup:
+    """多行代码：Text 不渲染行首空格，这里按缩进宽度手动右移，保留 Python 缩进。"""
+    char_w = mono("x" * 20, size).width / 20
+    ms = [mono(line.lstrip(), size) for line in lines]
+    block = VGroup(*ms).arrange(DOWN, aligned_edge=LEFT, buff=buff)
+    for m, line in zip(ms, lines, strict=True):
+        m.shift(RIGHT * char_w * (len(line) - len(line.lstrip())))
+    return block
+
+
 def fmt(v: float) -> str:
     """-6.0 → '-6'；2.5 → '2.5'。"""
     return f"{v:g}"
@@ -179,11 +189,11 @@ class ChapterScene(NarratedScene):
             "d": vbox(r"d").move_to([-2.3, 0.8, 0]),
             "add": opnode(r"+").move_to([-0.7, -0.3, 0]),
             "e": vbox(r"e").move_to([0.9, -0.3, 0]),
-            "pow": opnode(r"(\cdot)^2").move_to([2.5, -0.3, 0]),
+            "pow": opnode(r"(\,)^2").move_to([2.5, -0.3, 0]),
             "L": vbox(r"L", theme.OUTPUT).move_to([4.1, -0.3, 0]),
         }
-        nodes["pow"][0].scale(1.25)
-        nodes["pow"][1].scale(0.7)
+        nodes["pow"][0].scale(1.3)
+        nodes["pow"][1].scale(0.9)
         edges = {
             ("a", "mul"): edge(nodes["a"], nodes["mul"]),
             ("b", "mul"): edge(nodes["b"], nodes["mul"]),
@@ -228,7 +238,7 @@ class ChapterScene(NarratedScene):
             row1 = VGroup(r1_t, r1_f).arrange(DOWN, buff=0.2).move_to([0, 1.75, 0])
             r2_t = zh("第 3 章：两层网络，第一层权重的梯度", 26, theme.MUTED)
             r2_f = MathTex(r"\frac{\partial L}{\partial W_1}=X^\top\Big[\big(\tfrac{2}{N}(\hat Y-Y)"
-                           r"\,W_2^\top\big)\odot\mathbb{1}(XW_1+b_1>0)\Big]", font_size=32)
+                           r"\,W_2^\top\big)\odot\mathbf{1}(XW_1+b_1>0)\Big]", font_size=32)
             row2 = VGroup(r2_t, r2_f).arrange(DOWN, buff=0.2).move_to([0, -0.1, 0])
             r3 = zh("再加一层？换个激活函数？换个损失？—— 全部重推", 28, theme.GRAD)
             r3.move_to([0, -1.75, 0])
@@ -407,9 +417,7 @@ class ChapterScene(NarratedScene):
                 "    out._backward = _backward",
                 "    return out",
             ]
-            code = VGroup(*[mono(s, 19) for s in code_lines]).arrange(DOWN, aligned_edge=LEFT,
-                                                                       buff=0.16)
-            code.move_to([3.55, 0.1, 0])
+            code = code_block(code_lines, 19, 0.16).move_to([3.55, 0.3, 0])
             for i in range(len(table) // 2):
                 self.play(FadeIn(table[2 * i]), FadeIn(table[2 * i + 1]),
                           run_time=self.fit(0.5, reserve=5))
@@ -417,7 +425,7 @@ class ChapterScene(NarratedScene):
             hl = SurroundingRectangle(VGroup(code[3], code[4]), color=theme.GRAD, buff=0.08)
             self.wait(self.remaining() * 0.2)
             self.play(Create(hl), run_time=self.fit(0.8))
-            tag = zh("局部导数 × 上游梯度，传给输入", 22, theme.GRAD).next_to(hl, DOWN, 0.2)
+            tag = zh("局部导数 × 上游梯度，传给输入", 22, theme.GRAD).next_to(code, DOWN, 0.3)
             self.play(FadeIn(tag), run_time=self.fit(0.6))
             self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(table), FadeOut(code), FadeOut(hl), FadeOut(tag),
@@ -502,12 +510,12 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() * 0.12)
             back = zh("反向：6 → 5 → … → 1", 24, theme.GRAD).move_to([0, 2.3, 0])
             self.play(Transform(topo_note, back), run_time=self.fit(0.6))
-            code = VGroup(*[mono(s, 20) for s in [
+            code = code_block([
                 "topo = 拓扑排序(self)",
                 "self.grad = 1.0",
                 "for v in reversed(topo):",
                 "    v._backward()",
-            ]]).arrange(DOWN, aligned_edge=LEFT, buff=0.14).move_to([0, -1.75, 0])
+            ]).move_to([0, -1.75, 0])
             code[0][5:9].set_color(theme.HIGHLIGHT)
             per = (self.remaining() - 3) / len(order)
             grads = VGroup()
@@ -576,13 +584,13 @@ class ChapterScene(NarratedScene):
                       Create(axes), run_time=self.fit(1))
             self.play(LaggedStart(*[FadeIn(d, scale=0.5) for d in dots], lag_ratio=0.05),
                       Create(sin_curve), FadeIn(sin_lbl), run_time=self.fit(1.5))
-            code = VGroup(*[mono(s, 20) for s in [
+            code = code_block([
                 "loss = mse(net, xs, ys)",
                 "net.zero_grad()",
                 "loss.backward()",
                 "for p in net.parameters():",
                 "    p.data -= lr * p.grad",
-            ]]).arrange(DOWN, aligned_edge=LEFT, buff=0.14).move_to([3.5, 1.1, 0])
+            ]).move_to([3.5, 1.1, 0])
             self.wait(self.remaining() * 0.1)
             self.play(FadeIn(code), run_time=self.fit(1))
             table = VGroup(zh("步数", 22, theme.MUTED),
@@ -613,8 +621,9 @@ class ChapterScene(NarratedScene):
             for i in range(N_NODES):
                 r, c = divmod(i, cols)
                 grid.add(Dot([c * 0.075, -r * 0.055, 0], radius=0.018, color=theme.INPUT))
-            grid.move_to([-4.2, 0.45, 0])
-            cnt = zh(f"一次前向（20 个样本）= {N_NODES} 个 Value 节点", 22, theme.FG)
+            grid.move_to([-4.0, 0.6, 0])
+            cnt = VGroup(zh("一次前向（20 个样本）", 22, theme.FG),
+                         zh(f"= {N_NODES} 个 Value 节点", 22, theme.FG)).arrange(DOWN, buff=0.1)
             cnt.next_to(grid, DOWN, 0.2)
             self.play(FadeIn(grid, lag_ratio=0.002), run_time=self.fit(2))
             self.play(FadeIn(cnt), run_time=self.fit(0.6))
@@ -650,13 +659,15 @@ class ChapterScene(NarratedScene):
             lt = zh("Value 引擎（本章）", 26, theme.PARAM).move_to([-3.6, 2.2, 0])
             rt = zh("PyTorch nn.Sequential", 26, theme.OUTPUT).move_to([3.6, 2.2, 0])
             self.play(FadeIn(lt), FadeIn(rt), run_time=self.fit(0.8))
-            rows = VGroup()
+            cells = []
             for name, shape, ok in PARAM_ROWS:
-                rows.add(VGroup(mono(f"{name:<9}{str(shape):<7}", 20),
-                                zh("allclose ✓" if ok else "✗", 22,
-                                   theme.OUTPUT if ok else theme.GRAD)).arrange(RIGHT, buff=0.4))
-            rows.arrange(DOWN, aligned_edge=LEFT, buff=0.14).move_to([0, 0.55, 0])
-            self.play(LaggedStart(*[FadeIn(r) for r in rows], lag_ratio=0.3),
+                cells += [mono(name, 20), mono(str(shape), 20),
+                          zh("allclose ✓" if ok else "✗", 22, theme.OUTPUT if ok else theme.GRAD)]
+            rows = VGroup(*cells).arrange_in_grid(rows=len(PARAM_ROWS), cols=3,
+                                                  col_alignments="llc", buff=(0.5, 0.14))
+            rows.move_to([0, 0.55, 0])
+            self.play(LaggedStart(*[FadeIn(VGroup(*cells[3 * i:3 * i + 3]))
+                                    for i in range(len(PARAM_ROWS))], lag_ratio=0.3),
                       run_time=self.fit(2.2))
             summary = VGroup(
                 zh(f"梯度最大差 {MAX_DIFF:.1e}（双精度舍入误差）", 22, theme.FG),

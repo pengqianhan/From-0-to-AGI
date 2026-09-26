@@ -204,7 +204,7 @@ class ChapterScene(NarratedScene):
             self.play(*self.set_heading("softmax：把分数变成概率"), run_time=self.fit(0.8))
             cx, by = -3.4, -0.4
             b_logit = bars(LOGITS, NAMES, CLASS_COLORS, cx, by, 0.9, fmt="{:.1f}", label_y=-1.75)
-            stage = zh("logits  z", 28, theme.MUTED).move_to([cx, 2.35, 0])
+            stage = zh("logits  z", 28, theme.MUTED).move_to([cx, 2.55, 0])
             self.play(FadeIn(b_logit), FadeIn(stage), run_time=self.fit(1.2))
             formula = MathTex(r"p_k=\frac{e^{z_k}}{\sum_j e^{z_j}}", font_size=56).move_to([3.5, 1.2, 0])
             self.play(Write(formula), run_time=self.fit(1.5))
@@ -302,7 +302,7 @@ class ChapterScene(NarratedScene):
                 d = Dot(ax.c2p(PROBS[k], CE_EACH[k]), color=CLASS_COLORS[k], radius=0.09)
                 lab = zh(f"{NAMES[k]}：p={PROBS[k]:.2f} → {CE_EACH[k]:.2f}", 22, CLASS_COLORS[k])
                 pts.add(VGroup(d, lab))
-            pts[0][1].next_to(pts[0][0], UP, 0.15)
+            pts[0][1].next_to(pts[0][0], UR, 0.1)
             pts[1][1].next_to(pts[1][0], UR, 0.12)
             pts[2][1].next_to(pts[2][0], RIGHT, 0.2)
             self.play(LaggedStart(*[FadeIn(p) for p in pts], lag_ratio=0.5), run_time=self.fit(2.5, reserve=3))
@@ -330,9 +330,10 @@ class ChapterScene(NarratedScene):
                        fmt="{:.0f}", font=20, label_y=-1.9)
             g_g = bars(GRAD_CAT, short, [theme.GRAD] * 3, -1.1, -0.2, 1.8, width=0.45, gap=0.65,
                        fmt="{:.2f}", font=20, label_y=-1.9)
-            ts = VGroup(zh("p", 26, theme.OUTPUT).move_to([-5.3, 2.2, 0]),
-                        zh("onehot（猫）", 24, theme.HIGHLIGHT).move_to([-3.2, 2.2, 0]),
-                        zh("p − onehot", 26, theme.GRAD).move_to([-1.1, 2.2, 0]))
+            ts = VGroup(zh("p", 24, theme.OUTPUT).move_to([-5.3, 2.3, 0]),
+                        zh("onehot", 22, theme.HIGHLIGHT).move_to([-3.2, 2.3, 0]),
+                        zh("p − onehot", 22, theme.GRAD).move_to([-1.1, 2.3, 0]))
+            ts[1].add(zh("（正确 = 猫）", 18, theme.HIGHLIGHT).next_to(ts[1], DOWN, 0.08))
             ops = VGroup(MathTex("-", font_size=48).move_to([-4.25, 0.5, 0]),
                          MathTex("=", font_size=48).move_to([-2.15, 0.5, 0]))
             self.wait(self.remaining() * 0.1)
@@ -354,16 +355,17 @@ class ChapterScene(NarratedScene):
         # ── S08 MSE vs CE：梯度 ──────────────────────────────────────────
         with self.shot("S08"):
             self.play(*self.set_heading("自信地错了：MSE 的梯度会消失"), run_time=self.fit(0.8))
-            ax = Axes(x_range=[0, 10, 2], y_range=[-4, 0.5, 1], x_length=6.8, y_length=4.2,
+            # 纵轴画 log10(梯度) + 4，让横轴落在最底下（10⁻⁴ 处）
+            ax = Axes(x_range=[0, 10, 2], y_range=[0, 4.5, 1], x_length=6.8, y_length=4.2,
                       axis_config={"color": theme.MUTED, "font_size": 20}, tips=False,
                       x_axis_config={"include_numbers": True}).move_to([-2.4, 0.05, 0])
             ylabels = VGroup(*[MathTex(rf"10^{{{k}}}", font_size=24, color=theme.MUTED)
-                               .next_to(ax.c2p(0, k), LEFT, 0.12) for k in range(-4, 1)])
+                               .next_to(ax.c2p(0, k + 4), LEFT, 0.12) for k in range(-4, 1)])
             xl = zh("错误类别的 logit s（越大越自信地错）", 20, theme.MUTED).next_to(ax.x_axis, DOWN, 0.45)
             yl = zh("梯度大小", 20, theme.MUTED).next_to(ax.y_axis, UP, 0.1)
             self.play(Create(ax), FadeIn(ylabels), FadeIn(xl), FadeIn(yl), run_time=self.fit(1.2))
-            ce_pts = [(r[0], np.log10(r[3])) for r in WRONG_ROWS]
-            mse_pts = [(r[0], np.log10(r[5])) for r in WRONG_ROWS]
+            ce_pts = [(r[0], np.log10(r[3]) + 4) for r in WRONG_ROWS]
+            mse_pts = [(r[0], np.log10(r[5]) + 4) for r in WRONG_ROWS]
             ce_line = polyline_in_axes(ax, ce_pts, color=theme.GRAD, stroke_width=5)
             mse_line = polyline_in_axes(ax, mse_pts, color=theme.FG, stroke_width=5)
             leg = VGroup(zh("交叉熵", 26, theme.GRAD), zh("MSE", 26, theme.FG)
@@ -527,7 +529,7 @@ class ChapterScene(NarratedScene):
             top_names = [VOCAB[i] for i in TOP_FEN]
             nb = bars(top_vals, top_names, [theme.OUTPUT] * 3, -2.9, -1.6, 2.2, width=0.6, gap=1.1,
                       label_y=-2.0)
-            cap = zh("下一个字的概率", 22, theme.OUTPUT).move_to([-2.9, 1.1, 0])
+            cap = zh("下一个字的概率", 22, theme.OUTPUT).move_to([-2.9, 0.55, 0])
             self.play(FadeIn(fen), GrowArrow(arr), FadeIn(nb), FadeIn(cap), run_time=self.fit(1.2))
             self.wait(self.remaining() * 0.15)
             b0, p0 = lm.to_bits_and_ppl(LM_START)
@@ -567,13 +569,13 @@ class ChapterScene(NarratedScene):
             self.play(*self.set_heading("从极简到生产级：F.cross_entropy"), FadeIn(lt), FadeIn(left_code),
                       FadeIn(rt), FadeIn(right_code), run_time=self.fit(1.2))
             hl = SurroundingRectangle(right_code[1], color=theme.HIGHLIGHT, buff=0.08)
-            tag = zh("吃 logits，内部融合 log-softmax", 22, theme.HIGHLIGHT).next_to(hl, DOWN, 0.25)
+            tag = zh("吃 logits，内部融合 log-softmax", 22, theme.HIGHLIGHT).next_to(right_code, DOWN, 0.3)
             self.wait(self.remaining() * 0.12)
             self.play(Create(hl), FadeIn(tag), run_time=self.fit(0.8))
             self.wait(self.remaining() * 0.25)
             chk = VGroup(zh("[1000, 500, −500]：朴素写法 inf，F.cross_entropy 1500.0", 22, theme.FG),
                          zh("随机 8 样本 × 5 类：3.1764553511 = 3.1764553511", 22, theme.OUTPUT)
-                         ).arrange(DOWN, buff=0.22).move_to([0, -0.9, 0])
+                         ).arrange(DOWN, buff=0.22).move_to([0, -1.0, 0])
             self.play(FadeIn(chk[0]), run_time=self.fit(0.8))
             self.play(FadeIn(chk[1]), run_time=self.fit(0.8))
             self.wait(self.remaining() * 0.3)
@@ -589,9 +591,9 @@ class ChapterScene(NarratedScene):
                      ("−log p_y", theme.GRAD), ("p − onehot", theme.GRAD)]
             boxes = VGroup()
             for name, color in steps:
-                r = RoundedRectangle(width=2.0, height=0.9, corner_radius=0.12, color=color)
+                r = RoundedRectangle(width=2.25, height=0.9, corner_radius=0.12, color=color)
                 boxes.add(VGroup(r, zh(name, 24, color).move_to(r)))
-            boxes.arrange(RIGHT, buff=0.55).move_to([0, 1.5, 0])
+            boxes.arrange(RIGHT, buff=0.42).move_to([0, 1.5, 0])
             arrows = VGroup(*[Arrow(boxes[i].get_right(), boxes[i + 1].get_left(), buff=0.06,
                                     color=theme.MUTED, max_tip_length_to_length_ratio=0.35)
                               for i in range(4)])
