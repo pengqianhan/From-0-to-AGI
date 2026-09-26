@@ -93,8 +93,12 @@ class LinearMixer(nn.Module):
         self.out_norm = nn.RMSNorm(self.dh)
         if kind == "gdn":
             self.wb = nn.Linear(dim, n_heads)  # β_t = sigmoid(·)：写入强度
-            self.wa = nn.Linear(dim, n_heads)  # α_t = exp(−e^{A} softplus(·))：衰减门
+            self.wa = nn.Linear(dim, n_heads)  # α_t = exp(−e^{A} softplus(· + dt_bias))：衰减门
             self.A_log = nn.Parameter(torch.zeros(n_heads))
+            # Mamba-2 式初始化：各头的 softplus(dt_bias) 从 0.001 到 0.1 等比分布，
+            # 初始 α ≈ 0.9 ~ 0.999（不这样做的话 α 一开始约为 0.5，十几步就忘光了）
+            dt = torch.exp(torch.linspace(math.log(1e-3), math.log(1e-1), n_heads))
+            self.dt_bias = nn.Parameter(dt + torch.log(-torch.expm1(-dt)))
 
     def forward(self, x):
         B, T, D = x.shape
@@ -107,7 +111,8 @@ class LinearMixer(nn.Module):
             o = linear_chunked(q, k, v)
         else:
             beta = torch.sigmoid(self.wb(x)).transpose(1, 2)  # (B, H, T)
-            g = (-self.A_log.exp() * F.softplus(self.wa(x))).transpose(1, 2)  # 对数衰减 ≤ 0
+            g = -self.A_log.exp() * F.softplus(self.wa(x) + self.dt_bias)  # 对数衰减 ≤ 0
+            g = g.transpose(1, 2)
             o, _ = delta.gated_delta_chunked(q, k, v, g, beta, C=32)
         o = self.out_norm(o)
         return self.wo(o.transpose(1, 2).reshape(B, T, D))

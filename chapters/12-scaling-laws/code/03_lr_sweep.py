@@ -106,7 +106,11 @@ def train_step(model, opt, x, y, lr):
     opt.step()
 
 
-def train_wsd_branches(dim, n_layers, lr, budgets, seed=0, data=None):
+def adamw(model, lr):
+    return torch.optim.AdamW(model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=0.1)
+
+
+def train_wsd_branches(dim, n_layers, lr, budgets, seed=0, data=None, make_opt=adamw):
     """一次训练得到多个 token 预算的结果（WSD 分叉）。
 
     主干：warmup 后保持峰值学习率一直训到 0.8 × 最大预算；
@@ -116,7 +120,7 @@ def train_wsd_branches(dim, n_layers, lr, budgets, seed=0, data=None):
     train, val = data or load_bytes()
     torch.manual_seed(seed)
     model = make_model(dim, n_layers)
-    opt = torch.optim.AdamW(model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=0.1)
+    opt = make_opt(model, lr)
     g = torch.Generator().manual_seed(seed)
     steps = {D: D // TOKENS_PER_STEP for D in budgets}
     branch_at = {int(0.8 * s): D for D, s in steps.items()}
@@ -126,7 +130,7 @@ def train_wsd_branches(dim, n_layers, lr, budgets, seed=0, data=None):
         if step in branch_at:  # 分叉：复制当前状态，接一段衰减
             D = branch_at[step]
             m2 = copy.deepcopy(model)
-            o2 = torch.optim.AdamW(m2.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=0.1)
+            o2 = make_opt(m2, lr)
             o2.load_state_dict(copy.deepcopy(opt.state_dict()))
             g2 = torch.Generator().manual_seed(seed * 1000 + D % 997)
             n_decay = steps[D] - step
@@ -147,28 +151,52 @@ def fit_power_law(x, y):
 
 
 def run_sweep(fresh=False):
+    """每个尺寸先扫 SWEEP_LRS；如果最优值落在网格边上，就往那一侧再扩一倍，直到最优点在内部。
+    （最优在边上说明真正的最优还在网格外面——这是调参时最常见的坑。）结果逐个缓存，中断后可接着跑。"""
     path = OUT / "lr_sweep.json"
-    if path.exists() and not fresh:
-        return json.loads(path.read_text())
-    data = load_bytes()
-    rows, t0 = [], time.time()
+    rows = [] if fresh or not path.exists() else json.loads(path.read_text())["rows"]
+    done = {(r["size"], r["lr"]) for r in rows}
+    data, t0 = None, time.time()
     for name, dim, L in LADDER:
         n = non_embedding_params(dim, L)
-        for lr in SWEEP_LRS:
-            bpb = train_wsd_branches(dim, L, lr, [SWEEP_TOKENS], data=data)[SWEEP_TOKENS]
-            rows.append({"size": name, "dim": dim, "layers": L, "N": n, "lr": lr, "val_bpb": bpb})
-            print(f"  {name} N={n:>7,}  lr={lr:<7g} val {bpb:.4f} bit/字节  ({time.time() - t0:4.0f}s)")
-    OUT.mkdir(parents=True, exist_ok=True)
-    result = {"tokens": SWEEP_TOKENS, "rows": rows}
-    path.write_text(json.dumps(result, indent=1))
-    return result
+        grid = list(SWEEP_LRS)
+        while True:
+            for lr in grid:
+                if (name, lr) in done:
+                    continue
+                data = data or load_bytes()
+                bpb = train_wsd_branches(dim, L, lr, [SWEEP_TOKENS], data=data)[SWEEP_TOKENS]
+                rows.append({"size": name, "dim": dim, "layers": L, "N": n, "lr": lr, "val_bpb": bpb})
+                done.add((name, lr))
+                print(f"  {name} N={n:>7,}  lr={lr:<8g} val {bpb:.4f} bit/字节  ({time.time() - t0:4.0f}s)")
+                OUT.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps({"tokens": SWEEP_TOKENS, "rows": rows}, indent=1))
+            mine = sorted((r["lr"], r["val_bpb"]) for r in rows if r["size"] == name)
+            lrs = [lr for lr, _ in mine]
+            best = min(mine, key=lambda t: t[1])[0]
+            if best == lrs[0] and best / 2 >= 1e-4:
+                grid = [best / 2]
+            elif best == lrs[-1] and best * 2 <= 0.16:
+                grid = [best * 2]
+            else:
+                break
+    return {"tokens": SWEEP_TOKENS, "rows": rows}
 
 
 def best_lrs(sweep):
+    """每个尺寸的最优学习率。网格是 2 倍一档，太粗：取最低点和左右邻居，在 log(η) 上拟合抛物线取顶点。"""
     best = {}
-    for r in sweep["rows"]:
-        if r["size"] not in best or r["val_bpb"] < best[r["size"]]["val_bpb"]:
-            best[r["size"]] = r
+    for name in dict.fromkeys(r["size"] for r in sweep["rows"]):
+        mine = sorted((r for r in sweep["rows"] if r["size"] == name), key=lambda r: r["lr"])
+        i = min(range(len(mine)), key=lambda j: mine[j]["val_bpb"])
+        row = dict(mine[i])
+        row["grid_lr"] = row["lr"]
+        if 0 < i < len(mine) - 1:
+            x = np.log([mine[j]["lr"] for j in (i - 1, i, i + 1)])
+            y = [mine[j]["val_bpb"] for j in (i - 1, i, i + 1)]
+            a, b, _ = np.polyfit(x, y, 2)
+            row["lr"] = float(np.exp(np.clip(-b / (2 * a), x[0], x[2])))
+        best[name] = row
     return best
 
 
@@ -182,20 +210,23 @@ def main():
     table = {}
     for r in sweep["rows"]:
         table.setdefault((r["size"], r["N"]), {})[r["lr"]] = r["val_bpb"]
-    print("\n验证 loss（bit/字节），每行一个尺寸，* 为该尺寸最优：")
-    print(f"{'尺寸':>4} {'N':>8} | " + " ".join(f"{lr:>8g}" for lr in SWEEP_LRS))
+    all_lrs = sorted({r["lr"] for r in sweep["rows"]})
+    print("\n验证 loss（bit/字节），每行一个尺寸，* 为该尺寸最优，- 为没跑：")
+    print(f"{'尺寸':>4} {'N':>8} | " + " ".join(f"{lr:>8g}" for lr in all_lrs))
     best = best_lrs(sweep)
     for (name, n), row in table.items():
-        cells = [f"{row[lr]:>7.4f}{'*' if lr == best[name]['lr'] else ' '}" for lr in SWEEP_LRS]
+        cells = [f"{row[lr]:>7.4f}{'*' if lr == best[name]['grid_lr'] else ' '}" if lr in row else f"{'-':>8}"
+                 for lr in all_lrs]
         print(f"{name:>4} {n:>8,} | " + " ".join(cells))
+    print("抛物线插值后的 η*：" + "，".join(f"{s} {best[s]['lr']:.4g}" for s, _, _ in LADDER))
     ns = [best[s]["N"] for s, _, _ in LADDER]
     lrs = [best[s]["lr"] for s, _, _ in LADDER]
     c, k = fit_power_law(ns, lrs)
     n5 = non_embedding_params(*HELD_OUT[1:])
     print(f"\n拟合 η*(N) = {c:.3g} · N^(-{k:.3f})")
     print(f"外推到留出尺寸 {HELD_OUT[0]}（N={n5:,}）：η* ≈ {c * n5 ** -k:.4g}")
-    fixed = SWEEP_LRS[-1]
-    print(f"\n如果所有尺寸都用同一个学习率 {fixed:g}（不调参）：")
+    fixed = best[LADDER[0][0]]["grid_lr"]
+    print(f"\n如果所有尺寸都沿用最小模型调出来的学习率 {fixed:g}（只在小模型上调参）：")
     for (name, n), row in table.items():
         print(f"  {name} N={n:>7,}  {row[fixed]:.4f}  比调好的差 {row[fixed] - best[name]['val_bpb']:+.4f}")
 

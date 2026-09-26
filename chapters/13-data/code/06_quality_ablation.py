@@ -1,10 +1,10 @@
 """数据消融①：同样的模型、同样的步数，只换数据——脏网页原样 vs 走完整条过滤流水线。
 
 两个小模型（约 50 万参数，zero 的 Transformer）各训练 200 步、看同样多的 token，
-在同一份留出的干净文本（英文、中文）上比较 bits-per-byte。bpb 用本章的公式手算一遍，
-再和生产级的 zero/data/bpb.py 对拍。
+在同一份留出的干净文本（英文、中文）上比较 bits-per-byte。每种数据用 2 个随机种子各训练一次，
+看差距是否大于种子带来的波动。bpb 用本章的公式手算一遍，再和生产级的 zero/data/bpb.py 对拍。
 
-    uv run python chapters/13-data/code/06_quality_ablation.py     # CPU 约 3–4 分钟
+    uv run python chapters/13-data/code/06_quality_ablation.py     # CPU 约 5–8 分钟
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ def _load(name: str):
 
 
 SEQ, BATCH, STEPS, LR = 128, 16, 200, 3e-3
+SEEDS = (0, 1)
 MODEL = dict(dim=96, n_layers=3, n_heads=4, n_kv_heads=2, head_dim=24, ffn_dim=256,
              max_seq_len=SEQ, tie_embeddings=False)
 
@@ -104,9 +105,9 @@ def train(
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
-        curve.append((step, float(loss)))
+        curve.append((step, loss.item()))
         if log_every and step % log_every == 0:
-            print(f"  [{tag}] step {step:>4}  loss {float(loss):.3f}  ({time.time() - t0:.0f}s)")
+            print(f"  [{tag}] step {step:>4}  loss {loss.item():.3f}  ({time.time() - t0:.0f}s)")
     return model, curve
 
 
@@ -137,26 +138,37 @@ def run() -> dict:
     tok = make_tokenizer([d["text"] for d in cleaned])
     tb = token_byte_lengths(tok)
     val = {lang: pack(tok, docs) for lang, docs in crawl["heldout"].items()}
-    res = {"tokens": {}, "bpb": {}, "curves": {}}
+    res: dict = {"tokens": {}, "bpb": {}, "curves": {}}
     for name, docs in [("原样脏网页", raw), ("过滤后", cleaned)]:
         arr = pack(tok, [d["text"] for d in docs])
         res["tokens"][name] = len(arr)
-        model, curve = train({"all": arr}, {"all": 1.0}, tok.vocab_size, tag=name)
-        res["bpb"][name] = evaluate(model, val, tb)
-        res["curves"][name] = curve[::5]
+        runs = []
+        for seed in SEEDS:
+            model, curve = train({"all": arr}, {"all": 1.0}, tok.vocab_size, seed=seed,
+                                 tag=f"{name} seed {seed}")
+            runs.append(evaluate(model, val, tb))
+            if seed == SEEDS[0]:
+                res["curves"][name] = curve[::5]
+        res["bpb"][name] = {k: [r[k] for r in runs] for k in runs[0]}  # 每个种子一个值
     res["docs"] = {"原样脏网页": len(raw), "过滤后": len(cleaned)}
     return res
 
 
 def main() -> None:
     res = run()
-    print(f"\n{'训练数据':<10}{'文档数':>7}{'token 数':>10}{'英文 bpb':>10}{'中文 bpb':>10}")
+    print(f"\n{'训练数据':<10}{'文档数':>7}{'token 数':>11}{'英文 bpb（种子 0 / 1）':>24}{'中文 bpb（种子 0 / 1）':>24}")
     for name in res["bpb"]:
         b = res["bpb"][name]
-        print(f"{name:<10}{res['docs'][name]:>7}{res['tokens'][name]:>10,}{b['en']:>10.3f}{b['zh']:>10.3f}")
+        en = " / ".join(f"{v:.3f}" for v in b["en"])
+        zh = " / ".join(f"{v:.3f}" for v in b["zh"])
+        print(f"{name:<10}{res['docs'][name]:>7}{res['tokens'][name]:>11,}{en:>24}{zh:>24}")
     a, b = res["bpb"]["原样脏网页"], res["bpb"]["过滤后"]
+    d_en = np.mean(a["en"]) - np.mean(b["en"])
+    d_zh = np.mean(a["zh"]) - np.mean(b["zh"])
+    noise = max(abs(v[0] - v[1]) for r in res["bpb"].values() for v in r.values())
     print(f"\n同样训练 {STEPS} 步 × {BATCH} × {SEQ} = {STEPS * BATCH * SEQ:,} 个 token："
-          f"过滤后的数据让英文 bpb 低 {a['en'] - b['en']:.3f}，中文低 {a['zh'] - b['zh']:.3f}")
+          f"过滤后的数据让英文 bpb 平均低 {d_en:.3f}，中文低 {d_zh:.3f}"
+          f"（两个种子之间的最大差别 {noise:.3f}）")
 
 
 if __name__ == "__main__":
