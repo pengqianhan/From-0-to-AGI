@@ -203,7 +203,7 @@ class ChapterScene(NarratedScene):
             info = VGroup(zh("8 选 2：", 24, theme.HIGHLIGHT),
                           zh("总参数 8 份", 24, theme.PARAM),
                           zh("每个 token 只算 2 份", 24, theme.OUTPUT)).arrange(DOWN, aligned_edge=LEFT)
-            info.move_to([5.4, -1.4, 0])
+            info.move_to([5.0, -1.4, 0])
             for picks, color, name in (((1, 5), theme.INPUT, "token A"),
                                        ((3, 6), theme.GRAD, "token B")):
                 tok = VGroup(*[Rectangle(width=0.28, height=0.28, fill_color=color, fill_opacity=0.8,
@@ -521,13 +521,13 @@ class ChapterScene(NarratedScene):
             for n in names:
                 r = t5[n]
                 tbl.add(zh(f"{n}：MMLU {r['scores'][0]:.2f}  总 {r['total']}B / 激活 {r['active']}B", 20))
-            tbl.arrange(DOWN, aligned_edge=LEFT, buff=0.2).move_to([0, 0.75, 0])
+            tbl.arrange(DOWN, aligned_edge=LEFT, buff=0.2).move_to([0, 0.6, 0])
             self.play(FadeIn(tbl), run_time=self.fit(1.2))
             tq = D["touched"]["Qwen3-30B-A3B"]
             rd = VGroup(zh("解码一步读取的专家比例（Qwen3-30B-A3B）", 20, theme.MUTED),
                         mono(f"batch 1: {tq[0]:.1%}   16: {tq[1]:.1%}   64: {tq[2]:.1%}", 20,
                              theme.HIGHLIGHT)).arrange(DOWN, aligned_edge=LEFT, buff=0.2)
-            rd.move_to([0, -0.75, 0])
+            rd.move_to([0, -0.85, 0])
             self.play(FadeIn(rd), run_time=self.fit(1.0))
             key = zh("MoE 省的是算力，不是显存", 30, theme.HIGHLIGHT).move_to([0, -1.9, 0])
             self.wait(max(0.1, self.remaining() * 0.4))

@@ -103,7 +103,12 @@ def load_policy(
     model = Transformer(ModelConfig(**mcfg))
     sd = torch.load(ckpt / "model.pt", map_location="cpu", weights_only=True)
     model.load_state_dict(sd)
-    tp = tokenizer_path or meta["config"]["train"]["data"]["tokenizer"]
+    tp = Path(tokenizer_path or meta["config"]["train"]["data"]["tokenizer"])
+    if not tp.is_absolute() and not tp.exists():
+        # 配置里记的是相对训练时工作目录（通常是仓库根目录）的路径；从别的目录调用时按仓库根目录解析
+        repo_root = Path(__file__).resolve().parents[2]
+        if (repo_root / tp).exists():
+            tp = repo_root / tp
     return model.to(device), Tokenizer.load(tp)
 
 
