@@ -59,15 +59,23 @@ def rope(x, base: float = 10000.0):
 
 
 class SoftmaxAttention(nn.Module):
-    def __init__(self, dim: int, n_heads: int) -> None:
+    """conv > 0 时，q/k/v 投影之后也过一个和 LinearMixer 相同的因果短卷积（05 的回忆实验用，
+    让所有结构的"局部混合"能力相同，差别只来自全局的 token mixer）。"""
+
+    def __init__(self, dim: int, n_heads: int, conv: int = 0) -> None:
         super().__init__()
-        self.h, self.dh = n_heads, dim // n_heads
+        self.h, self.dh, self.conv_k = n_heads, dim // n_heads, conv
         self.wqkv = nn.Linear(dim, 3 * dim, bias=False)
         self.wo = nn.Linear(dim, dim, bias=False)
+        if conv > 0:
+            self.conv = nn.Conv1d(3 * dim, 3 * dim, conv, groups=3 * dim, bias=False)
 
     def forward(self, x):
         B, T, D = x.shape
-        q, k, v = self.wqkv(x).view(B, T, 3, self.h, self.dh).permute(2, 0, 3, 1, 4)
+        h = self.wqkv(x)
+        if self.conv_k > 0:
+            h = F.silu(self.conv(F.pad(h.transpose(1, 2), (self.conv_k - 1, 0)))).transpose(1, 2)
+        q, k, v = h.view(B, T, 3, self.h, self.dh).permute(2, 0, 3, 1, 4)
         o = F.scaled_dot_product_attention(rope(q), rope(k), v, is_causal=True)
         return self.wo(o.transpose(1, 2).reshape(B, T, D))
 
@@ -106,11 +114,11 @@ class LinearMixer(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, dim: int, n_heads: int, kind: str, ffn: int) -> None:
+    def __init__(self, dim: int, n_heads: int, kind: str, ffn: int, attn_conv: int = 0) -> None:
         super().__init__()
         self.n1, self.n2 = nn.RMSNorm(dim), nn.RMSNorm(dim)
         self.mix = (
-            SoftmaxAttention(dim, n_heads) if kind == "A"
+            SoftmaxAttention(dim, n_heads, attn_conv) if kind == "A"
             else LinearMixer(dim, n_heads, "linear" if kind == "L" else "gdn")
         )
         self.w_gate = nn.Linear(dim, ffn, bias=False)
@@ -124,15 +132,15 @@ class Block(nn.Module):
 
 
 class TinyLM(nn.Module):
-    """pattern 例如 "GGGA"：每个字母一层。"""
+    """pattern 例如 "GGGA"：每个字母一层。attn_conv：注意力层是否也带短卷积（默认不带）。"""
 
     def __init__(self, vocab: int, pattern: str, dim: int = 128, n_heads: int = 4,
-                 ffn: int = 384) -> None:
+                 ffn: int = 384, attn_conv: int = 0) -> None:
         super().__init__()
         self.pattern = pattern
         self.emb = nn.Embedding(vocab, dim)
         nn.init.normal_(self.emb.weight, std=0.02)
-        self.blocks = nn.ModuleList(Block(dim, n_heads, c, ffn) for c in pattern)
+        self.blocks = nn.ModuleList(Block(dim, n_heads, c, ffn, attn_conv) for c in pattern)
         self.norm = nn.RMSNorm(dim)
 
     def forward(self, ids):

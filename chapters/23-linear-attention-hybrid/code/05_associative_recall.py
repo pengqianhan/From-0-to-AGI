@@ -63,7 +63,7 @@ def train(pattern: str, steps: int = 1500, bsz: int = 64, lr: float = 3e-3, seed
           verbose: bool = True):
     path = OUT / f"recall_{pattern}_s{steps}_seed{seed}.pt"
     torch.manual_seed(seed)
-    model = lm.TinyLM(VOCAB, pattern, dim=DIM, n_heads=HEADS, ffn=2 * DIM)
+    model = lm.TinyLM(VOCAB, pattern, dim=DIM, n_heads=HEADS, ffn=2 * DIM, attn_conv=4)
     if path.exists():
         model.load_state_dict(torch.load(path, weights_only=True))
         return model.eval()

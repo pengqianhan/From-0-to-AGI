@@ -55,7 +55,7 @@ def main():
     fit = FITS["Epoch 2024 复现"]
     print("① 算力最优分配（Epoch 复现系数；网格搜索与解析解一致）")
     print(f"{'算力 C':>9} | {'N_opt':>9} {'D_opt':>9} {'token/参数':>9} | {'网格 N_opt':>9}")
-    for C in [1e19, 1e21, 2.78e21, 1e23, 1e25]:
+    for C in [1e19, 1e21, 1.65e21, 1e23, 1e25]:
         N, D = compute_optimal(C, **fit)
         Ng, _ = compute_optimal_grid(C, fit)
         print(f"{C:>9.2e} | {N / 1e9:>8.2f}B {D / 1e9:>8.1f}B {D / N:>9.1f} | {Ng / 1e9:>8.2f}B")
@@ -63,8 +63,10 @@ def main():
         N, D = compute_optimal(1e23, **f)
         print(f"  {name}：C=1e23 时最优 {D / N:.0f} token/参数")
 
-    C = 2.78e21  # 主线预训练：689.5M 参数 × 400B token（见 01_flops.py 和 05_plan_budget.py）
-    N_ours, D_ours = 689.5e6, C / (6 * 689.5e6)
+    # 主线预训练：689.5M 参数 × 400B token（见 05_plan_budget.py）。Chinchilla 用粗算口径 C = 6ND，
+    # 这里也用它（01_flops.py 里含注意力项的精确口径是 2.78e21，两者差在 4096 长序列的注意力上）
+    N_ours, D_ours = 689.5e6, 400e9
+    C = 6 * N_ours * D_ours
     N_opt, D_opt = compute_optimal(C, **fit)
     L_ours, L_opt = loss(N_ours, D_ours, **fit), loss(N_opt, D_opt, **fit)
     print(f"\n② 我们的预算（C ≈ {C:.3g}，粗算口径 6ND）：")

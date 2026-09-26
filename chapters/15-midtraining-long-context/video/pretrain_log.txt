@@ -1,4 +1,0 @@
-模型参数 1.31M（非 embedding 0.79M），每步 2048 token，共 200 步，设备 cpu，world_size=1
-step      1/200 | loss 7.6507 | lr 1.00e-04 | gnorm 0.98 | 2,293 tok/s
-step     25/200 | loss 6.3844 | lr 2.50e-03 | gnorm 0.38 | 2,920 tok/s
-step     50/200 | loss 6.3938 | lr 3.00e-03 | gnorm 1.75 | 2,581 tok/s

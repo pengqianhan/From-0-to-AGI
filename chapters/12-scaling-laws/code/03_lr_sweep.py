@@ -3,7 +3,7 @@
 "小规模实验可以预测大规模结果"有个前提：每个小模型都调好了超参。没调好的小模型会把
 scaling law 扭歪（Lourie et al. 2026, arXiv:2608.11859）。所以阶梯实验先做学习率扫描：
 
-  1. 4 个尺寸（非 embedding 参数约 6K → 190K）× 5 个学习率，每个跑同样的 token 数；
+  1. 4 个尺寸（非 embedding 参数约 1 万 → 20 万）× 5 个学习率，每个跑同样的 token 数；
   2. 每个尺寸取验证 loss 最低的学习率 η*；
   3. 拟合 η*(N) = c · N^(-k)（对数坐标下的一条直线），外推给更大的模型用（第 4 个脚本）。
 
@@ -28,6 +28,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torch import nn
 
 ROOT = Path(__file__).resolve().parents[3]
 OUT = ROOT / "out" / "ch12"
@@ -38,15 +39,15 @@ tt = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(tt)
 
 SEQ_LEN = 64
-BATCH = 16
-TOKENS_PER_STEP = SEQ_LEN * BATCH  # 1024 个字节 / 步
+BATCH = 8  # 小 batch：同样的 token 数走更多步，这个尺度上学得更快（实测）
+TOKENS_PER_STEP = SEQ_LEN * BATCH  # 512 个字节 / 步
 WARMUP = 20
 
 # 阶梯：(名字, dim, 层数)；head_dim 固定 16，SwiGLU 中间维度 ≈ 8/3·dim 取 16 的倍数
 LADDER = [("s1", 16, 2), ("s2", 32, 2), ("s3", 48, 3), ("s4", 64, 4)]
 HELD_OUT = ("s5", 96, 4)  # 比阶梯最大的再大 2.3 倍，只用来检验外推
-SWEEP_LRS = [2e-3, 4e-3, 8e-3, 1.6e-2, 3.2e-2]
-SWEEP_TOKENS = 131_072  # 128 步
+SWEEP_LRS = [2.5e-3, 5e-3, 1e-2, 2e-2, 4e-2]
+SWEEP_TOKENS = 131_072  # 256 步
 
 
 def make_config(dim: int, n_layers: int):
@@ -54,9 +55,19 @@ def make_config(dim: int, n_layers: int):
     return tt.Config(dim=dim, n_layers=n_layers, n_heads=dim // 16, ffn_dim=ffn, seq_len=SEQ_LEN)
 
 
-def non_embedding_params(dim: int, n_layers: int) -> int:
-    """scaling law 里的 N：不含 embedding（它和 lm_head 共享，查表几乎不花算力）。"""
+def make_model(dim: int, n_layers: int):
+    """第 9 章的模型，只改一处：输入 embedding 和 lm_head 不共享。
+    这个尺度上共享会让模型在"只会猜高频字节"的平台期卡很久（实测），曲线噪声大到拟合不出规律；
+    zero 的 tiny 配置也因为同样的原因不共享（configs/tiny/pretrain.toml 的注释）。"""
     model = tt.TinyTransformer(make_config(dim, n_layers))
+    model.lm_head.weight = nn.Parameter(torch.randn(model.cfg.vocab_size, dim) * 0.02)
+    return model
+
+
+def non_embedding_params(dim: int, n_layers: int) -> int:
+    """scaling law 里的 N：参与矩阵乘的参数（除了输入 embedding 查表以外的全部，含 lm_head）。
+    这样 6N 就是每 token 的训练 FLOPs（不算注意力项），和 01_flops.py 的口径一致。"""
+    model = make_model(dim, n_layers)
     return sum(p.numel() for p in model.parameters()) - model.tok_emb.weight.numel()
 
 
@@ -104,7 +115,7 @@ def train_wsd_branches(dim, n_layers, lr, budgets, seed=0, data=None):
     """
     train, val = data or load_bytes()
     torch.manual_seed(seed)
-    model = tt.TinyTransformer(make_config(dim, n_layers))
+    model = make_model(dim, n_layers)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=0.1)
     g = torch.Generator().manual_seed(seed)
     steps = {D: D // TOKENS_PER_STEP for D in budgets}

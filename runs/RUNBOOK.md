@@ -31,7 +31,7 @@ uv sync --group dev                       # torch、tokenizers、safetensors、t
 uv run python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.device_count())"
 nvidia-smi topo -m                        # 确认 8 卡 NVLink 全互联
 uv run pytest -q                          # CPU 测试必须先全绿（约 3 分钟）
-uv run python -m zero.smoke --out /tmp/smoke   # 端到端冒烟（约 7 分钟，CPU）
+uv run python -m zero.smoke --out /tmp/smoke   # 端到端冒烟（CPU 单线程：空闲时约 9 分钟，CPU 被占用时更久）
 ```
 
 - torch 需要带 CUDA 的版本（`uv pip install torch --index-url https://download.pytorch.org/whl/cu12x`，与驱动匹配）。
