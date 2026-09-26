@@ -1,0 +1,68 @@
+# tiny 数据流水线（第 13 章"极小配置演示"）：把 assets/tiny_corpus 走一遍完整的数据流水线。
+#   uv run python -m zero.data.pipeline --config configs/tiny/data.toml
+# 输出：out/tiny/data_pipeline/（每阶段的 JSONL、manifest.json、pretrain_sources.toml）
+#       out/tiny/data_pipeline/shards/（tokenizer.json + <来源>_{train,val}_*.bin）
+# 用这些分片训练 tiny 模型：把 pretrain_sources.toml 里的 [data] 贴进 configs/tiny/pretrain.toml 的副本。
+# 注意：这是 2.5MB 的玩具语料，漏斗里的数字只说明"每一步都真的在工作"，不代表真实网页数据的比例。
+
+[pipeline]
+name = "tiny"
+work_dir = "out/tiny/data_pipeline"
+seed = 0
+val_fraction = 0.05
+shard_tokens = 1_000_000
+
+[[sources]]
+name = "shakespeare"
+registry = "tiny-shakespeare"
+inputs = ["assets/tiny_corpus/shakespeare.txt"]
+format = "text"
+doc_chars = 2000
+weight = 0.45
+lang = "en"
+heuristics = "web"        # 网页规则用在剧本上会误杀一部分（台词短行多）——第 13 章正文里讨论
+
+[[sources]]
+name = "chinese_poetry"
+registry = "tiny-chinese-poetry"
+inputs = ["assets/tiny_corpus/chinese_poetry.txt"]
+format = "text"
+doc_chars = 2000
+weight = 0.45
+lang = "zh"
+heuristics = "web"
+
+[[sources]]
+name = "code"
+registry = "tiny-code"
+inputs = ["assets/tiny_corpus/code.txt"]
+format = "text"
+doc_chars = 2000
+weight = 0.10
+lang = "code"
+heuristics = "code"       # 网页规则会删掉 96% 的代码（没有停用词、行尾没有句号），代码用代码的规则
+
+[quality]                 # 覆盖 zero/data/quality.py 的默认阈值（默认值来自 Gopher / FineWeb）
+min_words = 50
+
+[dedup]
+exact = true
+near = true
+threshold = 0.8           # MinHash 估计的 Jaccard ≥ 0.8 才算近似重复
+num_perm = 128
+bands = 16                # 16 段 × 8 行：S 曲线拐点 (1/16)^(1/8) ≈ 0.71
+ngram = 5
+cross_source = true
+
+[decontam]
+n = 13
+min_tokens = 8
+# 冒烟用：主线自己的工具调用开发集（函数名、schema、问题都会被检查）
+[[decontam.eval_sets]]
+name = "tool_dev"
+path = "zero/eval/tasks/tool_dev.jsonl"
+
+[tokenizer]
+vocab_size = 2048
+pretokenize = "qwen2"     # "qwen2"（= Qwen3，zero 默认）| "qwen3.5"；主线的选择见 configs/main/data.toml
+sample_bytes = 0          # 0 = 用全部训练文本训练分词器

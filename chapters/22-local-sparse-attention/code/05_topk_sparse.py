@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import torch
@@ -22,6 +23,7 @@ _spec = importlib.util.spec_from_file_location(
     "swa_model", Path(__file__).resolve().parent / "02_swa_model.py"
 )
 m = importlib.util.module_from_spec(_spec)
+sys.modules["swa_model"] = m  # dataclass 需要能在 sys.modules 里找到所在模块
 _spec.loader.exec_module(m)
 
 

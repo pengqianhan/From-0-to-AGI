@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import torch
@@ -20,6 +21,7 @@ _spec = importlib.util.spec_from_file_location(
     "swa_model", Path(__file__).resolve().parent / "02_swa_model.py"
 )
 m = importlib.util.module_from_spec(_spec)
+sys.modules["swa_model"] = m  # dataclass 需要能在 sys.modules 里找到所在模块
 _spec.loader.exec_module(m)
 
 
@@ -37,18 +39,18 @@ def generate(model, ids: list[int], n: int, use_cache: bool, report_at=()):
             logits = model(torch.tensor([ids]))
         ids.append(int(logits[0, -1].argmax()))
         nxt_in = torch.tensor([[ids[-1]]])
-        if use_cache and len(ids) in report_at:
-            sizes[len(ids)] = cache.nbytes()
+        if use_cache and start in report_at:  # start = 已经缓存了多少个位置
+            sizes[start] = cache.nbytes()
     return ids, sizes
 
 
 def main() -> None:
     data = m.CharData()
     prompt = data.encode("ROMEO:\n")
-    report_at = (16, 64, 128, 256, 307)
+    report_at = (16, 64, 128, 256, 306)
     print(f"提示词 'ROMEO:\\n'，贪心生成 300 个字符；窗口 W = {m.W}\n")
-    print(f"{'配置':<11}{'与不用缓存逐字相同':>18}   KV cache 字节数（序列长 " +
-          " / ".join(str(t) for t in report_at) + "）")
+    print(f"{'配置':<11}{'与不用缓存逐字相同':>18}   KV cache 字节数（已缓存 " +
+          " / ".join(str(t) for t in report_at) + " 个位置）")
     texts = {}
     for variant in m.VARIANTS:
         model = m.load_or_train("lm", variant)
