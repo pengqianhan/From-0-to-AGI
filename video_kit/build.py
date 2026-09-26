@@ -135,12 +135,15 @@ def build(chapter_dir: Path, preview: bool, scene_class: str) -> Path:
     frames = out / "frames"
     frames.mkdir(exist_ok=True)
     for sid, st in log["shots"].items():
-        mid = st + timings[sid]["duration"] / 2
-        subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{mid:.2f}", "-i", str(final),
-             "-frames:v", "1", "-vf", "scale=960:-2", str(frames / f"{tag}_{sid}.png")],
-            check=True,
-        )
+        dur = timings[sid]["duration"]
+        # 中点一帧 + 结尾前一帧：很多版式问题要等一镜的元素全部出现后才看得到
+        for suffix, t in (("", st + dur / 2), ("_end", st + max(0.1, dur - 0.4))):
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{t:.2f}", "-i", str(final),
+                 "-frames:v", "1", "-vf", "scale=960:-2",
+                 str(frames / f"{tag}_{sid}{suffix}.png")],
+                check=True,
+            )
 
     report = {
         "video": str(final.relative_to(REPO)),
