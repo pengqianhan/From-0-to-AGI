@@ -94,7 +94,7 @@ def compute_data() -> dict:
     train, val = bpe_mod.load_splits()
     bpe = bpe_mod.BPE().train("\n".join(train.values()), vocab_size=1024)
     data: dict = {}
-    data["history"] = [(i, list(b), c) for i, b, c in bpe.history[:12]]
+    data["history"] = [(i, list(b), c) for i, b, c in bpe.history[:18]]
     data["merge_states"] = merge_steps(bpe, MERGE_TEXT)
     data["ratio_mine"] = {k: len(v.encode()) / len(bpe.encode(v)) for k, v in val.items()}
     prod = train_bpe(["\n".join(train.values())], vocab_size=1024 + 16)
@@ -197,7 +197,7 @@ class ChapterScene(NarratedScene):
                 VGroup(RoundedRectangle(width=0.9, height=0.9, corner_radius=0.1, color=theme.INPUT,
                                         fill_color=theme.INPUT, fill_opacity=0.15),
                        zh(c, 40)) for c in chars
-            ]).arrange(RIGHT, buff=0.55).move_to([0, 1.7, 0])
+            ]).arrange(RIGHT, buff=1.55).move_to([0, 1.7, 0])
             self.play(LaggedStart(*[FadeIn(b, shift=UP * 0.2) for b in boxes], lag_ratio=0.3),
                       run_time=self.fit(2))
             conds = VGroup()
@@ -212,8 +212,8 @@ class ChapterScene(NarratedScene):
             chain.move_to([0, -0.3, 0])
             self.play(Write(chain), run_time=self.fit(2))
             loss = MathTex(r"L=-\frac{1}{T}\sum_{t} \log p(x_t \mid x_{<t})", font_size=40,
-                           color=theme.GRAD).move_to([0, -1.75, 0])
-            note = zh("= 第 5 章的交叉熵，类别 = 词表", 24, theme.MUTED).next_to(loss, RIGHT, 0.3)
+                           color=theme.GRAD).move_to([-1.6, -1.75, 0])
+            note = zh("= 第 5 章的交叉熵\n   类别 = 词表", 24, theme.MUTED).next_to(loss, RIGHT, 0.4)
             self.wait(self.remaining() * 0.25)
             self.play(Write(loss), run_time=self.fit(1.5))
             self.play(FadeIn(note), run_time=self.fit(0.8))
@@ -360,21 +360,25 @@ class ChapterScene(NarratedScene):
                 r[0].next_to(r[1], LEFT, 0.3)
                 r[2].next_to(r[1], RIGHT, 0.3)
                 rows.add(r)
-            left = VGroup(*rows[:6]).arrange(DOWN, aligned_edge=LEFT, buff=0.16)
-            right = VGroup(*rows[6:12]).arrange(DOWN, aligned_edge=LEFT, buff=0.16)
-            left.move_to([-3.2, 0.3, 0])
-            right.move_to([2.6, 0.3, 0])
+            cols = VGroup(*[VGroup(*rows[k:k + 6]).arrange(DOWN, aligned_edge=LEFT, buff=0.1)
+                            for k in (0, 6, 12)]).arrange(RIGHT, buff=0.6, aligned_edge=UP)
+            if cols.width > 13.2:
+                cols.scale_to_fit_width(13.2)
+            cols.move_to([0, 0.75, 0])
             self.play(LaggedStart(*[FadeIn(r, shift=RIGHT * 0.2) for r in rows], lag_ratio=0.25),
                       run_time=self.fit(4))
             tags = [
                 (0, "全角标点的前两个字节", theme.HIGHLIGHT),
                 (5, "汉字的“半个字”", theme.OUTPUT),
                 (1, "代码缩进", theme.INPUT),
+                (15, "英文字母对", theme.ATTN),
             ]
             marks = VGroup()
-            for i, txt, col in tags:
+            legend_x = [-4.4, -1.0, 1.7, 4.3]
+            for (i, txt, col), lx in zip(tags, legend_x):
                 box = SurroundingRectangle(rows[i][1], color=col, buff=0.06)
-                lab = zh(txt, 20, col).next_to(rows[i][2], RIGHT, 0.25)
+                lab = VGroup(Rectangle(width=0.3, height=0.22, color=col), zh(txt, 20, col)).arrange(
+                    RIGHT, buff=0.15).move_to([lx, -1.9, 0])
                 marks.add(VGroup(box, lab))
             for m in marks:
                 self.wait(self.remaining() * 0.12)
@@ -408,7 +412,7 @@ class ChapterScene(NarratedScene):
             a_lab = zh(f"{sweep[0][1]:,}", 18, theme.FG).next_to(ax.c2p(*pts[0]), RIGHT, 0.15)
             b_lab = zh(f"{sweep[-1][1]:,}", 18, theme.FG).next_to(ax.c2p(*pts[-1]), UP, 0.2)
             drop = (sweep[-2][1] - sweep[-1][1]) / sweep[-2][1]
-            c_lab = zh(f"16K→32K 只少 {drop:.0%}", 20, theme.HIGHLIGHT).move_to(ax.c2p(12.2, 45))
+            c_lab = zh(f"16K→32K 只少 {drop:.0%}", 20, theme.HIGHLIGHT).move_to(ax.c2p(13.2, 62))
             self.play(FadeIn(a_lab), FadeIn(b_lab), run_time=self.fit(0.8))
             self.wait(self.remaining() * 0.12)
             self.play(FadeIn(c_lab), run_time=self.fit(0.8))
@@ -444,8 +448,8 @@ class ChapterScene(NarratedScene):
             heat = np.array(D["heat"], dtype=float)
             logc = np.log1p(heat) / np.log1p(heat.max())
             n = len(HEAT_CHARS)
-            cell = 0.42
-            origin = np.array([-5.3, 1.75, 0])
+            cell = 0.36
+            origin = np.array([-5.1, 1.75, 0])
             grid = VGroup()
             for i in range(n):
                 for j in range(n):
@@ -465,7 +469,7 @@ class ChapterScene(NarratedScene):
             self.play(LaggedStart(*[FadeIn(s) for s in grid], lag_ratio=0.01), run_time=self.fit(2))
             ti, hj = HEAT_CHARS.index("t"), HEAT_CHARS.index("h")
             hl = SurroundingRectangle(grid[ti * n + hj], color=theme.HIGHLIGHT, buff=0.02)
-            th = zh(f"t→h：{int(heat[ti, hj]):,} 次", 22, theme.HIGHLIGHT).move_to([-3.4, -2.35, 0])
+            th = zh(f"t→h：{int(heat[ti, hj]):,} 次", 22, theme.HIGHLIGHT).next_to(grid, DOWN, 0.3)
             self.wait(self.remaining() * 0.12)
             self.play(Create(hl), FadeIn(th), run_time=self.fit(0.8))
             formula = MathTex(r"p(b\mid a)=\frac{\mathrm{count}(a,b)}{\sum_j \mathrm{count}(a,j)}",
@@ -485,13 +489,13 @@ class ChapterScene(NarratedScene):
         # ── S09 抽样 ────────────────────────────────────────────────────
         with self.shot("S09"):
             self.play(*self.set_heading("从 bigram 抽样：只看前 1 个 token"), run_time=self.fit(0.8))
-            en_lines = D["samples"]["en"].strip().split("\n")
+            en_lines = [x for x in D["samples"]["en"].strip().split("\n") if x]
             zh_lines = [x for x in D["samples"]["zh"].strip().split("\n")][:7]
             en_t = VGroup(zh("英文 · BPE", 24, theme.MUTED),
-                          *[mono(x if x else " ", 22) for x in en_lines]).arrange(
-                DOWN, aligned_edge=LEFT, buff=0.14).move_to([-3.6, 0.4, 0]).align_to([-6.3, 0, 0], LEFT)
+                          *[mono(x, 24) for x in en_lines]).arrange(DOWN, aligned_edge=LEFT, buff=0.3)
+            en_t.move_to([-3.4, 0, 0]).align_to([0, 2.4, 0], UP)
             zh_t = VGroup(zh("中文 · 字符", 24, theme.MUTED), *[zh(x, 24) for x in zh_lines]).arrange(
-                DOWN, aligned_edge=LEFT, buff=0.12).move_to([3.3, 0.35, 0])
+                DOWN, aligned_edge=LEFT, buff=0.12).move_to([3.3, 0, 0]).align_to([0, 2.4, 0], UP)
             for g in (en_t, zh_t):
                 if g.height > 4.3:
                     g.scale_to_fit_height(4.3)
@@ -592,7 +596,12 @@ tok.pre_tokenizer = Sequence([
     ByteLevel(use_regex=False)])
 trainer = BpeTrainer(vocab_size=...,
     special_tokens=DEFAULT_SPECIAL_TOKENS)'''
-            code = code_block(src, 18).move_to([-3.4, 0.7, 0])
+            code = code_block(src, 17)
+            # code_block 左对齐时行首空白没有宽度，缩进会丢；这里按等宽字符宽度手动补回
+            cw = Text("M" * 20, font="Noto Sans Mono", font_size=17).width / 20
+            for line_m, line in zip(code, src.splitlines()):
+                line_m.shift(RIGHT * cw * (len(line) - len(line.lstrip(" "))))
+            code.move_to([-3.2, 1.25, 0]).align_to([-6.6, 0, 0], LEFT)
             self.play(FadeIn(code), run_time=self.fit(1))
             notes = [(1, "Unicode 规范化"), (3, "Qwen 同款正则，数字逐个切"), (6, "16 个特殊 token")]
             tags = VGroup()
@@ -607,7 +616,7 @@ trainer = BpeTrainer(vocab_size=...,
             r2 = VGroup(zh("zero", 20, theme.OUTPUT), *[zh(f"{rz[k]:.2f}", 20, theme.OUTPUT)
                                                         for k in ["en", "zh", "code"]])
             table = VGroup(*head, *r1, *r2).arrange_in_grid(rows=3, cols=4, buff=(0.45, 0.2))
-            table.move_to([0, -1.25, 0])
+            table.move_to([3.6, -1.4, 0])
             ttl = zh("同样 768 次合并，验证集上的压缩率", 20, theme.FG).next_to(table, UP, 0.15)
             self.wait(self.remaining() * 0.2)
             self.play(FadeIn(ttl), FadeIn(table), run_time=self.fit(1))
@@ -629,7 +638,7 @@ trainer = BpeTrainer(vocab_size=...,
             ]).arrange(RIGHT, buff=0.18).move_to([0, 0.2, 0])
             self.play(FadeIn(boxes), run_time=self.fit(1))
             last = boxes[-1]
-            one = CurvedArrow(last.get_top(), boxes[-2].get_top(), angle=-1.2, color=theme.PARAM)
+            one = CurvedArrow(last.get_top(), boxes[-2].get_top(), angle=1.2, color=theme.PARAM)
             one_l = zh("bigram", 22, theme.PARAM).next_to(one, UP, 0.1)
             self.play(Create(one), FadeIn(one_l), run_time=self.fit(1))
             summary = VGroup(
@@ -640,8 +649,9 @@ trainer = BpeTrainer(vocab_size=...,
             self.play(FadeIn(summary), run_time=self.fit(1))
             self.wait(self.remaining() * 0.35)
             many = VGroup(*[
-                CurvedArrow(last.get_bottom(), boxes[i].get_bottom(), angle=1.0, color=theme.ATTN,
-                            stroke_width=2) for i in range(len(s) - 1)
+                CurvedArrow(last.get_bottom() + DOWN * 0.05, boxes[i].get_bottom() + DOWN * 0.05,
+                            angle=-1.2, color=theme.ATTN, stroke_width=2, tip_length=0.15)
+                for i in range(len(s) - 1)
             ])
             self.play(FadeOut(one), FadeOut(one_l), *self.set_heading("下一章：注意力 —— 看前面所有 token"),
                       LaggedStart(*[Create(a) for a in many], lag_ratio=0.1), run_time=self.fit(2))

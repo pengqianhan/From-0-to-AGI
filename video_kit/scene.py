@@ -168,15 +168,23 @@ MONO_FONT = "Noto Sans Mono"
 
 def code_block(source: str, size: float = 22, color: str = theme.FG,
                line_buff: float = 0.18) -> VGroup:
-    """等宽字体的代码块，保留缩进（Manim 的 Text 会吞掉行首空格，这里换成不间断空格）。
+    """等宽字体的代码块，保留缩进。
 
-    返回每行一个 Text 的 VGroup，左对齐，方便逐行高亮：code_block(src)[2] 是第 3 行。
+    Manim 的 Text 会吞掉行首空格，所以这里每行只渲染去掉缩进后的文字，
+    再按"缩进字符数 × 等宽字符宽度"把这一行向右平移。
+    返回每行一个 Text 的 VGroup，方便逐行高亮：code_block(src)[2] 是第 3 行。
     """
     lines = source.strip("\n").splitlines()
+    char_w = Text("M" * 10, font=MONO_FONT, font_size=size).width / 10
     group = VGroup()
+    indents = []
     for line in lines:
-        indent = len(line) - len(line.lstrip(" "))
-        shown = " " * indent + line.lstrip(" ") if line.strip() else " "
-        group.add(Text(shown, font=MONO_FONT, font_size=size, color=color))
+        stripped = line.lstrip(" ")
+        indents.append(len(line) - len(stripped))
+        group.add(Text(stripped if stripped else " ", font=MONO_FONT, font_size=size,
+                       color=color))
     group.arrange(DOWN, aligned_edge=LEFT, buff=line_buff)
+    left = group.get_left()[0]
+    for m, ind in zip(group, indents):
+        m.shift(RIGHT * (left + ind * char_w - m.get_left()[0]))
     return group
