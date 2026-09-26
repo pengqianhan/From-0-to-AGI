@@ -132,6 +132,12 @@ class ChapterScene(NarratedScene):
         for i in range(1, 15):
             getattr(self, f"s{i:02d}")()
 
+    def hold(self, reserve: float = 0.5) -> None:
+        """等到本镜只剩 reserve 秒（剩余不足时不等）。"""
+        t = self.remaining() - reserve
+        if t > 0.05:
+            self.wait(t)
+
     def clear_all(self, *keep) -> None:
         objs = [m for m in self.mobjects if m is not getattr(self, "_heading", None)
                 and m not in keep]
@@ -145,7 +151,7 @@ class ChapterScene(NarratedScene):
             sub = zh("参数翻几十倍，每个 token 的算力不变", 30, theme.HIGHLIGHT).next_to(card, DOWN, 0.6)
             self.play(FadeIn(card, shift=UP * 0.3), run_time=self.fit(1.5))
             self.play(Write(sub), run_time=self.fit(1.5))
-            self.wait(self.remaining() - 0.6)
+            self.hold(0.6)
             self.play(FadeOut(card), FadeOut(sub), run_time=0.5)
 
     # ── S02 FFN 是大头 ───────────────────────────────────────────────────
@@ -170,7 +176,7 @@ class ChapterScene(NarratedScene):
                           run_time=self.fit(1.2))
                 self.play(FadeIn(r[3]), FadeIn(r[4]), run_time=self.fit(0.5))
             self.play(FadeIn(note), run_time=self.fit(0.6))
-            self.wait(self.remaining() - 0.5)
+            self.hold(0.5)
             self.clear_all()
 
     # ── S03 拆成很多专家 ─────────────────────────────────────────────────
@@ -217,7 +223,7 @@ class ChapterScene(NarratedScene):
                           *[experts[p][0].animate.set_fill(theme.PARAM, 0.15) for p in picks],
                           run_time=self.fit(0.5))
             self.play(FadeIn(info), run_time=self.fit(0.8))
-            self.wait(self.remaining() - 0.5)
+            self.hold(0.5)
             self.clear_all()
 
     # ── S04 路由公式 ─────────────────────────────────────────────────────
@@ -242,7 +248,7 @@ class ChapterScene(NarratedScene):
             who = zh("sigmoid：DeepSeek、GLM、Kimi　　softmax：Qwen、Mixtral、gpt-oss", 22,
                      theme.MUTED).move_to([0, -2.3, 0])
             self.play(FadeIn(who), run_time=self.fit(0.8))
-            self.wait(self.remaining() - 0.5)
+            self.hold(0.5)
             self.clear_all()
 
     # ── S05 真实模型 ─────────────────────────────────────────────────────
@@ -273,7 +279,7 @@ class ChapterScene(NarratedScene):
             self.play(LaggedStart(*[FadeIn(g) for g in group], lag_ratio=0.3),
                       run_time=self.fit(3.5))
             self.play(FadeIn(legend), run_time=self.fit(0.6))
-            self.wait(self.remaining() - 0.5)
+            self.hold(0.5)
             self.clear_all()
 
     # ── S06 坍缩 ─────────────────────────────────────────────────────────
@@ -300,7 +306,7 @@ class ChapterScene(NarratedScene):
                 self.play(Transform(h, nh), Transform(step_lab, ns), Transform(ratio, nr),
                           run_time=self.fit(1.5))
                 self.wait(min(1.0, self.remaining() * 0.2))
-            self.wait(self.remaining() - 0.5)
+            self.hold(0.5)
             self.clear_all()
 
     # ── S07 辅助损失 ─────────────────────────────────────────────────────
@@ -325,7 +331,7 @@ class ChapterScene(NarratedScene):
             warn = zh("α 太小管不住，太大伤害模型质量", 24, theme.GRAD).move_to([0, -1.9, 0])
             self.wait(max(0.1, self.remaining() * 0.4))
             self.play(FadeIn(warn), run_time=self.fit(0.6))
-            self.wait(self.remaining() - 0.5)
+            self.hold(0.5)
             self.clear_all()
 
     # ── S08 偏置法 ───────────────────────────────────────────────────────
@@ -354,7 +360,7 @@ class ChapterScene(NarratedScene):
                                              theme.HIGHLIGHT).move_to(rt)),
                           run_time=self.fit(1.5))
                 self.wait(min(1.5, self.remaining() * 0.3))
-            self.wait(self.remaining() - 0.5)
+            self.hold(0.5)
             self.clear_all()
 
     # ── S09 容量因子 ─────────────────────────────────────────────────────
@@ -394,7 +400,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(left), FadeIn(tl), FadeIn(cap), run_time=self.fit(1.2))
             self.wait(max(0.1, self.remaining() * 0.35))
             self.play(FadeIn(right), FadeIn(tr), run_time=self.fit(1.2))
-            self.wait(self.remaining() - 0.5)
+            self.hold(0.5)
             self.clear_all()
 
     # ── S10 小实验：负载 ─────────────────────────────────────────────────
@@ -417,7 +423,7 @@ class ChapterScene(NarratedScene):
             for g in groups:
                 self.play(FadeIn(g), run_time=self.fit(1.0))
                 self.wait(min(1.5, self.remaining() * 0.2))
-            self.wait(self.remaining() - 0.5)
+            self.hold(0.5)
             self.clear_all()
 
     # ── S11 小实验：和稠密比 ─────────────────────────────────────────────
@@ -450,7 +456,7 @@ class ChapterScene(NarratedScene):
             axis = zh(f"横轴从 {lo:.2f} 起（放大差异）；白线 = 两个种子的范围", 18,
                       theme.MUTED).move_to([1.5, -2.35, 0])
             self.play(FadeIn(axis), run_time=self.fit(0.6))
-            self.wait(self.remaining() - 0.5)
+            self.hold(0.5)
             self.clear_all()
 
     # ── S12 细粒度 + 共享 ────────────────────────────────────────────────
@@ -491,7 +497,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() * 0.3))
             self.play(FadeIn(yes), run_time=self.fit(0.8))
             self.play(FadeIn(no), run_time=self.fit(0.8))
-            self.wait(self.remaining() - 0.5)
+            self.hold(0.5)
             self.clear_all()
 
     # ── S13 为什么小模型少用 ─────────────────────────────────────────────
@@ -523,7 +529,7 @@ class ChapterScene(NarratedScene):
             key = zh("MoE 省的是算力，不是显存", 30, theme.HIGHLIGHT).move_to([0, -1.9, 0])
             self.wait(max(0.1, self.remaining() * 0.4))
             self.play(Write(key), run_time=self.fit(1.0))
-            self.wait(self.remaining() - 0.5)
+            self.hold(0.5)
             self.clear_all()
 
     # ── S14 谁在用 + 生产级 ──────────────────────────────────────────────
@@ -551,4 +557,4 @@ class ChapterScene(NarratedScene):
             box = SurroundingRectangle(nxt, color=theme.HIGHLIGHT, buff=0.15)
             self.wait(max(0.1, self.remaining() - 2.0))
             self.play(FadeIn(nxt), Create(box), run_time=self.fit(1.0))
-            self.wait(self.remaining() - 0.3)
+            self.hold(0.3)

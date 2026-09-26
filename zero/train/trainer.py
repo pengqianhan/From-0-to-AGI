@@ -224,12 +224,33 @@ class Trainer:
             self.cfg.train.eval_batches,
             max(val.total_chunks // (val.batch_size * self.info.world_size), 1),
         )
-        for _ in range(n):
-            x, y = val.next_batch()
+        batches = [val.next_batch() for _ in range(n)]
+        for x, y in batches:
             losses.append(self._forward_loss(x, y).float())
         self.model.train()
         loss = all_reduce_mean(torch.stack(losses).mean())
+        self.last_val_bpb = self._val_bpb(batches)
         return float(loss.item())
+
+    def _val_bpb(self, batches) -> float | None:
+        """验证集 bits-per-byte（第 7、13 章）：与分词器无关的指标，便于比较不同词表。
+
+        只有预训练格式的数据、并且配置里给了 tokenizer 路径时才计算；否则返回 None。
+        """
+        d = self.cfg.train.data
+        if d.format == "sft" or not d.tokenizer:
+            return None
+        if getattr(self, "_token_bytes", None) is None:
+            from ..data.bpb import token_byte_lengths
+            from ..tokenizer import Tokenizer
+
+            self._token_bytes = token_byte_lengths(Tokenizer.load(d.tokenizer), self.device)
+        from ..data.bpb import bpb_stats
+
+        stats = bpb_stats(
+            self.model, batches, self._token_bytes, autocast=getattr(self, "autocast", None)
+        )
+        return stats.bpb if stats.bytes > 0 else None
 
     def save(self) -> Path:
         tc = self.cfg.train
@@ -321,6 +342,8 @@ class Trainer:
                 record.update(extra)
                 if do_eval:
                     record["val_loss"] = self.evaluate()
+                    if getattr(self, "last_val_bpb", None) is not None:
+                        record["val_bpb"] = self.last_val_bpb
                 if not math.isfinite(loss_val):
                     self.log(f"step {self.step}: loss 变成 {loss_val}，停止训练")
                     raise FloatingPointError(f"loss 发散：{loss_val}")

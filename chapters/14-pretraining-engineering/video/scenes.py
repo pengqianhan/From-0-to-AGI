@@ -549,8 +549,9 @@ class ChapterScene(NarratedScene):
                 self.play(*anims, run_time=self.fit(0.9))
                 cur = hl
             self.play(FadeIn(state[4]), run_time=self.fit(0.6))
-            diff = zh(f"CPU 上对拍：与朴素注意力最大差 {D['tiled_diff']:.1e}（精确，不是近似）", 22,
-                      theme.OUTPUT).move_to([0, -2.35, 0])
+            diff = VGroup(zh(f"CPU 上对拍：与朴素注意力最大差 {D['tiled_diff']:.1e}", 20, theme.OUTPUT),
+                          zh("精确注意力，不是近似", 20, theme.OUTPUT)).arrange(DOWN, aligned_edge=LEFT, buff=0.15)
+            diff.move_to([2.9, -1.3, 0]).align_to(state, LEFT)
             self.wait(self.remaining() * 0.3)
             self.play(FadeIn(diff), run_time=self.fit(0.8))
             self.clear_all(grid, ql, kl, skl, state, diff)
@@ -604,7 +605,7 @@ class ChapterScene(NarratedScene):
         with self.shot("S11"):
             self.play(*self.set_heading("环形 all-reduce"), run_time=self.fit(0.8))
             n = 4
-            center, rad = [-2.2, 0.1, 0], 1.9
+            center, rad = [-3.2, 0.1, 0], 1.9
             cols = [theme.INPUT, theme.PARAM, theme.ATTN, theme.OUTPUT]
             nodes = VGroup()
             chunks = []
@@ -625,7 +626,7 @@ class ChapterScene(NarratedScene):
                 ring.add(CurvedArrow(a + (b - a) * 0.28, a + (b - a) * 0.72, angle=-0.4,
                                      color=theme.MUTED, stroke_width=3))
             self.play(FadeIn(nodes), Create(ring), run_time=self.fit(1.5))
-            phase = zh("① reduce-scatter：N−1 轮，每轮传一块、累加", 20, theme.FG).move_to([3.6, 1.8, 0]).align_to([1.0, 0, 0], LEFT)
+            phase = zh("① reduce-scatter：N−1 轮，每轮传一块、累加", 18, theme.FG).move_to([3.6, 1.8, 0]).align_to([0.0, 0, 0], LEFT)
             self.play(FadeIn(phase), run_time=self.fit(0.6))
             per = max(0.5, (self.remaining() - 6) / 6)
             # reduce-scatter：第 r 轮，卡 i 把第 (i−r) 块发给右邻居，右邻居这一块变深
@@ -637,7 +638,7 @@ class ChapterScene(NarratedScene):
                     anims.append(chunks[dst][c].animate.set_fill(opacity=min(1.0, 0.35 + 0.22 * (r + 1))))
                 self.play(*[a.animate.set_color(theme.HIGHLIGHT) for a in ring], *anims, run_time=self.fit(per * 0.7))
                 self.play(*[a.animate.set_color(theme.MUTED) for a in ring], run_time=self.fit(per * 0.3))
-            phase2 = zh("② all-gather：再 N−1 轮，把完整的块传一圈", 20, theme.FG).move_to([3.6, 1.1, 0]).align_to([1.0, 0, 0], LEFT)
+            phase2 = zh("② all-gather：再 N−1 轮，把完整的块传一圈", 18, theme.FG).move_to([3.6, 1.1, 0]).align_to([0.0, 0, 0], LEFT)
             self.play(FadeIn(phase2), run_time=self.fit(0.6))
             for r in range(n - 1):
                 self.play(*[chunks[i][k].animate.set_fill(opacity=1.0) for i in range(n) for k in range(n)
@@ -646,9 +647,9 @@ class ChapterScene(NarratedScene):
                 self.play(*[a.animate.set_color(theme.MUTED) for a in ring], run_time=self.fit(per * 0.3))
             res = VGroup(
                 zh("每卡发送 = 2(N−1)/N × 自己的梯度量", 22, theme.HIGHLIGHT),
-                zh(f"4 卡模拟：每卡 1,000,000 个 → 发出 {D['ring_send']} 个", 20, theme.FG),
+                zh(f"4 卡模拟：每卡 1,000,000 个 → 发出 {D['ring_send']} 个", 18, theme.FG),
                 zh("几乎与卡数无关", 20, theme.FG),
-            ).arrange(DOWN, aligned_edge=LEFT, buff=0.2).move_to([3.6, -0.6, 0]).align_to([1.0, 0, 0], LEFT)
+            ).arrange(DOWN, aligned_edge=LEFT, buff=0.2).move_to([3.6, -0.6, 0]).align_to([0.0, 0, 0], LEFT)
             self.play(FadeIn(res), run_time=self.fit(0.8))
             self.clear_all(nodes, ring, phase, phase2, res)
 

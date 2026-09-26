@@ -60,6 +60,7 @@ VARIANTS = {
 SEEDS = (0, 1)
 STEPS = 800
 LOG_EVERY = 50
+SHOW_LAYER = 1  # 打印和视频里展示的层
 
 
 def make_ffn(v: dict, dim: int) -> nn.Module:
@@ -221,10 +222,17 @@ if __name__ == "__main__":
               f"   {s['mean']:.3f} [{vals}]      {load:>12}              {dead}")
     spread = max(max(s["vals"]) - min(s["vals"]) for s in summarize(rows))
     print(f"  同一方案换种子，验证 loss 最多相差 {spread:.3f}；差距小于这个量级时不能当真")
-    print("\n  第 0 层的专家负载占比随训练变化（种子 0；每行一个记录点）：")
+    print(f"\n  各层负载的「最大/平均」：训练开始（step 0）→ 结束（step {STEPS}），种子 0")
+    for name in ("MoE-无均衡", "MoE-辅助损失", "MoE-无辅助损失"):
+        r = next(r for r in rows if r["name"] == name and r["seed"] == 0)
+        pairs = "  ".join(f"第{i}层 {imbalance(a):.2f}→{imbalance(b):.2f}"
+                          for i, (a, b) in enumerate(zip(r["loads"][0], r["loads"][-1])))
+        print(f"  {name:14}{pairs}")
+    print(f"\n  第 {SHOW_LAYER} 层（从 0 数）的专家负载占比随训练变化（种子 0；均匀是 0.125）：")
     for name in ("MoE-无均衡", "MoE-辅助损失", "MoE-无辅助损失"):
         r = next(r for r in rows if r["name"] == name and r["seed"] == 0)
         print(f"  {name}")
         for i in (0, 2, 6, len(r["loads"]) - 1):
-            frac = " ".join(f"{v:.2f}" for v in r["loads"][i][0])
-            print(f"    step {i * LOG_EVERY:4d}: [{frac}]  最大/平均 {imbalance(r['loads'][i][0]):.2f}")
+            frac = " ".join(f"{v:.2f}" for v in r["loads"][i][SHOW_LAYER])
+            print(f"    step {i * LOG_EVERY:4d}: [{frac}]  最大/平均 "
+                  f"{imbalance(r['loads'][i][SHOW_LAYER]):.2f}")
