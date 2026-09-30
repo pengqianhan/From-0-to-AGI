@@ -294,6 +294,44 @@ bits-per-byte 就是第 7 章的指标：损失除以 ln 2（这里 1 字符 = 1
 
 ---
 
+## GPU 实测（单张 RTX 3090）
+
+> 上面正文里的数字都来自 CPU 运行。本节换到一张 NVIDIA GeForce RTX 3090（24 GB 显存，Ampere 架构；规格表：BF16 张量核稠密峰值约 71 TFLOPS，FP32 约 35.6 TFLOPS，显存带宽约 936 GB/s）上实测，环境：PyTorch 2.11.0+cu128、CUDA 12.8，2026 年 10 月。这张卡的功耗上限被服务器设成了 240 W（出厂默认 350 W），持续满载时会降频，所以算力、带宽的绝对值比满功耗的 3090 偏低，看相对关系更可靠。没有 GPU 可以跳过本节。
+
+运行：
+
+```bash
+uv run python chapters/08-attention/code/06_gpu_sdpa_backends.py
+```
+
+形状取主线模型的注意力：batch 1、16 个查询头、head_dim 128、BF16、因果 mask。"手写"就是第 5 节那个 `attention` 函数，原样搬到 GPU 上；另外三列是 `F.scaled_dot_product_attention` 用 `sdpa_kernel` 分别锁定 math、efficient、flash 三个后端。耗时是 CUDA event 计时的中位数（毫秒）：
+
+| T | 手写 `attention` | SDPA math | SDPA efficient | SDPA flash |
+|---:|---:|---:|---:|---:|
+| 512 | 0.22 | 0.50 | 0.09 | 0.08 |
+| 1K | 0.59 | 1.59 | 0.23 | 0.18 |
+| 2K | 2.56 | 6.74 | 0.70 | 0.42 |
+| 4K | 11.06 | 28.19 | 1.73 | 1.36 |
+| 8K | 44.36 | 110.76 | 6.60 | 4.96 |
+| 16K | 170.74 | 显存不够 | 29.21 | 23.50 |
+| 32K | 显存不够 | 显存不够 | 119.55 | 102.95 |
+
+同一次运行的峰值额外显存（MiB，调用过程中比调用前多占的最高值，不含 q、k、v 本身）。第二列是 16 个头的 T × T 分数矩阵按 BF16 存有多大，作为参照：
+
+| T | T × T 分数矩阵 | 手写 `attention` | SDPA math | SDPA efficient | SDPA flash |
+|---:|---:|---:|---:|---:|---:|
+| 512 | 8 | 18 | 53 | 2 | 2 |
+| 1K | 32 | 69 | 180 | 4 | 4 |
+| 2K | 128 | 268 | 656 | 8 | 8 |
+| 4K | 512 | 1,056 | 2,496 | 16 | 16 |
+| 8K | 2,048 | 4,192 | 9,728 | 32 | 33 |
+| 16K | 8,192 | 16,704 | 显存不够 | 64 | 65 |
+| 32K | 32,768 | 显存不够 | 显存不够 | 128 | 130 |
+
+脚本最后换成 GQA 的形状（16 个查询头共享 8 组 K/V，T = 4096），打开 `enable_gqa=True`：flash 能跑，和"先把 K/V 复制成 16 份再算"的结果最大差 7.8e-03（BF16 舍入量级），额外显存 16 MiB，先复制 K/V 要 48 MiB；efficient 不能跑（`No available kernel`，PyTorch 给的原因是它要求 q、k、v 的头数相同）；math 能跑。不指定后端时，MHA 和 GQA 默认选的都是 flash。
+
+第二张表就是引导问题 2 里那个 `T × T` 的实物。手写版多占的显存几乎正好是分数矩阵的两倍（`QKᵀ/√d` 和 softmax 的结果各存一份），T 翻一倍它就涨 4 倍：16K 时 16.3 GiB，照这个比例 32K 要 64 GiB，24 GB 的卡放不下；efficient 和 flash 只多占"输出"那么一点（16K 时 64 MiB），随 T 线性增长，因为它们分块算，从不把 T × T 的矩阵写进显存。但 FlashAttention 并没有少算：T 翻一倍，flash 的耗时照样涨约 4 倍，计算量还是 T²；它在 16K 比手写版快 7 倍多（23.5 ms 对 170.7 ms），省下的是把 T × T 矩阵写进显存再读出来的来回（原理在第 14 章）。出乎意料的是 SDPA 的 math 后端比我们手写的还慢、还费显存（4K 时 28 ms、2.4 GiB，手写 11 ms、1.0 GiB）：它先把 BF16 输入转成 float32 再算，换来的是精度（脚本开头的对拍里，它和 flash 与 float32 参考的最大差都是 7.3e-03，手写的 BF16 版是 1.6e-02）。下面表格里"SDPA 在 CUDA 上会自动选用 FlashAttention-2"这一条，在这张卡、BF16 下成立，GQA 也一样走 flash，不用真的复制 K/V。
+
 ## 从极简到生产级
 
 主线模型的注意力在 [`zero/model.py`](../../zero/model.py) 的 `Attention` 类里。骨架和本章的 `MultiHeadAttention` 一模一样：三个投影 `wq`、`wk`、`wv`，缩放点积，因果 mask，多头，输出投影 `wo`，参数名都相同。`Attention.forward` 的核心（省略了 transpose，几行稍作合并）：

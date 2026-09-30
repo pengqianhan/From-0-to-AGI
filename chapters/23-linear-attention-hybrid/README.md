@@ -297,6 +297,40 @@ KV cache 只跟着那 6 层全注意力走；另外 18 层 Gated DeltaNet 的状
 
 ---
 
+## GPU 实测（单张 RTX 3090）
+
+> 上面正文里的数字都来自 CPU 运行。本节换到一张 NVIDIA GeForce RTX 3090（24 GB 显存，Ampere 架构；规格表：BF16 张量核稠密峰值约 71 TFLOPS，FP32 约 35.6 TFLOPS，显存带宽约 936 GB/s）上实测，环境：PyTorch 2.11.0+cu128、CUDA 12.8，2026 年 10 月。这张卡的功耗上限被服务器设成了 240 W（出厂默认 350 W），持续满载时会降频，所以算力、带宽的绝对值比满功耗的 3090 偏低，看相对关系更可靠。没有 GPU 可以跳过本节。
+
+运行：
+
+```bash
+uv run python chapters/23-linear-attention-hybrid/code/06_gpu_linear_vs_softmax.py
+```
+
+形状取 Qwen3.5-0.8B 的 Gated DeltaNet 层：batch 1、16 个头、d_k = d_v = 128；softmax 注意力也用 16 × 128。线性注意力这边原封不动地调用本章代码——04 的 `linear_chunked`、03 的 `gated_delta_chunked` 和 `gated_delta_recurrent`，只是放进 `with torch.device("cuda")` 里，让函数内部新建的张量也落在 GPU 上（纯 PyTorch、FP32、块长 64，Python 逐块循环）；softmax 注意力用 PyTorch 自带的 FlashAttention kernel（BF16）。先确认 GPU 上数学没变：T = 1,024 时 Gated DeltaNet 的分块形式与递推形式最大输出差 6.0e-07，最终状态差 4.8e-07。
+
+整段处理 T 个 token（训练 / prefill；毫秒，取中位数；括号里是输入之外额外占的峰值显存）：
+
+| 序列长 T | softmax（FlashAttention） | 线性注意力·分块 | Gated DeltaNet·分块 | Gated DeltaNet·递推 |
+|---:|---:|---:|---:|---:|
+| 1,024 | 0.2（4 MiB） | 2.9（17 MiB） | 10.7（19 MiB） | 198.8 |
+| 4,096 | 1.3（16 MiB） | 11.2（65 MiB） | 43.1（67 MiB） | 813.5 |
+| 16,384 | 21.9（65 MiB） | 48.8（257 MiB） | 193.5（259 MiB） | — |
+| 65,536 | 460.1（260 MiB） | 180.7（1,025 MiB） | 757.5（1,027 MiB） | — |
+
+（逐 token 递推太慢，只测了前两行。）
+
+decode 一步：已有 T 个 token 的上下文，再来 1 个。Gated DeltaNet 这边先用分块形式把 T 个 token 真的压成状态，再从这个状态递推一步（毫秒，50 次取中位数）：
+
+| 上下文 T | softmax 的 KV cache | softmax 一步 | Gated DeltaNet 的状态 | Gated DeltaNet 一步 |
+|---:|---:|---:|---:|---:|
+| 1,024 | 8 MiB | 0.053 | (1, 16, 128, 128)，1 MiB | 0.259 |
+| 16,384 | 128 MiB | 0.217 | (1, 16, 128, 128)，1 MiB | 0.245 |
+| 65,536 | 512 MiB | 0.705 | (1, 16, 128, 128)，1 MiB | 0.242 |
+| 262,144 | 2,048 MiB | 3.408 | (1, 16, 128, 128)，1 MiB | 0.306 |
+
+第二张表是第 1、2 节那两张表在 GPU 上的样子：softmax 注意力的 KV cache 跟着上下文涨到 2 GiB，每一步都要整块读一遍，耗时从 0.053 ms 涨到 3.4 ms；Gated DeltaNet 的状态从头到尾是同一个 1 MiB 的 (1, 16, 128, 128)，一步 0.24–0.31 ms，和上下文多长无关。1.6 万个 token 时两者还差不多（0.217 对 0.245 ms），6.5 万时 softmax 这一步已经是它的 2.9 倍，26 万时是 11 倍。第一张表印证了第 3 节"训练和 prefill 用分块形式"：T = 4,096 时逐 token 递推要 814 ms，分块只要 43 ms，差了约 19 倍，比 CPU 上（第 3 节的 7 倍）更悬殊；分块形式的耗时随 T 线性涨，FlashAttention 按 T² 涨（16K → 64K 涨了 21 倍），到 T = 65,536 时朴素线性注意力的分块形式（181 ms）已经比 FlashAttention（460 ms）快。出乎意料的是短序列上差得这么远——T = 1,024 时本章的 Gated DeltaNet 分块形式比 FlashAttention 慢几十倍（10.7 对 0.2 ms），decode 一步的耗时也是 1K 上下文 softmax 的 5 倍：时间几乎全花在 Python 循环的固定开销上（分块形式每块约 0.7 ms、朴素线性每块约 0.18 ms，不随 T 变；每块十几个小 kernel，Gated DeltaNet 还有一次三角求解），GPU 本身没忙起来。这正是生产里要用 flash-linear-attention 的 Triton kernel 把整个循环融合成一个 kernel 的原因（本机没装 fla，没有对比）。
+
 ## 从极简到生产级
 
 生产级实现在 `zero/arch/linear_attention.py`（第五部分的实验模块，**不用于主线模型**）。它的结构和参数名与 Hugging Face transformers 的 Qwen3.5 实现（`transformers/models/qwen3_5/modeling_qwen3_5.py` 的 `Qwen3_5GatedDeltaNet`）一致，可以直接搬权重。
