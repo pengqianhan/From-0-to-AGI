@@ -181,3 +181,34 @@ def test_bfcl_adapter_without_package(tmp_path: Path) -> None:
     )
     got = bfcl.collect_scores(tmp_path / "score", "zero-FC")
     assert got == {"data_overall": {"Rank": "1", "Model": "zero-FC", "Overall Acc": "12.5"}}
+
+
+def test_stratified_single_stratum_matches_paired():
+    import numpy as np
+
+    from zero.eval.bootstrap import paired_bootstrap, stratified_paired_bootstrap
+
+    rng = np.random.default_rng(1)
+    a = rng.integers(0, 2, 50).astype(float)
+    b = rng.integers(0, 2, 50).astype(float)
+    r1 = paired_bootstrap(a, b, n_boot=2000, seed=3, chunk=2000)
+    r2 = stratified_paired_bootstrap({"s": a}, {"s": b}, {"s": 1.0}, n_boot=2000, seed=3)
+    assert abs(r1.ci_low - r2.ci_low) < 1e-12 and abs(r1.ci_high - r2.ci_high) < 1e-12
+    assert r1.decision == r2.decision
+
+
+def test_stratified_weighted_means():
+    from zero.eval.bootstrap import stratified_paired_bootstrap
+
+    a = {"x": [1.0, 1.0], "y": [0.0, 0.0]}
+    b = {"x": [0.0, 0.0], "y": [0.0, 0.0]}
+    r = stratified_paired_bootstrap(a, b, {"x": 1.0, "y": 3.0}, n_boot=200, seed=0)
+    assert abs(r.mean_a - 0.25) < 1e-12 and abs(r.diff - 0.25) < 1e-12
+
+
+def test_overall_verdict_requires_every_comparison():
+    from zero.eval.bootstrap import overall_verdict
+
+    assert overall_verdict({("q", "e1"): "超过", ("q", "e2"): "超过"}) == "超过"
+    assert overall_verdict({("q", "e1"): "超过", ("q", "e2"): "持平"}) == "持平"
+    assert overall_verdict({("q", "e1"): "超过", ("m", "e1"): "落后"}) == "落后"

@@ -96,3 +96,73 @@ def compare_to_opponent(
         raise ValueError("至少要有一种对手模式")
     best = max(opponent_modes, key=lambda k: float(np.mean(opponent_modes[k])))
     return best, paired_bootstrap(ours, opponent_modes[best], n_boot=n_boot, seed=seed)
+
+
+def _weighted(means: Mapping[str, float], weights: Mapping[str, float]) -> float:
+    total = sum(weights.values())
+    return sum(weights[k] * means[k] for k in weights) / total
+
+
+def stratified_paired_bootstrap(
+    a_by: Mapping[str, Sequence[float]],
+    b_by: Mapping[str, Sequence[float]],
+    weights: Mapping[str, float],
+    n_boot: int = 10_000,
+    confidence: float = 0.95,
+    seed: int = 0,
+) -> BootstrapResult:
+    """分层配对 bootstrap：总分 = 各类别平均分的加权和（如 BFCL 按类别加权，见 eval/PREREGISTRATION.md 的 E1）。
+
+    每个类别内部独立地有放回重抽（两个模型用同一组下标），再按权重合成总分之差。
+    只有一个类别、权重为 1 时，与 paired_bootstrap 完全相同。
+    """
+    keys = list(weights)
+    if set(keys) != set(a_by) or set(keys) != set(b_by):
+        raise ValueError(f"类别不一致：权重 {sorted(keys)}，a {sorted(a_by)}，b {sorted(b_by)}")
+    total_w = float(sum(weights.values()))
+    if total_w <= 0:
+        raise ValueError("权重之和必须为正")
+    rng = np.random.default_rng(seed)
+    stats = np.zeros(n_boot)
+    n_total = 0
+    for k in keys:
+        x = np.asarray(a_by[k], dtype=np.float64)
+        y = np.asarray(b_by[k], dtype=np.float64)
+        if x.shape != y.shape or x.ndim != 1 or len(x) == 0:
+            raise ValueError(f"类别 {k}：需要等长、非空的一维得分")
+        d = x - y
+        n = len(d)
+        n_total += n
+        idx = rng.integers(0, n, size=(n_boot, n))
+        stats += weights[k] / total_w * d[idx].mean(axis=1)
+    alpha = 1.0 - confidence
+    lo, hi = np.quantile(stats, [alpha / 2, 1 - alpha / 2])
+    mean_a = _weighted({k: float(np.mean(a_by[k])) for k in keys}, weights)
+    mean_b = _weighted({k: float(np.mean(b_by[k])) for k in keys}, weights)
+    return BootstrapResult(
+        mean_a=mean_a,
+        mean_b=mean_b,
+        diff=mean_a - mean_b,
+        ci_low=float(lo),
+        ci_high=float(hi),
+        n=n_total,
+        n_boot=n_boot,
+        confidence=confidence,
+        decision=decide(float(lo), float(hi)),
+    )
+
+
+def overall_verdict(decisions: Mapping[tuple[str, str], str]) -> str:
+    """总判定（交-并检验）：键是 (对手, 终点)，值是该组合的"超过 / 持平 / 落后"。
+
+    只有**每一个**对手在**每一个**预注册终点上都判"超过"，才能宣称"超过"；任何一组"落后"则总体"落后"；
+    其余情况一律"持平"。这是 GOAL.md 3.2 "超过所有同尺寸模型"的保守读法。
+    """
+    if not decisions:
+        raise ValueError("没有任何比较结果")
+    values = set(decisions.values())
+    if values == {AHEAD}:
+        return AHEAD
+    if BEHIND in values:
+        return BEHIND
+    return TIE
