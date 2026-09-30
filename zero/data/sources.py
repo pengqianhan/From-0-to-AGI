@@ -46,6 +46,7 @@ SOURCES: dict[str, DatasetSource] = {
             stage="pretrain",
             description="DCLM-baseline 1.0：约 4T token 的英文网页（arXiv:2406.11794）。",
             tags=("web",),
+            notes="数据集卡同时写了 CC-BY-4.0 和"仅供研究"，两者关系待核实（第 13 章）。",
         ),
         DatasetSource(
             name="fineweb-2-zh",
@@ -54,7 +55,7 @@ SOURCES: dict[str, DatasetSource] = {
             languages=("zh",),
             stage="pretrain",
             description="FineWeb2 多语言网页中的中文子集（cmn_Hani），arXiv:2506.20920。",
-            notes="子集名称以下载时的数据集卡为准（待核实）。",
+            notes="中文子集名为 cmn_Hani（第 13 章已在数据集卡上确认）；token 数待核实。",
             tags=("web",),
         ),
         DatasetSource(
@@ -64,7 +65,7 @@ SOURCES: dict[str, DatasetSource] = {
             languages=("en", "zh"),
             stage="pretrain",
             description="对 FineWeb 与中文 FineWeb-edu-v2 做验证式高质量过滤后的中英网页（arXiv:2505.05427）。",
-            notes="页面标注 Apache-2.0，但中文部分来自多个上游语料，上游许可证待核实。",
+            notes="页面标注 Apache-2.0，但中文部分来自多个上游语料（第 13 章列出），各上游许可证待核实。",
             tags=("web", "edu"),
         ),
         DatasetSource(
@@ -74,7 +75,7 @@ SOURCES: dict[str, DatasetSource] = {
             languages=("code",),
             stage="pretrain",
             description="从 The Stack v2（StarCoder2Data）中用教育价值分类器筛出的代码，约 125B token。",
-            notes="数据集页面未标注 license 元数据；内容来自 The Stack v2，受其条款与各仓库原始许可证约束。",
+            notes="数据集页面未标注 license 元数据；数据只含 blob_id，正文要从 Software Heritage 的 S3 取，受 The Stack v2 条款与每个文件 detected_licenses 约束（待核实）。",
             tags=("code", "edu"),
         ),
         DatasetSource(
