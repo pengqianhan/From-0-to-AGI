@@ -46,7 +46,7 @@ SOURCES: dict[str, DatasetSource] = {
             stage="pretrain",
             description="DCLM-baseline 1.0：约 4T token 的英文网页（arXiv:2406.11794）。",
             tags=("web",),
-            notes="数据集卡同时写了 CC-BY-4.0 和"仅供研究"，两者关系待核实（第 13 章）。",
+            notes="数据集卡同时写了 CC-BY-4.0 和“仅供研究”，两者关系待核实（第 13 章）。",
         ),
         DatasetSource(
             name="fineweb-2-zh",
