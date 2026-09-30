@@ -364,7 +364,7 @@ FLOPs / 字节 = (FLOPs / token) ÷ (字节 / token)
 - `test_download.py`：用假数据代替网络——出处字段、分片轮换与 sha256、中途停下后续传、Stack-Edu 按 blob_id 取内容、许可证闸门、下载量规划、`configs/main/data.toml` 的下载规格能解析。
 - `06_quality_ablation.py` 每次评估都 `assert` 手算 bpb 与 `zero/data/bpb.py` 一致。
 
-**接进训练循环**（`zero/train/trainer.py` 由第 14 章维护，这里只给出接口）：在 `Trainer.__init__` 里用 `Tokenizer.load(cfg.train.data.tokenizer)` 算一次 `token_byte_lengths(...).to(device)`；在 `Trainer.evaluate` 里把验证 batch 交给 `bpb_stats(self.model, batches, token_bytes, autocast=self.autocast)`，把 `val_bpb` 和 `val_loss` 一起写进日志。
+**接进训练循环**（已接入 `zero/train/trainer.py`）：`Trainer` 用分词器算一次 `token_byte_lengths`；`Trainer.evaluate` 把同一批验证 batch 交给 `bpb_stats`，把 `val_bpb` 和 `val_loss` 一起写进日志（SFT 格式的数据或没有分词器时跳过）。tiny 配置上的一次运行记录到 `val_bpb 3.997`（极小配置演示）。
 
 ---
 
