@@ -107,7 +107,7 @@ uv run python -m zero.smoke
 | 阶段 10：后训练、闸门 3 与发布 | ⏳ 等 GPU |
 | 阶段 11：把真实结果回填进第三、四部分 | ⏳ 等 GPU |
 
-第二步的操作手册、成本估算和记账表见 [runs/RUNBOOK.md](runs/RUNBOOK.md)、[runs/ledger.md](runs/ledger.md)、[runs/RELEASE_CHECKLIST.md](runs/RELEASE_CHECKLIST.md)。
+第一步的完成汇报（偏差、GPU 未验证项、第二步花费、待你决定的事）见 [runs/STEP1_REPORT.md](runs/STEP1_REPORT.md)。第二步的操作手册、成本估算和记账表见 [runs/RUNBOOK.md](runs/RUNBOOK.md)、[runs/ledger.md](runs/ledger.md)、[runs/RELEASE_CHECKLIST.md](runs/RELEASE_CHECKLIST.md)。
 
 ## 仓库结构
 
