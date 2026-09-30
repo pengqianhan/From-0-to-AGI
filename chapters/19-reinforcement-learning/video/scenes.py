@@ -202,7 +202,7 @@ class ChapterScene(NarratedScene):
             xs = [5 * i + 1 for i in range(len(B["nobase"]))]
             c1 = polyline_in_axes(ax, list(zip(xs, B["nobase"])), color=theme.GRAD, stroke_width=4)
             c2 = polyline_in_axes(ax, list(zip(xs, B["base"])), color=theme.OUTPUT, stroke_width=4)
-            l1 = zh(f"无基线 → {B['nobase'][-1]:.2f}", 20, theme.GRAD).move_to(ax.c2p(200, 0.42))
+            l1 = zh(f"无基线 → {B['nobase'][-1]:.2f}", 20, theme.GRAD).move_to(ax.c2p(200, 0.58))
             l2 = zh(f"批均值基线 → {B['base'][-1]:.2f}", 20, theme.OUTPUT).move_to(ax.c2p(190, 0.85))
             self.play(Create(c1), Create(c2), run_time=self.fit(3))
             self.play(FadeIn(l1), FadeIn(l2), run_time=self.fit(0.6))
@@ -225,7 +225,7 @@ class ChapterScene(NarratedScene):
             crit_t = zh("价值模型", 24, theme.GRAD).move_to(crit)
             g1 = VGroup(pol, pol_t).move_to([-4.6, 1.2, 0])
             g2 = VGroup(crit, crit_t).move_to([-4.6, -0.4, 0])
-            same = zh("一样大：多一份显存、多训一个模型", 20, theme.MUTED).move_to([-4.6, -1.4, 0])
+            same = VGroup(zh("两个一样大的模型：", 20, theme.MUTED), zh("多一份显存、多训一个模型", 20, theme.MUTED)).arrange(DOWN, buff=0.12).move_to([-4.6, -1.55, 0])
             self.play(FadeIn(g1), FadeIn(g2), run_time=self.fit(1))
             self.play(FadeIn(same), run_time=self.fit(0.6))
             # 裁剪函数：A>0 时目标 min(ρA, clip(ρ)A)
@@ -243,7 +243,7 @@ class ChapterScene(NarratedScene):
             self.play(Create(ax), FadeIn(title), run_time=self.fit(1))
             self.play(Create(lo), Create(hi), FadeIn(lab_lo), FadeIn(lab_hi), FadeIn(xl), run_time=self.fit(0.8))
             self.play(Create(curve), run_time=self.fit(2))
-            flat = zh("超过 1+ε：不再给梯度", 20, theme.HIGHLIGHT).move_to(ax.c2p(1.6, 1.45))
+            flat = zh("超过 1+ε：不再给梯度", 20, theme.HIGHLIGHT).move_to(ax.c2p(1.62, 1.52)).shift(RIGHT * 0.3)
             self.play(FadeIn(flat), run_time=self.fit(0.6))
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(g1, g2, same, ax, curve, lo, hi, lab_lo, lab_hi, xl, title, flat)), run_time=0.5)
@@ -273,12 +273,10 @@ class ChapterScene(NarratedScene):
             advs = VGroup()
             for c, a in zip(cards, ex["adv"]):
                 col = theme.OUTPUT if a > 0 else theme.GRAD
-                t = mono(f"{a:+.2f}", 22, col).move_to([c.get_center()[0], -1.1, 0])
-                arr = Arrow(start=[c.get_center()[0], -1.45, 0],
-                            end=[c.get_center()[0], -1.45 + (0.6 if a > 0 else -0.6), 0],
+                t = mono(f"{a:+.2f}", 22, col).move_to([c.get_center()[0], -1.0, 0])
+                y0, y1 = (-2.0, -1.4) if a > 0 else (-1.4, -2.0)
+                arr = Arrow(start=[c.get_center()[0], y0, 0], end=[c.get_center()[0], y1, 0],
                             color=col, buff=0, stroke_width=5, max_tip_length_to_length_ratio=0.35)
-                if a < 0:
-                    arr.shift(UP * 0.6)
                 advs.add(VGroup(t, arr))
             self.play(LaggedStart(*[FadeIn(a) for a in advs], lag_ratio=0.1), run_time=self.fit(2))
             self.wait(self.remaining() - 0.6)
@@ -406,7 +404,7 @@ class ChapterScene(NarratedScene):
                 hist = H[key]
                 ax = Axes(x_range=[0, 120, 40], y_range=[0, 1.0, 0.5], x_length=5.2, y_length=3.2, tips=False,
                           axis_config={"color": theme.MUTED, "stroke_width": 2, "include_numbers": True,
-                                       "font_size": 18}).move_to([-3.5 + 7.0 * j, -0.2, 0])
+                                       "font_size": 18}).move_to([-3.5 + 7.0 * j, 0.0, 0])
                 tt = zh(title, 24, col).next_to(ax, UP, buff=0.25)
                 xs = [h["step"] for h in hist]
                 cs = VGroup(
@@ -419,7 +417,7 @@ class ChapterScene(NarratedScene):
                 panels.add(VGroup(ax, tt, lab))
                 curves_all.append(cs)
             legend = VGroup(zh("格式错误率", 18, theme.GRAD), zh("正确格式调用", 18, theme.OUTPUT),
-                            zh("真实成功率", 18, theme.HIGHLIGHT)).arrange(RIGHT, buff=0.5).move_to([0, 2.45, 0])
+                            zh("真实成功率", 18, theme.HIGHLIGHT)).arrange(RIGHT, buff=0.5).move_to([0, 2.6, 0])
             self.play(FadeIn(panels[0][:2]), FadeIn(panels[1][:2]), FadeIn(legend), run_time=self.fit(1))
             self.play(Create(curves_all[0]), run_time=self.fit(3))
             self.play(FadeIn(panels[0][2]), run_time=self.fit(0.6))
@@ -451,12 +449,14 @@ class ChapterScene(NarratedScene):
             ax = Axes(x_range=[0, 10, 2], y_range=[-0.6, 0.8, 0.2], x_length=5.4, y_length=3.2, tips=False,
                       axis_config={"color": theme.MUTED, "stroke_width": 2}).move_to([-3.4, 0.2, 0])
             xs = list(range(1, 11))
+            ylab = VGroup(*[mono(f"{v:+.1f}" if v else "0", 16, theme.MUTED).next_to(ax.c2p(0, v), LEFT, buff=0.1)
+                            for v in (-0.4, 0.0, 0.4, 0.8)])
             r = polyline_in_axes(ax, list(zip(xs, SMOKE["reward"])), color=theme.PARAM, stroke_width=4)
             fr = polyline_in_axes(ax, list(zip(xs, SMOKE["format"])), color=theme.OUTPUT, stroke_width=4)
             leg = VGroup(zh("平均奖励", 18, theme.PARAM), zh("格式正确率", 18, theme.OUTPUT)).arrange(RIGHT, buff=0.4)
             leg.next_to(ax, UP, buff=0.2)
             xl = zh("tiny GRPO 10 步（每步 32 条回复）", 18, theme.MUTED).next_to(ax, DOWN, buff=0.15)
-            self.play(Create(ax), FadeIn(leg), FadeIn(xl), run_time=self.fit(1))
+            self.play(Create(ax), FadeIn(ylab), FadeIn(leg), FadeIn(xl), run_time=self.fit(1))
             self.play(Create(r), Create(fr), run_time=self.fit(2))
             info = VGroup(
                 zh("奖励 −0.19 → −0.07（噪声大）", 22, theme.FG),
@@ -469,7 +469,7 @@ class ChapterScene(NarratedScene):
             ).arrange(DOWN, aligned_edge=LEFT, buff=0.22).move_to([3.4, 0.1, 0])
             self.play(FadeIn(info), run_time=self.fit(1.5))
             self.wait(self.remaining() - 0.6)
-            self.play(FadeOut(VGroup(ax, r, fr, leg, xl, info)), run_time=0.5)
+            self.play(FadeOut(VGroup(ax, ylab, r, fr, leg, xl, info)), run_time=0.5)
         self.remove(badge)
 
         # ── S14 小结 ─────────────────────────────────────────────────────

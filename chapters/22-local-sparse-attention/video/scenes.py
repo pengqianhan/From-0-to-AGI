@@ -334,7 +334,7 @@ class ChapterScene(NarratedScene):
                 fills.add(num)
                 self.play(*anims, run_time=self.fit(0.25, reserve=6))
             # 右：三种配置的缓存大小
-            axes_x, base_y, scale = [0.6, 2.4, 4.2], -1.6, 3.6 / max(D["cache"]["full"]["sizes"])
+            axes_x, base_y, scale = [0.3, 2.4, 4.5], -1.6, 3.3 / max(D["cache"]["full"]["sizes"])
             bars, labs = VGroup(), VGroup()
             for x, v in zip(axes_x, ("full", "sliding", "interleave")):
                 bars.add(
@@ -346,7 +346,12 @@ class ChapterScene(NarratedScene):
                         stroke_width=0,
                     ).move_to([x, base_y, 0], aligned_edge=DOWN)
                 )
-                labs.add(zh(NAMES[v], 20, COLORS[v]).move_to([x, base_y - 0.35, 0]))
+                short = {
+                    "full": "全注意力",
+                    "sliding": "全部滑动",
+                    "interleave": "3 局部 + 1 全局",
+                }[v]
+                labs.add(zh(short, 20, COLORS[v]).move_to([x, base_y - 0.35, 0]))
             self.play(FadeIn(bars), FadeIn(labs), run_time=self.fit(0.6))
             t_lab, vals = None, None
             for k, t in enumerate(D["report_at"]):
@@ -499,7 +504,7 @@ class ChapterScene(NarratedScene):
         with self.shot("S09"):
             self.play(*self.set_heading("实验一：字符级语言建模"), run_time=self.fit(0.8))
             setup = zh("4 层小模型，窗口 W = 16，Shakespeare 字符级，600 步", 24, theme.MUTED)
-            setup.move_to([0, 2.2, 0])
+            setup.move_to([0, 2.45, 0])
             self.play(FadeIn(setup), run_time=self.fit(0.8))
             rows = VGroup()
             for v in ("full", "sliding", "interleave"):
@@ -508,7 +513,7 @@ class ChapterScene(NarratedScene):
                         RIGHT, buff=1.2
                     )
                 )
-            rows.arrange(DOWN, buff=0.55, aligned_edge=LEFT).move_to([0, 0.3, 0])
+            rows.arrange(DOWN, buff=0.55, aligned_edge=LEFT).move_to([0, 0.0, 0])
             head = zh("验证集 loss（nats / 字符）", 22, theme.MUTED).next_to(rows, UP, 0.4)
             self.play(FadeIn(head), run_time=self.fit(0.5))
             for r in rows:

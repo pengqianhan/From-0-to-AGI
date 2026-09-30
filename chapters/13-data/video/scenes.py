@@ -340,11 +340,11 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(hash_a), FadeIn(hash_b), run_time=self.fit(1))
             diff = zh("改一个词，哈希全变", 24, theme.GRAD).move_to([0, -0.4, 0])
             self.play(FadeIn(diff), run_time=self.fit(0.8))
-            ca = Circle(radius=0.95, color=theme.INPUT, fill_opacity=0.15).move_to([-0.55, -1.75, 0])
-            cb = Circle(radius=0.95, color=theme.PARAM, fill_opacity=0.15).move_to([0.55, -1.75, 0])
+            ca = Circle(radius=0.95, color=theme.INPUT, fill_opacity=0.15).move_to([-2.35, -1.75, 0])
+            cb = Circle(radius=0.95, color=theme.PARAM, fill_opacity=0.15).move_to([-1.25, -1.75, 0])
             la = zh("A 的 5-gram", 20, theme.INPUT).next_to(ca, LEFT, 0.2)
             lb = zh("B 的 5-gram", 20, theme.PARAM).next_to(cb, RIGHT, 0.2)
-            form = MathTex(r"J(A,B)=\frac{|A\cap B|}{|A\cup B|}", font_size=40).move_to([4.6, -1.75, 0])
+            form = MathTex(r"J(A,B)=\frac{|A\cap B|}{|A\cup B|}", font_size=40).move_to([3.9, -1.75, 0])
             self.wait(self.remaining() * 0.25)
             self.play(FadeOut(diff), Create(ca), Create(cb), FadeIn(la), FadeIn(lb), run_time=self.fit(1.2))
             self.play(Write(form), run_time=self.fit(1))
@@ -509,8 +509,9 @@ class ChapterScene(NarratedScene):
                                     fill_color=col, fill_opacity=0.85, stroke_width=2,
                                     stroke_color=theme.BG).move_arc_center_to([-4.0, 0.1, 0])
                 mid = start + ang / 2
-                lab = zh(f"{name} {w:.2f}", 22, col).move_to(
-                    [-4.0 + 2.25 * math.cos(mid), 0.1 + 2.0 * math.sin(mid), 0])
+                u = [math.cos(mid), math.sin(mid), 0]
+                edge = [-4.0 + 1.65 * u[0], 0.1 + 1.65 * u[1], 0]
+                lab = zh(f"{name} {w:.2f}", 22, col).next_to(edge, u, buff=0.1)
                 pie.add(sec)
                 labs.add(lab)
                 start += ang
@@ -585,9 +586,13 @@ class ChapterScene(NarratedScene):
             qline1 = mono(" ".join(words[:15]), 17, theme.FG)
             qline2 = mono(" ".join(words[15:30]), 17, theme.FG)
             q = VGroup(zh("考题", 20, theme.ATTN), qline1, qline2).arrange(DOWN, aligned_edge=LEFT, buff=0.1)
+            if q.width > 12.8:
+                q.scale_to_fit_width(12.8)
             q.move_to([0, 2.0, 0])
             self.play(FadeIn(q), run_time=self.fit(1))
             gram = mono("13-gram：" + " ".join(words[:13]), 17, theme.HIGHLIGHT).move_to([0, 0.95, 0])
+            if gram.width > 12.6:
+                gram.scale_to_fit_width(12.6)
             box = SurroundingRectangle(gram, color=theme.HIGHLIGHT, buff=0.08)
             self.wait(self.remaining() * 0.12)
             self.play(FadeIn(gram), Create(box), run_time=self.fit(1))
@@ -622,7 +627,8 @@ class ChapterScene(NarratedScene):
                                                                         "font_size": 18},
                       tips=False).move_to([-3.5, 0.2, 0])
             xt = VGroup(*[zh(f"{v // 1024}K" if v % 1024 == 0 else f"{v / 1024:.0f}K", 16, theme.MUTED)
-                          .next_to(ax.c2p(math.log2(v), ymin), DOWN, 0.12) for v in vs])
+                          .next_to(ax.c2p(math.log2(v), ymin), DOWN, 0.12)
+                          for v in vs if v in (16384, 32768, 65536, 131072)])
             yl = zh("字节 / token", 18, theme.MUTED).next_to(ax, UP, 0.1).align_to(ax, LEFT)
             self.play(Create(ax), FadeIn(xt), FadeIn(yl), run_time=self.fit(1))
             lines = VGroup()

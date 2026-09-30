@@ -189,8 +189,8 @@ att = att.masked_fill(~window_mask(pos, k_pos, self.window), float("-inf"))
 **实验二：大海捞针（needle in a haystack）**。序列长 96，全是随机的"填充字符"，其中一个位置藏着一根"针"（8 种之一），最后一个位置是"提问"，模型要说出针是哪一个。针与提问的距离 d 在 1–95 之间均匀随机，于是可以按距离统计准确率：
 
 ```python
-x[torch.arange(bsz), NEEDLE_T - 1 - d] = ans      # 把针放在距离提问 d 的位置
-loss = F.cross_entropy(model(x)[:, -1], ans)      # 只在"提问"位置算 loss
+x[torch.arange(bsz), NEEDLE_T - 1 - d] = ans  # 把针放在距离提问 d 的位置
+loss = F.cross_entropy(model(x)[:, -1], ans)  # 只在"提问"位置算 loss
 ```
 
 同一个脚本的输出（每个距离测 64 条，8 选 1 瞎猜是 12.5%）：
@@ -226,8 +226,8 @@ loss = F.cross_entropy(model(x)[:, -1], ans)      # 只在"提问"位置算 loss
 [`code/05_topk_sparse.py`](code/05_topk_sparse.py) 拿第 6 节训练好的**全注意力**模型，推理时让每个 query 只留 k 个键，不重新训练，比较两种挑法：
 
 ```python
-kth = att.topk(self.topk, dim=-1).values[..., -1:]   # 每行第 k 大的分数
-att = att.masked_fill(att < kth, float("-inf"))      # 其余的当作看不见
+kth = att.topk(self.topk, dim=-1).values[..., -1:]  # 每行第 k 大的分数
+att = att.masked_fill(att < kth, float("-inf"))  # 其余的当作看不见
 ```
 
 | 挑法 | k | 捞针 d < 16 | 捞针 d > 60 | 全部距离 | LM loss |
@@ -291,7 +291,7 @@ att = att.masked_fill(att < kth, float("-inf"))      # 其余的当作看不见
 | `01_masks_and_ledger.py` 的 `kv_bytes` | `zero/arch/sliding_window.py` 的 `kv_cache_bytes(layer_types, window, ...)`；按 `config.json` 自动识别层类型的完整账本在第 21 章的 `zero/tools/kv_cache_calc.py`（已支持 `sliding` 层） | 同一个公式：全局层存 T 个位置、滑动窗口层存 min(W, T) 个 |
 | 手写 `q @ kᵀ` + 掩码 | SDPA + 自定义掩码（CPU） | GPU 上要真正跳过窗口外的块，需要 FlashAttention 的 `flash_attn_func(..., causal=True, window_size=(W − 1, 0))`，或 PyTorch FlexAttention 的滑动窗口 `mask_mod`；vLLM / transformers 读到 `sliding_window` 和 `layer_types` 会自动选 kernel 和分层缓存。**这些 GPU 路径尚未在 GPU 上验证** |
 
-**对拍**：[`tests/test_arch_sliding_window.py`](../../tests/test_arch_sliding_window.py)（`uv run pytest tests/test_arch_sliding_window.py`，本机 8 项全部通过，约 1.4 秒）：
+**对拍**：[`tests/test_arch_sliding_window.py`](../../tests/test_arch_sliding_window.py)（`uv run pytest tests/test_arch_sliding_window.py`，本机 8 项全部通过，几秒内跑完）：
 
 - 掩码与定义逐格一致（W = 3 的 6×6 表）；每个 query 最多看 W 个；空槽不可见、键可以乱序；
 - `make_layer_types` 的 5:1、1:1、全部滑动三种排布；

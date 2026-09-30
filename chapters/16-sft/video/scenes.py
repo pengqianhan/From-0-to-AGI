@@ -98,14 +98,15 @@ def sample_lines() -> list[tuple[str, str, bool]]:
     lines: list[tuple[str, str, bool]] = [
         ("<|im_start|>system", "system", False),
         ("你是一个会使用工具的助手……", "system", False),
-        ("# Tools … <tools>{get_weather …}</tools> …<|im_end|>", "system", False),
+        ("# Tools … <tools>…</tools> …<|im_end|>", "system", False),
     ]
     for s, role, train in D["segs"]:
         if role == "system":
             continue
         for ln in s.split("\n"):
             if ln.strip():
-                lines.append((ln[:46], role, train))
+                cut = 44 if role in ("user", "assistant") and "response" not in ln else 38
+                lines.append((ln if len(ln) <= cut else ln[: cut - 1] + "…", role, train))
     return lines
 
 
@@ -163,14 +164,14 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(q), run_time=self.fit(0.8))
             base_txt = S["base_continue"].replace("\n", "↵")
             left = VGroup(zh("底座（第 10 章，0.86M 参数）", 22, theme.GRAD),
-                          mono(base_txt[:26], 18), mono(base_txt[26:52], 18),
-                          mono(base_txt[52:78], 18)).arrange(DOWN, aligned_edge=LEFT, buff=0.2)
+                          mono(base_txt[:24], 18), mono(base_txt[24:48], 18),
+                          mono(base_txt[48:72], 18)).arrange(DOWN, aligned_edge=LEFT, buff=0.2)
             ex = next(e for e in S["examples"] if e["q"] == S["question"])
             rep = ex["reply"].split("\n")
             right = VGroup(zh("SFT 之后", 22, theme.OUTPUT),
-                           *[mono(r_, 18) for r_ in rep]).arrange(DOWN, aligned_edge=LEFT, buff=0.2)
-            left.move_to([-3.4, 0.2, 0])
-            right.move_to([3.2, 0.2, 0])
+                           *[mono(r_, 14) for r_ in rep]).arrange(DOWN, aligned_edge=LEFT, buff=0.2)
+            left.move_to([-4.4, 0.2, 0])
+            right.move_to([2.6, 0.2, 0])
             box_l = SurroundingRectangle(left, color=theme.GRAD, buff=0.25)
             box_r = SurroundingRectangle(right, color=theme.OUTPUT, buff=0.25)
             self.play(FadeIn(left), Create(box_l), run_time=self.fit(1.5))
@@ -192,8 +193,8 @@ class ChapterScene(NarratedScene):
             sft.move_to([0, 0.7, 0])
             self.play(FadeIn(pre), run_time=self.fit(1.0))
             self.play(Write(sft), run_time=self.fit(1.5))
-            parts = [("system", 3.0, False), ("user", 2.2, False), ("assistant 头", 1.3, False),
-                     ("助手输出（A）", 3.2, True)]
+            parts = [("system", 2.8, False), ("user", 2.0, False), ("assistant 头", 2.0, False),
+                     ("助手输出（A）", 3.0, True)]
             roles = ["system", "user", "assistant", "assistant"]
             strip = VGroup()
             x = -4.9
@@ -202,7 +203,7 @@ class ChapterScene(NarratedScene):
                 r = Rectangle(width=w, height=0.7, stroke_color=col, stroke_width=2,
                               fill_color=col, fill_opacity=0.55 if train else 0.12)
                 r.move_to([x + w / 2, -1.0, 0])
-                t = zh(label, 20, theme.FG).move_to(r)
+                t = zh(label, 18, theme.FG).move_to(r)
                 strip.add(VGroup(r, t))
                 x += w + 0.1
             self.play(LaggedStart(*[FadeIn(s) for s in strip], lag_ratio=0.2), run_time=self.fit(1.5))
@@ -342,9 +343,10 @@ class ChapterScene(NarratedScene):
                       *[FadeIn(b[1:]) for b in bars], run_time=self.fit(1.5))
             ex = next(e for e in S["examples"] if "Nairobi" in e["q"])
             q = mono(ex["q"], 20, theme.INPUT)
-            out = mono(ex["reply"].split("\n")[1], 16, theme.OUTPUT)
+            city = json.loads(ex["reply"].split("\n")[1])["arguments"]["city"]
+            out = mono(f'get_weather  {{"city": "{city}"}}', 18, theme.OUTPUT)
             grp = VGroup(zh("问", 20, theme.MUTED), q, zh("答", 20, theme.MUTED), out
-                         ).arrange(DOWN, aligned_edge=LEFT, buff=0.18).move_to([3.2, 0.4, 0])
+                         ).arrange(DOWN, aligned_edge=LEFT, buff=0.18).move_to([3.6, 0.6, 0])
             self.wait(self.remaining() * 0.35)
             self.play(FadeIn(grp), run_time=self.fit(1.0))
             hl = zh("没照抄：写了训练里常见的 Denver", 20, theme.GRAD).next_to(grp, DOWN, 0.35)
