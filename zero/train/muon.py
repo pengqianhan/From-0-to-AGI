@@ -23,7 +23,9 @@ embedding、lm_head、RMSNorm 权重用 AdamW——Kimi K2、GLM-4.5、DeepSeek-
 - DDP：每张卡拿到的是 all-reduce 之后的完整梯度，各自算同样的 NS5，结果一致，只是有重复计算；
 - FSDP：参数被切片，NS5 需要完整矩阵，本实现不支持（遇到 DTensor 直接报错）。
   DeepSeek-V4 的做法是按矩阵把 ZeRO 分桶，单机 8 卡、0.7B 模型用 DDP 就够。
-以上 GPU 路径（CUDA 上 BF16 的 NS5、DDP 下的数值一致性）**尚未在 GPU 上验证**。
+CUDA 上 BF16 的 NS5 已在单张 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/：与 CPU FP32 的相对差约 2%，
+`optim.name = "muon"` 训练 loss 正常下降）；DDP 下的数值一致性已在 2×RTX 3090（PCIe）上验证
+（50 步后两张卡上的参数逐位相同，loss 与单卡等价运行的差异和求和顺序不同的单卡对照同一量级）。
 
 接入训练器（zero/train/trainer.py 不在本章改动范围内，接入需要两处小改，见第 12 章 README）：
     OptimConfig 加字段 `name: str = "adamw"`；build_optimizer 开头加一行

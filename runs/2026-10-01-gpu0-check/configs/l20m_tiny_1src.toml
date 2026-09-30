@@ -1,0 +1,9 @@
+# 多卡对拍用（dist2_check.py）：与 l20m_tiny.toml 相同，只把三个来源合成一个 PackedDataLoader。
+# 多来源时 MixtureLoader 的来源采样器按 (seed, rank) 播种，每张卡各自抽来源，2 卡与 1 卡每步看到的样本组成不同；
+# 单来源时第 g 个全局样本分给 rank g % world_size，"2 卡各 B 条"与"1 卡 2B 条"是同一批数据，才能逐步对拍 loss。
+base = "l20m_tiny.toml"
+
+[[data.sources]]
+name = "tiny"
+path = "out/gpu0-check/tiny/data/*_train_*.bin"
+weight = 1.0

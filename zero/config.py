@@ -215,10 +215,10 @@ class TrainConfig:
     grad_accum_steps: int = 1  # 梯度累积：有效 batch = micro * accum * world_size
     device: str = "auto"  # "auto" | "cpu" | "cuda"
     dtype: str = "auto"  # "auto"（CUDA 用 bf16，CPU 用 fp32）| "bf16" | "fp32"
-    compile: bool = False  # torch.compile（尚未在 GPU 上验证）
-    activation_checkpointing: bool = (
-        False  # 激活检查点：每层只存输入、反向时重算（第 14 章；尚未在 GPU 上验证）
-    )
+    # torch.compile：单卡与 2 卡 DDP 已在 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）；与 FSDP 的组合尚未在 GPU 上验证
+    compile: bool = False
+    # 激活检查点：每层只存输入、反向时重算（第 14 章）。已在单张 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）
+    activation_checkpointing: bool = False
     cpu_threads: int = (
         0  # CPU 上 PyTorch 的线程数；0 表示用默认值。机器被别的进程占满时设 1 反而最快
     )

@@ -329,7 +329,7 @@ W = 1,024 时，除了 q、k、v 之外额外占的显存：稠密 65 MiB；布�
 | `KVCache.append`：拼接后切片保留最后 W 个 | `SlidingWindowKVCache`：全局层按 `max_seq_len` 预分配，滑动窗口层只分配 W 个槽位的**环形缓冲区**（位置 p → 槽位 `p % W`），另存每个槽位的位置 | 一次分配、不再拷贝；支持一次喂入超过 W 个 token 的分块 prefill（先用"旧 + 新"算注意力，再只写回最后 W 个）；`nbytes()` 与 `kv_cache_bytes(...)` 公式一致 |
 | 每步整段重算 / 截断缓存 | `generate_greedy(model, prompt, n, cache=None)` | 专门用来对拍"有界缓存"和"不用缓存" |
 | `01_masks_and_ledger.py` 的 `kv_bytes` | `zero/arch/sliding_window.py` 的 `kv_cache_bytes(layer_types, window, ...)`；按 `config.json` 自动识别层类型的完整账本在第 21 章的 `zero/tools/kv_cache_calc.py`（已支持 `sliding` 层） | 同一个公式：全局层存 T 个位置、滑动窗口层存 min(W, T) 个 |
-| 手写 `q @ kᵀ` + 掩码 | SDPA + 自定义掩码（CPU） | GPU 上要真正跳过窗口外的块，需要 FlashAttention 的 `flash_attn_func(..., causal=True, window_size=(W − 1, 0))`，或 PyTorch FlexAttention 的滑动窗口 `mask_mod`；vLLM / transformers 读到 `sliding_window` 和 `layer_types` 会自动选 kernel 和分层缓存。**这些 GPU 路径尚未在 GPU 上验证** |
+| 手写 `q @ kᵀ` + 掩码 | SDPA + 自定义掩码（CPU） | GPU 上要真正跳过窗口外的块，需要 FlashAttention 的 `flash_attn_func(..., causal=True, window_size=(W − 1, 0))`，或 PyTorch FlexAttention 的滑动窗口 `mask_mod`；vLLM / transformers 读到 `sliding_window` 和 `layer_types` 会自动选 kernel 和分层缓存。FlexAttention 的块稀疏滑动窗口已在 RTX 3090 上实测（本章"GPU 实测"一节：T = 65,536 时比稠密因果注意力快约 39 倍）；FlashAttention 的 `window_size` 因为没装 `flash_attn`，尚未验证；`zero/arch/sliding_window.py` 在 CUDA 上仍用布尔掩码 SDPA，正确性已验证（[runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 11 节），但比全注意力还慢 |
 
 **对拍**：[`tests/test_arch_sliding_window.py`](../../tests/test_arch_sliding_window.py)（`uv run pytest tests/test_arch_sliding_window.py`，本机 8 项全部通过，几秒内跑完）：
 

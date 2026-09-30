@@ -366,7 +366,7 @@ NS5 检查：随机 64×32 梯度的奇异值 0.059–0.290 → 正交化后 0.6
 | `04_mini_ladder.py` 的 `fit_lnd`：网格 + 无约束最小二乘，负系数直接丢弃 | `zero/tools/fit_scaling.py`：`fit_chinchilla`、`fit_power_law`、`bootstrap_chinchilla`、`fit_loss_to_score` | 3 变量**非负**最小二乘（枚举 7 种有效集，精确且向量化）、N/D 先归一化防病态、两轮网格细化、指数落在边界时报警、可选 α=β；按组 bootstrap；L(C) 幂律；loss → 分数的 S 形映射（闸门 1 的第二步） |
 | 手动把点写进 JSON | `fit_scaling --run 目录[:配置] --holdout ... --target-config ... --out fit.json` | 直接读训练器的 `log.jsonl`（取最后一次验证 loss 与 token 数）和 checkpoint 里的配置算 N；N 口径可选非 embedding / 总参数 / FLOPs |
 | `03`、`04` 手写的 WSD 分叉 | `zero/train/schedule.py` 的 WSD + 从 checkpoint 续训（`runs/ladder/README.md` 第 4 节的命令） | 分叉就是"复制分叉点的 checkpoint、用更小的 `max_steps` 续训"；数据加载器状态一起恢复，分叉看到的是主干接下来的数据 |
-| `06_muon.py` 的极简 `Muon` | `zero/train/muon.py`：`zeropower_via_newtonschulz5`、`MuonAdamW`、`split_params_for_muon`、`build_muon_optimizer` | 一个优化器对象同时管 Muon 组和 AdamW 组（调度按组写学习率、checkpoint 一个 `state_dict`）；两种尺度规则（rms / spectral）；CUDA 上 BF16 的 NS5；遇到 FSDP 切片参数直接报错（尚未在 GPU 上验证） |
+| `06_muon.py` 的极简 `Muon` | `zero/train/muon.py`：`zeropower_via_newtonschulz5`、`MuonAdamW`、`split_params_for_muon`、`build_muon_optimizer` | 一个优化器对象同时管 Muon 组和 AdamW 组（调度按组写学习率、checkpoint 一个 `state_dict`）；两种尺度规则（rms / spectral）；CUDA 上 BF16 的 NS5；遇到 FSDP 切片参数直接报错（CUDA 上的 BF16 NS5 与 DDP 下各卡一致已在 RTX 3090 上验证，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 11、14.1 节） |
 
 **对拍与测试**：
 

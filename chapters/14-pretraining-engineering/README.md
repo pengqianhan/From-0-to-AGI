@@ -11,7 +11,7 @@
 
 这不再是数学问题，而是工程问题。算一下就知道分量：主线模型每训练一个 token 要 69.6 亿次浮点运算，400B token 一共 2.8 × 10²¹ 次；8 张 H100 按 40% 的效率跑，要 10.2 天、约 4900 美元，刚好在 GOAL.md 给预训练的 5000 美元线以内。效率从 40% 掉到 30%，就要多花一千六百多美元，直接超线。这一章的每一个技术，要么是让 GPU 算得更快（混合精度、FlashAttention），要么是让显存装得下（激活检查点、FSDP），要么是让多张卡一起干活（数据并行），要么是让十来天的训练出了事也不白跑（loss spike 处理、断点续训）。
 
-> 本章所有代码都在 CPU 上运行。GPU 上的数字（吞吐、MFU、显存）都是**按公式估算**，标注"尚未在 GPU 上验证"，第二步的第一件事就是一次不超过 $50 的 GPU 验证运行（见"主线进度"）。
+> 正文的代码都在 CPU 上运行，正文里 H100 上的数字（吞吐、MFU、显存）仍是**按公式估算**。本章新增的"GPU 实测（单张 RTX 3090）"一节把其中几项放到真 GPU 上测了一遍；zero 的 GPU 路径在单张和 2 张 RTX 3090 上的逐项验证见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md)。8×H100 上不超过 $50 的验证运行仍是第二步的第一件事（见"主线进度"）。
 
 ## 1. 先算账：一步预训练要花多少
 
@@ -268,7 +268,7 @@ out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=is_
                                      enable_gqa=self.n_kv_heads != self.n_heads)
 ```
 
-SDPA 会根据设备、dtype、形状自动挑后端：GPU 上 BF16/FP16 优先走 FlashAttention 内核，不满足条件就退到 memory-efficient 或 math 后端。在 CPU 上，本章用保存张量的钩子确认过：zero 的注意力保存的是 q、k、v、输出和每行一个 logsumexp，没有 T × T 的矩阵（第 2 节的激活公式就是这样数出来的）。GPU 上 `enable_gqa=True` 能否走 Flash 后端**尚未在 GPU 上验证**，是阶段 6 的第一项检查。
+SDPA 会根据设备、dtype、形状自动挑后端：GPU 上 BF16/FP16 优先走 FlashAttention 内核，不满足条件就退到 memory-efficient 或 math 后端。在 CPU 上，本章用保存张量的钩子确认过：zero 的注意力保存的是 q、k、v、输出和每行一个 logsumexp，没有 T × T 的矩阵（第 2 节的激活公式就是这样数出来的）。GPU 上 `enable_gqa=True` 能否走 Flash 后端，已在 RTX 3090 上验证：BF16 下默认就走 Flash（memory-efficient 后端不支持 GQA），见"GPU 实测"一节与 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 1 节。
 
 ## 5. 数据并行：从 DDP 到 FSDP
 
@@ -538,14 +538,14 @@ T = 4096、打开检查点、加大 micro batch：2 条每步 1,721 ms、4,761 t
 | `01_step_cost.py` 的公式 | `zero/model.py` 的 `estimate_flops_per_token`；`zero/tools/estimate_cost.py` | 同一个公式；估算工具带 GPU 峰值表、单价、卡数，输出卡时和费用。H100 峰值 989.5 TFLOPS 在代码里标"待核实"，Nemotron-4 报告写的是"989 teraFLOP/s（bfloat16，不含稀疏）"，与之吻合 |
 | `05_memory.py` 数保存的张量 | **本章新增** `zero/tools/memory_calc.py`（`estimate_memory`、`max_micro_batch`，CLI） | 按 zero 的 `Block` 逐项写出每层每 token 的激活公式，支持 DDP / ZeRO-1 / ZeRO-2 / FSDP、激活检查点、BF16 / FP32；`tests/test_memory_calc.py` 保证公式与 `saved_tensors_hooks` 实测**逐字节相等** |
 | 手写 `torch.autocast` 实验 | `zero/train/trainer.py` 的 `autocast_context`：CUDA 上 BF16 autocast，参数和优化器状态保持 FP32；`zero/model.py` 的 RMSNorm、交叉熵先转 FP32 再算 | 精度敏感的运算单独保护；CPU 上默认 FP32 |
-| `04_tiled_attention.py` 的 Python 循环 | `zero/model.py` 的 `Attention`：`F.scaled_dot_product_attention(..., enable_gqa=...)` | 不自己写内核，交给 PyTorch 选 FlashAttention / memory-efficient 后端。**尚未在 GPU 上验证**实际走的是哪个后端 |
+| `04_tiled_attention.py` 的 Python 循环 | `zero/model.py` 的 `Attention`：`F.scaled_dot_product_attention(..., enable_gqa=...)` | 不自己写内核，交给 PyTorch 选后端。RTX 3090 上实测：BF16 + GQA 走 FlashAttention（memory-efficient 后端不支持 GQA），见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 1 节 |
 | 手写梯度累积 | `Trainer.train`：`grad_accum_steps` 次前向 + 反向，loss 除以累积步数；DDP 下前几个 micro batch 用 `no_sync()` | 省掉中间的梯度通信 |
-| `06_ddp_by_hand.py` 手写 all-reduce | `zero/train/dist.py`：`init_distributed`（读 torchrun 的环境变量，GPU 用 NCCL、CPU 用 gloo）、`wrap_model`（DDP 或 FSDP2 `fully_shard`，BF16 参数 + FP32 梯度规约） | 桶化、通信与反向重叠由 PyTorch DDP 完成；FSDP2 路径**尚未在 GPU 上验证** |
+| `06_ddp_by_hand.py` 手写 all-reduce | `zero/train/dist.py`：`init_distributed`（读 torchrun 的环境变量，GPU 用 NCCL、CPU 用 gloo）、`wrap_model`（DDP 或 FSDP2 `fully_shard`，BF16 参数 + FP32 梯度规约） | 桶化、通信与反向重叠由 PyTorch DDP 完成；DDP 与 FSDP2 已在 2×RTX 3090（PCIe）上验证（跨卡一致性、checkpoint 聚合与续训），8 卡与 NVLink 下的吞吐尚未实测，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 14 节 |
 | 数据按进程分片 | `zero/data/loader.py` 的 `PackedDataLoader`：第 g 个全局样本分给 rank g % world_size | 保证"2 卡各 B 条"与"1 卡 2B 条"看到同一批数据，DDP 才能对拍 |
 | 第 6 章的 `clip_grad_norm_` | `Trainer.train` 每步裁剪，梯度范数写进日志 | 梯度范数是发现 spike 的第一信号 |
 | `01_step_cost.py` 的 MFU | `Trainer._peak_flops` + 日志里的 `tok_per_s`、`mfu` | 按设备名查峰值表；CPU 上不报 |
 | `07_resume.py` 的 `state_dict` | `zero/train/checkpoint.py`：`save_checkpoint`（model / optim / meta.json（步数、token 数、调度器、配置）/ 每个 rank 的数据位置 + 全部 RNG）；先写 `.tmp_step_xxx` 再 `os.replace`，最后原子更新 `latest`；`keep_last` 自动清理 | 多进程时每个 rank 各存一份加载器与 RNG 状态；卡数变了会拒绝精确续训（数据位置对不上） |
-| `05_memory.py` 的 `checkpoint(self.block, ...)` | `zero/model.py` 的 `Transformer.forward`：`train.activation_checkpointing = true` 时每个 Block 用 `torch.utils.checkpoint` 包起来（`Trainer` 负责打开）；主线配置默认 `false` | 只在训练、且不用 KV cache 时生效；`tests/test_activation_checkpointing.py` 保证开关前后梯度一致。**尚未在 GPU 上验证**，是否需要打开由阶段 6 的实测决定 |
+| `05_memory.py` 的 `checkpoint(self.block, ...)` | `zero/model.py` 的 `Transformer.forward`：`train.activation_checkpointing = true` 时每个 Block 用 `torch.utils.checkpoint` 包起来（`Trainer` 负责打开）；主线配置默认 `false` | 只在训练、且不用 KV cache 时生效；`tests/test_activation_checkpointing.py` 保证开关前后梯度一致。已在 RTX 3090 上验证（主线尺寸在 24GB 上不开检查点连 micro batch 1 都放不下），见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 7 节；80GB 的 H100 上是否需要打开，仍由阶段 6 的实测决定 |
 | — | z-loss、跳过坏 batch | **zero 目前没有实现** |
 
 **对拍（都在 CPU 上通过）**：

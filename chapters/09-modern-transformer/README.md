@@ -295,7 +295,7 @@ GPT-2 的具体结构可以在 transformers 的 `GPT2Config`（`activation_funct
 |---|---|---|
 | `RMSNorm` | `zero/model.py` 的 `RMSNorm` | 先转 float32 算归一化再转回原精度（BF16 训练时数值更稳），与 HF 的 `Qwen3RMSNorm` 逐行一致 |
 | `rope_cos_sin` + `apply_rope` | `compute_rope_inv_freq`、`RotaryEmbedding`、`apply_rope` | cos/sin 预计算成不进 checkpoint 的 buffer；支持 **YaRN** 缩放（第 15 章长上下文），`reset_buffers` 在换设备后重建 |
-| `Attention`（手写 softmax + mask） | `Attention` | **GQA**（`n_kv_heads < n_heads`，第 10 章）；`F.scaled_dot_product_attention`（GPU 上自动走 FlashAttention 内核，第 14 章，尚未在 GPU 上验证）；**KV cache** 与分块 prefill 的 mask（第 10 章）；`head_dim` 可以不等于 `d / n_heads` |
+| `Attention`（手写 softmax + mask） | `Attention` | **GQA**（`n_kv_heads < n_heads`，第 10 章）；`F.scaled_dot_product_attention`（GPU 上 BF16 自动走 FlashAttention 内核，第 14 章；已在 RTX 3090 上验证，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 1 节）；**KV cache** 与分块 prefill 的 mask（第 10 章）；`head_dim` 可以不等于 `d / n_heads` |
 | `SwiGLU` | `SwiGLU` | 相同（参数名 `w_gate/w_up/w_down` 故意取成一样） |
 | `Block` | `Block` | 多传 `kv_cache`、`start_pos`，其余相同 |
 | `TinyTransformer` | `Transformer` | `tie_embeddings` 可配置；`loss()` 在 float32 上算并支持 `ignore_index`（第 16 章 SFT 的 loss mask）；`num_params`、`flops_per_token`（第 12、14 章算 MFU 和成本） |

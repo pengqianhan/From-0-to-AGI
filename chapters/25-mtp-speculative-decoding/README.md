@@ -330,7 +330,7 @@ uv run python chapters/25-mtp-speculative-decoding/code/06_gpu_speculative.py
 - **SGLang**：`speculative_algorithm` 可选 `EAGLE` / `EAGLE3`、`STANDALONE`（独立的草稿模型）、`NGRAM` 等，DeepSeek 等模型的 MTP 层用别名 `NEXTN` 走 EAGLE 这条路径（`python/sglang/srt/speculative/spec_info.py`）；另有训练 EAGLE 草稿头的 SpecForge 工具。
 - 服务端的难点是**批量**：一批里每条序列接受的个数不同，KV cache 的回滚、下一轮的输入长度都参差不齐；还常用"树状验证"（一次验证多条候选路径）进一步提高每轮产出。这些都在推理引擎的调度器里完成，本章的 batch = 1 实现不涉及。
 
-`zero/arch/speculative.py` 和 `mtp.py` 的 GPU 路径**尚未在 GPU 上验证**：本章只在 CPU 上验证了算法的正确性，没有测过 GPU 上的速度。
+`zero/arch/speculative.py` 和 `mtp.py` 在 CUDA 上的正确性已在 RTX 3090 上验证（推测解码与贪心逐字相同，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 11 节）；zero 这两个模块在 GPU 上的速度没有测过——本章"GPU 实测"一节测的是极简代码放大后的版本。
 
 **主线模型怎么用这一章**。主线模型**不带 MTP**（GOAL.md 3.3：主线不冒架构风险；在 0.6B 这个规模上，MTP 对主模型质量的影响也没有公开的可靠证据）。第二步发布时可以这样给它加速，前提是先在 GPU 上实测：
 

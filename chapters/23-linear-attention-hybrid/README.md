@@ -360,7 +360,7 @@ decode 一步：已有 T 个 token 的上下文，再来 1 个。Gated DeltaNet 
 - **flash-linear-attention（fla-org）**：Triton 写的线性注意力 kernel 库，`fla.ops.gated_delta_rule.chunk_gated_delta_rule` / `fused_recurrent_gated_delta_rule` 就是本章两种形式的 GPU 实现，Kimi Linear 的 KDA kernel（`fla.ops.kda`）也开源在里面；HF transformers 的 Qwen3.5 实现在装了 fla 和 causal-conv1d 时会自动换用这些 kernel，否则退回到和本章同构的纯 PyTorch 版本。
 - **vLLM**：`vllm/model_executor/models/qwen3_next.py`、`qwen3_5.py` 等支持这些混合模型；它的混合 KV cache 管理器（Hybrid KV Cache Manager 设计文档）为不同类型的层分配不同的缓存：全注意力层按 token 数分配 KV 页，Mamba / 线性层按请求分配固定大小的状态。
 
-`zero/arch/linear_attention.py` 里这些 GPU 路径都标注了"尚未在 GPU 上验证"：本章只在 CPU 上用纯 PyTorch 验证了数学。
+`zero/arch/linear_attention.py` 在 CUDA 上的前向、反向和生成已在 RTX 3090 上验证（顺带修了 `generate_greedy` 把输入建在 CPU 上的 bug；BF16 下 Gated DeltaNet 的梯度与 FP32 相对差约 20%，纯 PyTorch 分块实现在低精度下不够准，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 11、12 节）；fla、causal-conv1d 这些 CUDA kernel 没有安装，仍未验证。
 
 ---
 

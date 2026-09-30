@@ -354,7 +354,7 @@ return self.wo(out.reshape(bsz, seqlen, self.n_heads * self.head_dim))
 | 头数 H，每头 `d = C/H` | `n_heads` 个查询头，`n_kv_heads` 个 K/V 头；`head_dim` 可以不等于 `dim / n_heads` | **GQA**（分组查询注意力）：几个查询头共用一组 K/V，KV cache 按比例变小。第 10 章讲 |
 | 直接用 q、k | `q_norm`、`k_norm`：对每个头的 q、k 在 head_dim 上做 RMSNorm | **QK-Norm**：防止注意力分数过大导致训练发散（Qwen3、OLMo 2、Gemma 3 都用）。第 9 章讲 |
 | 可学习的位置向量加在输入上（`04` 里） | `apply_rope`：对 q、k 做旋转位置编码 | **RoPE**：位置信息直接进入 q·k，只和相对距离有关。第 9 章讲 |
-| 手写 `softmax(QKᵀ/√d)` + `masked_fill` | `F.scaled_dot_product_attention(..., is_causal=..., enable_gqa=...)` | 在 CUDA 上会自动选用 FlashAttention-2 或 memory-efficient 内核，不把 T × T 的权重矩阵写进显存；`enable_gqa` 让 SDPA 自己广播 K/V 头，不用复制。**这条 GPU 路径尚未在 GPU 上验证**；CPU 上用的是 PyTorch 的 C++ 参考实现 |
+| 手写 `softmax(QKᵀ/√d)` + `masked_fill` | `F.scaled_dot_product_attention(..., is_causal=..., enable_gqa=...)` | 在 CUDA 上 BF16/FP16 会自动选用 FlashAttention-2 内核，不把 T × T 的权重矩阵写进显存；`enable_gqa` 让 SDPA 自己广播 K/V 头，不用复制（memory-efficient 内核不支持 GQA，所以 GQA 只能走 Flash；FP32 时退回 math 后端）。已在 RTX 3090 上验证：BF16 + `enable_gqa=True` 默认就走 Flash（见本章"GPU 实测"与 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 1 节）；CPU 上用的是 PyTorch 的 C++ 参考实现 |
 | 一次处理整段序列 | 可选 `kv_cache`：推理时把算过的 K/V 存起来；有历史时按 `start_pos` 构造 mask（单个新 token 不需要 mask，分块 prefill 用显式布尔 mask） | 生成时每步只算新 token 的 q/k/v。第 10 章讲 |
 
 **对拍**：[`code/05_zero_parity.py`](code/05_zero_parity.py) 把本章 `MultiHeadAttention` 的权重原样加载进 `zero.model.Attention`（关掉 QK-Norm，传入 `cos = 1、sin = 0` 让 RoPE 变成恒等变换），再打开 GQA 和"手工复制 K/V"比较：

@@ -338,7 +338,7 @@ batch 1 从 T = 1,024 到 131,072：KV cache 多读 13.89 GiB，一步多花 23.
 | `01_kv_ledger.py`：手写的模型字典 + `layer_list` / `kv_bytes` | `zero/tools/kv_cache_calc.py`：`kv_cache_bytes(cfg, seq_len, batch, dtype_bytes)`、`kv_bytes_per_token`、`fixed_state_bytes`、`breakdown`；命令行 `uv run python -m zero.tools.kv_cache_calc configs/main/pretrain.toml --seq 32768` | 直接读 zero 的 `ModelConfig` / TOML、Hugging Face 的 `config.json`（含多模态模型的 `text_config` 嵌套、`layer_types`、Kimi 的 `linear_attn_config`、Mistral 原生 `params.json` 的字段名）；自动识别 MLA、滑动窗口、线性注意力层；单独估算线性层的固定状态；`--dtype-bytes 1` 可以算 FP8 KV cache |
 | `03_mla.py` 的 `MLA`：接口对齐第 10 章小模型，借用它的 `torch.cat` 式缓存 | `zero/arch/mla.py`：`MLAConfig`（字段名与 DeepSeek-V3 的 config 一致）、`MLAAttention`（接口与 `zero.model.Attention` 相同，可直接换进 `Transformer`，见 `mla_transformer`）、`MLACache`（预分配潜向量与 RoPE key，`nbytes()`） | 支持 query 也做低秩压缩（`q_lora_rank`，DeepSeek-V3 为 1536，省训练激活、不省缓存）；有缓存时自动走吸收路径、无缓存时走显式路径 + SDPA；支持分块 prefill；softmax 至少在 float32 上算 |
 | `04_attention_variants.py`：MHA/GQA/MQA/MLA 同配置对比 | 第二步可选：用 `mla_transformer(model_cfg, mla_cfg)` 在约 1 亿参数的 ladder 配置上重跑 | 生产级模块与主线 `Transformer` 共用 RMSNorm、SwiGLU、训练循环，换注意力只改一处 |
-| 无 | 行业实现：vLLM 的 PagedAttention（第 10 章）按页管理 KV cache；DeepSeek 开源的 FlashMLA 是 MLA decode 的 GPU kernel；vLLM、SGLang 都有 MLA 后端 | 本课的 MLA 只追求可读和正确，**尚未在 GPU 上验证性能**；真正上线要用这些专门实现 |
+| 无 | 行业实现：vLLM 的 PagedAttention（第 10 章）按页管理 KV cache；DeepSeek 开源的 FlashMLA 是 MLA decode 的 GPU kernel；vLLM、SGLang 都有 MLA 后端 | 本课的 MLA 只追求可读和正确：CUDA + BF16 下的正确性已在 RTX 3090 上验证（见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 11 节），性能没有优化、尚未在 GPU 上验证（本章"GPU 实测"一节有一组 decode 耗时参考）；真正上线要用这些专门实现 |
 
 **对拍**（`uv run pytest tests/test_kv_cache_calc.py tests/test_arch_mla.py`，本机 12 项全部通过，约 3 秒）：
 

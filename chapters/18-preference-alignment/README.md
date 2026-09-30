@@ -334,7 +334,7 @@ lr = 1e-2 时 margin 冲到 4.26、训练 acc 1.00，看起来"学得最好"；�
 | 参考 log 概率训练前算好 | `[dpo] ref_mode = "precompute"`（训练前对全部数据算一遍参考 log 概率）或 `"online"`（每步用一份冻结的拷贝现算） | precompute 省下一整份模型的显存；online 适合数据边生成边训练 |
 | 固定的 280 对 | `make_env_preferences`：`generate_pairs > 0` 且文件不存在时，对工具调用环境 `zero/post/envs/tool_env.py` 的任务，从当前策略采样 `samples_per_prompt` 个回答，用可验证奖励打分，最高分（满分才算）当 chosen、否则用标准解答；最低分当 rejected；都满分时把标准调用改坏当 rejected | **on-policy 偏好数据**：rejected 是模型自己真会犯的错；不需要人工标注 |
 | Adam、固定学习率 | `zero.post.common.LoopState`：AdamW、warmup + cosine、梯度裁剪、梯度累积、日志 JSONL、checkpoint、断点续训 | 和其他后训练阶段共用一套训练循环 |
-| 单进程 CPU | 单进程；CUDA 上用 BF16 autocast | 多卡 DDP 尚未实现，**尚未在 GPU 上验证**（`run_dpo` 的文档字符串） |
+| 单进程 CPU | 单进程；CUDA 上用 BF16 autocast | 多卡 DDP 尚未实现；单卡 CUDA + BF16 的通路已在 RTX 3090 上验证（见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 9 节） |
 
 **对拍**（[`tests/test_dpo.py`](../../tests/test_dpo.py)）：`test_dpo_loss_hand_computed` 用两对手算的例子验证损失、acc、margin，并检查 policy = ref 时损失为 ln 2、梯度抬 chosen 压 rejected；`test_batch_logps_only_counts_response` 验证序列 log 概率只算回复 token，与逐 token 手算一致；`test_run_dpo_end_to_end` 在 precompute / online 两种模式下各跑 3 步，第一步损失 = ln 2、之后下降、checkpoint 落盘。本章 `03` 的 ⑤ 又把从零写的损失和 `dpo_loss` 在数值与梯度上对了一遍。
 

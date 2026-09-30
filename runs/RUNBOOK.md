@@ -43,9 +43,11 @@ uv run python -m zero.smoke --out /tmp/smoke   # 端到端冒烟（CPU 单线程
 
 目的：把"尚未在 GPU 上验证"的路径逐项验证掉，并实测 MFU。预算：8×H100 约 1.5 小时 ≈ $30，上限 $50。
 
+> 2026-10：本节的单卡 / 2 卡 RTX 3090 版已经做过（[`2026-10-01-gpu0-check/`](2026-10-01-gpu0-check/README.md)：通路、跨卡一致性、续训都通过；32K 在 24GB 的卡上放不下）。8×H100 上仍要逐项跑一遍，重点是 NVLink 下的吞吐与 MFU、8 卡 FSDP 和 32K 的显存。
+
 | # | 验证项 | 命令 | 通过标准 |
 |---|---|---|---|
-| 1 | 单卡 BF16 + SDPA 走 FlashAttention | `uv run python -c "import torch; from torch.nn.attention import sdpa_kernel, SDPBackend; from zero.config import load_model_config; from zero.model import Transformer; m=Transformer(load_model_config('configs/main/pretrain.toml')).cuda().bfloat16(); x=torch.randint(0,65536,(1,4096),device='cuda');\nwith sdpa_kernel(SDPBackend.FLASH_ATTENTION): print(m(x).shape)"` | 不报 "No available kernel"。**待核实**：SDPA 的 `enable_gqa=True` 能否走 Flash 后端；若不能，退回 efficient 后端并记录 MFU 差异，必要时在 `Attention` 里先 `repeat_interleave` K/V |
+| 1 | 单卡 BF16 + SDPA 走 FlashAttention | `uv run python -c "import torch; from torch.nn.attention import sdpa_kernel, SDPBackend; from zero.config import load_model_config; from zero.model import Transformer; m=Transformer(load_model_config('configs/main/pretrain.toml')).cuda().bfloat16(); x=torch.randint(0,65536,(1,4096),device='cuda');\nwith sdpa_kernel(SDPBackend.FLASH_ATTENTION): print(m(x).shape)"` | 不报 "No available kernel"。**已核实**（RTX 3090，2026-10，见 [`2026-10-01-gpu0-check/`](2026-10-01-gpu0-check/README.md) 第 1 节）：BF16 下 `enable_gqa=True` 默认就走 Flash 后端。memory-efficient 后端**不支持 GQA**，所以不能"退回 efficient"；万一 H100 上 Flash 不可用，只能在 `Attention` 里先 `repeat_interleave` K/V 再走 efficient，并记录 MFU 差异 |
 | 2 | 多卡 DDP | `uv run torchrun --standalone --nproc_per_node=8 -m zero.train.pretrain --config configs/main/pretrain.toml --set train.max_steps=200 --set checkpoint.every=100 --set train.out_dir=out/gpu_check/ddp` | loss 下降；各卡显存均衡；日志里 `tok/s` 与 MFU 稳定 |
 | 3 | 断点续训 | 上一条跑到 ~150 步时 `kill`，再执行同一条命令 | 从 step 100 续训，第 101–200 步 loss 与不中断的对照运行一致（BF16 下允许 1e-3 级差异；数据顺序必须完全一致） |
 | 4 | FSDP2 | 同 2，加 `--set train.parallel=fsdp`，另起目录 | 与 DDP 的前 50 步 loss 曲线一致（误差 < 1%）；checkpoint 能被单卡 `load_policy` 读回 |

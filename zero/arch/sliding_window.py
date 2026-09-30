@@ -226,7 +226,8 @@ class SlidingWindowAttention(Attention):
         k, v = k.to(q.dtype), v.to(q.dtype)
 
         mask = sliding_window_mask(q_pos, k_pos, self.window)
-        # 自定义布尔掩码走 SDPA 的通用路径；GPU 上用 FlashAttention 的 window_size 或
+        # 自定义布尔掩码走 SDPA 的通用路径（CUDA 上能跑，但带掩码用不了 Flash 内核，RTX 3090 上训练吞吐只有
+        # 同尺寸全注意力的一半左右，2026-10）；GPU 上用 FlashAttention 的 window_size 或
         # FlexAttention 才能真正跳过窗口外的块（尚未在 GPU 上验证）
         out = F.scaled_dot_product_attention(
             q, k, v, attn_mask=mask, enable_gqa=self.n_kv_heads != self.n_heads

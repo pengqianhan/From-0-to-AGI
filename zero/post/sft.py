@@ -1,7 +1,8 @@
 """监督微调 SFT：对话数据 → token + loss mask → 打包 → 训练（对应第 16 章）。
 
     uv run python -m zero.post.sft --config configs/tiny/sft.toml
-    uv run torchrun --standalone --nproc_per_node=8 -m zero.post.sft --config configs/main/sft.toml   # 尚未在 GPU 上验证
+    uv run torchrun --standalone --nproc_per_node=8 -m zero.post.sft --config configs/main/sft.toml
+    # nproc_per_node=1 已在单张 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）；8 卡尚未在 GPU 上验证
 
 流程：
 

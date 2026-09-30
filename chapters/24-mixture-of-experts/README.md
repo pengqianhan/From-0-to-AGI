@@ -356,7 +356,7 @@ uv run python chapters/24-mixture-of-experts/code/05_gpu_moe.py
 
 | 极简版（`code/`） | 生产级（`zero/arch/moe.py`） | 多做了什么、为什么 |
 |---|---|---|
-| `02_moe_layer.py` 的 `MoE`：`nn.ModuleList` 装专家，按专家循环 | `MoEFFN`：专家权重按专家**堆叠**成 `(E, d, h)` 三维张量；token 按专家**稳定排序**后分段计算 | 堆叠权重是 grouped GEMM / 专家并行分片的前提（按第 0 维切给不同的卡）；排序后每个专家的 token 连续，方便换成 GPU kernel（**尚未在 GPU 上验证**） |
+| `02_moe_layer.py` 的 `MoE`：`nn.ModuleList` 装专家，按专家循环 | `MoEFFN`：专家权重按专家**堆叠**成 `(E, d, h)` 三维张量；token 按专家**稳定排序**后分段计算 | 堆叠权重是 grouped GEMM / 专家并行分片的前提（按第 0 维切给不同的卡）；排序后每个专家的 token 连续，方便换成 GPU kernel（CUDA + BF16 的前向反向已在 RTX 3090 上验证，顺带修了 autocast 下 `index_add_` 的精度 bug，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 12 节；grouped GEMM kernel 尚未接入） |
 | 固定 sigmoid 或 softmax、top-k 归一化 | `MoEConfig`：`score_func`、`norm_topk_prob`、`routed_scaling_factor`、`n_shared_experts` / `shared_expert_dim`，字段名对齐 HF 配置 | 能表达 DeepSeek-V3（sigmoid、归一化、×2.5、1 个共享）、Qwen3-MoE（softmax、归一化、无共享）、Mixtral 等不同配方 |
 | 偏置用这一步的负载更新 | `load_accum` 累计自上次 `update_bias()` 以来的负载；分布式下先 `all_reduce` | 梯度累积时要按整个全局 batch 的负载更新（DeepSeek-V3 "monitoring the expert load on the whole batch"）；多卡路径**尚未在 GPU 上验证** |
 | 偏置只在 `balance="free"` 时参与 | 偏置总是参与选择（不更新时保持为 0），并作为 buffer 进 `state_dict` | DeepSeek-V3 最后 500B token 把 γ 设为 0 但继续用已学到的偏置；续训必须恢复偏置 |
