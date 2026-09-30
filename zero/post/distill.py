@@ -480,7 +480,7 @@ def run_distill(
     """教师数据生成 →（混入 SFT 数据）→ 打包 → 训练学生。返回 {"meta", "history", ...}。"""
     from zero.post.common import read_jsonl
     from zero.post.sft import build_sft_shards
-    from zero.train.dist import DistInfo
+    from zero.train.dist import DistInfo, pick_device
     from zero.train.trainer import Trainer
 
     cfg, sec = load_post_config(
@@ -498,7 +498,7 @@ def run_distill(
     # 教师是不是"本项目自己的模型"（冒烟测试的替身）：local 后端 + zero checkpoint 目录
     is_self = tcfg.backend == "local" and not (Path(tcfg.path) / "config.json").exists()
     check_license(tcfg, is_self)
-    # 尚未在 GPU 上验证：有 CUDA 时本地教师放到 GPU 上
+    # 有 CUDA 时本地教师放到 GPU 上：已在单张 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）
     t_device = "cuda" if tc.device in ("auto", "cuda") and torch.cuda.is_available() else "cpu"
     teacher = build_teacher(tcfg, t_device)
     # 先检查能不能做 logits 蒸馏（分词器不同就尽早报错，别等教师数据生成完）
@@ -536,10 +536,13 @@ def run_distill(
     tc.eval_every = 0
 
     os.makedirs(tc.out_dir, exist_ok=True)
+    # 单进程；设备按 [train] device 选（原来固定 DistInfo()，即 CPU：有 GPU 时学生仍在 CPU 上训练、
+    # 教师也被搬回 CPU。2026-10 在 RTX 3090 上发现，见 runs/2026-10-01-gpu0-check/）
+    info = DistInfo(device=pick_device(tc.device))
     if use_logits:
-        trainer = _make_distill_trainer_cls()(cfg, teacher.model, dc, info=DistInfo(), log=log)  # type: ignore[union-attr]
+        trainer = _make_distill_trainer_cls()(cfg, teacher.model, dc, info=info, log=log)  # type: ignore[union-attr]
     else:
-        trainer = Trainer(cfg, DistInfo(), log)
+        trainer = Trainer(cfg, info, log)
     history = trainer.train()
 
     on_policy_hist: list[dict[str, float]] = []

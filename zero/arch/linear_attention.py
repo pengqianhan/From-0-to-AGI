@@ -22,7 +22,8 @@
 
 纯 PyTorch 实现，只为可读和对拍。真正训练时应换成 flash-linear-attention（fla-org）的 Triton kernel
 （`fla.ops.gated_delta_rule.chunk_gated_delta_rule` / `fused_recurrent_gated_delta_rule`），
-以及 causal-conv1d 的 CUDA kernel。# 尚未在 GPU 上验证
+以及 causal-conv1d 的 CUDA kernel。# 尚未在 GPU 上验证（fla 未安装）；本文件的纯 PyTorch 版在 CUDA 上能跑，
+与 CPU 对拍一致（RTX 3090，2026-10，见 runs/2026-10-01-gpu0-check/）
 """
 
 from __future__ import annotations
@@ -600,17 +601,20 @@ def generate_greedy(
     model: HybridTransformer, prompt: list[int], max_new_tokens: int, use_cache: bool = True
 ) -> list[int]:
     """贪心生成（返回新 token）。use_cache=False 时每步把整段序列重算一遍，专门用来对拍。"""
+    # 输入和缓存放到模型所在的设备上（2026-10 在 RTX 3090 上发现原来固定在 CPU，模型在 CUDA 上时报错）
+    device = next(model.parameters()).device
     ids = list(prompt)
     if not use_cache:
         for _ in range(max_new_tokens):
-            ids.append(int(model(torch.tensor([ids]))[0, -1].argmax()))
+            ids.append(int(model(torch.tensor([ids], device=device))[0, -1].argmax()))
         return ids[len(prompt) :]
-    cache = model.new_cache(1, len(prompt) + max_new_tokens)
-    logits = model(torch.tensor([ids]), cache, 0)  # prefill：分块形式
+    cache = model.new_cache(1, len(prompt) + max_new_tokens, device=device)
+    logits = model(torch.tensor([ids], device=device), cache, 0)  # prefill：分块形式
     for _ in range(max_new_tokens):
         nxt = int(logits[0, -1].argmax())
         ids.append(nxt)
-        logits = model(torch.tensor([[nxt]]), cache, len(ids) - 1)  # decode：递推形式，O(1) 状态
+        # decode：递推形式，O(1) 状态
+        logits = model(torch.tensor([[nxt]], device=device), cache, len(ids) - 1)
     return ids[len(prompt) :]
 
 

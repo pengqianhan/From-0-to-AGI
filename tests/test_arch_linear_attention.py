@@ -239,3 +239,14 @@ def test_hybrid_trains() -> None:
         opt.step()
         losses.append(loss.item())
     assert losses[-1] < losses[0] - 0.5
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="需要 CUDA")
+@pytest.mark.parametrize("kind", ["gated_deltanet", "linear"])
+def test_generate_greedy_on_cuda(kind: str) -> None:
+    """模型在 CUDA 上时，generate_greedy 的输入和缓存也要放到 CUDA 上（2026-10 在 RTX 3090 上发现）。"""
+    model = _tiny_hybrid(2, kind).cuda()
+    prompt = [3, 14, 15, 9, 26, 5, 35, 8, 9, 7, 9]
+    a = generate_greedy(model, prompt, 20, use_cache=True)
+    b = generate_greedy(model, prompt, 20, use_cache=False)
+    assert a == b and len(a) == 20
