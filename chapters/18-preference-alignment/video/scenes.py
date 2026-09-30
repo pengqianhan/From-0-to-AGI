@@ -20,7 +20,6 @@ from manim import (
     UP,
     Arrow,
     Axes,
-    Circle,
     Create,
     Cross,
     DashedLine,
