@@ -1,0 +1,30 @@
+{"id": "add-0", "prompt": "3 + 21 =", "answer": "24"}
+{"id": "add-1", "prompt": "10 + 12 =", "answer": "22"}
+{"id": "add-2", "prompt": "14 + 6 =", "answer": "20"}
+{"id": "add-3", "prompt": "2 + 17 =", "answer": "19"}
+{"id": "add-4", "prompt": "15 + 2 =", "answer": "17"}
+{"id": "add-5", "prompt": "20 + 4 =", "answer": "24"}
+{"id": "add-6", "prompt": "23 + 13 =", "answer": "36"}
+{"id": "add-7", "prompt": "7 + 9 =", "answer": "16"}
+{"id": "add-8", "prompt": "12 + 29 =", "answer": "41"}
+{"id": "add-9", "prompt": "24 + 16 =", "answer": "40"}
+{"id": "add-10", "prompt": "27 + 29 =", "answer": "56"}
+{"id": "add-11", "prompt": "30 + 19 =", "answer": "49"}
+{"id": "add-12", "prompt": "6 + 23 =", "answer": "29"}
+{"id": "add-13", "prompt": "22 + 7 =", "answer": "29"}
+{"id": "add-14", "prompt": "25 + 2 =", "answer": "27"}
+{"id": "add-15", "prompt": "26 + 22 =", "answer": "48"}
+{"id": "add-16", "prompt": "6 + 28 =", "answer": "34"}
+{"id": "add-17", "prompt": "6 + 11 =", "answer": "17"}
+{"id": "add-18", "prompt": "17 + 9 =", "answer": "26"}
+{"id": "add-19", "prompt": "4 + 20 =", "answer": "24"}
+{"id": "copy-0", "prompt": "Repeat: apple ->", "answer": "apple"}
+{"id": "copy-1", "prompt": "Repeat: river ->", "answer": "river"}
+{"id": "copy-2", "prompt": "Repeat: moon ->", "answer": "moon"}
+{"id": "copy-3", "prompt": "Repeat: 花 ->", "answer": "花"}
+{"id": "copy-4", "prompt": "Repeat: 山 ->", "answer": "山"}
+{"id": "copy-5", "prompt": "Repeat: code ->", "answer": "code"}
+{"id": "copy-6", "prompt": "Repeat: tiger ->", "answer": "tiger"}
+{"id": "copy-7", "prompt": "Repeat: 海 ->", "answer": "海"}
+{"id": "copy-8", "prompt": "Repeat: light ->", "answer": "light"}
+{"id": "copy-9", "prompt": "Repeat: 春 ->", "answer": "春"}

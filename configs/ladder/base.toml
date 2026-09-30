@@ -1,0 +1,69 @@
+# 阶梯实验（scaling ladder）的公共配置（第 12 章）。各尺寸文件用 base = "base.toml" 继承，只改模型形状、步数和学习率。
+# 用途：闸门 1 的"外推预测"——用几个小模型的 loss 拟合 scaling law，外推主线模型的 loss。
+# 全部是第二步（有 GPU 之后）才跑的配置；数值是起点，不是结论。
+# 假设单机 8 卡：每步 token 数 = micro_batch_size × grad_accum_steps × 8 × seq_len = 16 × 1 × 8 × 2048 = 262,144。
+# 词表与主线相同（暂定 65,536，第 13 章定），这样阶梯的结论才能外推到主线。
+
+[model]
+vocab_size = 65536
+rope_theta = 10000.0
+max_seq_len = 2048
+norm_eps = 1e-6
+qk_norm = true
+tie_embeddings = true
+init_std = 0.02
+
+[train]
+seed = 1337
+micro_batch_size = 16
+grad_accum_steps = 1
+device = "auto"
+dtype = "auto"           # CUDA 上 BF16 autocast
+parallel = "ddp"
+eval_every = 250
+eval_batches = 20
+
+[data]
+tokenizer = "data/tokenizer/tokenizer.json"
+seq_len = 2048
+val = "data/pretrain/val_*.bin"
+
+# 数据配比待第 13 章消融实验确定；这里是占位的起点
+[[data.sources]]
+name = "fineweb-edu"
+path = "data/pretrain/fineweb-edu_*.bin"
+weight = 0.45
+
+[[data.sources]]
+name = "fineweb-2-zh"
+path = "data/pretrain/fineweb-2-zh_*.bin"
+weight = 0.35
+
+[[data.sources]]
+name = "stack-edu"
+path = "data/pretrain/stack-edu_*.bin"
+weight = 0.12
+
+[[data.sources]]
+name = "finemath"
+path = "data/pretrain/finemath_*.bin"
+weight = 0.08
+
+[optim]
+weight_decay = 0.1
+beta1 = 0.9
+beta2 = 0.95
+grad_clip = 1.0
+
+[schedule]
+kind = "wsd"             # WSD：阶梯里可以从稳定段分叉出不同长度的衰减，一次训练得到多个 token 预算的点
+warmup_steps = 200
+decay_frac = 0.2
+min_lr_ratio = 0.0
+
+[checkpoint]
+every = 1000
+keep_last = 3
+
+[logging]
+every = 10

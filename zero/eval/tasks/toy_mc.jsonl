@@ -1,0 +1,40 @@
+{"id": "arith-0", "question": "26 + 50 = ?", "choices": ["75", "77", "76", "86"], "answer": 2}
+{"id": "arith-1", "question": "34 + 33 = ?", "choices": ["67", "66", "68", "77"], "answer": 0}
+{"id": "arith-2", "question": "24 + 39 = ?", "choices": ["73", "63", "62", "64"], "answer": 1}
+{"id": "arith-3", "question": "20 + 10 = ?", "choices": ["40", "31", "29", "30"], "answer": 3}
+{"id": "arith-4", "question": "36 + 47 = ?", "choices": ["82", "83", "93", "84"], "answer": 1}
+{"id": "arith-5", "question": "48 + 6 = ?", "choices": ["64", "54", "55", "53"], "answer": 1}
+{"id": "arith-6", "question": "24 + 29 = ?", "choices": ["54", "53", "63", "52"], "answer": 1}
+{"id": "arith-7", "question": "37 + 32 = ?", "choices": ["69", "70", "68", "79"], "answer": 0}
+{"id": "arith-8", "question": "5 + 37 = ?", "choices": ["41", "43", "52", "42"], "answer": 3}
+{"id": "arith-9", "question": "47 + 44 = ?", "choices": ["101", "92", "90", "91"], "answer": 3}
+{"id": "arith-10", "question": "23 + 17 = ?", "choices": ["41", "40", "50", "39"], "answer": 1}
+{"id": "arith-11", "question": "14 + 38 = ?", "choices": ["62", "51", "52", "53"], "answer": 2}
+{"id": "arith-12", "question": "36 + 30 = ?", "choices": ["65", "67", "76", "66"], "answer": 3}
+{"id": "arith-13", "question": "34 + 33 = ?", "choices": ["77", "66", "68", "67"], "answer": 3}
+{"id": "arith-14", "question": "47 + 9 = ?", "choices": ["57", "56", "66", "55"], "answer": 1}
+{"id": "arith-15", "question": "40 + 37 = ?", "choices": ["87", "77", "78", "76"], "answer": 1}
+{"id": "arith-16", "question": "40 + 26 = ?", "choices": ["67", "66", "76", "65"], "answer": 1}
+{"id": "arith-17", "question": "20 + 13 = ?", "choices": ["43", "32", "33", "34"], "answer": 2}
+{"id": "arith-18", "question": "41 + 44 = ?", "choices": ["95", "85", "86", "84"], "answer": 1}
+{"id": "arith-19", "question": "7 + 45 = ?", "choices": ["62", "51", "52", "53"], "answer": 2}
+{"id": "fact-0", "question": "中国的首都是哪座城市？", "choices": ["南京", "上海", "广州", "北京"], "answer": 3}
+{"id": "fact-1", "question": "一年有几个月？", "choices": ["十个", "十二个", "十三个", "十一个"], "answer": 1}
+{"id": "fact-2", "question": "水在标准大气压下的沸点是多少摄氏度？", "choices": ["100", "200", "0", "50"], "answer": 0}
+{"id": "fact-3", "question": "太阳从哪个方向升起？", "choices": ["东方", "北方", "西方", "南方"], "answer": 0}
+{"id": "fact-4", "question": "一周有几天？", "choices": ["八天", "五天", "七天", "六天"], "answer": 2}
+{"id": "fact-5", "question": "熊猫最爱吃什么？", "choices": ["米饭", "苹果", "鱼", "竹子"], "answer": 3}
+{"id": "fact-6", "question": "“春眠不觉晓”的下一句是？", "choices": ["疑是地上霜", "花落知多少", "处处闻啼鸟", "夜来风雨声"], "answer": 2}
+{"id": "fact-7", "question": "三角形有几条边？", "choices": ["四条", "两条", "三条", "五条"], "answer": 2}
+{"id": "fact-8", "question": "地球绕着什么转？", "choices": ["木星", "月亮", "太阳", "火星"], "answer": 2}
+{"id": "fact-9", "question": "冬天之后是哪个季节？", "choices": ["夏天", "秋天", "春天", "冬天"], "answer": 2}
+{"id": "fact-10", "question": "What is the capital of France?", "choices": ["Rome", "Paris", "Berlin", "London"], "answer": 1}
+{"id": "fact-11", "question": "How many legs does a spider have?", "choices": ["six", "ten", "four", "eight"], "answer": 3}
+{"id": "fact-12", "question": "What color is the sky on a clear day?", "choices": ["green", "red", "black", "blue"], "answer": 3}
+{"id": "fact-13", "question": "Which animal says 'moo'?", "choices": ["dog", "duck", "cat", "cow"], "answer": 3}
+{"id": "fact-14", "question": "What is the opposite of 'hot'?", "choices": ["warm", "fast", "cold", "big"], "answer": 2}
+{"id": "fact-15", "question": "Water freezes at how many degrees Celsius?", "choices": ["100", "10", "50", "0"], "answer": 3}
+{"id": "fact-16", "question": "How many days are in a week?", "choices": ["ten", "three", "five", "seven"], "answer": 3}
+{"id": "fact-17", "question": "Which planet do we live on?", "choices": ["Mars", "Jupiter", "Venus", "Earth"], "answer": 3}
+{"id": "fact-18", "question": "What do bees make?", "choices": ["milk", "honey", "silk", "paper"], "answer": 1}
+{"id": "fact-19", "question": "Who wrote 'Romeo and Juliet'?", "choices": ["Dickens", "Homer", "Shakespeare", "Tolstoy"], "answer": 2}

@@ -1,0 +1,61 @@
+# 主线模型 GRPO（第 19 章）。第二步默认值，待调。
+#   uv run python -m zero.post.grpo --config configs/main/grpo.toml
+# zero 的 GRPO 是可读的单进程实现（采样用 zero.generate + KV cache，没有连续批处理）。
+# 第二步如果吞吐不够，按 zero/post/grpo.py 模块说明先与 verl 在同一小任务上对拍，再用 verl 做实际训练。
+# 尚未在 GPU 上验证。
+
+[model]                  # 与 configs/main/longctx.toml 的 checkpoint 形状一致（689.5M 参数）
+vocab_size = 65536
+dim = 1280
+n_layers = 28
+n_heads = 16
+n_kv_heads = 8
+head_dim = 128
+ffn_dim = 3584
+rope_theta = 1000000.0   # 长上下文阶段调大后的底数
+max_seq_len = 32768
+tie_embeddings = true
+
+[train]
+seed = 1337
+max_steps = 500
+device = "auto"
+dtype = "auto"
+out_dir = "out/main/grpo"
+init_from = "out/main/dpo/ckpt"
+
+[data]
+format = "none"
+tokenizer = "data/tokenizer/tokenizer.json"
+seq_len = 8192
+
+[grpo]
+group_size = 16
+prompts_per_step = 64    # 每步 1024 条回复
+max_new_tokens = 512
+temperature = 1.0
+clip_eps = 0.2
+clip_eps_high = 0.28     # clip-higher（DAPO），属"GRPO 改进"，待核实是否达到共识；设 0 即关闭
+kl_coef = 0.0
+ppo_epochs = 1
+loss_agg = "token_mean"
+scale_rewards = true
+n_train_tasks = 100000
+env_seed = 19
+forward_batch = 16
+
+[optim]
+lr = 1e-6
+weight_decay = 0.0
+grad_clip = 1.0
+
+[schedule]
+kind = "constant"
+warmup_steps = 10
+
+[checkpoint]
+every = 50
+keep_last = 3
+
+[logging]
+every = 1
