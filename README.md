@@ -44,7 +44,7 @@ uv run python -m zero.smoke
 
 - 系统里装好 `ffmpeg` 和 LaTeX（Manim 的公式要用）；
 - 字体：中文字体（WenQuanYi Zen Hei、Noto Sans CJK SC、Source Han Sans SC 任一）和等宽字体 Noto Sans Mono（代码块用）；
-- 第一次渲染会从 GitHub 自动下载离线 TTS 模型（sherpa-onnx 的 MeloTTS 中英混读模型）到 `~/.cache/tts`，之后离线可用；换目录用环境变量 `VIDEO_TTS_MODEL_DIR`；
+- 第一次渲染会从 GitHub 自动下载离线 TTS 模型（sherpa-onnx 的 MeloTTS 中英混读模型）到 `~/.cache/tts`，之后离线可用；换目录用环境变量 `VIDEO_TTS_MODEL_DIR`；TTS 默认用满所有 CPU 核，在共享服务器上用 `VIDEO_TTS_THREADS=8` 之类的设置限制线程数；
 - 一章 1080p 成片在 4 核 CPU 上约 6–8 分钟，加 `--preview` 出 480p 样片更快；成片在 `chapters/NN-*/video/out/`（不进 git）。
 
 ## 目录

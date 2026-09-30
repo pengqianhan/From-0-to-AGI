@@ -78,8 +78,10 @@ class _SherpaBackend:
         fsts = ",".join(
             str(d / f) for f in ["date.fst", "number.fst", "phone.fst", "new_heteronym.fst"]
         )
+        # 默认用满所有核；共享服务器上用 VIDEO_TTS_THREADS 限制线程数
+        threads = int(os.environ.get("VIDEO_TTS_THREADS", "0")) or os.cpu_count() or 2
         cfg = sherpa_onnx.OfflineTtsConfig(
-            model=sherpa_onnx.OfflineTtsModelConfig(vits=vits, num_threads=os.cpu_count() or 2),
+            model=sherpa_onnx.OfflineTtsModelConfig(vits=vits, num_threads=threads),
             rule_fsts=fsts,
         )
         self.tts = sherpa_onnx.OfflineTts(cfg)
