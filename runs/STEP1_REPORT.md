@@ -11,7 +11,7 @@
 - 视频源码（`video/script.md` 事实清单 + 分镜旁白，`video/scenes.py`，`video/build.sh`），480p 样片都已渲染并逐镜检查版式，交付检查 `problems` 为空，时长 5–10 分钟（各章时长见根目录 README）；
 - 自检 Skill（`.claude/commands/chNN-*.md`）。
 
-1080p 成片由 `bash chapters/NN-*/video/build.sh` 生成（MP4 按 GOAL.md 第 7 节不进 git），发布到 B 站 / YouTube 后把链接写回各章 README。
+26 章的 1080p 成片都已渲染（`bash chapters/NN-*/video/build.sh`），交付检查全部通过：1920×1080、有音轨、峰值约 −6 dB、`problems` 为空，时长 5.2–9.5 分钟；字幕 `video/subtitles.srt` 已提交。MP4 按 GOAL.md 第 7 节不进 git，发布到 B 站 / YouTube 后把链接写回各章 README。
 
 生产级代码（`zero/`）：
 
