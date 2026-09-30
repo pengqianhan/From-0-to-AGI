@@ -118,10 +118,10 @@
 
 ## 三、交付检查
 
-- [ ] `bash chapters/13-data/video/build.sh --preview` 无 problems，时长 5–10 分钟
-- [ ] 每镜中点与结尾截图检查：无重叠、无越界、不进字幕区、标题不叠
-- [ ] 用到极小配置数据的镜头（S04、S08、S12、S13、S15）右上角有"极小配置演示"
-- [ ] 画面数字全部来自代码输出或缓存（见文首）
+- [x] `bash chapters/13-data/video/build.sh --preview` 无 problems，样片时长 8.58 分钟
+- [x] 每镜中点与结尾截图检查：无重叠、无越界、不进字幕区、标题不叠（修过 S06 公式与标签重叠、S11 饼图标签、S13 考题越界、S14 刻度重叠）
+- [x] 用到极小配置数据的镜头（S04、S08、S12、S13、S15）右上角有"极小配置演示"
+- [x] 画面数字全部来自代码输出或缓存（见文首）
 - [ ] 专有名词读法：FineWeb、DCLM、MinHash、Jaccard、Puro、Kimi K2、SimpleQA、Nemotron、Phi-4
 
 > ⚠️ 旁白发音与语速未经人工试听。
