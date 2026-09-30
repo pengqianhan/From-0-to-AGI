@@ -7,6 +7,7 @@ import pytest
 from zero.post.chat import format_tool_call
 from zero.post.envs.tool_env import (
     MAX_CALLS,
+    NO_TOOL_REWARD,
     SMALL_SPACE_KINDS,
     Task,
     ToolError,
@@ -119,8 +120,12 @@ def test_gold_solutions_get_full_reward() -> None:
     for t in generate_tasks(300, seed=7) + dev_tasks(100):
         text = _calls_text(t.gold_calls) if t.gold_calls else t.gold_answer
         r = score_tool_calls(t, text)
-        assert r.total == pytest.approx(1.0) and r.format_ok, (t.query, r)
-        assert score_final_answer(t, t.gold_answer).answer_ok, t.query
+        if t.gold_calls:
+            assert r.total == pytest.approx(1.0) and r.format_ok, (t.query, r)
+            assert score_final_answer(t, t.gold_answer).answer_ok, t.query
+        else:  # 闲聊任务：没调工具是对的，但内容无法自动核对
+            assert r.total == pytest.approx(NO_TOOL_REWARD) and r.format_ok, (t.query, r)
+            assert score_final_answer(t, t.gold_answer).answer_ok is None, t.query
         # 标准解答轨迹：tool 结果就是执行 gold call 的结果
         msgs = reference_messages(t)
         assert msgs[-1]["content"] == t.gold_answer
@@ -178,7 +183,7 @@ def test_reward_negative_cases() -> None:
     assert r.total < 0 and not r.format_ok  # 参数不合 schema
     assert score_tool_calls(t, "我不知道").total == 0.0  # 该调没调
     no = _task("no_tool")
-    assert score_tool_calls(no, no.gold_answer).total == 1.0
+    assert score_tool_calls(no, no.gold_answer).total == NO_TOOL_REWARD
     r = score_tool_calls(
         no, format_tool_call({"name": no.tools[0]["function"]["name"], "arguments": {}})
     )
@@ -271,3 +276,24 @@ def test_guard_untagged_call_json() -> None:
     assert score_tool_calls(no, '{"name": "x"').total == -1.0  # 不该调工具的任务上也不能拿满分
     assert score_tool_calls(no, "   ").total == 0.0  # 空回答不给分
     assert score_final_answer(t, bare).answer_ok is False
+
+
+def test_wrong_args_with_coincident_result_not_full_credit() -> None:
+    """第 17、19 章发现的真实漏洞：weekday 的日期差 7 天，星期几相同，但参数是错的。"""
+    import datetime as dt
+
+    t = _task("weekday")
+    g = t.gold_calls[0]
+    d = dt.date.fromisoformat(g["arguments"]["date"]) + dt.timedelta(days=7)
+    wrong = {"name": "weekday", "arguments": {"date": d.isoformat()}}
+    r = score_tool_calls(t, format_tool_call(wrong))
+    assert r.total < 0.999 and r.exec_match == 0.0, r
+
+
+def test_no_tool_invented_numbers_get_zero() -> None:
+    """第 17 章发现的真实漏洞：闲聊任务上的胡话（编造的天气数字）曾经拿满分、还通过了蒸馏验证。"""
+    no = _task("no_tool")
+    r = score_tool_calls(no, "坚下云，气温 28°C。")
+    assert r.total == 0.0
+    f = score_final_answer(no, "坚下云，气温 28°C。")
+    assert f.total == 0.0 and f.answer_ok is False

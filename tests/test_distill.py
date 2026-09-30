@@ -164,8 +164,8 @@ def test_openai_teacher_with_fake_server(tmp_path: Path) -> None:
     finally:
         srv.shutdown()
     assert (
-        meta["n_candidates"] == 12 and meta["n_verified"] == 6
-    )  # 每个任务一对一错，错的被执行验证筛掉
+        meta["n_candidates"] == 12 and meta["n_verified"] == 5
+    )  # 每个任务一对一错，错的被执行验证筛掉；闲聊任务的回答内容无法核对，也不收进蒸馏数据
     assert meta["teacher"] == {
         "name": "FakeTeacher",
         "version": "v0",
@@ -176,7 +176,9 @@ def test_openai_teacher_with_fake_server(tmp_path: Path) -> None:
     }
     rows = [json.loads(x) for x in (tmp_path / "kd.jsonl").read_text().splitlines()]
     assert all(r["teacher"]["name"] == "FakeTeacher" for r in rows)
-    assert json.loads((tmp_path / "kd.jsonl.meta.json").read_text())["pass_rate"] == 0.5
+    assert json.loads((tmp_path / "kd.jsonl.meta.json").read_text())["pass_rate"] == pytest.approx(
+        5 / 12
+    )
     assert _FakeOpenAI.requests[0]["tools"] and _FakeOpenAI.requests[0]["n"] == 2
 
 

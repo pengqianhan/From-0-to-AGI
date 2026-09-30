@@ -410,8 +410,8 @@ class ChapterScene(NarratedScene):
             self.play(*self.set_heading("在两万参数的小模型上跑 DPO"), run_time=self.fit(0.8))
             T = N["toy"]
             H = T["hist"]
-            tax = Axes(x_range=[0, 150, 50], y_range=[0, 1, 0.25], x_length=5.4, y_length=3.4,
-                       axis_config={"color": theme.MUTED, "include_numbers": True, "font_size": 18}, tips=False).move_to([-3.5, 0.2, 0])
+            tax = Axes(x_range=[0, 150, 50], y_range=[0, 1, 0.25], x_length=5.4, y_length=3.0,
+                       axis_config={"color": theme.MUTED, "include_numbers": True, "font_size": 18}, tips=False).move_to([-3.5, 0.55, 0])
             tl = zh("DPO 步数", 18, theme.MUTED).next_to(tax.x_axis, DOWN, 0.4)
             task = zh("任务 a+b=？  SFT 示范只有 40% 是对的", 22, theme.FG).move_to([0, 2.5, 0])
             self.play(FadeIn(task), Create(tax), FadeIn(tl), run_time=self.fit(1.2))

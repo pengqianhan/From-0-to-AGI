@@ -143,7 +143,7 @@ def node_box(nid: str) -> VGroup:
     status = n["status"]
     color = {"consensus": theme.OUTPUT, "new": theme.HIGHLIGHT, "frontier": theme.MUTED}.get(status, theme.FG)
     t = zh(LABEL[nid], 19, theme.FG if status != "frontier" else theme.MUTED)
-    ch = zh(n["chapter"].split("、")[0], 13, theme.MUTED)
+    ch = zh(n["chapter"].split("、")[0], 14, theme.MUTED)
     body = VGroup(t, ch).arrange(DOWN, buff=0.04)
     box = RoundedRectangle(corner_radius=0.08, width=2.45, height=0.52, stroke_color=color,
                            stroke_width=2.2, fill_color=color, fill_opacity=0.12 if status != "frontier" else 0)
@@ -210,7 +210,7 @@ class ChapterScene(NarratedScene):
             items = ["现代稠密块", "Pre-Norm RMSNorm", "RoPE", "SwiGLU", "GQA", "QK-Norm", "共享 embedding"]
             lines = VGroup(*[zh(t, 22 if i == 0 else 18, theme.HIGHLIGHT if i == 0 else theme.FG)
                              for i, t in enumerate(items)]).arrange(DOWN, buff=0.2)
-            block = RoundedRectangle(corner_radius=0.12, width=2.25, height=lines.height + 0.5,
+            block = RoundedRectangle(corner_radius=0.12, width=2.55, height=lines.height + 0.5,
                                      stroke_color=theme.INPUT, stroke_width=2.5, fill_color=theme.INPUT,
                                      fill_opacity=0.1)
             lines.move_to(block.get_center())
@@ -266,8 +266,8 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() * 0.3)
             self.grow(["csa"], 1.2)
             ratio = next(k["gib"] for k in D["kv"] if k["id"] == "deepseek-v4-pro")
-            note = zh(f"DeepSeek-V4-Pro：128K 的 KV cache 只要 {ratio * 1024:.0f} MiB", 18,
-                      theme.PARAM).next_to(self.boxes["csa"], DOWN, 0.18)
+            note = zh(f"DeepSeek-V4-Pro：128K 只要 {ratio * 1024:.0f} MiB", 17, theme.PARAM)
+            note.next_to(self.boxes["csa"], DOWN, 0.15).align_to(self.boxes["csa"], RIGHT)
             self.play(FadeIn(note), run_time=self.fit(0.6))
             self.wait(self.remaining() - 0.5)
             self.play(FadeOut(note), run_time=self.fit(0.5))
@@ -280,8 +280,9 @@ class ChapterScene(NarratedScene):
             self.grow(["swa"], 1.0)
             self.grow(["sparse"], 1.2)
             users = NODES["sparse"]["users"]
-            note = zh("在用：" + "、".join(u.split("-")[0] for u in users) + "（2026 刚满 3 家）", 16,
-                      theme.HIGHLIGHT).next_to(self.boxes["sparse"], RIGHT, 0.2)
+            note = VGroup(zh("在用：" + "、".join(u.split("-")[0] for u in users), 16, theme.HIGHLIGHT),
+                          zh("2026 年过门槛，做法各异", 16, theme.HIGHLIGHT)).arrange(DOWN, buff=0.06)
+            note.next_to(self.boxes["sparse"], RIGHT, 0.25)
             self.play(FadeIn(note), run_time=self.fit(0.6))
             self.wait(self.remaining() * 0.35)
             self.grow(["hybrid"], 1.0)
@@ -341,7 +342,7 @@ class ChapterScene(NarratedScene):
     # ── S09 参数 ─────────────────────────────────────────────────────────
     def s09(self) -> None:
         with self.shot("S09"):
-            self.play(*self.set_heading("总参数（浅）与激活参数（深），对数刻度"), run_time=self.fit(0.8))
+            self.play(*self.set_heading("总参数（暗色长条）与激活参数（亮色），对数刻度"), run_time=self.fit(0.8))
             x0, per_dec, lo = -1.9, 1.62, 8  # 1e8 在 x0，每十倍 1.62 个单位
 
             def xpos(v: float) -> float:

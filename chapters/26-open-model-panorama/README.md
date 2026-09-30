@@ -53,7 +53,7 @@ GPT-2  [起点，第 8 章]
    │  ├─ 无辅助损失均衡  [共识，第 24 章]｜在用：DeepSeek-V4-Pro、Kimi-K3、GLM-5.3、MiniMax-M3
    │  └─ Latent MoE（专家在潜空间里算）  [前沿观察，本章]｜在用：Kimi-K3
    ├─ 滑动窗口 / 局部-全局交替  [共识，第 22 章]｜在用：DeepSeek-V4-Pro、gpt-oss-120b
-   │  └─ 稀疏注意力（按内容挑 top-k）  [新晋共识（2026 刚满 3 家），第 22 章、本章]｜在用：DeepSeek-V4-Pro、GLM-5.3、MiniMax-M3
+   │  └─ 稀疏注意力（按内容挑 top-k）  [新晋共识（2026 年才达到规则 A），第 22 章、本章]｜在用：DeepSeek-V4-Pro、GLM-5.3、MiniMax-M3
    ├─ 混合线性注意力（约 3:1）  [共识，第 23 章]｜在用：Qwen3.8、Kimi-K3、Qwen3.5-0.8B
    │  └─ KDA（逐通道门控）  [前沿观察，第 23 章]｜在用：Kimi-K3
    ├─ MTP（多预测一个 token）  [共识，第 25 章]｜在用：DeepSeek-V4-Pro、Qwen3.8、GLM-5.3、MiniMax-M3、Qwen3.5-0.8B
@@ -224,7 +224,7 @@ YaRN                       ●      ·      ·      ●      ·      ·     2  �
 SwiGLU/GLU                 ●      ●      ●      ●      ●      ●     6  ≥3 家，共识
 QK-Norm                    ●      ●      ·      ·      ·      ●     3  ≥3 家，共识
 滑动窗口                    ●      ·      ·      ●      ·      ·     2  ＋Gemma 3、OLMo 3（第 22 章） → 共识
-稀疏注意力                  ●      ·      ·      ·      ●      ●     3  ≥3 家，共识（2026 新晋）
+稀疏注意力                  ●      ·      ·      ·      ●      ●     3  ＋美团 LongCat-2.0（第 22 章） → 共识（2026 新晋）
 MoE                        ●      ●      ●      ●      ●      ●     6  ≥3 家，共识
 共享专家                    ●      ●      ●      ·      ●      ●     5  ≥3 家，共识
 无辅助损失均衡               ●      ·      ●      ·      ●      ●     4  ≥3 家，共识
@@ -245,7 +245,7 @@ MLA                        ·      ·      ●      ·      ●      ·     2  �
 **二、"让长上下文变便宜"已经分成三派，每派都过了 3 家的门槛。**
 
 - **混合线性注意力派**：千问（Gated DeltaNet 3:1）、Kimi（KDA 约 3:1）、NVIDIA Nemotron 3（Mamba-2 混合，第 23 章）；
-- **稀疏注意力派**：DeepSeek（V3.2 的 DSA → V4 的 CSA）、GLM（DSA + IndexShare）、MiniMax（M3 的 MSA 块稀疏）。**这是本章的新发现**：第 21、22 章写作时只核实到 DeepSeek 和 GLM 两家，MiniMax-M3 的加入让它刚好满 3 家，所以树上标成"新晋共识"。但三家的做法并不一样——DSA 按单个 token 挑 top-k，CSA 先压缩再挑，MSA 按 128 个 token 的块挑——**"按内容挑"这个思想已是共识，具体做法还没收敛**，而且没有一家小模型在用；
+- **稀疏注意力派**：DeepSeek（V3.2 的 DSA → V4 的 CSA）、GLM（DSA + IndexShare）、MiniMax（M3 的 MSA 块稀疏）。第 21 章写作时只核实到 DeepSeek 和 GLM 两家；2026 年 MiniMax-M3 加入（第 22 章另核实了美团 LongCat-2.0），只看本章的 6 个旗舰就已满 3 家，所以树上标成"新晋共识"，与第 22 章的判定一致。但各家的做法并不一样——DSA 按单个 token 挑 top-k，CSA 先压缩再挑，MSA 按 128 个 token 的块挑——**"按内容挑"这个思想已是共识，具体做法还没收敛**，而且没有一家小模型在用；
 - **少存 / 压缩派**：MLA（Kimi-K3、GLM-5.3，加上第 21 章的 Mistral Large 3）、滑动窗口（gpt-oss、DeepSeek-V4 的滑动分支，加上第 22 章的 Gemma 3、OLMo 3）。
 
 要注意 MLA 的处境：它的发明者 DeepSeek 在 V4 里换成了压缩注意力 + 共享 K=V 的 MQA。MLA 按计数仍满足规则 A，但它已经不再是"越来越多人用"的那种共识了。
@@ -351,7 +351,7 @@ MLA                        ·      ·      ●      ·      ●      ·     2  �
 | QK-Norm | DeepSeek-V4（报告 2.3.3 节）、Qwen3.8（HF `Qwen3_5MoeAttention.q_norm/k_norm`）、MiniMax-M3（`use_qk_norm: true`） | Gemma 3、OLMo 2（第 9 章） | 共识 |
 | MLA | Kimi-K3、GLM-5.3（`kv_lora_rank: 512`） | Mistral Large 3、DeepSeek-V3/V3.2（第 21 章） | 共识（DeepSeek-V4 已换掉） |
 | 滑动窗口 / 局部-全局 | gpt-oss（1:1，窗口 128）、DeepSeek-V4（每层 128 的滑动分支） | Gemma 3、OLMo 3（第 22 章） | 共识 |
-| 稀疏注意力 | DeepSeek-V4（`index_topk: 1024`）、GLM-5.3（`index_topk: 2048` + IndexShare）、MiniMax-M3（MSA，`sparse_topk_blocks: 16`） | DeepSeek-V3.2（第 21 章） | **2026 新晋：刚满 3 家，做法未收敛** |
+| 稀疏注意力 | DeepSeek-V4（`index_topk: 1024`）、GLM-5.3（`index_topk: 2048` + IndexShare）、MiniMax-M3（MSA，`sparse_topk_blocks: 16`） | DeepSeek-V3.2（第 21 章）、美团 LongCat-2.0（第 22 章） | **2026 新晋共识，做法未收敛** |
 | 混合线性注意力 | Qwen3.8（69 GDN : 23）、Kimi-K3（69 KDA : 24） | NVIDIA Nemotron 3（第 23 章）、Qwen3.5 全系列 | 共识 |
 | MoE（细粒度） | 全部 6 家：384 选 6、512 选 10、896 选 16、128 选 4、256 选 8、128 选 4 | 第 24 章 | 共识 |
 | 共享专家 | DeepSeek-V4（1）、Qwen3.8（1）、Kimi-K3（2）、GLM-5.3（1）、MiniMax-M3（1）；gpt-oss 不用 | 第 24 章 | 共识 |
@@ -392,7 +392,7 @@ MLA                        ·      ·      ●      ·      ●      ·     2  �
 2. Qwen3.8 和 Kimi-K3 都是约 3:1 的混合线性注意力，一个全注意力层用 GQA，一个用 MLA。如果把 Qwen3.8 的 23 层全注意力换成 MLA（512 + 64），128K 的 KV cache 会变成多少？用 `01_panorama.py` 的办法算一算。
 3. MiniMax-M3 的块稀疏注意力不省 KV cache，为什么还能让 decode 快 15 倍？（提示：第 21 章 decode 读的是什么；稀疏注意力每一步要读的是全部 KV 还是被挑中的块？）
 4. 本章说"激活参数没有统一口径"。如果你要公平地比较 gpt-oss-120b 和 MiniMax-M3 每个 token 的计算量，应该用哪一列？每个 token 的前向计算量大约是激活参数的几倍？
-5. 按 GOAL.md 2.1，稀疏注意力在 2026 年刚好凑满 3 家。你认为"3 家都在用同一个思想、但 3 种做法"算不算共识？如果你是这门课的作者，会把它写进正文还是留在前沿观察？
+5. 按 GOAL.md 2.1，稀疏注意力到 2026 年才过了 3 家的门槛。你认为"几家都在用同一个思想、但做法各不相同"算不算共识？如果你是这门课的作者，会把它写进正文还是留在前沿观察？
 6. 假如主线模型的下一版只能加一项新技术，你会选 MTP、3:1 混合线性注意力，还是局部-全局交替？列出你的理由、预期收益，以及要在第 11 章的考卷上加什么测试来证明它没有伤害工具调用。
 
 ## 动手任务

@@ -179,7 +179,7 @@ NODES = [
 STATUS_ZH = {
     "base": "起点",
     "consensus": "共识",
-    "new": "新晋共识（2026 刚满 3 家）",
+    "new": "新晋共识（2026 年才达到规则 A）",
     "frontier": "前沿观察",
 }
 

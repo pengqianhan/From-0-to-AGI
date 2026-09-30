@@ -150,6 +150,7 @@ EARLIER = {
     "滑动窗口": ["Gemma 3、OLMo 3（第 22 章）"],
     "混合线性注意力": ["NVIDIA Nemotron 3（第 23 章）"],
     "MLA": ["Mistral Large 3（第 21 章）"],
+    "稀疏注意力": ["美团 LongCat-2.0（第 22 章）"],
 }
 
 

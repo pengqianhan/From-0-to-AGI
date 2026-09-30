@@ -657,7 +657,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() * 0.25)
             self.play(Create(hl), run_time=self.fit(0.6))
             rx = VGroup(zh("预切分正则 → qwen3.5：", 20, theme.HIGHLIGHT),
-                        zh("印地语 36 → 14 块，泰语 16 → 1 块，中英代码完全相同", 20)).arrange(RIGHT, buff=0.2)
+                        zh("印地语 36 → 14 块，泰语 16 → 1 块，中英代码压缩率不变", 20)).arrange(RIGHT, buff=0.2)
             rx.move_to([0.8, -2.25, 0])
             self.wait(self.remaining() * 0.4)
             self.play(FadeIn(rx), run_time=self.fit(0.8))

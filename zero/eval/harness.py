@@ -200,12 +200,12 @@ def eval_tool_calls(
                 "kind": t.kind,
                 "call_reward": cr.total,
                 "format_ok": float(cr.format_ok),
-                "call_exact": float(
-                    cr.total >= 0.999
-                ),  # 该调的全调对、没有多余调用（不该调的没调）
+                "call_exact": float(cr.exact),  # 该调的全调对、没有多余调用（不该调的没调、没编造）
                 "ast_match": cr.ast_match,
                 "exec_match": cr.exec_match,
-                "answer_ok": float(bool(ep.answer_reward.answer_ok)),
+                "answer_ok": float(
+                    ep.answer_reward.answer_ok is not False
+                ),  # 闲聊任务无法核对时不计为错
                 "success": float(ep.success),
                 "turns": ep.turns,
             }

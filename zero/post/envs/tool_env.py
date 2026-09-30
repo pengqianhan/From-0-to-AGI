@@ -626,12 +626,15 @@ class Reward:
     format_ok: bool
     n_calls: int = 0
     ast_match: float = 0.0  # 标准调用里参数 AST 一致的比例
-    exec_match: float = 0.0  # 标准调用里执行结果一致（或 AST 一致）的比例
+    exec_match: float = 0.0  # 标准调用里参数等价（或 AST 一致）的比例；calculator 按执行结果
     answer_ok: bool | None = None
     details: list[str] = field(default_factory=list)
+    exact: bool = False  # 调用行为完全正确：该调的全调对且没多余调用；不该调的没调、也没编造
 
 
 _NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
+# 不需要工具的闲聊任务：内容无法自动判分，只因"正确地没调工具"给部分分（满分留给可验证的任务）
+NO_TOOL_REWARD = 0.5
 
 
 def _norm_value(v: Any) -> Any:
@@ -684,6 +687,55 @@ def exec_equal(pred: dict[str, Any], gold: dict[str, Any]) -> bool:
     return _results_equal(rp, rg)
 
 
+def canonical_args(name: str, args: dict[str, Any]) -> dict[str, Any] | None:
+    """把参数换成规范形式（日期解析成 ISO、单位和城市换成标准名、数字按数值）；参数非法返回 None。"""
+    try:
+        if name == "get_weather":
+            return {"city": canon_city(args["city"])}
+        if name == "convert_units":
+            return {
+                "value": round(float(args["value"]), 6),
+                "from_unit": _canon_unit(args["from_unit"]),
+                "to_unit": _canon_unit(args["to_unit"]),
+            }
+        if name == "date_add":
+            return {
+                "date": _parse_date(args["date"], "date").isoformat(),
+                "days": int(args["days"]),
+            }
+        if name == "days_between":
+            return {
+                "start_date": _parse_date(args["start_date"], "start_date").isoformat(),
+                "end_date": _parse_date(args["end_date"], "end_date").isoformat(),
+            }
+        if name == "weekday":
+            return {"date": _parse_date(args["date"], "date").isoformat()}
+    except (ToolError, KeyError, TypeError, ValueError):
+        return None
+    return None
+
+
+def args_equivalent(pred: dict[str, Any], gold: dict[str, Any]) -> bool:
+    """参数"意思相同"：规范化后逐项相等。
+
+    只有 calculator 用执行结果判（外加数字多重集合一致），因为等价的算式写法很多；
+    其余工具必须参数本身等价——只看执行结果会放过"参数错、结果碰巧对"的调用
+    （例如 weekday 的日期差 7 天，星期几一样；第 17、19 章的真实案例）。
+    """
+    if pred["name"] != gold["name"]:
+        return False
+    if pred["name"] == "calculator":
+        return exec_equal(pred, gold)
+    cp = canonical_args(pred["name"], pred["arguments"])
+    return cp is not None and cp == canonical_args(gold["name"], gold["arguments"])
+
+
+def _invented_numbers(answer: str, query: str) -> bool:
+    """回答里出现了问题里没有的数字：不需要工具的闲聊任务上，这通常是在编造工具结果。"""
+    allowed = set(_NUM_RE.findall(query))
+    return any(n not in allowed for n in _NUM_RE.findall(answer))
+
+
 def _forged(text: str) -> str | None:
     for tag in ("<tool_response>", "</tool_response>", "<|im_start|>"):
         if tag in text:
@@ -733,9 +785,28 @@ def score_tool_calls(task: Task, text: str) -> Reward:
     gold = task.gold_calls
     if not gold:
         if not calls:
-            if not parsed.content.strip():
+            content = parsed.content.strip()
+            if not content:
                 return Reward(0.0, True, 0, details=["空回答"])
-            return Reward(1.0, True, 0, 1.0, 1.0, details=["正确地没有调用工具"])
+            if _invented_numbers(content, task.query):
+                return Reward(
+                    0.0,
+                    True,
+                    0,
+                    answer_ok=False,
+                    details=["没调工具，但回答里有问题中没有的数字（疑似编造）"],
+                )
+            # 没调工具是对的；但闲聊内容本身无法自动核对，只给部分分，answer_ok 记为"未知"
+            return Reward(
+                NO_TOOL_REWARD,
+                True,
+                0,
+                1.0,
+                1.0,
+                answer_ok=None,
+                details=["正确地没有调用工具（回答内容无法自动核对）"],
+                exact=True,
+            )
         return Reward(-0.5, format_ok, len(calls), details=["不需要工具却调用了", *details])
     if not calls:
         return Reward(0.0, True, 0, details=["需要调用工具但没有调用"])
@@ -756,7 +827,7 @@ def score_tool_calls(task: Task, text: str) -> Reward:
         unmatched_gold.append(g)
     still = []
     for g in unmatched_gold:
-        hit = next((i for i in remaining if exec_equal(valid[i], g)), None)
+        hit = next((i for i in remaining if args_equivalent(valid[i], g)), None)
         if hit is not None:
             remaining.remove(hit)
             n_exec += 1
@@ -783,6 +854,7 @@ def score_tool_calls(task: Task, text: str) -> Reward:
         n_ast / len(gold),
         n_exec / len(gold),
         details=details,
+        exact=total >= 0.999,
     )
 
 
@@ -809,6 +881,12 @@ def score_final_answer(task: Task, text: str) -> Reward:
     ans = parsed.content.strip()
     if not ans:
         return Reward(0.0, True, answer_ok=False, details=["空回答"])
+    if not task.answer_facts:
+        if _invented_numbers(ans, task.query):
+            return Reward(
+                0.0, True, answer_ok=False, details=["回答里有问题中没有的数字（疑似编造）"]
+            )
+        return Reward(NO_TOOL_REWARD, True, answer_ok=None, details=["回答内容无法自动核对"])
     if _too_many_numbers(ans, task.answer_facts):
         return Reward(0.0, True, answer_ok=False, details=["回答里数字过多"])
     norm = ans.replace(" ", "").lower()
@@ -832,7 +910,8 @@ class Episode:
 
     @property
     def success(self) -> bool:
-        return bool(self.answer_reward.answer_ok) and self.call_reward.total >= 0.999
+        # 闲聊任务的回答内容无法核对（answer_ok 为 None），只要调用行为对、没被判为编造就算成功
+        return self.call_reward.exact and self.answer_reward.answer_ok is not False
 
 
 def run_episode(policy: Policy, task: Task, max_turns: int = 3) -> Episode:
