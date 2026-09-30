@@ -191,7 +191,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--strategy", choices=STRATEGIES + ("all",), default="all")
     ap.add_argument("--dtype", choices=("bf16", "fp32"), default="bf16")
     ap.add_argument(
-        "--checkpointing", action="store_true", help="估算开启激活检查点（zero 尚未实现）"
+        "--checkpointing", action="store_true", help="估算开启激活检查点（对应 train.activation_checkpointing；尚未在 GPU 上验证）"
     )
     ap.add_argument(
         "--gpu-mem", type=float, default=80.0, help="单卡显存 GiB（用来判断放不放得下）"

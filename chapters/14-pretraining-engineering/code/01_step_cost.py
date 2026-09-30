@@ -5,7 +5,7 @@
 其中 N_matmul 是参与矩阵乘的参数（含 lm_head），后一项是注意力里 QKᵀ 和 AV 两个"没有参数"的矩阵乘。
 
 这里做三件事：
-  ① 用这个公式算主线模型（configs/main/pretrain.toml）一步、全程要多少 FLOPs；
+  ① 用这个公式算主线模型（configs/main/pretrain.toml）一步、全程（约 400B token）要多少 FLOPs；
   ② 换算成 8×H100 上的墙钟时间和费用（MFU 取 0.3 / 0.4 / 0.5）；
   ③ MFU（Model FLOPs Utilization）= 实际吞吐 × 每 token FLOPs / 硬件峰值：
      在本机单线程 CPU 上实测矩阵乘峰值，再读 tiny 预训练日志里的 tok/s，算出 CPU 上的 MFU。
@@ -16,6 +16,7 @@
 """
 
 import json
+import math
 import statistics
 import time
 import tomllib
@@ -74,16 +75,22 @@ def main():
     print(f"  每步 token = {tr['micro_batch_size']} × {tr['grad_accum_steps']} × {gpus} 卡 × {T} = {tok_step:,}")
     print(f"  每步 FLOPs = {fpt * tok_step:.4g}")
 
-    print("\n② 500B token 在 8×H100 上要多久（峰值 989.5 TFLOPS/卡，待核实）")
-    D = 500e9
+    D = 400e9  # 第 12 章定的预训练 token 预算（约 400B，闸门 1 定稿）
+    print(f"\n② {D / 1e9:.0f}B token 在 8×H100 上要多久（峰值 989.5 TFLOPS/卡，待核实）")
     total = fpt * D
-    print(f"  总 FLOPs = {total:.4g}")
+    print(f"  总 FLOPs = {total:.4g}，{D / 1e9:.0f}B / {tok_step:,} 向上取整 = {math.ceil(D / tok_step):,} 步"
+          f"（configs/main/pretrain.toml 的 max_steps = {tr['max_steps']:,}）")
     print(f"  {'MFU':>5} {'8 卡吞吐 tok/s':>14} {'每步秒数':>8} {'天数':>6} {'卡时':>8} {'费用':>8}")
     for mfu in (0.3, 0.4, 0.5):
         tps = gpus * H100_BF16_DENSE * mfu / fpt
         hours = D / tps / 3600
         print(f"  {mfu:>5} {tps:>14,.0f} {tok_step / tps:>8.2f} {hours / 24:>6.2f} "
               f"{hours * gpus:>8,.0f} ${hours * gpus * PRICE:>7,.0f}")
+    old = 500e9 / (gpus * H100_BF16_DENSE * 0.4 / fpt) / 3600
+    print(f"  对照：原计划 500B token 在 MFU 0.4 下要 {old / 24:.2f} 天、${old * gpus * PRICE:,.0f}，"
+          f"超过 GOAL.md 3.4 给预训练的 ~$5K")
+    cost04 = D / (gpus * H100_BF16_DENSE * 0.4 / fpt) / 3600 * gpus * PRICE
+    print(f"  费用和 MFU 成反比：{D / 1e9:.0f}B 在 MFU 低于 {0.4 * cost04 / 5000:.3f} 时就超过 $5,000")
 
     print("\n③ MFU：实测吞吐 × 每 token FLOPs / 峰值（本机单线程 CPU）")
     peak = cpu_peak_flops()

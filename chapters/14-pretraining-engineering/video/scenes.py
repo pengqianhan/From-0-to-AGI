@@ -48,6 +48,7 @@ HERE = Path(__file__).resolve().parent
 CODE = HERE.parent / "code"
 ROOT = HERE.parents[2]
 CACHE = HERE / "out" / "cache.json"
+TOKENS = 400e9  # 主线预训练 token 预算（第 12 章：约 400B，闸门 1 定稿）
 MONO = "Noto Sans Mono"
 GIB = 2**30
 
@@ -80,11 +81,11 @@ def compute() -> dict:
     fpt, n_matmul, n_total = sc.flops_per_token(cfg["model"], cfg["seq_len"])
     tr = cfg["train"]
     tok_step = tr["micro_batch_size"] * tr["grad_accum_steps"] * 8 * cfg["seq_len"]
-    d["step"] = dict(fpt=fpt, n_total=n_total, tok_step=tok_step, total=fpt * 500e9)
+    d["step"] = dict(fpt=fpt, n_total=n_total, tok_step=tok_step, tokens=TOKENS, total=fpt * TOKENS)
     d["mfu_rows"] = []
     for mfu in (0.3, 0.4, 0.5):
         tps = 8 * sc.H100_BF16_DENSE * mfu / fpt
-        hours = 500e9 / tps / 3600
+        hours = TOKENS / tps / 3600
         d["mfu_rows"].append(dict(mfu=mfu, days=hours / 24, cost=hours * 8 * sc.PRICE))
 
     # ③ CPU 上的 MFU（极小配置演示）
@@ -259,7 +260,7 @@ class ChapterScene(NarratedScene):
                 zh(f"主线模型：{st['n_total'] / 1e6:.1f}M 参数，T = 4096", 24, theme.FG),
                 zh(f"每 token：{st['fpt'] / 1e9:.2f} × 10⁹ 次运算", 24, theme.PARAM),
                 zh(f"每步 {st['tok_step']:,} token", 24, theme.FG),
-                zh(f"500B token 共 {st['total'] / 1e21:.2f} × 10²¹ 次", 24, theme.PARAM),
+                zh(f"{st['tokens'] / 1e9:.0f}B token 共 {st['total'] / 1e21:.2f} × 10²¹ 次", 24, theme.PARAM),
             ).arrange(DOWN, aligned_edge=LEFT, buff=0.3).next_to(f, DOWN, 0.5).align_to(f, LEFT)
             self.play(Write(f), run_time=self.fit(1.5))
             self.play(LaggedStart(*[FadeIn(x) for x in lines], lag_ratio=0.4), run_time=self.fit(3))
