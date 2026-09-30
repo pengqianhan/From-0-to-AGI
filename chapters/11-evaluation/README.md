@@ -282,7 +282,7 @@ decision = AHEAD if lo > 0 else BEHIND if hi < 0 else TIE
 |---|---|---|
 | `02` 的 `SuffixLM.logprob` + `score_mc_loglik` | `zero/eval/harness.py`：`continuation_logprob(model, tok, context, continuation)`、`eval_multiple_choice(model, tok, items, fewshot, max_items)` | 真模型、真分词器：上下文和选项**分开编码再拼接**（选项前的空格归选项，与 lm-eval 默认一致），上下文过长从左截断；前 `fewshot` 题做示例；acc_norm 同样按 UTF-8 字节归一化 |
 | `02` 的 `score_generate_em` | `harness.greedy_until`、`eval_exact_match` | 用第 10 章带 KV cache 的 `generate_stream` 贪心生成，遇到换行或 `eot` 停止；答案可以是多个候选 |
-| 无（第 19 章的环境） | `zero/post/envs/tool_env.py`：`score_tool_calls`（格式、AST 一致 `ast_equal`、执行一致 `exec_equal`、多余 / 无效调用扣分）、`run_episode`；`harness.eval_tool_calls` 记录 `call_exact`、`ast_match`、`exec_match`、`answer_ok`、`success` | 我们自己的工具调用开发集（`zero/eval/tasks/tool_dev.jsonl`，冻结成文件，改了生成代码也不会悄悄变）；这是**挑 checkpoint 用的开发集**，不是预注册的测试基准 |
+| 无（第 19 章的环境） | `zero/post/envs/tool_env.py`：`score_tool_calls`（格式、参数一致 `ast_equal` / 规范化参数一致 `args_equivalent`、计算器另接受执行一致 `exec_equal`、多余 / 无效调用扣分）、`run_episode`；`harness.eval_tool_calls` 记录 `call_exact`、`ast_match`、`exec_match`、`answer_ok`、`success` | 我们自己的工具调用开发集（`zero/eval/tasks/tool_dev.jsonl`，冻结成文件，改了生成代码也不会悄悄变）；这是**挑 checkpoint 用的开发集**，不是预注册的测试基准 |
 | `04` 的 `paired_bootstrap` | `zero/eval/bootstrap.py`：`paired_bootstrap`（分块重抽，省内存）、`decide`、`compare_to_opponent(ours, {"thinking": ..., "non_thinking": ...})` 取对手平均分最高的模式 | 判定规则与 GOAL.md 3.2 第 5 条逐字对应；`compare_to_opponent` 实现"对手取较高模式" |
 | `04` 打印的表 | `zero/eval/report.py`：`results_table`、`comparison_table`、`write_report` | 生成模型卡和课程正文直接引用的 Markdown 表 |
 | `05` 的 `overlap` / `find_leaks` | `zero/data/decontam.py`（第 13 章）：`NgramIndex`（blake2b 8 字节哈希，跨进程稳定、省内存）、`find_contamination`、`decontaminate` | 同样的"词"定义和短题整题匹配；能扫几十亿 token 的语料 |

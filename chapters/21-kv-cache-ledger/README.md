@@ -314,7 +314,7 @@ GOAL.md 第五部分的"第二步"会在约 1 亿参数的 ladder 配置上用�
 
 ## 前沿观察
 
-> **稀疏注意力（DeepSeek DSA）不省 KV cache，省的是算力。** DeepSeek-V3.2 和 GLM-5 在 MLA 之上加了 DeepSeek Sparse Attention：一个轻量的"索引器"给历史 token 打分，每个 query 只和得分最高的 2048 个（`index_topk: 2048`）做注意力。这把长上下文的注意力算力从 O(T²) 降到接近 O(T·k)，但 KV cache 仍要全部保留（索引器自己还要额外缓存一份小 key）。目前明确采用的只有 DeepSeek 和 GLM 两个家族，不满足 GOAL.md 2.1 的"至少 3 家"，第 22 章会再核实一次。
+> **稀疏注意力（DeepSeek DSA）不省 KV cache，省的是算力。** DeepSeek-V3.2 和 GLM-5 在 MLA 之上加了 DeepSeek Sparse Attention：一个轻量的"索引器"给历史 token 打分，每个 query 只和得分最高的 2048 个（`index_topk: 2048`）做注意力。这把长上下文的注意力算力从 O(T²) 降到接近 O(T·k)，但 KV cache 仍要全部保留（索引器自己还要额外缓存一份小 key）。写这一章时只核实到 DeepSeek 和 GLM 两个家族；第 22 章再核实后，"学出来的稀疏注意力"这个大方向已有 4 家（DeepSeek、GLM-5、MiniMax-M3、美团 LongCat），满足 GOAL.md 2.1，在第 22 章正文讲；但各家的具体做法（DSA、MSA、LSA 等）还没有收敛，具体变体仍算前沿观察。它省的依然是算力，不是 KV cache。
 
 ---
 

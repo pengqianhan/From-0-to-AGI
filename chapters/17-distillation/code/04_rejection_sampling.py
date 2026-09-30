@@ -3,7 +3,7 @@
 对工具调用任务（zero/post/envs/tool_env.py 的模拟 API），教师每个任务采样 K 次，然后逐关筛：
 
   关 1 格式：输出能解析（JSON 完整、标签配对、没有伪造工具结果）
-  关 2 调用：函数名 + 参数与标准调用一致（或执行结果一致）→ score_tool_calls == 1
+  关 2 调用：函数名 + 规范化后的参数与标准调用一致（计算器另接受执行结果一致）→ 调用满分
   关 3 执行 + 回答：真的去执行工具、把结果喂回，教师写最终回答，要点必须都在 → score_final_answer
   关 4 去重：每个任务最多留 keep 条
 
@@ -11,8 +11,9 @@
 选错工具、JSON 写坏、不调工具直接编答案、多调一个、工具结果对了但回答抄错）。这样能在 CPU 上
 几秒内看到漏斗的每一关筛掉了什么。筛选本身用的就是生产级代码 zero.post.distill.teacher_trajectories。
 
-最后演示验证器的一个真实漏洞：不需要工具的任务（打招呼、鼓励）只检查"有没有乱调工具"，
-不检查回答内容——冒烟测试里唯一"通过验证"的那条教师数据就是这样混进来的。
+最后看不需要工具的任务（打招呼、鼓励）：旧版验证器只检查"有没有乱调工具"，不检查回答内容——
+冒烟测试里唯一"通过验证"的那条教师数据就是一句胡话。修好后，这类回答只拿 0.5 分、标记为"无法核对"，
+不进蒸馏数据；编出题目里没有的数字直接 0 分。
 
 运行：uv run python chapters/17-distillation/code/04_rejection_sampling.py      （约 5 秒）
 """
@@ -172,16 +173,16 @@ def main() -> None:
         kept_rows += [(task, m) for m in kept]
     print(f"\nzero.post.distill.teacher_trajectories：{n_cand} 个候选 → 保留 {len(kept_rows)} 条"
           f"（{covered}/{N_TASKS} 个任务至少有一条；关 4 每任务最多 {KEEP} 条）")
-    print(f"  如果不筛，至少 {total - c['关3 执行+回答正确']} / {total} = {1 - c['关3 执行+回答正确'] / total:.1%} 的训练数据在教学生犯错"
-          "（还没算混进来的胡话）。")
+    print(f"  如果不筛，{total - c['关3 执行+回答正确']} / {total} = {1 - c['关3 执行+回答正确'] / total:.1%} 的候选没有通过验证"
+          "（绝大多数是错的；不需要工具的任务无法核对，也算在里面）。")
 
-    # 3) 验证器的漏洞：不需要工具的任务
+    # 3) 不需要工具的任务：回答无法自动核对，不进蒸馏数据
+    n_no_tool = sum(1 for t in tasks if not t.gold_calls)
     no_tool = [(t, m) for t, m in kept_rows if not t.gold_calls]
-    bad = [(t, m) for t, m in no_tool if m[-1]["content"] != t.gold_answer]
-    print(f"\n保留的数据里，不需要工具的任务 {len(no_tool)} 条，其中回答是胡话却通过验证的 {len(bad)} 条，例如：")
-    for t, m in bad[:2]:
-        print(f"  用户：{t.query}   助手：{m[-1]['content']}")
-    print("  原因：score_final_answer 只检查'要点都出现'，而这类任务没有要点；需要另加内容判分（规则或评审模型）。")
+    print(f"\n不需要工具的任务 {n_no_tool} 个（{n_no_tool * K} 个候选，其中胡话 {teacher.first_kinds['胡话']} 个）"
+          f"→ 保留 {len(no_tool)} 条。")
+    print("  这类回答没有标准答案可核对（奖励 NO_TOOL_REWARD = 0.5，不算验证通过），"
+          "\"该不调就不调\"的示范交给人工审过的 SFT 数据。")
 
 
 if __name__ == "__main__":

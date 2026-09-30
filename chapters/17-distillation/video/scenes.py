@@ -104,14 +104,8 @@ def vocab_params() -> list[tuple[str, int, float]]:
 
 @lru_cache(maxsize=1)
 def smoke() -> dict:
-    d = REPO / "out" / "smoke" / "distill"
-    s = json.loads((d / "distill_summary.json").read_text())
-    row = json.loads((d / "teacher.jsonl").read_text().splitlines()[0])
-    last = s["history"][-1]
-    return {"cand": s["meta"]["n_candidates"], "ok": s["meta"]["n_verified"],
-            "loss": last["loss"], "ce": last["ce"], "kd": last["kd"],
-            "user": next(m["content"] for m in row["messages"] if m["role"] == "user"),
-            "reply": row["messages"][-1]["content"]}
+    """修复判分器之前那次冒烟测试的记录（冻结在 data/ 里；重跑冒烟测试会覆盖 out/smoke）。"""
+    return json.loads((HERE / "data" / "smoke_before_fix.json").read_text(encoding="utf-8"))
 
 
 def mono(text: str, size: float = 24, color: str = theme.FG) -> Text:
@@ -514,7 +508,8 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() * 0.2)
             self.play(FadeIn(u), FadeIn(ut), run_time=self.fit(0.6))
             self.play(FadeIn(a), FadeIn(at), run_time=self.fit(0.6))
-            why = zh("不需要工具的任务：只查“没乱调工具”，不查内容", 22, theme.HIGHLIGHT).move_to([0, -1.45, 0])
+            why = zh("旧版只查“没乱调工具”→ 已修：只给 0.5 分、不算通过；编造数字 0 分", 22,
+                     theme.HIGHLIGHT).move_to([0, -1.45, 0])
             loss = MathTex(rf"\text{{loss}}\ {sm['loss']:.3f} = 0.5\times\text{{ce}}\ {sm['ce']:.3f}"
                            rf" + 0.5\times\text{{kd}}\ {sm['kd']:.4f}", font_size=30,
                            color=theme.MUTED).move_to([0, -2.2, 0])

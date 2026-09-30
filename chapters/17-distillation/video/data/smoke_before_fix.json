@@ -1,0 +1,10 @@
+{
+ "note": "冒烟测试 distill 阶段的输出摘录，记录于修复 tool_env 判分器之前（旧版不检查不需要工具的任务的回答内容）。来源：out/smoke/distill/distill_summary.json、teacher.jsonl。",
+ "cand": 96,
+ "ok": 1,
+ "loss": 0.26879817247390747,
+ "ce": 0.5259996652603149,
+ "kd": 0.011596660129725933,
+ "user": "讲一句鼓励的话。",
+ "reply": "坚下云，气温 28°C。"
+}
