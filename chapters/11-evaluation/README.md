@@ -224,7 +224,7 @@ decision = AHEAD if lo > 0 else BEHIND if hi < 0 else TIE
 
 1. **主终点要事先指定**，其余子类别只作描述。草案里只有两个主终点：BFCL 主终点分数、ACEBench 中文（Normal + Special）准确率。
 2. 硬目标是"超过**所有**对手"——每一个对手、每一个主终点都要判成"超过"才算。这是"交集-并集检验"（intersection-union test）：要求每个单独的比较都在 5% 水平上显著，整体结论的错误率不会超过 5%，**反而不需要**再做多重比较校正（代价是很严格）。
-3. BFCL 主终点是按类别加权的，重抽时要**在每个类别内部分别重抽**（分层 bootstrap），再按官方权重合成。`zero/eval/bootstrap.py` 目前只支持等权重的一组题，这一步需要补（见"从极简到生产级"）。
+3. BFCL 主终点是按类别加权的，重抽时要**在每个类别内部分别重抽**（分层 bootstrap），再按官方权重合成。`zero/eval/bootstrap.py` 的 `stratified_paired_bootstrap` 做的就是这一步（见"从极简到生产级"）。
 
 ## 6. 数据污染：考题混进了训练数据
 
@@ -300,10 +300,10 @@ uv run pytest tests/test_eval.py -q
 
 本机结果：`10 passed in 3.36s`。
 
-**生产级代码还缺的两处（已在汇报里提出，不在本章改 `zero/`）**：
+**写完本章后补上的两处**（`zero/eval/bootstrap.py`，测试在 `tests/test_eval.py`）：
 
-1. **分层 / 加权 bootstrap**：BFCL 的主终点是按类别加权的，重抽要在类别内分层进行；`paired_bootstrap` 目前只支持等权重的一组题。
-2. **"对所有对手、所有主终点都超过"的汇总判定**：目前 `report.py` 逐行给判定，还没有按预注册的交集-并集规则给出一个总结论。
+1. **分层 / 加权 bootstrap**：BFCL 的主终点是按类别加权的，重抽要在类别内分层进行。`stratified_paired_bootstrap(a_by, b_by, weights, ...)` 在每个类别内部分别重抽、按权重合成；只有一个类别时与 `paired_bootstrap` 结果完全相同。
+2. **"对所有对手、所有主终点都超过"的汇总判定**：`overall_verdict(decisions)` 按预注册的交集-并集规则给总结论——全部"超过"才算超过，任何一项"落后"就是落后，其余为持平。
 
 ---
 

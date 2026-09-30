@@ -57,7 +57,7 @@ GOAL.md 3.2 要求本文件写明五件事，分别在第 2 节（基准及版�
 | ACEBench | E2 | 仓库 commit TBD | 官方 `requirements.txt` 钉了 `vllm==0.6.1.post1`，新模型大概率需要适配层（待核实） |
 | EvalPlus | HumanEval+ / MBPP+ | TBD（当前最新 0.3.1） | |
 | vLLM | 推理后端 | TBD | 所有模型同一版本 |
-| 本仓库 | 配对 bootstrap、报告 | 冻结时的 commit | `zero/eval/bootstrap.py`、`zero/eval/report.py`；**E1 需要的分层 / 加权 bootstrap 尚未实现**（见第 6 节） |
+| 本仓库 | 配对 bootstrap、报告 | 冻结时的 commit | `zero/eval/bootstrap.py`、`zero/eval/report.py`；E1 需要的分层 / 加权 bootstrap 已实现为 `stratified_paired_bootstrap`，多对手 × 多终点的总判定为 `overall_verdict`（见第 6 节；测试在 `tests/test_eval.py`） |
 
 ## 4. 提示词、模板与解码参数
 
@@ -85,7 +85,7 @@ GOAL.md 3.2 要求本文件写明五件事，分别在第 2 节（基准及版�
 
 - **单个比较**：同一组题上的逐题得分做**配对 bootstrap**（10,000 次重抽，百分位法 95% 置信区间，种子 TBD），差值 = 我们 − 对手
   （对手取第 4 节规则下的较高者）。区间下界 > 0 → **超过**；上界 < 0 → **落后**；跨过 0 → **持平**（`zero/eval/bootstrap.py` 的 `decide`）。
-- **E1 的重抽方式**：E1 是按类别加权的分数，重抽在每个类别内部分别进行（分层 bootstrap），再按第 2.1 节的权重合成。实现：TBD（`zero/eval/bootstrap.py` 目前只支持等权重）。
+- **E1 的重抽方式**：E1 是按类别加权的分数，重抽在每个类别内部分别进行（分层 bootstrap），再按第 2.1 节的权重合成。实现：`zero/eval/bootstrap.py` 的 `stratified_paired_bootstrap(a_by, b_by, weights, ...)`（只有一个类别时与 `paired_bootstrap` 结果相同）。
 - **硬目标成立的条件**（候选）：对 `eval/opponents.md` 冻结清单里的**每一个**对手，E1 与 E2 **都**判为"超过"。
   这是交集-并集检验（intersection-union test）：每个单独比较在 5% 水平上显著，整体结论的第一类错误率不超过 5%，因此不另做多重比较校正。
 - **其余所有分数**（各类别、各子集、通用组、只报告的基准）只作描述，不参与"超过"的判定，也不能事后改成主终点。
