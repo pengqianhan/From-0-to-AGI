@@ -115,7 +115,7 @@ def smoke_log() -> list[dict]:
     return [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
 
 
-SHORT = ["简洁正确", "详细正确", "还行", "一般", "跑题", "错误", "啰嗦", "注水"]
+SHORT = ["简洁对", "详细对", "还行", "一般", "跑题", "错误", "啰嗦", "注水"]
 
 
 def box(text: str, w: float, h: float, color: str, size: float = 22) -> VGroup:
@@ -246,7 +246,7 @@ class ChapterScene(NarratedScene):
             kl_pos = lambda k: [1.6 + min(k, 5.5) * 0.85, 0.4, 0]  # noqa: E731
             mover = Dot(kl_pos(N["kls"]["100.0"]), radius=0.14, color=theme.PARAM)
             rope = DashedLine(anchor.get_center(), mover.get_center(), color=theme.HIGHLIGHT)
-            m_lab = zh("π", 22, theme.PARAM).next_to(mover, DOWN, 0.2)
+            m_lab = zh("π", 22, theme.PARAM).next_to(mover, UP, 0.2)
             beta_t = MathTex(r"\beta = 100", font_size=34).move_to([3.5, 1.3, 0])
             kl_t = zh(f"KL = {N['kls']['100.0']:.2f}", 24, theme.HIGHLIGHT).move_to([3.5, -0.5, 0])
             self.play(FadeIn(pol), FadeIn(leg2), FadeIn(anchor), FadeIn(a_lab), FadeIn(mover), FadeIn(m_lab),
@@ -256,7 +256,7 @@ class ChapterScene(NarratedScene):
                 k = N["kls"][b]
                 new_m = Dot(kl_pos(k), radius=0.14, color=theme.PARAM)
                 self.play(Transform(pol, bars(N["probs"][b], theme.PARAM, bw * 0.55)),
-                          Transform(mover, new_m), m_lab.animate.next_to(new_m, DOWN, 0.2),
+                          Transform(mover, new_m), m_lab.animate.next_to(new_m, UP, 0.2),
                           Transform(rope, DashedLine(anchor.get_center(), new_m.get_center(), color=theme.HIGHLIGHT)),
                           Transform(beta_t, MathTex(tex, font_size=34).move_to([3.5, 1.3, 0])),
                           Transform(kl_t, zh(f"KL = {k:.2f}", 24, theme.HIGHLIGHT).move_to([3.5, -0.5, 0])),
@@ -270,27 +270,28 @@ class ChapterScene(NarratedScene):
                       FadeOut(VGroup(obj, anchor, a_lab, mover, m_lab, rope, beta_t, kl_t, leash)),
                       run_time=self.fit(0.8))
             sw = N["sweep"]
-            cax = Axes(x_range=[-1.8, 2, 1], y_range=[-1, 3, 1], x_length=5.6, y_length=3.6,
+            # 横轴是 log10(β) + 2（让纵轴落在最左边）
+            cax = Axes(x_range=[0.2, 4, 1], y_range=[-1, 3, 1], x_length=5.6, y_length=3.6,
                        axis_config={"color": theme.MUTED, "font_size": 18}, tips=False,
                        x_axis_config={"include_numbers": False},
                        y_axis_config={"include_numbers": True}).move_to([3.6, 0.2, 0])
-            xlab = VGroup(*[MathTex(t, font_size=22, color=theme.MUTED).next_to(cax.c2p(v, -1), DOWN, 0.15)
+            xlab = VGroup(*[MathTex(t, font_size=22, color=theme.MUTED).next_to(cax.c2p(v + 2, -1), DOWN, 0.15)
                             for v, t in ((-1, "0.1"), (0, "1"), (1, "10"), (2, "100"))])
-            bl = MathTex(r"\beta", font_size=30, color=theme.MUTED).next_to(cax.c2p(2, -1), RIGHT, 0.2)
-            proxy = polyline_in_axes(cax, [(math.log10(s["beta"]), s["proxy"]) for s in sw], color=theme.PARAM, stroke_width=4)
-            true = polyline_in_axes(cax, [(math.log10(s["beta"]), s["true"]) for s in sw], color=theme.OUTPUT, stroke_width=4)
-            lp = zh("奖励模型分", 20, theme.PARAM).move_to(cax.c2p(-1.0, 2.75))
-            lt = zh("真实质量", 20, theme.OUTPUT).move_to(cax.c2p(0.6, 2.75))
+            bl = MathTex(r"\beta", font_size=30, color=theme.MUTED).next_to(cax.c2p(4, -1), RIGHT, 0.2)
+            proxy = polyline_in_axes(cax, [(math.log10(s["beta"]) + 2, s["proxy"]) for s in sw], color=theme.PARAM, stroke_width=4)
+            true = polyline_in_axes(cax, [(math.log10(s["beta"]) + 2, s["true"]) for s in sw], color=theme.OUTPUT, stroke_width=4)
+            lp = zh("奖励模型分", 20, theme.PARAM).move_to(cax.c2p(3.3, 2.8))
+            lt = zh("真实质量", 20, theme.OUTPUT).move_to(cax.c2p(3.3, 2.4))
             self.play(Create(cax), FadeIn(xlab), FadeIn(bl), run_time=self.fit(1))
             self.play(Create(proxy), Create(true), FadeIn(lp), FadeIn(lt), run_time=self.fit(2.5))
             t = N["trues"]
-            d1 = Dot(cax.c2p(2, t["100.0"]), color=theme.OUTPUT)
-            d2 = Dot(cax.c2p(math.log10(0.5), t["0.5"]), color=theme.HIGHLIGHT)
+            d1 = Dot(cax.c2p(4, t["100.0"]), color=theme.OUTPUT)
+            d2 = Dot(cax.c2p(math.log10(0.5) + 2, t["0.5"]), color=theme.HIGHLIGHT)
             d2l = MathTex(f"{t['0.5']:.2f}", font_size=24, color=theme.HIGHLIGHT).next_to(d2, UP, 0.15)
             self.play(FadeIn(d1), FadeIn(d2), FadeIn(d2l), run_time=self.fit(1))
             self.wait(self.remaining() * 0.25)
-            d3 = Dot(cax.c2p(math.log10(0.03), t["0.03"]), color=theme.GRAD)
-            d3l = zh(f"{t['0.03']:.2f}：全押注水", 20, theme.GRAD).next_to(d3, RIGHT, 0.15)
+            d3 = Dot(cax.c2p(math.log10(0.03) + 2, t["0.03"]), color=theme.GRAD)
+            d3l = zh(f"β = 0.03：真实质量 {t['0.03']:.2f}，全押注水", 22, theme.GRAD).move_to([3.6, -2.4, 0])
             self.play(Transform(pol, bars(N["probs"]["0.03"], theme.GRAD, bw * 0.55)), FadeIn(d3), FadeIn(d3l),
                       run_time=self.fit(1.5))
             self.wait(self.remaining() - 0.6)
@@ -390,7 +391,7 @@ class ChapterScene(NarratedScene):
             hl = zh("h = 隐式奖励之差", 20, theme.MUTED).next_to(gax.x_axis, DOWN, 0.4)
             g = gax.plot(lambda h: 1 / (1 + math.exp(h)), x_range=[-5, 5], color=theme.GRAD, stroke_width=4)
             self.play(Create(gax), FadeIn(gl), FadeIn(hl), Create(g), run_time=self.fit(1.5))
-            f = MathTex(r"|\nabla| \propto \beta\,\sigma(-h)", font_size=34).move_to([3.4, 2.3, 0])
+            f = MathTex(r"|\nabla| \propto \beta\,\sigma(-h)", font_size=34).move_to([5.3, 2.4, 0])
             self.play(Write(f), run_time=self.fit(1))
             rows = N["grad_rows"]
             dots = VGroup()
@@ -423,7 +424,7 @@ class ChapterScene(NarratedScene):
             scale = 0.42
             zline = Line([1.6, zero_y, 0], [5.6, zero_y, 0], color=theme.MUTED)
             zl = MathTex("0", font_size=24, color=theme.MUTED).next_to(zline, LEFT, 0.1)
-            ylab = MathTex(r"\log\pi", font_size=28, color=theme.MUTED).next_to(zline, UP, 0.1)
+            ylab = MathTex(r"\log\pi", font_size=28, color=theme.MUTED).next_to(zl, LEFT, 0.15)
 
             def lbar(v, x, color):
                 return Rectangle(width=1.0, height=max(-v * scale, 0.02), fill_color=color, fill_opacity=0.85,
@@ -445,7 +446,7 @@ class ChapterScene(NarratedScene):
                           Transform(rv, MathTex(f"{h['logp_l']:.2f}", font_size=24, color=theme.GRAD).next_to(nr, DOWN, 0.1)),
                           run_time=self.fit(0.7))
             b, a = T["base"]["p_correct"], T["after"]["p_correct"]
-            res = zh(f"留出 30 题上答对的概率：{b:.3f} → {a:.3f}", 24, theme.HIGHLIGHT).move_to([0, -2.35, 0])
+            res = zh(f"留出 30 题上答对的概率：{b:.3f} → {a:.3f}", 24, theme.HIGHLIGHT).move_to([-3.0, -2.45, 0])
             self.wait(self.remaining() * 0.3)
             self.play(FadeIn(res), run_time=self.fit(0.8))
             self.wait(self.remaining() - 0.6)
