@@ -18,7 +18,7 @@
 
 ## 怎么学
 
-1. 读章节 README 的**一句话目标**和速读正文（最好配合视频）。
+1. 读章节 README 的**一句话目标**和速读正文（最好配合视频；视频还没发布，目前请按下面的命令在本地渲染）。
 2. 运行本章 `code/` 里的极简代码，对照正文里的数字。
 3. 读"从极简到生产级"，打开 `zero/` 里对应的文件。
 4. 带着"引导问题"去问 Claude Code，完成"动手任务"。
@@ -27,7 +27,7 @@
 ```bash
 # 安装依赖（需要 uv：https://docs.astral.sh/uv/）
 uv sync                       # 文字 + 代码
-uv sync --extra video         # 还想自己渲染视频（另需 ffmpeg、LaTeX）
+uv sync --extra video         # 还想自己渲染视频（另需系统依赖，见下面的"渲染视频前的准备"）
 
 # 跑第 1 章
 uv run python chapters/01-linear-regression/code/01_fit_line.py
@@ -39,6 +39,13 @@ bash chapters/01-linear-regression/video/build.sh
 uv run pytest
 uv run python -m zero.smoke
 ```
+
+**渲染视频前的准备**：
+
+- 系统里装好 `ffmpeg` 和 LaTeX（Manim 的公式要用）；
+- 字体：中文字体（WenQuanYi Zen Hei、Noto Sans CJK SC、Source Han Sans SC 任一）和等宽字体 Noto Sans Mono（代码块用）；
+- 第一次渲染会从 GitHub 自动下载离线 TTS 模型（sherpa-onnx 的 MeloTTS 中英混读模型）到 `~/.cache/tts`，之后离线可用；换目录用环境变量 `VIDEO_TTS_MODEL_DIR`；
+- 一章 1080p 成片在 4 核 CPU 上约 6–8 分钟，加 `--preview` 出 480p 样片更快；成片在 `chapters/NN-*/video/out/`（不进 git）。
 
 ## 目录
 
