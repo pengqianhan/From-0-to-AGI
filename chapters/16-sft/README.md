@@ -428,6 +428,8 @@ LoRA（Low-Rank Adaptation）冻结原模型的权重，只在每个线性层旁
 
 ### 极小配置演示（CPU，`python -m zero.smoke`，约 1.3M 参数）
 
+> 注：本节数字来自修复工具调用判分器（第 19 章第 6 节）**之前**的那次冒烟测试，是当时的真实输出。修复后重跑（`uv run python -m zero.smoke --out out/smoke_final`），数据、预训练、中期训练、SFT 各阶段完全一致；蒸馏通过验证的样本从 1 条（那句胡话）变为 0 条，下游的 DPO、GRPO 和评测数字随之变化（例如同一个 SFT 模型的工具调用 call_exact 从 0.133 变为 0.100——模型没变，是判分更严了；GRPO 相对 SFT 仍判"持平"）。你自己运行时以运行结果为准。
+
 > 以下是**极小配置演示**：只说明生产级代码通路是通的，不代表主线模型的任何结果。
 
 冒烟测试的 SFT 阶段从 tiny 中期训练的 checkpoint 出发，用 `tool_env` 生成的 1,500 条工具调用对话训练（`configs/tiny/sft.toml`，冒烟测试把 seq_len 改为 512、micro batch 8、240 步）。数字来自 `out/smoke/summary.json`、`out/smoke/sft/data/train.json` 和 `out/smoke/eval/results.json`，用 `code/05_smoke_samples.py` 可以重新打印：

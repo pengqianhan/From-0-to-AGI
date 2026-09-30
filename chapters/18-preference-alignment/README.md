@@ -376,6 +376,8 @@ uv run pytest tests/test_dpo.py -q
 
 > 以下是**极小配置演示**：只说明代码通路是通的，不代表主线模型的任何结果。
 
+> 注：本节数字来自修复工具调用判分器（第 19 章第 6 节）**之前**的那次冒烟测试，是当时的真实输出。修复后重跑（`uv run python -m zero.smoke --out out/smoke_final`），数据、预训练、中期训练、SFT 各阶段完全一致；蒸馏通过验证的样本从 1 条（那句胡话）变为 0 条，下游的 DPO、GRPO 和评测数字随之变化（例如同一个 SFT 模型的工具调用 call_exact 从 0.133 变为 0.100——模型没变，是判分更严了；GRPO 相对 SFT 仍判"持平"）。你自己运行时以运行结果为准。
+
 `uv run python -m zero.smoke` 的 DPO 阶段（`out/smoke/SUMMARY.md`、`out/smoke/dpo/log.jsonl`；smoke 把 `seq_len` 设为 512、造 32 对、跑 24 步，其余同 `configs/tiny/dpo.toml`：β = 0.1、lr = 5e-5、precompute）：
 
 - 偏好数据：32 对，全部由 tool_env 现场造；其中 chosen 来自策略自身采样的 3 对，其余 29 对用标准解答（tiny 模型太弱，很少自己答对）。

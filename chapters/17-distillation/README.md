@@ -305,6 +305,8 @@ uv run pytest tests/test_distill.py -q     # 7 passed（本机 9.5 秒）
 
 ### 极小配置演示（CPU，`configs/tiny`，约 1.3M 参数）
 
+> 注：本节数字来自修复工具调用判分器（第 19 章第 6 节）**之前**的那次冒烟测试，是当时的真实输出。修复后重跑（`uv run python -m zero.smoke --out out/smoke_final`），数据、预训练、中期训练、SFT 各阶段完全一致；蒸馏通过验证的样本从 1 条（那句胡话）变为 0 条，下游的 DPO、GRPO 和评测数字随之变化（例如同一个 SFT 模型的工具调用 call_exact 从 0.133 变为 0.100——模型没变，是判分更严了；GRPO 相对 SFT 仍判"持平"）。你自己运行时以运行结果为准。
+
 > 以下是**极小配置演示**：只说明代码能跑通，不代表主线模型的任何结果。数字来自 `uv run python -m zero.smoke` 的真实输出（`out/smoke/SUMMARY.md`、`out/smoke/distill/`），本章没有重跑。
 
 **教师是替身**：这个环境访问不了 huggingface.co，下载不了任何开源权重，所以冒烟测试用 **tiny SFT 模型自己**当教师（自蒸馏 / 拒绝采样微调）。这只验证"教师采样 → 执行验证 → 打包 → 序列级 + logits 蒸馏"这条通路，不说明蒸馏的效果。

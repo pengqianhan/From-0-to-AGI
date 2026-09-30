@@ -313,6 +313,8 @@ uv run pytest tests/test_eval.py -q
 
 > 以下是**极小配置演示**：tiny 模型的分数接近随机，只说明评测代码能跑通、判定规则按预期生效，不代表主线模型的任何结果。
 
+> 注：本节数字来自修复工具调用判分器（第 19 章第 6 节）**之前**的那次冒烟测试，是当时的真实输出。修复后重跑（`uv run python -m zero.smoke --out out/smoke_final`），数据、预训练、中期训练、SFT 各阶段完全一致；蒸馏通过验证的样本从 1 条（那句胡话）变为 0 条，下游的 DPO、GRPO 和评测数字随之变化（例如同一个 SFT 模型的工具调用 call_exact 从 0.133 变为 0.100——模型没变，是判分更严了；GRPO 相对 SFT 仍判"持平"）。你自己运行时以运行结果为准。
+
 冒烟测试（`uv run python -m zero.smoke`，全流程约 16 分钟）的评测阶段，用 `configs/tiny/eval.toml` 在玩具选择题、玩具生成题和工具调用开发集上比较了后训练三个阶段（`out/smoke/eval/report.md`）：
 
 | 模型 | toy_mc acc | toy_mc acc_norm | toy_gen em | tool_dev call_exact | tool_dev call_reward | tool_dev format_ok | tool_dev answer_ok |
