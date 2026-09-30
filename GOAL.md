@@ -46,6 +46,19 @@
 
 > 注：最初需求里写的"GPO"按 **GRPO** 理解。
 
+**第一步写作中的核实结果（2026 年 9 月，详见各章"采用方与来源"）**：
+
+| 技术 | 结论 | 章节 |
+|---|---|---|
+| Muon 优化器、FP8 训练 | 满足规则 A，进正文；主线模型的 Muon 与 AdamW 对比放进阶梯实验 | 12、14 |
+| MLA | 满足规则 A（DeepSeek、Kimi、GLM-5、Mistral Large 3），但都是大 MoE；主线模型保持 GQA | 21 |
+| 学出来的稀疏注意力 | 大方向满足规则 A（DeepSeek、GLM-5、MiniMax-M3、美团 LongCat），进正文并写明局限；DSA / MSA / LSA 等具体变体没有收敛，放前沿观察 | 22、26 |
+| 混合线性注意力 | 进正文（Qwen、Kimi、NVIDIA）；Gated DeltaNet 这个具体算子只有 Qwen 在用 | 23 |
+| 无辅助损失的 MoE 负载均衡 | 满足规则 A（DeepSeek-V3、GLM-4.5、Nemotron 3），进正文 | 24 |
+| MTP | 满足规则 A，进正文；Medusa / EAGLE 类草稿头放前沿观察 | 25 |
+| 在线策略蒸馏 | 满足规则 A（Qwen3、Gemma 2、GLM-5、MiMo、DeepSeek-V4），进正文；主线模型因词表不同用不上 | 17 |
+| GRPO 改进 | GRPO 本身是共识；clip-higher 待核实；Dr. GRPO、GSPO 放前沿观察 | 19 |
+
 ### 2.2 一个问题引出下一个方法
 
 整门课的主线是"上一个方法遇到了什么问题，所以有了下一个方法"：
