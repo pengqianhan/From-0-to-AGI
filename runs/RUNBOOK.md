@@ -90,18 +90,18 @@ done
 
 **闸门 1 检查清单**（全部完成才申请预训练预算）：
 
-- [ ] 阶梯 4 个尺寸跑完，val loss 与 (N, D) 的拟合残差 < 1%，外推出主线 Base 在 500B token 的 loss（附置信区间）
+- [ ] 阶梯 4 个尺寸跑完，val loss 与 (N, D) 的拟合残差 < 1%，外推出主线 Base 在约 400B token 的 loss（附置信区间）
 - [ ] 外推出通用基准分数（用阶梯模型的"loss → 分数"关系；小模型接近随机的基准不外推，如实说明）
 - [ ] 配方验证 (a)：后训练配方套在 2–3 个阶梯 Base 上，得到"Base 质量 → 工具调用得分"的关系并外推到主线
 - [ ] 配方验证 (b)：后训练配方套在一个现成同尺寸开源 Base 上，看配方上限（只做验证，不发布）
 - [ ] 预测结果是否达到硬目标（预注册的判定标准），写成闸门 1 报告
-- [ ] 预训练预算（`estimate_cost --config configs/main/pretrain.toml --tokens 500B --mfu <实测>`）随报告一起提交
+- [ ] 预训练预算（`estimate_cost --config configs/main/pretrain.toml --tokens 400B --mfu <实测>`）随报告一起提交
 - [ ] **等批准**
 
 ## 5. 阶段 9：预训练、中期训练、长上下文与闸门 2（约 $5,700）
 
 ```bash
-# 预训练（500B token，953,674 步；估算 2,441 GPU·h ≈ $6.1K @ MFU 0.4 —— 以实测 MFU 重算后报批）
+# 预训练（约 400B token，762,940 步；估算 1,952 GPU·h ≈ $4.9K @ MFU 0.4 —— 以实测 MFU 重算后报批）
 uv run torchrun --standalone --nproc_per_node=8 -m zero.train.pretrain --config configs/main/pretrain.toml
 # 中期训练 / 退火（≈ 26B token，估算 127 GPU·h ≈ $317）
 uv run torchrun --standalone --nproc_per_node=8 -m zero.train.midtrain --config configs/main/midtrain.toml
@@ -109,7 +109,7 @@ uv run torchrun --standalone --nproc_per_node=8 -m zero.train.midtrain --config 
 uv run torchrun --standalone --nproc_per_node=8 -m zero.train.midtrain --config configs/main/longctx.toml
 ```
 
-注意：预训练 500B token 在 MFU 0.4 下估算约 $6.1K，已超过 GOAL.md 3.4 给预训练的 ~$5K；闸门 1 需要在"token 数、MFU 实测值、租价"三者之间定稿（例如 MFU 0.5 时约 $4.9K）。
+注意：最初按 500B token 估算约 $6.1K（MFU 0.4），超过 GOAL.md 3.4 给预训练的 ~$5K；第 12 章据此把默认值降到约 400B token（`max_steps = 762940`，MFU 0.4 时约 $4.9K）。闸门 1 仍需用阶梯实验和实测 MFU 在"token 数、MFU、租价"三者之间定稿。
 
 需要盯的指标：
 
@@ -174,7 +174,7 @@ uv run python -m zero.export.gguf --hf-dir out/main/hf_final --out out/main/zero
 | 阶段 6 GPU 验证 | （预留内） | ≤ $50 | |
 | 第 11 章对手重跑 | ~$200 | $60–200 | 取决于对手数量 |
 | 第 12–13 章阶梯、消融、配方验证 | ~$1,200 | 阶梯本身 < $40，主要是消融 | |
-| 第 14 章预训练 | ~$5,000 | ~$6,100 | 需实测 MFU 后定稿 |
+| 第 14 章预训练 | ~$5,000 | ~$4,900（400B token，MFU 0.4） | 需实测 MFU 后定稿 |
 | 第 15 章中期训练 + 长上下文 | ~$700 | ~$514 | |
 | 第 16–19 章后训练 | ~$1,500 | SFT ~$17 + 蒸馏/DPO/GRPO 待实测 | |
 | 第 20 章最终评测与发布 | ~$200 | — | |

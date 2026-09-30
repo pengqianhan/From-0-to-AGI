@@ -325,7 +325,7 @@ uv run pytest tests/test_model_hf_parity.py tests/test_kv_cache.py tests/test_ne
 | 设置 | 值 | 为什么 |
 |---|---|---|
 | `train.init_from` | `out/main/pretrain/ckpt` | 从预训练稳定段的最后一个 checkpoint 接着训 |
-| `train.max_steps` | 50000（≈ 26B token） | 约为预训练 500B 的 5%，落在 OLMo 2 的 5–10% 区间下沿；待定 |
+| `train.max_steps` | 50000（≈ 26B token） | 约为预训练 400B 的 6.5%，落在 OLMo 2 的 5–10% 区间内；待定 |
 | `[schedule]` | `wsd`，`warmup_steps = 0`，`decay_frac = 1.0`，`min_lr_ratio = 0` | 整段就是 WSD 的衰减段：从峰值线性降到 0（OLMo 2、Llama 3、MobileLLM-R1 都是线性降到 0） |
 | `[[data.sources]]` | fineweb-edu 0.35、fineweb-2-zh 0.25、stack-edu 0.15、finemath 0.15、instruct-toolcall 0.10 | 数学和代码比预训练的 0.12 / 0.08 翻倍左右，另加 10% 指令与工具调用格式数据；具体比例待第二步用分叉衰减确定 |
 | 其余（模型形状、优化器、seq_len 4096） | 继承 | 中期训练不改模型形状，`check_compatible` 会拦住误改 |
