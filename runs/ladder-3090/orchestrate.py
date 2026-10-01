@@ -12,8 +12,10 @@
 - e44m 训完先拟合一次 L(N, D)，在 e83m 开训之前把对它的预测存下来（results/fit_before_e83m.json），
   e83m 训完再算外推误差——预测在先、检验在后。
 
-GPU：e5m 只用 GPU0；e11m、e24m 用 GPU0 和 GPU2；e44m、e83m 用三张卡（GPU1 功耗上限 200W，慢一些，
-只影响时间、不影响 loss）。
+GPU：每档的配置彼此独立，三张卡各训各的配置（2026-10-01 按用户的意见从"e5m 只用 GPU0"改过来）。
+不用多卡合训一个配置（DDP）：这台机器的卡之间只有 PCIe，实测 2 卡 DDP 只有单卡的 1.75 倍，
+而两张卡各训一个配置是 2 倍；本轮最大的 e83m 单卡也放得下。配置少、单次很久的运行（下一轮的
+e166m 起、主线）再用 2 卡、3 卡合训。GPU1 功耗上限 200W，慢一些，只影响时间、不影响 loss。
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 HERE = REPO / "runs" / "ladder-3090"
 RES = HERE / "results"
-GPUS = {"small": ["0"], "mid": ["0", "2"], "all": ["0", "1", "2"]}
+GPUS = {"small": ["0", "1", "2"], "mid": ["0", "1", "2"], "all": ["0", "1", "2"]}
 SH_MAX_REGRET, SH_MIN_TOP5 = 0.005, 3
 
 
