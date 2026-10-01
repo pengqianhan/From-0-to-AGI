@@ -25,11 +25,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import fcntl
 import json
 import math
 import os
 import random
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -188,7 +190,14 @@ def read_log(out_dir: Path) -> list[dict]:
 
 
 def val_at(out_dir: Path) -> dict[int, float]:
-    return {r["step"]: r["val_bpb"] for r in read_log(out_dir) if r.get("val_bpb") is not None}
+    """step → val_bpb；发散时可能写出 NaN/inf，一律丢掉（排序时 NaN 会把顺序搅乱）。"""
+    return {r["step"]: r["val_bpb"] for r in read_log(out_dir)
+            if isinstance(r.get("val_bpb"), (int, float)) and math.isfinite(r["val_bpb"])}
+
+
+def failed(out_dir: Path) -> bool:
+    """训练进程非零退出（多半是 loss 发散，训练器会抛 FloatingPointError）时写下的标记。"""
+    return (out_dir / "FAILED").exists()
 
 
 def last_ckpt_step(out_dir: Path) -> int:
@@ -223,7 +232,17 @@ def run_jobs(jobs: list[Job], gpus: list[str], per_gpu: int, dry: bool = False) 
     running: dict[str, tuple[subprocess.Popen, Job, float]] = {}
     pending = list(jobs)
     t0 = time.time()
-    done = failed = 0
+    done = n_failed = 0
+
+    def stop_children(*_: object) -> None:  # 调度器被中断时一起结束训练进程，免得重跑时两个进程写同一个目录
+        for p, _, _ in running.values():
+            p.terminate()
+        for p, _, _ in running.values():
+            p.wait()
+        raise SystemExit("调度器被中断，已结束正在训练的进程（重跑会从 checkpoint 接着训）")
+
+    signal.signal(signal.SIGTERM, stop_children)
+    signal.signal(signal.SIGINT, stop_children)
     while pending or running:
         for slot_key in [f"{g}#{i}" for i, g in enumerate(slots)]:
             if slot_key not in running and pending:
@@ -240,10 +259,35 @@ def run_jobs(jobs: list[Job], gpus: list[str], per_gpu: int, dry: bool = False) 
                 del running[k]
                 ok = p.returncode == 0
                 done += ok
-                failed += not ok
+                n_failed += not ok
+                if not ok:
+                    tail = (job.out_dir / "stdout.log").read_text(errors="replace").splitlines()[-5:]
+                    (job.out_dir / "FAILED").write_text(f"退出码 {p.returncode}，{time.strftime('%F %T')}\n"
+                                                        + "\n".join(tail) + "\n")
                 print(f"[{time.strftime('%H:%M:%S')}] {'完成' if ok else f'失败({p.returncode})'} {job.name} "
-                      f"{(time.time() - ts) / 60:.1f} 分钟 | 已完成 {done}、失败 {failed}、剩余 {len(pending)}、"
+                      f"{(time.time() - ts) / 60:.1f} 分钟 | 已完成 {done}、失败 {n_failed}、剩余 {len(pending)}、"
                       f"运行中 {len(running)} | 总用时 {(time.time() - t0) / 3600:.2f} 小时", flush=True)
+
+
+class scheduler_lock:  # noqa: N801
+    """同一档同时只允许一个调度器（两个调度器会把同一个配置启动两次、写同一个目录）。"""
+
+    def __init__(self, scale: str, dry: bool) -> None:
+        self.path, self.dry, self.f = OUT / scale / ".scheduler.lock", dry, None
+
+    def __enter__(self) -> None:
+        if self.dry:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.f = self.path.open("w")
+        try:
+            fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SystemExit(f"{self.path} 被另一个调度器占着") from None
+
+    def __exit__(self, *_: object) -> None:
+        if self.f is not None:
+            self.f.close()
 
 
 def select(cfgs: list[dict], plans: dict[str, Plan], top: float, rank_at: Fraction | None) -> list[dict]:
@@ -251,6 +295,8 @@ def select(cfgs: list[dict], plans: dict[str, Plan], top: float, rank_at: Fracti
     if rank_at is None or top >= len(cfgs):
         return cfgs
     def score(c: dict) -> float:
+        if failed(run_dir(c)):
+            return math.inf
         return val_at(run_dir(c)).get(plans[c["id"]].step_at(rank_at), math.inf)
     ranked = sorted(cfgs, key=score)
     k = max(1, round(top * len(cfgs))) if top < 1 else int(top)
@@ -267,14 +313,19 @@ def cmd_run(args: argparse.Namespace) -> None:
     cfgs = select(cfgs, plans, args.top, Fraction(args.rank_at) if args.rank_at else None)
     jobs = []
     for c in cfgs:
+        if failed(run_dir(c)) and not args.retry_failed:
+            continue
         pl = plans[c["id"]]
         m, f = with_decay(pl.stable_steps)
         stop = 0 if until >= 1 else pl.step_at(until)
         if (stop and last_ckpt_step(run_dir(c)) >= stop) or (not stop and finished_trunk(c, pl)):
             continue  # 已经训到了
         jobs.append(Job(c["id"], train_cmd(c, pl, run_dir(c), m, f, stop, pl.every, pl.every), run_dir(c)))
-    print(f"{args.scale}（N_eff {neff / 1e6:.2f}M）：{len(cfgs)} 组里 {len(jobs)} 组要训到 {args.until}")
-    run_jobs(jobs, args.gpus, args.per_gpu, args.dry_run)
+    n_failed = sum(failed(run_dir(c)) for c in cfgs)
+    print(f"{args.scale}（N_eff {neff / 1e6:.2f}M）：{len(cfgs)} 组里 {len(jobs)} 组要训到 {args.until}"
+          f"（已失败 {n_failed} 组{'，重试' if args.retry_failed else '，跳过'}）")
+    with scheduler_lock(args.scale, args.dry_run):
+        run_jobs(jobs, args.gpus, args.per_gpu, args.dry_run)
 
 
 def cmd_branch(args: argparse.Namespace) -> None:
@@ -300,7 +351,8 @@ def cmd_branch(args: argparse.Namespace) -> None:
             # 分支只在最后评估一次，不再存 checkpoint
             jobs.append(Job(f"{c['id']}/b{k}", train_cmd(c, pl, bdir, m, f, 0, m, m), bdir))
     print(f"{args.scale}：最好的 {min(args.top, len(best))} 组 × 分支 {args.ks} → {len(jobs)} 个分支要训")
-    run_jobs(jobs, args.gpus, args.per_gpu, args.dry_run)
+    with scheduler_lock(args.scale, args.dry_run):
+        run_jobs(jobs, args.gpus, args.per_gpu, args.dry_run)
 
 
 def cmd_collect(args: argparse.Namespace) -> None:
@@ -360,6 +412,7 @@ def main() -> None:
             p.add_argument("--top", type=float, default=math.inf)
             p.add_argument("--rank-at", default=None)
             p.add_argument("--ids", nargs="*")
+            p.add_argument("--retry-failed", action="store_true")
         else:
             p.add_argument("--top", type=int, default=8)
             p.add_argument("--ks", type=int, nargs="+", default=[3, 4, 5, 6, 7])
