@@ -59,15 +59,15 @@ uv run python -m zero.smoke
 | 2 | [从标量到矩阵 —— y = XW + b](chapters/02-from-scalar-to-matrix/) | `/ch02-matrix` | 7.4 分钟 |
 | 3 | [非线性与神经网络 —— 用折线拼出曲线](chapters/03-neural-network/) | `/ch03-neural-network` | 7.9 分钟 |
 | 4 | [反向传播与自动微分 —— 让计算机替你求导](chapters/04-backprop-autograd/) | `/ch04-backprop` | 6.3 分钟 |
-| 5 | [分类与概率 —— 从"猜一个数"到"猜哪一类"](chapters/05-classification-probability/) | `/ch05-classification` | 8.5 分钟 |
-| 6 | [让训练稳定 —— 初始化、归一化、残差、AdamW 与学习率调度](chapters/06-training-stability/) | `/ch06-training-stability` | 9.3 分钟 |
+| 5 | [分类与概率 —— 从"猜一个数"到"猜哪一类"](chapters/05-classification-probability/) | `/ch05-classification` | 8.7 分钟 |
+| 6 | [让训练稳定 —— 初始化、归一化、残差、AdamW 与学习率调度](chapters/06-training-stability/) | `/ch06-training-stability` | 9.4 分钟 |
 
 ### 第二部分：构建现代 Transformer（PyTorch）
 
 | 章 | 标题 | 自检 | 视频 |
 |---|---|---|---|
-| 7 | [语言建模与分词 —— 从"猜下一个字"到 byte-level BPE](chapters/07-tokenization-language-model/) | `/ch07-tokenization` | 7.4 分钟 |
-| 8 | [注意力 —— 让每个位置自己决定看哪里](chapters/08-attention/) | `/ch08-attention` | 7.7 分钟 |
+| 7 | [语言建模与分词 —— 从"猜下一个字"到 byte-level BPE](chapters/07-tokenization-language-model/) | `/ch07-tokenization` | 7.5 分钟 |
+| 8 | [注意力 —— 让每个位置自己决定看哪里](chapters/08-attention/) | `/ch08-attention` | 7.8 分钟 |
 | 9 | [现代 Transformer —— 把注意力搭成一个会写字的模型](chapters/09-modern-transformer/) | `/ch09-transformer` | 6.3 分钟 |
 | 10 | [推理 —— 让模型开口说话，而且说得快](chapters/10-inference/) | `/ch10-inference` | 9.4 分钟 |
 
@@ -76,18 +76,18 @@ uv run python -m zero.smoke
 | 章 | 标题 | 自检 | 视频 |
 |---|---|---|---|
 | 11 | [评测：先定考卷 —— 考什么、怎么判、差多少才算赢](chapters/11-evaluation/) | `/ch11-evaluation` | 8.0 分钟 |
-| 12 | [Scaling Law 与实验设计 —— 先用小模型算清楚，再花大钱](chapters/12-scaling-laws/) | `/ch12-scaling-laws` | 6.3 分钟 |
+| 12 | [Scaling Law 与实验设计 —— 先用小模型算清楚，再花大钱](chapters/12-scaling-laws/) | `/ch12-scaling-laws` | 7.1 分钟 |
 | 13 | [数据 —— 从一堆网页到一份能训练的数据集](chapters/13-data/) | `/ch13-data` | 8.6 分钟 |
-| 14 | [预训练工程 —— 混合精度、FlashAttention、数据并行与断点续训](chapters/14-pretraining-engineering/) | `/ch14-pretraining` | 9.5 分钟 |
+| 14 | [预训练工程 —— 混合精度、FlashAttention、数据并行与断点续训](chapters/14-pretraining-engineering/) | `/ch14-pretraining` | 9.6 分钟 |
 | 15 | [中期训练与长上下文 —— 最后一段怎么训，读不长怎么办](chapters/15-midtraining-long-context/) | `/ch15-midtraining` | 8.8 分钟 |
 
 ### 第四部分：后训练 —— 把底座变成可用的工具调用模型
 
 | 章 | 标题 | 自检 | 视频 |
 |---|---|---|---|
-| 16 | [SFT —— 把只会续写的底座，教成会回答、会调工具的助手](chapters/16-sft/) | `/ch16-sft` | 6.0 分钟 |
+| 16 | [SFT —— 把只会续写的底座，教成会回答、会调工具的助手](chapters/16-sft/) | `/ch16-sft` | 6.3 分钟 |
 | 17 | [蒸馏 —— 让小模型向大模型学](chapters/17-distillation/) | `/ch17-distillation` | 6.4 分钟 |
-| 18 | [偏好对齐 —— 从 RLHF 到 DPO](chapters/18-preference-alignment/) | `/ch18-dpo` | 6.3 分钟 |
+| 18 | [偏好对齐 —— 从 RLHF 到 DPO](chapters/18-preference-alignment/) | `/ch18-dpo` | 6.5 分钟 |
 | 19 | [强化学习 —— 让模型从自己的尝试里学](chapters/19-reinforcement-learning/) | `/ch19-rl` | 6.6 分钟 |
 | 20 | [发布 —— 按预注册交卷，把模型装进笔记本](chapters/20-release/) | `/ch20-release` | 7.4 分钟 |
 
@@ -96,9 +96,9 @@ uv run python -m zero.smoke
 | 章 | 标题 | 自检 | 视频 |
 |---|---|---|---|
 | 21 | [KV cache 的账本 —— 长上下文贵在哪，每个 token 该存多少](chapters/21-kv-cache-ledger/) | `/ch21-kv-cache` | 7.0 分钟 |
-| 22 | [局部与稀疏注意力 —— 只看附近，也不丢掉远处](chapters/22-local-sparse-attention/) | `/ch22-local-attention` | 6.5 分钟 |
-| 23 | [线性注意力与混合架构 —— 把 KV cache 压成一个固定大小的矩阵](chapters/23-linear-attention-hybrid/) | `/ch23-linear-attention` | 7.1 分钟 |
-| 24 | [混合专家（MoE）—— 参数翻几十倍，每个 token 的算力不变](chapters/24-mixture-of-experts/) | `/ch24-moe` | 6.3 分钟 |
+| 22 | [局部与稀疏注意力 —— 只看附近，也不丢掉远处](chapters/22-local-sparse-attention/) | `/ch22-local-attention` | 6.8 分钟 |
+| 23 | [线性注意力与混合架构 —— 把 KV cache 压成一个固定大小的矩阵](chapters/23-linear-attention-hybrid/) | `/ch23-linear-attention` | 7.2 分钟 |
+| 24 | [混合专家（MoE）—— 参数翻几十倍，每个 token 的算力不变](chapters/24-mixture-of-experts/) | `/ch24-moe` | 6.4 分钟 |
 | 25 | [多 token 预测与推测解码 —— 让小模型先猜，大模型一次改完](chapters/25-mtp-speculative-decoding/) | `/ch25-speculative` | 6.4 分钟 |
 | 26 | [当前最先进开源模型全景 —— 把整门课的架构放进一棵树](chapters/26-open-model-panorama/) | `/ch26-panorama` | 6.5 分钟 |
 

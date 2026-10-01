@@ -2,7 +2,9 @@
 
 画面里的数字来源（见 script.md 事实清单）：
 - 量化误差、第一块的数值、小模型的 loss 表、内存计算：由 ../code/ 的脚本真实计算，缓存在 video/out/cache.json；
-- 判定表、导出结果：读 out/smoke/（`uv run python -m zero.smoke` 的输出，极小配置演示）；
+- 判定表、导出结果：读 video/data/smoke_before_fix.json——修复工具调用判分器之前那次冒烟测试
+  （`uv run python -m zero.smoke`，极小配置演示）的真实输出，与 README 第 1.3 节同一次运行；
+  重跑冒烟测试会覆盖 out/smoke（修复后四行都是"持平"），所以冻结在这里，来源写在 json 里；
 - llama.cpp 对拍结果：本章写作时实测（README"从极简到生产级"一节），在下方 LLAMA_CHECK 里原样记录。
 渲染：bash chapters/20-release/video/build.sh
 """
@@ -43,7 +45,6 @@ from video_kit.scene import NarratedScene, zh
 
 HERE = Path(__file__).resolve().parent
 CODE = HERE.parent / "code"
-ROOT = HERE.parents[2]
 CACHE = HERE / "out" / "cache.json"
 MONO = "Noto Sans Mono"
 
@@ -87,10 +88,9 @@ def compute() -> dict:
     d["tiny"] = tm.run()
     d["tiny_params"] = sum(p.numel() for p in tm.tiny.load_or_train(4).parameters())
 
-    res = json.loads((ROOT / "out/smoke/eval/results.json").read_text(encoding="utf-8"))
-    d["comparisons"] = [c for c in res["comparisons"] if c["task"] in ("toy_mc", "tool_dev")]
-    summ = json.loads((ROOT / "out/smoke/summary.json").read_text(encoding="utf-8"))
-    d["smoke"] = {s["stage"]: s for s in summ["stages"]}
+    frozen = json.loads((HERE / "data" / "smoke_before_fix.json").read_text(encoding="utf-8"))
+    d["comparisons"] = [c for c in frozen["comparisons"] if c["task"] in ("toy_mc", "tool_dev")]
+    d["smoke"] = {"export (HF + GGUF)": frozen["export"]}
     return d
 
 
@@ -464,7 +464,9 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(cap), FadeIn(hdr), run_time=self.fit(0.6))
             self.play(LaggedStart(*[FadeIn(t) for t in tbl], lag_ratio=0.25),
                       run_time=self.fit(2.0))
-            ax = Axes(x_range=[2, 8, 1], y_range=[0, 0.55, 0.1], x_length=4.6, y_length=3.2,
+            # 纵轴上限随数据走：INT2 的 Δloss 在不同机器上训练出的底座上是 0.51–0.58
+            top = max(0.55, max(r["loss"] for r in D["tiny"]) - ref + 0.08)
+            ax = Axes(x_range=[2, 8, 1], y_range=[0, top, 0.1], x_length=4.6, y_length=3.2,
                       axis_config={"color": theme.MUTED, "include_numbers": True,
                                    "font_size": 20}, tips=False).move_to([4.3, 0.2, 0])
             xl = zh("bit 数（分块 32）", 18, theme.MUTED).next_to(ax, DOWN, 0.15)

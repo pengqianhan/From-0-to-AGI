@@ -1,7 +1,8 @@
 """第 18 章视频：偏好对齐 —— 从 RLHF 到 DPO
 
 画面里的数值由 ../code/ 中的代码真实计算（见 script.md 事实清单）；04、05 较慢，
-结果缓存在 video/out/cache.json。冒烟测试数字读 out/smoke/dpo/log.jsonl（极小配置演示）。
+结果缓存在 video/out/cache.json。冒烟测试数字读 video/data/smoke_before_fix.json：修复工具调用判分器之前
+那次冒烟测试 DPO 日志的摘录（极小配置演示），与 README「主线进度」同一次运行；重跑冒烟测试会覆盖 out/smoke。
 渲染：bash chapters/18-preference-alignment/video/build.sh
 """
 
@@ -43,7 +44,6 @@ from video_kit.scene import NarratedScene, code_block, polyline_in_axes, zh
 
 HERE = Path(__file__).resolve().parent
 CODE = HERE.parent / "code"
-ROOT = HERE.parents[2]
 CACHE = HERE / "out" / "cache.json"
 
 
@@ -108,10 +108,8 @@ def numbers() -> dict:
 
 
 def smoke_log() -> list[dict]:
-    p = ROOT / "out" / "smoke" / "dpo" / "log.jsonl"
-    if not p.exists():
-        return []
-    return [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+    """修复判分器之前那次冒烟测试的 DPO 日志摘录（冻结在 data/ 里，来源写在 json 里）。"""
+    return json.loads((HERE / "data" / "smoke_before_fix.json").read_text(encoding="utf-8"))["log"]
 
 
 SHORT = ["简洁对", "详细对", "还行", "一般", "跑题", "错误", "啰嗦", "注水"]

@@ -85,11 +85,15 @@ W_LIN, B_LIN = clf.train_linear(X, Y)
 LIN_ACC = float(((X @ W_LIN + B_LIN).argmax(1) == Y).mean())
 _, LOG_BAD_CE, _ = clf.train(X, Y, loss="ce", out_std=10.0)
 _, LOG_BAD_MSE, _ = clf.train(X, Y, loss="mse", out_std=10.0)
+# MSE 卡多久对舍入极其敏感（课程构建机上卡七八百步，另一台服务器上两三百步），
+# 所以画面只强调两台机器都成立的部分：第 100 步时的差距，以及 MSE 在这台机器上第几步过 90%。
+STUCK_STEP = 100
 STUCK = {}
 for _loss in ["ce", "mse"]:
-    _p, _, _ = clf.train(X, Y, loss=_loss, steps=500, out_std=10.0)
+    _p, _, _ = clf.train(X, Y, loss=_loss, steps=STUCK_STEP, out_std=10.0)
     _pt = cem.softmax(clf.forward(_p, X)[0])[np.arange(len(Y)), Y]
     STUCK[_loss] = int(np.sum(_pt < 0.01))
+MSE_CATCH = next(s for s, _, a in LOG_BAD_MSE if a >= 0.9)
 
 VOCAB, STOI, LM_X, LM_Y = lm.build_dataset(lm.TEXT)
 V = len(VOCAB)
@@ -390,7 +394,7 @@ class ChapterScene(NarratedScene):
 
         # ── S09 MSE vs CE：训练 ──────────────────────────────────────────
         with self.shot("S09"):
-            self.play(*self.set_heading("一开始就自信地乱猜：MSE 卡住七八百步"), run_time=self.fit(0.8))
+            self.play(*self.set_heading("一开始就自信地乱猜：MSE 起步慢得多"), run_time=self.fit(0.8))
             ax = Axes(x_range=[0, 3000, 500], y_range=[0.2, 1.0, 0.2], x_length=6.8, y_length=4.0,
                       axis_config={"color": theme.MUTED, "include_numbers": True, "font_size": 20},
                       tips=False).move_to([-2.4, 0.15, 0])
@@ -402,23 +406,37 @@ class ChapterScene(NarratedScene):
             mse_curve = polyline_in_axes(ax, [(s, a) for s, _, a in LOG_BAD_MSE], color=theme.FG,
                                          stroke_width=5)
             leg = VGroup(zh("交叉熵", 26, theme.GRAD), zh("MSE", 26, theme.FG)
-                         ).arrange(DOWN, aligned_edge=LEFT, buff=0.25).move_to([3.9, 1.9, 0])
-            self.wait(self.remaining() * 0.2)
+                         ).arrange(DOWN, aligned_edge=LEFT, buff=0.25).move_to([3.9, 2.1, 0])
+            self.wait(self.remaining() * 0.1)
             self.play(Create(ce_curve), FadeIn(leg[0]), run_time=self.fit(2))
             self.play(Create(mse_curve), FadeIn(leg[1]), run_time=self.fit(2.5))
-            acc = {s: a for s, _, a in LOG_BAD_MSE}
-            flat = SurroundingRectangle(VGroup(Dot(ax.c2p(100, acc[100])), Dot(ax.c2p(800, acc[800]))),
-                                        color=theme.HIGHLIGHT, buff=0.15)
-            flat_lbl = zh(f"≈{acc[500]:.0%}", 22, theme.HIGHLIGHT).next_to(flat, DOWN, 0.1)
-            self.play(Create(flat), FadeIn(flat_lbl), run_time=self.fit(1))
-            stuck = VGroup(zh("第 500 步，p(正确) < 1% 的样本：", 22, theme.FG),
-                           zh(f"交叉熵 {STUCK['ce']} 个", 26, theme.GRAD),
-                           zh(f"MSE {STUCK['mse']} 个", 26, theme.FG)
-                           ).arrange(DOWN, aligned_edge=LEFT, buff=0.22).move_to([4.2, -0.2, 0])
-            self.wait(self.remaining() * 0.3)
+            acc_ce = {s: a for s, _, a in LOG_BAD_CE}
+            acc_mse = {s: a for s, _, a in LOG_BAD_MSE}
+            vline = DashedLine(ax.c2p(STUCK_STEP, 0.2), ax.c2p(STUCK_STEP, 1.0), color=theme.HIGHLIGHT,
+                               stroke_width=2)
+            d_ce = Dot(ax.c2p(STUCK_STEP, acc_ce[STUCK_STEP]), radius=0.08, color=theme.GRAD)
+            d_mse = Dot(ax.c2p(STUCK_STEP, acc_mse[STUCK_STEP]), radius=0.08, color=theme.FG)
+            self.play(Create(vline), FadeIn(d_ce), FadeIn(d_mse), run_time=self.fit(1))
+            stuck = VGroup(
+                zh(f"第 {STUCK_STEP} 步", 22, theme.HIGHLIGHT), zh("交叉熵", 22, theme.GRAD),
+                zh("MSE", 22, theme.FG),
+                zh("训练准确率", 22, theme.MUTED), zh(f"{acc_ce[STUCK_STEP]:.0%}", 26, theme.GRAD),
+                zh(f"{acc_mse[STUCK_STEP]:.0%}", 26, theme.FG),
+                zh("p(正确) < 1% 的样本", 22, theme.MUTED), zh(f"{STUCK['ce']} 个", 26, theme.GRAD),
+                zh(f"{STUCK['mse']} 个", 26, theme.FG),
+            ).arrange_in_grid(rows=3, cols=3, buff=(0.45, 0.32), col_alignments="lcc"
+                              ).move_to([4.1, 0.35, 0])
             self.play(FadeIn(stuck), run_time=self.fit(1))
+            note = VGroup(zh("MSE 卡多久，对舍入误差极其敏感：", 18, theme.HIGHLIGHT),
+                          zh("课程构建机：在 65% 附近卡了七八百步", 18, theme.MUTED),
+                          zh(f"渲染本视频的机器：第 {MSE_CATCH} 步就过了 90%", 18, theme.MUTED)
+                          ).arrange(DOWN, aligned_edge=LEFT, buff=0.18).move_to([4.2, -1.75, 0])
+            note.shift(RIGHT * (1.6 - note.get_left()[0]))  # 左边避开横轴的 3,000，右边留出安全边距
+            self.wait(self.remaining() * 0.25)
+            self.play(FadeIn(note), run_time=self.fit(1))
             self.wait(self.remaining() - 0.6)
-            self.play(*[FadeOut(m) for m in [ax, xl, yl, ce_curve, mse_curve, leg, flat, flat_lbl, stuck]],
+            self.play(*[FadeOut(m) for m in [ax, xl, yl, ce_curve, mse_curve, leg, vline, d_ce, d_mse,
+                                             stuck, note]],
                       run_time=self.fit(0.6))
 
         # ── S10 螺旋数据 + 线性分类器 ────────────────────────────────────

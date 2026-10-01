@@ -1,0 +1,83 @@
+{
+ "note": "冒烟测试（uv run python -m zero.smoke，极小配置演示）的评测与导出结果，记录于修复工具调用判分器（第 19 章第 6 节）之前，是那次运行的真实输出；重跑冒烟测试会覆盖 out/smoke，所以冻结在这里，与 README 第 1.3 节、第 11 章 README 用的是同一次运行。",
+ "items_source": "chapters/11-evaluation/code/04_paired_bootstrap.py 里的 SMOKE 字典：当时从 out/smoke/eval/results.json 逐题抄下（toy_mc 取 correct，tool_dev 取 call_exact；1 = 对，0 = 错，每项 30 题）。",
+ "items": {
+  "sft/toy_mc": "100001010000000001000000100000",
+  "dpo/toy_mc": "100001010000100001000000100000",
+  "grpo/toy_mc": "101001010010100011000000100000",
+  "sft/tool_dev": "000000010001000000010000000001",
+  "dpo/tool_dev": "000000010001000000000000000001",
+  "grpo/tool_dev": "000000010001000000000000000001"
+ },
+ "comparisons_source": "对上面的逐题结果用 zero.eval.bootstrap.paired_bootstrap（n_boot=2000、seed=0，与 configs/tiny/eval.toml 相同，也是 zero/eval/harness.py 生成 results.json 时调用的函数）重算，只保留 toy_mc 与 tool_dev 两个任务；三位小数与 README 第 1.3 节的判定表（当时 out/smoke/eval/report.md 的真实输出）逐格一致。",
+ "comparisons": [
+  {
+   "model": "dpo",
+   "baseline": "sft",
+   "task": "toy_mc",
+   "metric": "acc",
+   "mean_a": 0.2,
+   "mean_b": 0.16666666666666666,
+   "diff": 0.03333333333333333,
+   "ci_low": 0.0,
+   "ci_high": 0.1,
+   "n": 30,
+   "n_boot": 2000,
+   "confidence": 0.95,
+   "decision": "持平"
+  },
+  {
+   "model": "dpo",
+   "baseline": "sft",
+   "task": "tool_dev",
+   "metric": "call_exact",
+   "mean_a": 0.1,
+   "mean_b": 0.13333333333333333,
+   "diff": -0.03333333333333333,
+   "ci_low": -0.1,
+   "ci_high": 0.0,
+   "n": 30,
+   "n_boot": 2000,
+   "confidence": 0.95,
+   "decision": "持平"
+  },
+  {
+   "model": "grpo",
+   "baseline": "sft",
+   "task": "toy_mc",
+   "metric": "acc",
+   "mean_a": 0.3,
+   "mean_b": 0.16666666666666666,
+   "diff": 0.13333333333333333,
+   "ci_low": 0.03333333333333333,
+   "ci_high": 0.26666666666666666,
+   "n": 30,
+   "n_boot": 2000,
+   "confidence": 0.95,
+   "decision": "超过"
+  },
+  {
+   "model": "grpo",
+   "baseline": "sft",
+   "task": "tool_dev",
+   "metric": "call_exact",
+   "mean_a": 0.1,
+   "mean_b": 0.13333333333333333,
+   "diff": -0.03333333333333333,
+   "ci_low": -0.1,
+   "ci_high": 0.0,
+   "n": 30,
+   "n_boot": 2000,
+   "confidence": 0.95,
+   "decision": "持平"
+  }
+ ],
+ "export_source": "README「主线进度 → 极小配置演示」表（当时 out/smoke/SUMMARY.md / summary.json 的 export 阶段）。",
+ "export": {
+  "hf_logits_maxdiff": "0.0e+00",
+  "hf_template_identical": true,
+  "gguf_f16_MB": 2.7,
+  "gguf_q8_0_MB": 1.47,
+  "llama_simple_ok": true
+ }
+}

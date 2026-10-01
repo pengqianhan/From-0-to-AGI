@@ -1,7 +1,9 @@
 """第 16 章视频：SFT —— 对话模板、loss mask、打包
 
-画面里的所有数值都由 ../code/ 中的代码真实计算（见 script.md 事实清单）；冒烟测试的数字读自 out/smoke/。
-较慢的计算（小模型 SFT、生成、冒烟模型采样）结果缓存在 video/out/cache.json；删掉它会重新计算。
+画面里的数值由 ../code/ 中的代码真实计算（见 script.md 事实清单）；S13 的冒烟测试数字读自
+video/data/smoke_before_fix.json：修复工具调用判分器之前那次冒烟测试的真实输出，与 README「主线进度」同一次运行
+（重跑冒烟测试会覆盖 out/smoke，所以冻结在这里，来源写在 json 里）。
+较慢的计算（小模型 SFT、生成）结果缓存在 video/out/cache.json；删掉它会重新计算。
 渲染：bash chapters/16-sft/video/build.sh
 """
 
@@ -57,7 +59,6 @@ def compute() -> dict:
     tmpl = _load("ch16_chat_template", "01_chat_template.py")
     sft = _load("ch16_sft_tiny", "03_sft_tiny.py")
     pack = _load("ch16_packing", "04_packing.py")
-    smoke = _load("ch16_smoke", "05_smoke_samples.py")
     d: dict = {}
     segs = tmpl.render(tmpl.MESSAGES, tmpl.TOOLS)
     d["segs"] = [[s, r, t] for s, r, t in segs]
@@ -66,8 +67,9 @@ def compute() -> dict:
     d["n_train"] = sum(len(s) for s, _, t in segs if t)
     d["sft"] = sft.run(log=lambda _: None)
     d["pack"] = pack.run()
-    d["smoke"] = smoke.smoke_numbers()
-    d["smoke_samples"] = smoke.samples(2) if d["smoke"] else []
+    frozen = json.loads((HERE / "data" / "smoke_before_fix.json").read_text(encoding="utf-8"))
+    d["smoke"] = {"sft": frozen["sft"], "eval": frozen["eval"]}
+    d["smoke_samples"] = [frozen["sample"]]
     return d
 
 
@@ -515,9 +517,7 @@ class ChapterScene(NarratedScene):
             self.play(LaggedStart(*[FadeIn(c) for c in cards], lag_ratio=0.2), run_time=self.fit(1.5))
             smp = D["smoke_samples"][0]
             gold = ", ".join(f"{g['name']}({g['arguments']['city']})" for g in smp["gold"])
-            got = [ln for ln in smp["out"].split("\n") if ln.startswith("{")]
-            got_s = ", ".join(
-                f"{json.loads(g)['name']}({json.loads(g)['arguments'].get('city')})" for g in got)
+            got_s = ", ".join(f"{g['name']}({g['arguments'].get('city')})" for g in smp["calls"])
             ex = VGroup(zh("问：" + smp["q"], 22, theme.INPUT),
                         zh("标准：" + gold, 22, theme.OUTPUT),
                         zh("模型：" + got_s, 22, theme.GRAD)

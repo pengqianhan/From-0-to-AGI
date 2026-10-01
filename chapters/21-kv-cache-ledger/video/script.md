@@ -1,7 +1,7 @@
 # 第 21 章视频脚本：KV cache 的账本 —— 长上下文贵在哪，每个 token 该存多少
 
 目标时长：7–9 分钟。渲染：`bash chapters/21-kv-cache-ledger/video/build.sh`（样片加 `--preview`）。
-画面里的数字由 `scenes.py` 调用 `../code/` 真实计算，结果缓存在 `video/out/cache.json`；小实验（S11）读取 `code/out/results.pt`（先运行 `code/04_attention_variants.py`）。
+画面里的数字由 `scenes.py` 调用 `../code/` 真实计算，结果缓存在 `video/out/cache.json`；小实验（S11）读取 `code/out/results.pt`（先运行 `code/04_attention_variants.py`）。训练类数字（S11 的验证 loss）随机器和底层数学库的浮点运算顺序漂移：下表写的是 2026-10 在 RTX 3090 服务器的 CPU 上渲染时的值（`code/out/results.pt` 在这台机器上训练），括号里是 README（课程构建机）的数字，对照见 `runs/2026-10-01-gpu0-check/chapters-21-23.md`。
 
 ## 一、事实清单
 
@@ -18,7 +18,7 @@
 | F9 | MLA：低秩联合压缩 c_KV、解耦 RoPE、W_UK/W_UV 可吸收；DeepSeek-V3 `kv_lora_rank` 512、`qk_rope_head_dim` 64，每层每位置 576 个数；同 128 头 MHA（K 192 + V 128）40,960 个数，比值 1.4% | DeepSeek-V2 arXiv:2405.04434 第 2.1 节、附录 C；DeepSeek-V3 `config.json`；`03_mla.py` 输出 | 已核对 |
 | F10 | 吸收路径与显式路径最大差异 4.4e-16（float64） | `03_mla.py` 输出 | 代码生成 |
 | F11 | 吸收后形式上为 MQA（GLM-5 报告称"MLA 的 MQA 模式"） | GLM-5 arXiv:2602.15763 第 3.5 节 | 已核对 |
-| F12 | 小实验：缓存 MHA 4,096 B / GQA 2,048 / MQA 1,024 / MLA-48 1,024 / MLA-16 512（每 token，FP32）；验证 loss 均值 1.858 / 1.856 / 1.860 / 1.887 / 1.886；MHA 种子间差 0.031；五种结构缓存版 = 朴素版 | `04_attention_variants.py` 输出（`code/out/results.pt`） | 代码生成 |
+| F12 | 小实验：缓存 MHA 4,096 B / GQA 2,048 / MQA 1,024 / MLA-48 1,024 / MLA-16 512（每 token，FP32）；验证 loss 均值 1.852 / 1.853 / 1.859 / 1.886 / 1.886；MHA 种子间差 0.034；五种结构缓存版 = 朴素版（README 构建机：1.858 / 1.856 / 1.860 / 1.887 / 1.886，种子间差 0.031） | `04_attention_variants.py` 输出（`code/out/results.pt`） | 代码生成 |
 | F13 | MLA 采用方：DeepSeek（V2/V3/V3.2）、Kimi（K2 报告 2.3 节）、GLM（GLM-5 报告 2.1 节）、Mistral（Large 3 的 `params.json`：`kv_lora_rank` 512） | 各技术报告与配置 | 已核对 |
 | F14 | 代价：decode 时 576 维点积（GLM-5 报告 2.1 节）；QK-Norm 不适用于 MLA（Kimi K2 报告 2.1 节）；GLM-5 报告中 MLA 起初不如 GQA-8，Muon Split 后追平 | GLM-5、Kimi K2 技术报告 | 已核对 |
 | F15 | 生产级：`zero/tools/kv_cache_calc.py`、`zero/arch/mla.py`；`tests/test_kv_cache_calc.py`、`tests/test_arch_mla.py` 12 项通过 | 本仓库；`uv run pytest` | 已核对 |
@@ -81,7 +81,7 @@
 ### S11 小实验
 - 画面：左边五根横条是每 token 的缓存大小（MHA、GQA、MQA、MLA-48、MLA-16）；右边每种方案三个种子的验证 loss 点和均值线。
 - 屏幕文字：同一个小模型，只换注意力，训练 600 步 × 3 个种子
-- 旁白：在 CPU 上做个小实验：第十章那个字符级小模型，只换注意力，同样训练六百步，每种跑三个随机种子。结果先看缓存：MLA-48 和 MQA 一样大，都是 MHA 的四分之一；MLA-16 只有八分之一；所有结构用缓存生成的文字，都和每步重算的结果逐字相同。再看 loss：MHA、GQA、MQA 的均值在 1.856 到 1.860 之间，而 MHA 自己换个种子就能差 0.03，分不出高下。MLA 在这里反而稍差，MLA-48 的三个种子都在 1.88 上下。但这不能说明 MLA 不好：超参数是按 MHA 调的，模型只有四个头，训练也只有六百步。在这么小的规模上，这个实验能证明的是：代码是对的，缓存确实省下来了。
+- 旁白：在 CPU 上做个小实验：第十章那个字符级小模型，只换注意力，同样训练六百步，每种跑三个随机种子。结果先看缓存：MLA-48 和 MQA 一样大，都是 MHA 的四分之一；MLA-16 只有八分之一；所有结构用缓存生成的文字，都和每步重算的结果逐字相同。再看 loss：MHA、GQA、MQA 的均值在 1.852 到 1.859 之间，而 MHA 自己换个种子就能差 0.03，分不出高下。MLA 在这里反而稍差，MLA-48 的三个种子都在 1.88 上下。但这不能说明 MLA 不好：超参数是按 MHA 调的，模型只有四个头，训练也只有六百步。在这么小的规模上，这个实验能证明的是：代码是对的，缓存确实省下来了。
 
 ### S12 谁在用，代价是什么
 - 画面：左边四个家族（DeepSeek、Kimi、GLM、Mistral）的旗舰模型；右边三条代价；底部结论。
