@@ -54,3 +54,40 @@ def test_sampling_is_deterministic_and_in_range() -> None:
         assert 1e-3 <= hp["warmup_frac"] <= 1 / 8
         assert 1e-4 <= hp["weight_decay"] <= 1.0
         assert 2**10 <= hp["rope_theta"] <= 2**20
+
+
+def test_narrow_ranges_follow_trend_and_stay_in_bounds(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    # 两个小档：最优学习率随 N 变小（N 翻 4 倍、lr 减半）；收窄的区间应该顺着这个趋势外推到大档
+    import csv
+    import json
+    import math
+
+    neffs = {"a": 4e6, "b": 16e6, "c": 64e6}
+    monkeypatch.setattr(sweep, "HERE", tmp_path)
+    monkeypatch.setattr(sweep, "n_eff", lambda s: neffs[s])
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "results").mkdir()
+    for scale, best_lr in (("a", 4e-3), ("b", 2e-3)):
+        cfgs, rows = [], []
+        for i in range(60):
+            hp = sweep.sample_full(random.Random(f"{scale}/{i}"))
+            cfg = {"id": f"{scale}-{i:03d}", "scale": scale, "space": "full", **hp}
+            cfgs.append(cfg)
+            loss = 1 + (math.log(hp["lr"] / best_lr)) ** 2  # 只有学习率重要
+            rows.append({"id": cfg["id"], "phase": "decay", "k": 8, "val_bpb": loss})
+        (tmp_path / "configs" / f"{scale}.jsonl").write_text("\n".join(json.dumps(c) for c in cfgs) + "\n")
+        with (tmp_path / "results" / f"{scale}.csv").open("w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(rows[0]))
+            w.writeheader()
+            w.writerows(rows)
+    r = sweep.narrow_ranges("c", ["a", "b"])
+    for h, (lo, hi) in r.items():
+        full_lo, full_hi = sweep.FULL_Z[h]
+        assert full_lo - 1e-9 <= lo < hi <= full_hi + 1e-9, h
+        assert hi - lo >= 2 * sweep.MIN_HALF[h] - 1e-9, h
+    center = math.exp(sum(r["lr"]) / 2)
+    assert 3e-4 < center < 2e-3  # 外推到 c 档：比两个小档的最优值都小
+    for i in range(50):
+        hp = sweep.sample_in(random.Random(i), r)
+        assert math.exp(r["lr"][0]) - 1e-12 <= hp["lr"] <= math.exp(r["lr"][1]) + 1e-12
+        assert hp["tokens_per_step"] in {2**k for k in range(15, 22)}

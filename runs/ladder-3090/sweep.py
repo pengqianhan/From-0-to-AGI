@@ -85,6 +85,88 @@ def sample_full(rng: random.Random) -> dict:
     }
 
 
+# 收窄的搜索空间（e24m 起一半配置从这里抽）：在"变换后的尺度"上（batch 取 log2、正数取 ln、
+# β 取 logit）描述每个超参数的取值区间。full 空间的区间即论文图 16
+FULL_Z = {
+    "tokens_per_step": (15.0, 21.0),
+    "lr": (math.log(1e-5), math.log(1e-1)),
+    "beta1": (math.log(0.7 / 0.3), math.log(0.999 / 0.001)),
+    "beta2": (math.log(0.9 / 0.1), math.log(0.9999 / 0.0001)),
+    "warmup_frac": (math.log(1e-3), math.log(1 / 8)),
+    "weight_decay": (math.log(1e-4), math.log(1.0)),
+    "rope_theta": (math.log(2.0**10), math.log(2.0**20)),
+}
+# 收窄后每侧至少留这么宽（变换尺度上）：学习率、warmup、weight decay、RoPE θ 至少 ×/÷ 4，batch 至少 ×/÷ 2
+MIN_HALF = {"tokens_per_step": 1.0, "lr": math.log(4), "beta1": 1.0, "beta2": 1.0,
+            "warmup_frac": math.log(4), "weight_decay": math.log(4), "rope_theta": math.log(4)}
+# 最优值会随模型规模系统性移动的超参数：对 log N_eff 做线性回归、外推到目标档
+TRENDED = ("lr", "tokens_per_step")
+
+
+def to_z(h: str, v: float) -> float:
+    if h == "tokens_per_step":
+        return math.log2(v)
+    if h in ("beta1", "beta2"):
+        return math.log(v / (1 - v))
+    return math.log(v)
+
+
+def from_z(h: str, z: float) -> float:
+    if h == "tokens_per_step":
+        return float(2 ** int(round(z)))
+    if h in ("beta1", "beta2"):
+        return 1 / (1 + math.exp(-z))
+    return math.exp(z)
+
+
+def narrow_ranges(target: str, sources: list[str]) -> dict[str, list[float]]:
+    """按小档的结果给目标档收窄搜索区间：每个小档取最终 val_bpb 最好的 10%（至少 5 组）。
+    TRENDED 里的超参数对 log N_eff 做最小二乘、外推到目标档，半宽取残差标准差的 2 倍；
+    其余取均值 ± 2 倍标准差。每侧至少 MIN_HALF，并截在完整空间之内。"""
+    import numpy as np
+
+    xs, tops = [], []
+    for sc in sources:
+        rows = list(csv.DictReader((HERE / "results" / f"{sc}.csv").open()))
+        final = {r["id"]: float(r["val_bpb"]) for r in rows if r["phase"] == "decay" and r["k"] == "8"}
+        cfgs = {c["id"]: c for c in load_configs(sc)}
+        k = max(5, round(0.1 * len(final)))
+        for i in sorted(final, key=final.get)[:k]:
+            tops.append(cfgs[i])
+            xs.append(math.log(n_eff(sc)))
+    x = np.array(xs)
+    target_x = math.log(n_eff(target))
+    out = {}
+    for h, (lo_full, hi_full) in FULL_Z.items():
+        z = np.array([to_z(h, float(c[h])) for c in tops])
+        if h in TRENDED and len(set(xs)) >= 2:
+            slope, icept = np.polyfit(x, z, 1)
+            center = icept + slope * target_x
+            spread = float(np.std(z - (icept + slope * x)))
+        else:
+            center, spread = float(z.mean()), float(z.std())
+        half = max(2 * spread, MIN_HALF[h])
+        lo, hi = max(lo_full, center - half), min(hi_full, center + half)
+        # 中心贴着完整空间的边界、被截掉一截时，向里补足最小宽度（只在真的被截断时做，避免浮点误差误触发）
+        if hi - lo < 2 * MIN_HALF[h] - 1e-9:
+            if center - half < lo_full:
+                lo, hi = lo_full, min(hi_full, lo_full + 2 * MIN_HALF[h])
+            elif center + half > hi_full:
+                lo, hi = max(lo_full, hi_full - 2 * MIN_HALF[h]), hi_full
+        out[h] = [float(lo), float(hi)]
+    return out
+
+
+def sample_in(rng: random.Random, ranges: dict[str, list[float]]) -> dict:
+    hp = {}
+    for h, (lo, hi) in ranges.items():
+        if h == "tokens_per_step":
+            hp[h] = 2 ** rng.randint(math.ceil(lo - 1e-9), math.floor(hi + 1e-9))
+        else:
+            hp[h] = from_z(h, rng.uniform(lo, hi))
+    return hp
+
+
 def configs_path(scale: str) -> Path:
     return HERE / "configs" / f"{scale}.jsonl"
 
@@ -98,14 +180,26 @@ def cmd_sample(args: argparse.Namespace) -> None:
     existing = load_configs(args.scale)
     path = configs_path(args.scale)
     path.parent.mkdir(parents=True, exist_ok=True)
+    ranges = None
+    if args.space == "narrow":
+        if not args.sources:
+            raise SystemExit("--space narrow 需要 --from <小档…>")
+        ranges = narrow_ranges(args.scale, args.sources)
+        rpath = HERE / "results" / f"{args.scale}_narrow_ranges.json"
+        if len(existing) < args.n:
+            rpath.parent.mkdir(parents=True, exist_ok=True)
+            rpath.write_text(json.dumps({"from": args.sources, "ranges_z": ranges, "ranges": {
+                h: [from_z(h, lo), from_z(h, hi)] for h, (lo, hi) in ranges.items()}}, indent=2))
+    elif args.space != "full":
+        raise SystemExit(f"未实现的搜索空间 {args.space!r}")
     with path.open("a") as f:
         for i in range(len(existing), args.n):
             # 每组配置的种子只由 (档, 编号, space) 决定：追加采样不会改动已有的配置
             rng = random.Random(f"{args.scale}/{i}/{args.space}")
-            hp = sample_full(rng) if args.space == "full" else None
-            if hp is None:
-                raise SystemExit(f"未实现的搜索空间 {args.space!r}")
+            hp = sample_full(rng) if ranges is None else sample_in(rng, ranges)
             rec = {"id": f"{args.scale}-{i:03d}", "scale": args.scale, "space": args.space, **hp}
+            if ranges is not None:
+                rec["narrow_from"] = args.sources
             f.write(json.dumps(rec) + "\n")
     print(f"{path}：共 {max(args.n, len(existing))} 组")
 
@@ -384,6 +478,34 @@ def cmd_collect(args: argparse.Namespace) -> None:
     print(f"{out}：{len(rows)} 行")
 
 
+def cmd_prune(args: argparse.Namespace) -> None:
+    """一档做完衰减分叉并汇总之后清理 checkpoint（全部保留的话五档要 300GB 以上）：
+    最终 val_bpb 最好的 keep_top 组保留主干最后一步的权重（model.pt + meta.json，供以后评测），其余全部删除。"""
+    neff = n_eff(args.scale)
+    cfgs = load_configs(args.scale)
+    final_step = {c["id"]: with_decay(plan_for(c, neff).stable_steps)[0] for c in cfgs}
+    finals = {c["id"]: val_at(run_dir(c)).get(final_step[c["id"]]) for c in cfgs}
+    finals = {k: v for k, v in finals.items() if v is not None}
+    keep = set(sorted(finals, key=finals.get)[: args.keep_top])
+    freed = 0
+    for c in cfgs:
+        d = run_dir(c)
+        for root in [d / "ckpt", *(b / "ckpt" for b in d.glob("branch_*"))]:
+            if not root.exists():
+                continue
+            for step_dir in [x for x in root.iterdir() if x.is_dir()]:
+                if c["id"] in keep and root == d / "ckpt" and step_dir.name == f"step_{final_step[c['id']]:08d}":
+                    victims = [f for f in step_dir.iterdir() if f.name not in ("model.pt", "meta.json")]
+                else:
+                    victims = [step_dir]
+                for v in victims:
+                    size = sum(f.stat().st_size for f in v.rglob("*")) if v.is_dir() else v.stat().st_size
+                    freed += size
+                    if not args.dry_run:
+                        shutil.rmtree(v) if v.is_dir() else v.unlink()
+    print(f"{args.scale}：{'将' if args.dry_run else '已'}释放 {freed / 1e9:.1f} GB；保留最好的 {len(keep)} 组的最终权重")
+
+
 def cmd_status(args: argparse.Namespace) -> None:
     neff = n_eff(args.scale)
     for c in load_configs(args.scale):
@@ -400,7 +522,8 @@ def main() -> None:
     p = sub.add_parser("sample")
     p.add_argument("--scale", required=True)
     p.add_argument("--n", type=int, required=True)
-    p.add_argument("--space", default="full")
+    p.add_argument("--space", default="full", choices=["full", "narrow"])
+    p.add_argument("--from", dest="sources", nargs="*", default=[], help="narrow：按哪些小档的结果收窄")
     for name in ("run", "branch"):
         p = sub.add_parser(name)
         p.add_argument("--scale", required=True)
@@ -419,9 +542,13 @@ def main() -> None:
     for name in ("collect", "status"):
         p = sub.add_parser(name)
         p.add_argument("--scale", required=True)
+    p = sub.add_parser("prune")
+    p.add_argument("--scale", required=True)
+    p.add_argument("--keep-top", type=int, default=8)
+    p.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     {"sample": cmd_sample, "run": cmd_run, "branch": cmd_branch, "collect": cmd_collect,
-     "status": cmd_status}[args.cmd](args)
+     "status": cmd_status, "prune": cmd_prune}[args.cmd](args)
 
 
 if __name__ == "__main__":
