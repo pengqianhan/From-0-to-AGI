@@ -74,3 +74,29 @@
 - **功耗上限**：三张卡都被限了功率（GPU1 更低），只影响速度，不影响 loss；同一档的配置尽量放在同一张卡上，便于比较吞吐。
 - **外推距离**：主线 N_eff 按它的序列长度 4096 是 1.16B（按阶梯的 2048 算是 0.92B），是 e44m 的 21–26 倍；token/参数约 345 倍，远在本轮的 32 倍之外；序列长度不同也是一个额外的外推因素。本轮的外推误差只能在 e83m（约 2 倍距离）上检验；要可信地外推到主线，下一轮需要 e166m–e320m，以及在小尺寸上补"过训练"的点（token/参数 128–512 倍）。这正是第 5 阶段测算"要买多少算力"的依据。
 - **不确定性**：拟合用 bootstrap 给出区间（`zero/tools/fit_scaling.py` 已有），报告里一律带区间。
+
+## 进度
+
+### 第 0 阶段：准备（2026-10-01，进行中）
+
+- 训练数据下载：`runs/ladder-3090/make_download_config.py` 生成 `configs/ladder3090/download.toml`——6 个数据集、140 个来源，每个数据集按文件序号均匀挑文件（例如 FineWeb-Edu 的 14 个文件全用、各读约 0.4GB），共约 16.8GB 正文；`runs/ladder-3090/download_all.sh` 8 路并行下载到 `/mnt/DataSets/phan635/From-0-to-AGI/ladder/raw/`。抽查：FineWeb-Edu 第 7 个文件的网页来自 CC-MAIN-2021-25、FineWeb-2 中文第 23 个文件来自 CC-MAIN-2017-39，样本不再只有 2013–2014 年。
+- 流水线配置 `configs/ladder3090/data.toml`（与主线配方相同，差别见文件头），训练配置 `configs/ladder3090/base.toml` + `e5m.toml`……`e166m.toml`。
+- 工具：`sweep.py`（采样、按卡排队、逐轮淘汰、衰减分叉、汇总；`tests/test_ladder3090_sweep.py` 检查衰减恰好从第 k/8 个 checkpoint 开始）、`build_val.py`（固定验证集：按配比拼 1024 个片段，所有配置看到同一份验证数据）。训练器加了 `train.stop_step`（停下再续训与一口气训完逐位相同，`tests/test_train_resume.py`）。
+
+### 第 1 阶段：试点（2026-10-01，只用 GPU0，随机 token 数据，`pilot.py`）
+
+吞吐（单进程，micro batch 4，`torch.compile`，序列 2048；`out/ladder3090/pilot/speed.json`）：
+
+| 档 | tok/s | 显存 | 一个配置的主干（1.25 × 32 N_eff token） |
+|---|---:|---:|---:|
+| e5m | 218k | 7.6GB | 约 15 分钟 |
+| e11m | 180k | 9.8GB | 约 41 分钟 |
+| e24m | 143k | 10.0GB | 约 1.9 小时 |
+| e44m | 105k | 10.5GB | 约 4.7 小时 |
+| e83m | 70k | 11.5GB | 约 13 小时 |
+
+- **单卡并发没有收益**：e5m 同时跑 2 个、3 个时总吞吐 198k、194k，反而比单个 218k 低。小模型的时间主要花在 65,536 词表的 logits 上（FP32 logits 是 micro × 2048 × 65536 × 4 字节，micro 8 就要 19GB 显存），一个进程已经占满了显存带宽。所以**每张卡一次只跑一个配置**；分块交叉熵能省显存、但换不来速度，这一轮不做。
+- micro batch 4 和 8 吞吐几乎一样，micro 16 在 24GB 上 OOM；统一用 micro 4。`torch.compile` 在 e5m 上只快 2%，但省 2GB 显存，保留。
+- **衰减分叉正确**：主干训到第 32 步存 checkpoint，接一段 max_steps = 40、从第 32 步开始衰减的分支，与从头直接训练 max_steps = 40 的运行相比，学习率每一步完全相同，loss 最大差 5.7e-6（GPU 上 BF16 的非确定性）。
+
+据此修正第 5 节的估计（GPU·小时，含逐轮淘汰与最好 8 组的衰减分叉）：e5m 128 组全部训满约 33、e11m 96 组约 37、e24m 48 组约 54、e44m 24 组约 79、e83m 6 组约 130，合计约 330 GPU·小时（3 张卡约 4.6 天）。**第 2 阶段（e5m）只用 GPU0，约 1.4 天。**

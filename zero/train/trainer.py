@@ -272,8 +272,11 @@ class Trainer:
 
     # ---- 主循环 ----
     def train(self, stop_at: int | None = None) -> list[dict[str, Any]]:
-        """训练到 max_steps。stop_at 用于测试"训练到一半被打断"：到这一步就返回（不额外存 checkpoint）。"""
+        """训练到 max_steps。stop_at 用于测试"训练到一半被打断"：到这一步就返回（不额外存 checkpoint）。
+        没传 stop_at 时用配置里的 train.stop_step（0 = 不提前停）。"""
         tc = self.cfg.train
+        if stop_at is None and tc.stop_step > 0:
+            stop_at = tc.stop_step
         accum = tc.grad_accum_steps
         use_no_sync = self.info.is_distributed and tc.parallel == "ddp"
         self.model.train()

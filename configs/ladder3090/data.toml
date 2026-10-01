@@ -1,0 +1,103 @@
+# 阶梯实验（runs/ladder-3090）的数据流水线：与主线配方（configs/main/data.toml）相同的清洗、质量、去重、
+# 分词器设置，输入是 configs/ladder3090/download.toml 下载的约 16.8GB 样本（每个数据集分散取多个文件）。
+#
+#   bash runs/ladder-3090/download_all.sh
+#   uv run python -m zero.data.pipeline --config configs/ladder3090/data.toml
+#
+# 与主线配置的不同（都记在 runs/ladder-3090/README.md）：
+# - 代码来源用 UltraData-Code-L2（9 种语言）代替 Stack-Edu（后者要 AWS 凭证取正文）；
+# - 去污染只对这台机器上已有的评测集做（工具调用 dev 集）；MMLU、C-Eval 等评测集文件还没下载；
+# - 分词器训练文本 2GB（主线 20GB），规模只够阶梯用；数据和分片放在 NAS 上，不进 git。
+
+[pipeline]
+name = "ladder3090"
+work_dir = "/mnt/DataSets/phan635/From-0-to-AGI/ladder/pipeline"
+out_dir = "/mnt/DataSets/phan635/From-0-to-AGI/ladder/pretrain"
+seed = 0
+val_fraction = 0.001
+val_max_docs = 5000
+shard_tokens = 100_000_000
+token_budget = 3.6e9
+write_stages = false
+
+[[sources]]
+name = "fineweb-edu"
+registry = "fineweb-edu"
+inputs = ["/mnt/DataSets/phan635/From-0-to-AGI/ladder/raw/fineweb-edu-*/*.jsonl.gz"]
+format = "jsonl"
+weight = 0.35
+lang = "en"
+heuristics = "none"
+score_field = "int_score"
+score_min = 3
+
+[[sources]]
+name = "dclm-baseline"
+registry = "dclm-baseline"
+inputs = ["/mnt/DataSets/phan635/From-0-to-AGI/ladder/raw/dclm-baseline-*/*.jsonl.gz"]
+format = "jsonl"
+weight = 0.10
+lang = "en"
+heuristics = "none"
+
+[[sources]]
+name = "fineweb-2-zh"
+registry = "fineweb-2-zh"
+inputs = ["/mnt/DataSets/phan635/From-0-to-AGI/ladder/raw/fineweb-2-zh-*/*.jsonl.gz"]
+format = "jsonl"
+weight = 0.20
+lang = "zh"
+heuristics = "web"
+
+[[sources]]
+name = "ultra-fineweb-zh"
+registry = "ultra-fineweb"
+inputs = ["/mnt/DataSets/phan635/From-0-to-AGI/ladder/raw/ultra-fineweb-zh-*/*.jsonl.gz"]
+format = "jsonl"
+weight = 0.10
+lang = "zh"
+heuristics = "none"
+
+[[sources]]
+name = "ultradata-code"
+registry = "ultradata-code"
+inputs = ["/mnt/DataSets/phan635/From-0-to-AGI/ladder/raw/ultradata-code-*/*.jsonl.gz"]
+format = "jsonl"
+weight = 0.15
+lang = "code"
+heuristics = "code"
+
+[[sources]]
+name = "finemath"
+registry = "finemath"
+inputs = ["/mnt/DataSets/phan635/From-0-to-AGI/ladder/raw/finemath-*/*.jsonl.gz"]
+format = "jsonl"
+weight = 0.10
+lang = "en"
+heuristics = "none"
+
+[quality]
+min_words = 50
+
+[dedup]
+exact = true
+near = true
+threshold = 0.8
+num_perm = 128
+bands = 16
+ngram = 5
+cross_source = true
+
+[decontam]
+n = 13
+min_tokens = 8
+[[decontam.eval_sets]]
+name = "tool_dev"
+path = "zero/eval/tasks/tool_dev.jsonl"
+
+[tokenizer]
+vocab_size = 65536
+pretokenize = "qwen3.5"
+sample_bytes = 2_000_000_000
+min_frequency = 2
+path = "/mnt/DataSets/phan635/From-0-to-AGI/ladder/pretrain/tokenizer.json"

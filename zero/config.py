@@ -224,6 +224,10 @@ class TrainConfig:
     )
     parallel: str = "ddp"  # 多进程时的并行方式："ddp" | "fsdp"；单进程忽略
     out_dir: str = "out/run"
+    # 训练到这一步就停（0 = 训练到 max_steps）。学习率调度仍按 max_steps 计算，所以停下再续训与一口气训完一样；
+    # 阶梯实验的逐轮淘汰（successive halving）用它：先训到 2/8 处，留下的配置再接着训（runs/ladder-3090）。
+    # 让停止点落在 checkpoint.every 的整数倍上，续训才能从这一步接上
+    stop_step: int = 0
     init_from: str = ""  # 中期训练：从这个 checkpoint 目录（或其父目录里最新的）加载模型权重
     eval_every: int = 100  # 每多少步算一次验证 loss；<=0 不评估
     eval_batches: int = 10
@@ -240,6 +244,7 @@ class TrainConfig:
                 raise ConfigError(msg)
 
         need(self.max_steps > 0, "[train] max_steps 必须 > 0")
+        need(self.stop_step >= 0, "[train] stop_step 必须 >= 0（0 = 训练到 max_steps）")
         need(self.micro_batch_size > 0, "[train] micro_batch_size 必须 > 0")
         need(self.grad_accum_steps > 0, "[train] grad_accum_steps 必须 > 0")
         need(

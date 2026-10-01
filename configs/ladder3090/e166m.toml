@@ -1,0 +1,10 @@
+# 阶梯 e166m：有效参数 N_eff = 165.94M（每 token FLOPs / 6，序列 2048；runs/ladder-3090/README.md 第 3 节）
+base = "base.toml"
+[model]
+dim = 768
+n_layers = 12
+n_heads = 12
+n_kv_heads = 6
+ffn_dim = 2048
+[train]
+out_dir = "out/ladder3090/e166m/scratch"

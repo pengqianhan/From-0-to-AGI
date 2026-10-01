@@ -1,0 +1,1707 @@
+# 阶梯实验（runs/ladder-3090）的训练数据下载配置。由 runs/ladder-3090/make_download_config.py 生成，不要手改。
+# 每个 [[sources]] 是某个数据集里的一个文件，从文件开头读 target_bytes 字节正文；
+# 流水线（configs/ladder3090/data.toml）用通配符 <来源>-*/ 把同一数据集的文件合回一个来源。
+
+[[sources]]
+name = "fineweb-edu-00"
+registry = "fineweb-edu"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-edu"
+  revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+  data_files = "sample/10BT/000_00000.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "score", "int_score", "token_count", "language_score"]
+  target_bytes = 412500000
+
+[[sources]]
+name = "fineweb-edu-01"
+registry = "fineweb-edu"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-edu"
+  revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+  data_files = "sample/10BT/001_00000.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "score", "int_score", "token_count", "language_score"]
+  target_bytes = 412500000
+
+[[sources]]
+name = "fineweb-edu-02"
+registry = "fineweb-edu"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-edu"
+  revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+  data_files = "sample/10BT/002_00000.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "score", "int_score", "token_count", "language_score"]
+  target_bytes = 412500000
+
+[[sources]]
+name = "fineweb-edu-03"
+registry = "fineweb-edu"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-edu"
+  revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+  data_files = "sample/10BT/003_00000.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "score", "int_score", "token_count", "language_score"]
+  target_bytes = 412500000
+
+[[sources]]
+name = "fineweb-edu-04"
+registry = "fineweb-edu"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-edu"
+  revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+  data_files = "sample/10BT/004_00000.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "score", "int_score", "token_count", "language_score"]
+  target_bytes = 412500000
+
+[[sources]]
+name = "fineweb-edu-05"
+registry = "fineweb-edu"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-edu"
+  revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+  data_files = "sample/10BT/005_00000.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "score", "int_score", "token_count", "language_score"]
+  target_bytes = 412500000
+
+[[sources]]
+name = "fineweb-edu-06"
+registry = "fineweb-edu"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-edu"
+  revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+  data_files = "sample/10BT/006_00000.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "score", "int_score", "token_count", "language_score"]
+  target_bytes = 412500000
+
+[[sources]]
+name = "fineweb-edu-07"
+registry = "fineweb-edu"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-edu"
+  revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+  data_files = "sample/10BT/007_00000.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "score", "int_score", "token_count", "language_score"]
+  target_bytes = 412500000
+
+[[sources]]
+name = "fineweb-edu-08"
+registry = "fineweb-edu"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-edu"
+  revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+  data_files = "sample/10BT/008_00000.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "score", "int_score", "token_count", "language_score"]
+  target_bytes = 412500000
+
+[[sources]]
+name = "fineweb-edu-09"
+registry = "fineweb-edu"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-edu"
+  revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+  data_files = "sample/10BT/009_00000.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "score", "int_score", "token_count", "language_score"]
+  target_bytes = 412500000
+
+[[sources]]
+name = "fineweb-edu-10"
+registry = "fineweb-edu"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-edu"
+  revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+  data_files = "sample/10BT/010_00000.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "score", "int_score", "token_count", "language_score"]
+  target_bytes = 412500000
+
+[[sources]]
+name = "fineweb-edu-11"
+registry = "fineweb-edu"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-edu"
+  revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+  data_files = "sample/10BT/011_00000.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "score", "int_score", "token_count", "language_score"]
+  target_bytes = 412500000
+
+[[sources]]
+name = "fineweb-edu-12"
+registry = "fineweb-edu"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-edu"
+  revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+  data_files = "sample/10BT/012_00000.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "score", "int_score", "token_count", "language_score"]
+  target_bytes = 412500000
+
+[[sources]]
+name = "fineweb-edu-13"
+registry = "fineweb-edu"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-edu"
+  revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+  data_files = "sample/10BT/013_00000.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "score", "int_score", "token_count", "language_score"]
+  target_bytes = 412500000
+
+[[sources]]
+name = "dclm-baseline-00"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_01_of_10/local-shard_0_of_10/shard_00000000_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-01"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_01_of_10/local-shard_2_of_10/shard_00000156_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-02"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_01_of_10/local-shard_5_of_10/shard_00000033_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-03"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_01_of_10/local-shard_7_of_10/shard_00000188_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-04"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_02_of_10/local-shard_0_of_10/shard_00000065_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-05"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_02_of_10/local-shard_2_of_10/shard_00000221_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-06"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_02_of_10/local-shard_5_of_10/shard_00000098_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-07"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_02_of_10/local-shard_7_of_10/shard_00000253_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-08"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_03_of_10/local-shard_0_of_10/shard_00000130_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-09"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_03_of_10/local-shard_3_of_10/shard_00000107_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-10"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_03_of_10/local-shard_5_of_10/shard_00000263_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-11"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_03_of_10/local-shard_8_of_10/shard_00000139_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-12"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_04_of_10/local-shard_1_of_10/shard_00000015_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-13"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_04_of_10/local-shard_3_of_10/shard_00000170_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-14"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_04_of_10/local-shard_6_of_10/shard_00000044_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-15"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_04_of_10/local-shard_8_of_10/shard_00000198_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-16"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_05_of_10/local-shard_1_of_10/shard_00000072_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-17"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_05_of_10/local-shard_3_of_10/shard_00000226_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-18"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_05_of_10/local-shard_6_of_10/shard_00000100_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-19"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_05_of_10/local-shard_8_of_10/shard_00000254_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-20"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_06_of_10/local-shard_1_of_10/shard_00000128_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-21"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_06_of_10/local-shard_4_of_10/shard_00000003_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-22"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_06_of_10/local-shard_6_of_10/shard_00000157_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-23"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_06_of_10/local-shard_9_of_10/shard_00000032_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-24"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_07_of_10/local-shard_1_of_10/shard_00000185_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-25"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_07_of_10/local-shard_4_of_10/shard_00000060_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-26"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_07_of_10/local-shard_6_of_10/shard_00000214_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-27"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_07_of_10/local-shard_9_of_10/shard_00000088_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-28"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_08_of_10/local-shard_1_of_10/shard_00000242_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-29"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_08_of_10/local-shard_4_of_10/shard_00000115_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-30"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_08_of_10/local-shard_6_of_10/shard_00000269_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-31"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_08_of_10/local-shard_9_of_10/shard_00000143_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-32"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_09_of_10/local-shard_2_of_10/shard_00000020_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-33"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_09_of_10/local-shard_4_of_10/shard_00000176_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-34"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_09_of_10/local-shard_7_of_10/shard_00000055_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-35"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_09_of_10/local-shard_9_of_10/shard_00000213_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-36"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_10_of_10/local-shard_2_of_10/shard_00000090_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-37"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_10_of_10/local-shard_4_of_10/shard_00000245_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-38"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_10_of_10/local-shard_7_of_10/shard_00000122_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "dclm-baseline-39"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  data_files = "global-shard_10_of_10/local-shard_9_of_10/shard_00000278_processed.jsonl.zst"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url"]
+  target_bytes = 41250000
+
+[[sources]]
+name = "finemath-00"
+registry = "finemath"
+  [sources.download]
+  repo = "HuggingFaceTB/finemath"
+  revision = "e92b25a616738fe95dc186b64dfb19f9c8525594"
+  data_files = "finemath-3plus/train-00000-of-00128.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "score", "int_score", "token_count"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "finemath-01"
+registry = "finemath"
+  [sources.download]
+  repo = "HuggingFaceTB/finemath"
+  revision = "e92b25a616738fe95dc186b64dfb19f9c8525594"
+  data_files = "finemath-3plus/train-00008-of-00128.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "score", "int_score", "token_count"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "finemath-02"
+registry = "finemath"
+  [sources.download]
+  repo = "HuggingFaceTB/finemath"
+  revision = "e92b25a616738fe95dc186b64dfb19f9c8525594"
+  data_files = "finemath-3plus/train-00017-of-00128.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "score", "int_score", "token_count"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "finemath-03"
+registry = "finemath"
+  [sources.download]
+  repo = "HuggingFaceTB/finemath"
+  revision = "e92b25a616738fe95dc186b64dfb19f9c8525594"
+  data_files = "finemath-3plus/train-00025-of-00128.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "score", "int_score", "token_count"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "finemath-04"
+registry = "finemath"
+  [sources.download]
+  repo = "HuggingFaceTB/finemath"
+  revision = "e92b25a616738fe95dc186b64dfb19f9c8525594"
+  data_files = "finemath-3plus/train-00034-of-00128.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "score", "int_score", "token_count"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "finemath-05"
+registry = "finemath"
+  [sources.download]
+  repo = "HuggingFaceTB/finemath"
+  revision = "e92b25a616738fe95dc186b64dfb19f9c8525594"
+  data_files = "finemath-3plus/train-00042-of-00128.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "score", "int_score", "token_count"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "finemath-06"
+registry = "finemath"
+  [sources.download]
+  repo = "HuggingFaceTB/finemath"
+  revision = "e92b25a616738fe95dc186b64dfb19f9c8525594"
+  data_files = "finemath-3plus/train-00051-of-00128.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "score", "int_score", "token_count"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "finemath-07"
+registry = "finemath"
+  [sources.download]
+  repo = "HuggingFaceTB/finemath"
+  revision = "e92b25a616738fe95dc186b64dfb19f9c8525594"
+  data_files = "finemath-3plus/train-00059-of-00128.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "score", "int_score", "token_count"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "finemath-08"
+registry = "finemath"
+  [sources.download]
+  repo = "HuggingFaceTB/finemath"
+  revision = "e92b25a616738fe95dc186b64dfb19f9c8525594"
+  data_files = "finemath-3plus/train-00068-of-00128.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "score", "int_score", "token_count"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "finemath-09"
+registry = "finemath"
+  [sources.download]
+  repo = "HuggingFaceTB/finemath"
+  revision = "e92b25a616738fe95dc186b64dfb19f9c8525594"
+  data_files = "finemath-3plus/train-00076-of-00128.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "score", "int_score", "token_count"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "finemath-10"
+registry = "finemath"
+  [sources.download]
+  repo = "HuggingFaceTB/finemath"
+  revision = "e92b25a616738fe95dc186b64dfb19f9c8525594"
+  data_files = "finemath-3plus/train-00085-of-00128.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "score", "int_score", "token_count"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "finemath-11"
+registry = "finemath"
+  [sources.download]
+  repo = "HuggingFaceTB/finemath"
+  revision = "e92b25a616738fe95dc186b64dfb19f9c8525594"
+  data_files = "finemath-3plus/train-00093-of-00128.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "score", "int_score", "token_count"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "finemath-12"
+registry = "finemath"
+  [sources.download]
+  repo = "HuggingFaceTB/finemath"
+  revision = "e92b25a616738fe95dc186b64dfb19f9c8525594"
+  data_files = "finemath-3plus/train-00102-of-00128.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "score", "int_score", "token_count"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "finemath-13"
+registry = "finemath"
+  [sources.download]
+  repo = "HuggingFaceTB/finemath"
+  revision = "e92b25a616738fe95dc186b64dfb19f9c8525594"
+  data_files = "finemath-3plus/train-00110-of-00128.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "score", "int_score", "token_count"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "finemath-14"
+registry = "finemath"
+  [sources.download]
+  repo = "HuggingFaceTB/finemath"
+  revision = "e92b25a616738fe95dc186b64dfb19f9c8525594"
+  data_files = "finemath-3plus/train-00119-of-00128.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "score", "int_score", "token_count"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "finemath-15"
+registry = "finemath"
+  [sources.download]
+  repo = "HuggingFaceTB/finemath"
+  revision = "e92b25a616738fe95dc186b64dfb19f9c8525594"
+  data_files = "finemath-3plus/train-00127-of-00128.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "score", "int_score", "token_count"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "fineweb-2-zh-00"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/000_00000.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-01"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/000_00016.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-02"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/000_00032.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-03"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/000_00048.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-04"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/000_00064.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-05"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/001_00006.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-06"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/001_00022.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-07"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/001_00038.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-08"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/001_00054.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-09"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/001_00070.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-10"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/002_00012.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-11"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/002_00028.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-12"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/002_00045.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-13"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/002_00061.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-14"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/003_00003.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-15"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/003_00019.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-16"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/003_00035.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-17"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/003_00051.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-18"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/003_00067.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-19"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/004_00009.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-20"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/004_00025.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-21"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/004_00041.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-22"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/004_00057.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "fineweb-2-zh-23"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  config = "cmn_Hani"
+  data_files = "data/cmn_Hani/train/004_00073.parquet"
+  text_field = "text"
+  id_field = "id"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 151250000
+
+[[sources]]
+name = "ultra-fineweb-zh-00"
+registry = "ultra-fineweb"
+  [sources.download]
+  repo = "openbmb/Ultra-FineWeb"
+  revision = "02c85641e3d19a854be2e09139c25adaa9518063"
+  data_files = "data/ultrafineweb_zh/ultrafineweb-zh-part-001-of-256.parquet"
+  text_field = "content"
+  id_field = "id"
+  keep_fields = ["score", "source"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "ultra-fineweb-zh-01"
+registry = "ultra-fineweb"
+  [sources.download]
+  repo = "openbmb/Ultra-FineWeb"
+  revision = "02c85641e3d19a854be2e09139c25adaa9518063"
+  data_files = "data/ultrafineweb_zh/ultrafineweb-zh-part-018-of-256.parquet"
+  text_field = "content"
+  id_field = "id"
+  keep_fields = ["score", "source"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "ultra-fineweb-zh-02"
+registry = "ultra-fineweb"
+  [sources.download]
+  repo = "openbmb/Ultra-FineWeb"
+  revision = "02c85641e3d19a854be2e09139c25adaa9518063"
+  data_files = "data/ultrafineweb_zh/ultrafineweb-zh-part-035-of-256.parquet"
+  text_field = "content"
+  id_field = "id"
+  keep_fields = ["score", "source"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "ultra-fineweb-zh-03"
+registry = "ultra-fineweb"
+  [sources.download]
+  repo = "openbmb/Ultra-FineWeb"
+  revision = "02c85641e3d19a854be2e09139c25adaa9518063"
+  data_files = "data/ultrafineweb_zh/ultrafineweb-zh-part-052-of-256.parquet"
+  text_field = "content"
+  id_field = "id"
+  keep_fields = ["score", "source"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "ultra-fineweb-zh-04"
+registry = "ultra-fineweb"
+  [sources.download]
+  repo = "openbmb/Ultra-FineWeb"
+  revision = "02c85641e3d19a854be2e09139c25adaa9518063"
+  data_files = "data/ultrafineweb_zh/ultrafineweb-zh-part-069-of-256.parquet"
+  text_field = "content"
+  id_field = "id"
+  keep_fields = ["score", "source"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "ultra-fineweb-zh-05"
+registry = "ultra-fineweb"
+  [sources.download]
+  repo = "openbmb/Ultra-FineWeb"
+  revision = "02c85641e3d19a854be2e09139c25adaa9518063"
+  data_files = "data/ultrafineweb_zh/ultrafineweb-zh-part-086-of-256.parquet"
+  text_field = "content"
+  id_field = "id"
+  keep_fields = ["score", "source"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "ultra-fineweb-zh-06"
+registry = "ultra-fineweb"
+  [sources.download]
+  repo = "openbmb/Ultra-FineWeb"
+  revision = "02c85641e3d19a854be2e09139c25adaa9518063"
+  data_files = "data/ultrafineweb_zh/ultrafineweb-zh-part-103-of-256.parquet"
+  text_field = "content"
+  id_field = "id"
+  keep_fields = ["score", "source"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "ultra-fineweb-zh-07"
+registry = "ultra-fineweb"
+  [sources.download]
+  repo = "openbmb/Ultra-FineWeb"
+  revision = "02c85641e3d19a854be2e09139c25adaa9518063"
+  data_files = "data/ultrafineweb_zh/ultrafineweb-zh-part-120-of-256.parquet"
+  text_field = "content"
+  id_field = "id"
+  keep_fields = ["score", "source"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "ultra-fineweb-zh-08"
+registry = "ultra-fineweb"
+  [sources.download]
+  repo = "openbmb/Ultra-FineWeb"
+  revision = "02c85641e3d19a854be2e09139c25adaa9518063"
+  data_files = "data/ultrafineweb_zh/ultrafineweb-zh-part-137-of-256.parquet"
+  text_field = "content"
+  id_field = "id"
+  keep_fields = ["score", "source"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "ultra-fineweb-zh-09"
+registry = "ultra-fineweb"
+  [sources.download]
+  repo = "openbmb/Ultra-FineWeb"
+  revision = "02c85641e3d19a854be2e09139c25adaa9518063"
+  data_files = "data/ultrafineweb_zh/ultrafineweb-zh-part-154-of-256.parquet"
+  text_field = "content"
+  id_field = "id"
+  keep_fields = ["score", "source"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "ultra-fineweb-zh-10"
+registry = "ultra-fineweb"
+  [sources.download]
+  repo = "openbmb/Ultra-FineWeb"
+  revision = "02c85641e3d19a854be2e09139c25adaa9518063"
+  data_files = "data/ultrafineweb_zh/ultrafineweb-zh-part-171-of-256.parquet"
+  text_field = "content"
+  id_field = "id"
+  keep_fields = ["score", "source"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "ultra-fineweb-zh-11"
+registry = "ultra-fineweb"
+  [sources.download]
+  repo = "openbmb/Ultra-FineWeb"
+  revision = "02c85641e3d19a854be2e09139c25adaa9518063"
+  data_files = "data/ultrafineweb_zh/ultrafineweb-zh-part-188-of-256.parquet"
+  text_field = "content"
+  id_field = "id"
+  keep_fields = ["score", "source"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "ultra-fineweb-zh-12"
+registry = "ultra-fineweb"
+  [sources.download]
+  repo = "openbmb/Ultra-FineWeb"
+  revision = "02c85641e3d19a854be2e09139c25adaa9518063"
+  data_files = "data/ultrafineweb_zh/ultrafineweb-zh-part-205-of-256.parquet"
+  text_field = "content"
+  id_field = "id"
+  keep_fields = ["score", "source"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "ultra-fineweb-zh-13"
+registry = "ultra-fineweb"
+  [sources.download]
+  repo = "openbmb/Ultra-FineWeb"
+  revision = "02c85641e3d19a854be2e09139c25adaa9518063"
+  data_files = "data/ultrafineweb_zh/ultrafineweb-zh-part-222-of-256.parquet"
+  text_field = "content"
+  id_field = "id"
+  keep_fields = ["score", "source"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "ultra-fineweb-zh-14"
+registry = "ultra-fineweb"
+  [sources.download]
+  repo = "openbmb/Ultra-FineWeb"
+  revision = "02c85641e3d19a854be2e09139c25adaa9518063"
+  data_files = "data/ultrafineweb_zh/ultrafineweb-zh-part-239-of-256.parquet"
+  text_field = "content"
+  id_field = "id"
+  keep_fields = ["score", "source"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "ultra-fineweb-zh-15"
+registry = "ultra-fineweb"
+  [sources.download]
+  repo = "openbmb/Ultra-FineWeb"
+  revision = "02c85641e3d19a854be2e09139c25adaa9518063"
+  data_files = "data/ultrafineweb_zh/ultrafineweb-zh-part-256-of-256.parquet"
+  text_field = "content"
+  id_field = "id"
+  keep_fields = ["score", "source"]
+  target_bytes = 103125000
+
+[[sources]]
+name = "ultradata-code-py-00"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/py/UltraData-Code-L2-py-part-00001-of-00119.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 92812499
+
+[[sources]]
+name = "ultradata-code-py-01"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/py/UltraData-Code-L2-py-part-00018-of-00119.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 92812499
+
+[[sources]]
+name = "ultradata-code-py-02"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/py/UltraData-Code-L2-py-part-00035-of-00119.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 92812499
+
+[[sources]]
+name = "ultradata-code-py-03"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/py/UltraData-Code-L2-py-part-00052-of-00119.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 92812499
+
+[[sources]]
+name = "ultradata-code-py-04"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/py/UltraData-Code-L2-py-part-00068-of-00119.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 92812499
+
+[[sources]]
+name = "ultradata-code-py-05"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/py/UltraData-Code-L2-py-part-00085-of-00119.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 92812499
+
+[[sources]]
+name = "ultradata-code-py-06"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/py/UltraData-Code-L2-py-part-00102-of-00119.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 92812499
+
+[[sources]]
+name = "ultradata-code-py-07"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/py/UltraData-Code-L2-py-part-00119-of-00119.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 92812499
+
+[[sources]]
+name = "ultradata-code-js-00"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/js/UltraData-Code-L2-js-part-00001-of-00159.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 92812499
+
+[[sources]]
+name = "ultradata-code-js-01"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/js/UltraData-Code-L2-js-part-00054-of-00159.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 92812499
+
+[[sources]]
+name = "ultradata-code-js-02"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/js/UltraData-Code-L2-js-part-00106-of-00159.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 92812499
+
+[[sources]]
+name = "ultradata-code-js-03"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/js/UltraData-Code-L2-js-part-00159-of-00159.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 92812499
+
+[[sources]]
+name = "ultradata-code-java-00"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/java/UltraData-Code-L2-java-part-00001-of-00065.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 92812499
+
+[[sources]]
+name = "ultradata-code-java-01"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/java/UltraData-Code-L2-java-part-00022-of-00065.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 92812499
+
+[[sources]]
+name = "ultradata-code-java-02"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/java/UltraData-Code-L2-java-part-00044-of-00065.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 92812499
+
+[[sources]]
+name = "ultradata-code-java-03"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/java/UltraData-Code-L2-java-part-00065-of-00065.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 92812499
+
+[[sources]]
+name = "ultradata-code-cpp-00"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/cpp/UltraData-Code-L2-cpp-part-00001-of-00031.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 92812499
+
+[[sources]]
+name = "ultradata-code-cpp-01"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/cpp/UltraData-Code-L2-cpp-part-00011-of-00031.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 92812499
+
+[[sources]]
+name = "ultradata-code-cpp-02"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/cpp/UltraData-Code-L2-cpp-part-00021-of-00031.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 92812499
+
+[[sources]]
+name = "ultradata-code-cpp-03"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/cpp/UltraData-Code-L2-cpp-part-00031-of-00031.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 92812499
+
+[[sources]]
+name = "ultradata-code-go-00"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/go/UltraData-Code-L2-go-part-00001-of-00006.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 61875000
+
+[[sources]]
+name = "ultradata-code-go-01"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/go/UltraData-Code-L2-go-part-00006-of-00006.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 61875000
+
+[[sources]]
+name = "ultradata-code-rust-00"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/rust/UltraData-Code-L2-rust-part-00001-of-00006.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 61875000
+
+[[sources]]
+name = "ultradata-code-rust-01"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/rust/UltraData-Code-L2-rust-part-00006-of-00006.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 61875000
+
+[[sources]]
+name = "ultradata-code-sh-00"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/sh/UltraData-Code-L2-sh-part-00001-of-00005.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 61875000
+
+[[sources]]
+name = "ultradata-code-sh-01"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/sh/UltraData-Code-L2-sh-part-00005-of-00005.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 61875000
+
+[[sources]]
+name = "ultradata-code-cs-00"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/cs/UltraData-Code-L2-cs-part-00001-of-00050.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 61875000
+
+[[sources]]
+name = "ultradata-code-cs-01"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/cs/UltraData-Code-L2-cs-part-00050-of-00050.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 61875000
+
+[[sources]]
+name = "ultradata-code-php-00"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/php/UltraData-Code-L2-php-part-00001-of-00110.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 61875000
+
+[[sources]]
+name = "ultradata-code-php-01"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  data_files = "data/UltraData-Code-L2/php/UltraData-Code-L2-php-part-00110-of-00110.parquet"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "quality_score"]
+  target_bytes = 61875000

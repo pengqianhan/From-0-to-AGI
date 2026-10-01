@@ -1,0 +1,10 @@
+# 阶梯 e83m：有效参数 N_eff = 83.03M（每 token FLOPs / 6，序列 2048；runs/ladder-3090/README.md 第 3 节）
+base = "base.toml"
+[model]
+dim = 512
+n_layers = 10
+n_heads = 8
+n_kv_heads = 4
+ffn_dim = 1344
+[train]
+out_dir = "out/ladder3090/e83m/scratch"
