@@ -74,6 +74,14 @@ def test_make_record_keeps_provenance() -> None:
     assert make_record({"content": "x"}, spec(text_field="content"), 0)["text"] == "x"
 
 
+def test_make_record_keep_field_does_not_clobber_provenance() -> None:
+    # Ultra-FineWeb 自带一个 "source" 字段（上游语料名，如 "Tele"），不能覆盖我们的出处
+    r = make_record({"text": "x", "source": "Tele", "score": 0.5}, spec(keep_fields=["source", "score"]), 0)
+    assert r["source"] == "fw"
+    assert r["orig_source"] == "Tele"
+    assert r["score"] == 0.5
+
+
 def test_download_writes_shards_and_resumes(tmp_path: Path) -> None:
     rows = fake_rows(10)
     # 第一次：最多 5 篇就停（模拟中途停下），complete=False

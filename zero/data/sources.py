@@ -87,6 +87,20 @@ SOURCES: dict[str, DatasetSource] = {
             description="从 CommonCrawl 中用数学分类器筛出的数学教育内容，FineMath-3+ 约 34B token。",
             tags=("math",),
         ),
+        DatasetSource(
+            name="ultradata-code",
+            url="https://huggingface.co/datasets/openbmb/UltraData-Code",
+            license="Apache-2.0",
+            languages=("code",),
+            stage="pretrain",
+            description="MiniCPM5 的代码数据（2026-09）：L2 是从约 1.92 亿个公开 GitHub 仓库清洗、去重后按算法相关性"
+            "与质量筛出的自然代码，约 400B token、11 种语言；L3 是由 L2 合成的编程练习，约 150B token。"
+            "正文直接在 parquet 的 content 字段里，不需要 AWS。",
+            notes="数据集卡标 Apache-2.0；单个文件原始仓库的许可证数据卡没有逐条给出（待核实）。"
+            "数据卡称 1B 模型续训 10B token 时 L2 比 Stack-Edu 在 EvalPlus / MultiPL-E 上高 4.37 / 3.05 分，"
+            "可作为主线代码来源 Stack-Edu 的候选替代（第 13 章）。2026-10 先用于第 13 章词表测量的抽样。",
+            tags=("code",),
+        ),
         # ---- 仓库内置的极小语料（离线冒烟测试用，见 assets/tiny_corpus/LICENSES.md）----
         DatasetSource(
             name="tiny-shakespeare",

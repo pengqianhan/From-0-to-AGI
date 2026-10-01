@@ -41,6 +41,16 @@ def test_all_configs_load(path: Path) -> None:
 
         load_pipeline_config(path)
         return
+    if path.stem == "download":  # 只给下载器用的配置（如 configs/vocab/download.toml，第 13 章词表测量）
+        import tomllib
+
+        from zero.data.download import check_license, specs_from_config
+
+        specs = specs_from_config(tomllib.loads(path.read_text("utf-8")))
+        assert specs
+        for s in specs:  # 每个来源都要在 zero/data/sources.py 登记，且许可证已核实
+            check_license(s)
+        return
     if path.stem == "eval":  # 评测配置只有 [eval]（tests/test_post_configs.py 另测）
         from zero.eval.harness import load_eval_config
 

@@ -1,0 +1,183 @@
+# 第 13 章第 10 节"词表选多大"的测量语料：从主线预训练来源里各抽一小份样本（只用于本地测量分词器压缩率，
+# 不用于训练，也不进仓库）。配比和主线一致（configs/main/data.toml）：英文 0.55 = FineWeb-Edu 0.35 + DCLM 0.10
+# + FineMath 0.10，中文 0.30 = FineWeb-2 0.20 + Ultra-FineWeb 0.10，代码 0.15。代码用 UltraData-Code-L2 代替
+# Stack-Edu（后者只有文件 id，正文要用 AWS 凭证从 Software Heritage 取）。
+#
+#   uv run python -m zero.data.download --config configs/vocab/download.toml --out /mnt/DataSets/phan635/From-0-to-AGI/raw_vocab
+#   uv run python chapters/13-data/code/09_build_vocab_corpus.py --raw /mnt/DataSets/phan635/From-0-to-AGI/raw_vocab \
+#       --out /mnt/DataSets/phan635/From-0-to-AGI/vocab_corpus
+#
+# 下载量：08_vocab_size.py 训练分词器用 30MB（英 16.5 / 中 9 / 代码 4.5），验证集英 1.75 / 中 0.8 / 代码 1.6MB；
+# 按语言留约 40% 余量：英 24MB、中 13MB、代码 9MB，各来源按配比分。target_bytes 按 UTF-8 正文字节计。
+# revision 固定到 2026-10-01 下载当天的 commit，保证可复现。流式读取从各数据集的第一个文件开始，
+# 样本偏向前几个 dump / 分片（FineWeb-Edu 用随机抽样的 sample-10BT 子集减轻这一点）。
+# 实际下载结果记在 runs/2026-10-01-vocab-corpus/README.md。
+
+[[sources]]
+name = "fineweb-edu"
+registry = "fineweb-edu"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-edu"
+  config = "sample-10BT"
+  revision = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+  keep_fields = ["url", "dump", "score", "int_score", "token_count", "language_score"]
+  target_bytes = 15_300_000
+
+[[sources]]
+name = "dclm-baseline"
+registry = "dclm-baseline"
+  [sources.download]
+  repo = "mlfoundations/dclm-baseline-1.0"
+  revision = "a3b142c183aebe5af344955ae20836eb34dcf69b"
+  keep_fields = ["url"]
+  target_bytes = 4_350_000
+
+[[sources]]
+name = "finemath"
+registry = "finemath"
+  [sources.download]
+  repo = "HuggingFaceTB/finemath"
+  config = "finemath-3plus"
+  revision = "e92b25a616738fe95dc186b64dfb19f9c8525594"
+  keep_fields = ["url", "score", "int_score", "token_count"]
+  target_bytes = 4_350_000
+
+[[sources]]
+name = "fineweb-2-zh"
+registry = "fineweb-2-zh"
+  [sources.download]
+  repo = "HuggingFaceFW/fineweb-2"
+  config = "cmn_Hani"
+  revision = "af9c13333eb981300149d5ca60a8e9d659b276b9"
+  keep_fields = ["url", "dump", "language_score"]
+  target_bytes = 8_700_000
+
+[[sources]]
+name = "ultra-fineweb-zh"
+registry = "ultra-fineweb"
+  [sources.download]
+  repo = "openbmb/Ultra-FineWeb"
+  split = "zh"
+  revision = "02c85641e3d19a854be2e09139c25adaa9518063"
+  text_field = "content"
+  keep_fields = ["score", "source"]
+  target_bytes = 4_300_000
+
+# 代码 9MB：Python 30%，JavaScript / Java / C++ 各 15%，Go / Rust / Shell / C# / PHP 各 5%
+# （UltraData-Code-L2 的 11 种语言里去掉了 R 和 Ruby；L3 是合成的编程练习，测分词器用自然代码 L2）
+[[sources]]
+name = "ultradata-code-py"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  config = "UltraData-Code-L2"
+  split = "py"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "algo_rel_score", "quality_score"]
+  target_bytes = 2_700_000
+
+[[sources]]
+name = "ultradata-code-js"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  config = "UltraData-Code-L2"
+  split = "js"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "algo_rel_score", "quality_score"]
+  target_bytes = 1_350_000
+
+[[sources]]
+name = "ultradata-code-java"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  config = "UltraData-Code-L2"
+  split = "java"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "algo_rel_score", "quality_score"]
+  target_bytes = 1_350_000
+
+[[sources]]
+name = "ultradata-code-cpp"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  config = "UltraData-Code-L2"
+  split = "cpp"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "algo_rel_score", "quality_score"]
+  target_bytes = 1_350_000
+
+[[sources]]
+name = "ultradata-code-go"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  config = "UltraData-Code-L2"
+  split = "go"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "algo_rel_score", "quality_score"]
+  target_bytes = 450_000
+
+[[sources]]
+name = "ultradata-code-rust"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  config = "UltraData-Code-L2"
+  split = "rust"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "algo_rel_score", "quality_score"]
+  target_bytes = 450_000
+
+[[sources]]
+name = "ultradata-code-sh"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  config = "UltraData-Code-L2"
+  split = "sh"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "algo_rel_score", "quality_score"]
+  target_bytes = 450_000
+
+[[sources]]
+name = "ultradata-code-cs"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  config = "UltraData-Code-L2"
+  split = "cs"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "algo_rel_score", "quality_score"]
+  target_bytes = 450_000
+
+[[sources]]
+name = "ultradata-code-php"
+registry = "ultradata-code"
+  [sources.download]
+  repo = "openbmb/UltraData-Code"
+  config = "UltraData-Code-L2"
+  split = "php"
+  revision = "85182d829f2ce7ea07cca72ebfc509deea1d9f5f"
+  text_field = "content"
+  id_field = "uuid"
+  keep_fields = ["repo_name", "relative_path", "category", "algo_rel_score", "quality_score"]
+  target_bytes = 450_000
