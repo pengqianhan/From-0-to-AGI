@@ -110,6 +110,17 @@ def test_target_bytes_stops_early(tmp_path: Path) -> None:
     assert sum(s["bytes"] for s in m["shards"]) >= 100
 
 
+def test_rerun_after_target_reached_does_not_read_again(tmp_path: Path) -> None:
+    download_source(spec(target_bytes=100), tmp_path, rows=fake_rows(10), log=lambda s: None)
+
+    def must_not_read():  # noqa: ANN202
+        raise AssertionError("已经下够了，不该再读数据流")
+        yield
+
+    m = download_source(spec(target_bytes=100), tmp_path, rows=must_not_read(), log=lambda s: None)
+    assert m["complete"] is False and sum(s["bytes"] for s in m["shards"]) >= 100
+
+
 def test_swh_content_fetch(tmp_path: Path) -> None:
     rows = [{"blob_id": "a", "text": None}, {"blob_id": "b", "text": None}]
     s = spec(name="se", registry="fineweb-edu", swh_content=True, id_field="blob_id")

@@ -34,6 +34,7 @@ import gzip
 import hashlib
 import json
 import os
+import sys
 import time
 import tomllib
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -316,6 +317,13 @@ def download_source(
     if w.manifest.get("complete"):
         log(f"[download] {spec.name} 已完成，跳过")
         return w.manifest
+    # 已经下够了（上次按 target_bytes / max_docs 停下）：别再打开数据流——续传要先从网络把已下载的行
+    # 重读一遍才能跳过它们，等于白白重下一遍
+    if (spec.max_docs and w.docs_done >= spec.max_docs) or (
+        spec.target_bytes and w.bytes_done >= spec.target_bytes
+    ):
+        log(f"[download] {spec.name} 已达到下载目标，跳过")
+        return w.manifest
     skip = w.rows_done
     it = iter(rows) if rows is not None else hf_rows(spec, skip=skip)
     if rows is not None and skip:  # 假数据/本地数据：手动跳过已完成的行
@@ -374,3 +382,9 @@ def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover
 
 if __name__ == "__main__":  # pragma: no cover
     main()
+    # 分片和 _manifest.json 都已经写完、落盘。datasets 流式读取留下的后台线程会让解释器在退出阶段
+    # 崩溃（PyGILState_Release，退出码 134）或者卡住不退出（2026-10 并行下载时 8 个进程全卡住，
+    # 占满了并发槽位）。所以直接结束进程，跳过解释器的收尾
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)

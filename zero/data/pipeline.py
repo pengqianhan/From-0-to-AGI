@@ -171,6 +171,7 @@ class DedupSpec:
     bands: int = 16
     ngram: int = 5
     cross_source: bool = False  # 来源内部去重之后，是否再跨来源去一次
+    n_jobs: int = 1  # MinHash 签名用几个进程算（结果与 1 相同，只是快；阶梯数据 16.8GB 单进程约 5 小时）
 
 
 @dataclass
@@ -457,6 +458,7 @@ def dedup_stage(docs: Sequence[Doc], spec: DedupSpec) -> tuple[StageResult, list
             num_perm=spec.num_perm,
             bands=spec.bands,
             ngram=spec.ngram,
+            n_jobs=spec.n_jobs,
         )
         removed["near_duplicate"] += len(kept) - len(keep)
         clusters = [[kept[i]["id"] for i in c] for c in cl]

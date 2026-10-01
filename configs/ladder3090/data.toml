@@ -87,6 +87,7 @@ num_perm = 128
 bands = 16
 ngram = 5
 cross_source = true
+n_jobs = 32                       # 多进程算 MinHash 签名（结果与单进程相同）
 
 [decontam]
 n = 13
