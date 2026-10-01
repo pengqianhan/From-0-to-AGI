@@ -12,7 +12,7 @@ PyTorch 的 F.scaled_dot_product_attention（SDPA）在 CUDA 上有三个后端�
   3. GQA（第 10 章）：K/V 头少于查询头时，enable_gqa=True 能走哪些后端。
 
 形状取主线模型的注意力：batch 1、16 个查询头、head_dim 128、BF16、因果 mask。
-需要 CUDA GPU（显存 ≥ 20 GB 才能跑完手写版的 16K），约半分钟。
+需要 CUDA GPU（显存 ≥ 20 GB 才能跑完手写版的 16K），RTX 3090 上约十几秒。
 运行：uv run python chapters/08-attention/code/06_gpu_sdpa_backends.py
 """
 
