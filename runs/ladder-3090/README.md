@@ -77,11 +77,17 @@
 
 ## 进度
 
-### 第 0 阶段：准备（2026-10-01，进行中）
+### 第 0 阶段：准备（2026-10-01，已完成）
 
 - 训练数据下载：`runs/ladder-3090/make_download_config.py` 生成 `configs/ladder3090/download.toml`——6 个数据集、140 个来源，每个数据集按文件序号均匀挑文件（例如 FineWeb-Edu 的 14 个文件全用、各读约 0.4GB），共约 16.8GB 正文；`runs/ladder-3090/download_all.sh` 8 路并行下载到 `/mnt/DataSets/phan635/From-0-to-AGI/ladder/raw/`。抽查：FineWeb-Edu 第 7 个文件的网页来自 CC-MAIN-2021-25、FineWeb-2 中文第 23 个文件来自 CC-MAIN-2017-39，样本不再只有 2013–2014 年。
 - 流水线配置 `configs/ladder3090/data.toml`（与主线配方相同，差别见文件头），训练配置 `configs/ladder3090/base.toml` + `e5m.toml`……`e166m.toml`。
 - 工具：`sweep.py`（采样、按卡排队、逐轮淘汰、衰减分叉、汇总；`tests/test_ladder3090_sweep.py` 检查衰减恰好从第 k/8 个 checkpoint 开始）、`build_val.py`（固定验证集：按配比拼 1024 个片段，所有配置看到同一份验证数据）。训练器加了 `train.stop_step`（停下再续训与一口气训完逐位相同，`tests/test_train_resume.py`）。
+
+- **数据流水线**（`configs/ladder3090/data.toml`，与主线相同的配方）：第一次跑满会话的 2 小时上限被中止、又不知道慢在哪，于是给流水线加了分段计时、改成脱离会话运行；重跑 3 小时 3 分钟完成，峰值内存 92.7GB。慢的是单进程 Python 的两步：FineWeb-2 中文的启发式规则 27 分钟、去污染合计约 80 分钟（逐篇算 13-gram，约 4MB/s）；MinHash 去重改成 32 进程后每个来源 1–7 分钟。主线 TB 级数据要把这两步也并行化（或换 datatrove）。
+- **漏斗**：UltraData-Code 近似去重删掉 15.6%（许可证头、自动生成文件这类样板代码），Ultra-FineWeb 中文被语言检查删掉 3.4%（混进来的非中文文档），FineWeb-2 中文被启发式规则删掉 2.2%，其余来源都在 1% 以内。
+- **训练数据 3.82B token**：FineWeb-Edu 1.261B、FineWeb-2 中文 0.817B、UltraData-Code 0.516B、FineMath 0.472B、DCLM 0.382B、Ultra-FineWeb 中文 0.373B。按配比最先用完的是代码（0.516B ÷ 0.15 = 3.44B），本轮单个运行最多读 3.32B（e83m 的主干），所以**没有任何来源被重复读**，但余量不大。
+- **分词器**（65,536 词表、qwen3.5 正则，2GB 文本训练 10 分钟）：验证集字节/token FineWeb-Edu 4.51、DCLM 4.37、FineWeb-2 中文 4.38、Ultra-FineWeb 中文 4.17、代码 3.46、FineMath 3.57，按配比加权 4.18，与第 13 章第 10 节在样本上测的 4.15 一致。
+- 分片拷到本地盘 `data/ladder3090/`（15GB），固定验证集 1024 个片段、2,097,153 token（按配比：FineWeb-Edu 358、FineWeb-2 中文 205、代码 154、其余各约 102 个片段）。真实数据上 20 步冒烟：219k tok/s，val_bpb 正常记录。
 
 ### 第 1 阶段：试点（2026-10-01，只用 GPU0，随机 token 数据，`pilot.py`）
 
@@ -100,3 +106,7 @@
 - **衰减分叉正确**：主干训到第 32 步存 checkpoint，接一段 max_steps = 40、从第 32 步开始衰减的分支，与从头直接训练 max_steps = 40 的运行相比，学习率每一步完全相同，loss 最大差 5.7e-6（GPU 上 BF16 的非确定性）。
 
 据此修正第 5 节的估计（GPU·小时，含逐轮淘汰与最好 8 组的衰减分叉）：e5m 128 组全部训满约 33、e11m 96 组约 37、e24m 48 组约 54、e44m 24 组约 79、e83m 6 组约 130，合计约 330 GPU·小时（3 张卡约 4.6 天）。**第 2 阶段（e5m）只用 GPU0，约 1.4 天。**
+
+### 第 2–5 阶段：自动执行（2026-10-01 23:00 开始）
+
+用户确认不必在阶段之间停下等确认，按计划自动推进。`runs/ladder-3090/orchestrate.py` 脱离会话运行（PID 记在 `out/ladder3090/orchestrate.pid`，日志 `out/ladder3090/orchestrate.log`），阶段之间的决定按文件头写好的规则自动做、记进 `results/decisions.json`。2026-10-01 23:00 从 e5m 开始（只用 GPU0，128 组全部训满，约 1.4 天）。每完成一档在下面追加结果。
