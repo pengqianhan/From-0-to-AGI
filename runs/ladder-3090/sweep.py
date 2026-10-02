@@ -477,8 +477,11 @@ def cmd_collect(args: argparse.Namespace) -> None:
     out = HERE / "results" / f"{args.scale}.csv"
     out.parent.mkdir(parents=True, exist_ok=True)
     if rows:
+        # 列取所有行的并集：narrow/ext 配置多一个 narrow_from（列表，写成 "+" 连接的字符串）
+        fields = list(dict.fromkeys(k for r in rows for k in r))
+        rows = [{k: "+".join(v) if isinstance(v, list) else v for k, v in r.items()} for r in rows]
         with out.open("w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=list(rows[0]))
+            w = csv.DictWriter(f, fieldnames=fields)
             w.writeheader()
             w.writerows(rows)
     print(f"{out}：{len(rows)} 行")
