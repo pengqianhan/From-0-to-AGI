@@ -91,3 +91,30 @@ def test_narrow_ranges_follow_trend_and_stay_in_bounds(tmp_path: Path, monkeypat
         hp = sweep.sample_in(random.Random(i), r)
         assert math.exp(r["lr"][0]) - 1e-12 <= hp["lr"] <= math.exp(r["lr"][1]) + 1e-12
         assert hp["tokens_per_step"] in {2**k for k in range(15, 22)}
+
+
+def test_ext_sampling_extends_batch_downward(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    # 边界扩展：batch 取 2^13–2^15，其余超参数在这一档自己最好的配置附近；只追加、不改已有配置
+    import argparse
+    import csv
+    import json
+
+    monkeypatch.setattr(sweep, "HERE", tmp_path)
+    monkeypatch.setattr(sweep, "n_eff", lambda s: 4e6)
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "results").mkdir()
+    cfgs = [{"id": f"a-{i:03d}", "scale": "a", "space": "full", **sweep.sample_full(random.Random(i))} for i in range(40)]
+    (tmp_path / "configs" / "a.jsonl").write_text("\n".join(json.dumps(c) for c in cfgs) + "\n")
+    with (tmp_path / "results" / "a.csv").open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["id", "phase", "k", "val_bpb"])
+        w.writeheader()
+        w.writerows({"id": c["id"], "phase": "decay", "k": 8, "val_bpb": 1 + c["tokens_per_step"] / 2**21} for c in cfgs)
+    sweep.cmd_sample(argparse.Namespace(scale="a", n=52, space="ext", sources=["a"]))
+    out = sweep.load_configs("a")
+    assert out[:40] == cfgs and len(out) == 52
+    for c in out[40:]:
+        assert c["space"] == "ext" and c["tokens_per_step"] in {2**13, 2**14, 2**15}
+        for h, (lo, hi) in sweep.FULL_Z.items():
+            if h != "tokens_per_step":
+                assert lo - 1e-9 <= sweep.to_z(h, c[h]) <= hi + 1e-9, h
+    assert (tmp_path / "results" / "a_ext_ranges.json").exists()

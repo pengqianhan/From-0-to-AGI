@@ -50,7 +50,14 @@ def plt_setup():  # noqa: ANN201
     return plt
 
 
-def load(scale: str) -> list[dict]:
+def load(scale: str, space: str | None = None) -> list[dict]:
+    """space=None 读全部；"full" 只读完整空间的随机搜索（分布、NQL、敏感性都只对它成立：
+    它们假设样本独立地来自同一个搜索分布；ext/narrow 是有针对性的补充搜索，只用来逼近最优前沿）。"""
+    rows = _load(scale)
+    return rows if space is None else [r for r in rows if r.get("space", "full") == space]
+
+
+def _load(scale: str) -> list[dict]:
     path = RES / f"{scale}.csv"
     if not path.exists():
         raise SystemExit(f"{path} 不存在：先跑 sweep.py collect --scale {scale}")
@@ -76,18 +83,25 @@ def configs(rows: list[dict]) -> dict[str, dict]:
 
 
 def cmd_frontier(args: argparse.Namespace) -> None:
-    rows = load(args.scale)
+    all_rows = load(args.scale)
+    all_final = scores(all_rows, "decay", 8)
+    all_cfg = configs(all_rows)
+    best_all = min(all_final, key=all_final.get)
+    rows = load(args.scale, "full")
     cfg = configs(rows)
     final = scores(rows, "decay", 8)
     n_all = sum(1 for line in (HERE / "configs" / f"{args.scale}.jsonl").read_text().splitlines() if line.strip())
     ys = np.array(sorted(final.values()))
     best = min(final, key=final.get)
     out = {
-        "scale": args.scale, "configs": n_all, "finished": len(final),
+        "scale": args.scale, "configs": n_all, "finished": len(all_final),
+        "best_all_id": best_all, "best_all_val_bpb": all_final[best_all], "best_all_config": all_cfg[best_all],
+        "full_space_finished": len(final),
         "best_id": best, "best_val_bpb": final[best], "best_config": cfg[best],
         "quantiles": {q: float(np.quantile(ys, q)) for q in (0.0, 0.1, 0.25, 0.5)},
     }
-    print(f"{args.scale}：{n_all} 组里 {len(final)} 组训完（其余发散或未跑）")
+    print(f"{args.scale}：{n_all} 组里 {len(all_final)} 组训完（其中完整空间 {len(final)} 组）；"
+          f"全部配置里最好 {best_all}：{all_final[best_all]:.4f}")
     print(f"最好 {best}：val_bpb {final[best]:.4f}  " + "  ".join(f"{h}={cfg[best][h]:.3g}" for h in HP))
     print("分位数：" + "  ".join(f"{q:.0%} {v:.4f}" for q, v in out["quantiles"].items()))
 
@@ -122,7 +136,7 @@ def cmd_frontier(args: argparse.Namespace) -> None:
 def cmd_nql(args: argparse.Namespace) -> None:
     from opda.parametric import NoisyQuadraticDistribution
 
-    rows = load(args.scale)
+    rows = load(args.scale, "full")
     plt = plt_setup()
     targets = [("decay", 8, "衰减后 8/8（完整训练）")] + [("stable", k, f"稳定段 {k}/8") for k in (4, 8)]
     out = {}
@@ -167,7 +181,7 @@ def cmd_nql(args: argparse.Namespace) -> None:
 
 
 def cmd_sensitivity(args: argparse.Namespace) -> None:
-    rows = load(args.scale)
+    rows = load(args.scale, "full")
     cfg = configs(rows)
     final = scores(rows, "decay", 8)
     ids = sorted(final, key=final.get)

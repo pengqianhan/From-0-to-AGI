@@ -181,11 +181,15 @@ def cmd_sample(args: argparse.Namespace) -> None:
     path = configs_path(args.scale)
     path.parent.mkdir(parents=True, exist_ok=True)
     ranges = None
-    if args.space == "narrow":
+    if args.space in ("narrow", "ext"):
         if not args.sources:
-            raise SystemExit("--space narrow 需要 --from <小档…>")
+            raise SystemExit(f"--space {args.space} 需要 --from <档…>")
         ranges = narrow_ranges(args.scale, args.sources)
-        rpath = HERE / "results" / f"{args.scale}_narrow_ranges.json"
+        if args.space == "ext":
+            # 边界扩展：这一档最好的配置用的是搜索空间里最小的 batch（2^15），最优可能在边界外，
+            # 于是 batch 往下扩两档（2^13–2^15），其余超参数在这一档自己最好的配置附近收窄
+            ranges["tokens_per_step"] = [13.0, 15.0]
+        rpath = HERE / "results" / f"{args.scale}_{args.space}_ranges.json"
         if len(existing) < args.n:
             rpath.parent.mkdir(parents=True, exist_ok=True)
             rpath.write_text(json.dumps({"from": args.sources, "ranges_z": ranges, "ranges": {
@@ -402,6 +406,8 @@ def cmd_run(args: argparse.Namespace) -> None:
     cfgs = load_configs(args.scale)
     if args.ids:
         cfgs = [c for c in cfgs if c["id"] in set(args.ids)]
+    if args.only_space:
+        cfgs = [c for c in cfgs if c["space"] == args.only_space]
     plans = {c["id"]: plan_for(c, neff) for c in cfgs}
     until = Fraction(args.until)
     cfgs = select(cfgs, plans, args.top, Fraction(args.rank_at) if args.rank_at else None)
@@ -522,7 +528,7 @@ def main() -> None:
     p = sub.add_parser("sample")
     p.add_argument("--scale", required=True)
     p.add_argument("--n", type=int, required=True)
-    p.add_argument("--space", default="full", choices=["full", "narrow"])
+    p.add_argument("--space", default="full", choices=["full", "narrow", "ext"])
     p.add_argument("--from", dest="sources", nargs="*", default=[], help="narrow：按哪些小档的结果收窄")
     for name in ("run", "branch"):
         p = sub.add_parser(name)
@@ -536,6 +542,7 @@ def main() -> None:
             p.add_argument("--rank-at", default=None)
             p.add_argument("--ids", nargs="*")
             p.add_argument("--retry-failed", action="store_true")
+            p.add_argument("--only-space", default=None, help="只训这一类配置（如 ext），逐轮淘汰也只在它们之间排")
         else:
             p.add_argument("--top", type=int, default=8)
             p.add_argument("--ks", type=int, nargs="+", default=[3, 4, 5, 6, 7])

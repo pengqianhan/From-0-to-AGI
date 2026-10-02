@@ -9,6 +9,10 @@
   差不超过 0.5%、并且全局前 5 名至少留下 3 个，e11m 起才采用；否则改为全部训满、配置数减半（算力不变）。
 - 收窄的搜索空间：e24m、e44m 一半配置从完整空间抽、一半按更小几档的结果收窄（sweep.py narrow_ranges）；
   e83m 全部从收窄的空间抽。
+- 边界扩展（2026-10-02 e5m 跑完后加的规则）：一档搜索结束后，如果全部配置里最好的那组用的是搜索空间里
+  最小的 batch（2^15），最优就可能在边界外——补搜一批 batch 取 2^13–2^15、其余超参数在这一档自己最好的
+  配置附近收窄的配置（e5m 36 组、e11m 24 组、e24m 12 组、e44m 6 组），再重新做衰减分叉和分析。
+  这批配置只用来逼近最优前沿；分布、NQL、敏感性分析只用完整空间的随机搜索（analyze.py）。
 - e44m 训完先拟合一次 L(N, D)，在 e83m 开训之前把对它的预测存下来（results/fit_before_e83m.json），
   e83m 训完再算外推误差——预测在先、检验在后。
 
@@ -33,6 +37,7 @@ HERE = REPO / "runs" / "ladder-3090"
 RES = HERE / "results"
 GPUS = {"small": ["0", "1", "2"], "mid": ["0", "1", "2"], "all": ["0", "1", "2"]}
 SH_MAX_REGRET, SH_MIN_TOP5 = 0.005, 3
+EXT_N = {"e5m": 36, "e11m": 24, "e24m": 12, "e44m": 6}  # 边界扩展补搜的配置数
 
 
 def log(msg: str) -> None:
@@ -77,6 +82,28 @@ def finish_scale(scale: str, gpus: list[str], top_branch: int = 8) -> None:
     sweep("prune", "--scale", scale, "--keep-top", 8)
 
 
+def maybe_extend(scale: str, gpus: list[str], use_sh: bool) -> None:
+    """最好的配置落在 batch 下边界（2^15）时，往下扩两档补搜（规则见文件头）。"""
+    fr = json.loads((RES / f"{scale}_frontier.json").read_text())
+    tps = fr["best_all_config"]["tokens_per_step"]
+    decide(f"ext_{scale}", tps <= 2**15,
+           f"{scale} 全部配置里最好的 {fr['best_all_id']}（val_bpb {fr['best_all_val_bpb']:.4f}）每步 {int(tps):,} token"
+           + ("，落在搜索空间的 batch 下边界 2^15：往下扩到 2^13 补搜" if tps <= 2**15 else "，不在边界上，不补搜"))
+    if not json.loads((RES / "decisions.json").read_text())[f"ext_{scale}"]["value"]:
+        return
+    cfgs = [json.loads(x) for x in (HERE / "configs" / f"{scale}.jsonl").read_text().splitlines() if x.strip()]
+    n_main = sum(c["space"] != "ext" for c in cfgs)
+    sweep("sample", "--scale", scale, "--n", n_main + EXT_N[scale], "--space", "ext", "--from", scale)
+    ext = ["--only-space", "ext", "--gpus", *gpus]
+    if use_sh and EXT_N[scale] >= 12:
+        sweep("run", "--scale", scale, "--until", "2/8", *ext)
+        sweep("run", "--scale", scale, "--until", "4/8", "--top", "0.5", "--rank-at", "2/8", *ext)
+        sweep("run", "--scale", scale, "--until", "1", "--top", "0.25", "--rank-at", "4/8", *ext)
+    else:
+        sweep("run", "--scale", scale, "--until", "1", *ext)
+    finish_scale(scale, gpus)
+
+
 def run_scale(scale: str, n_full: int, n_narrow: int, narrow_from: list[str], gpus: list[str], use_sh: bool) -> None:
     log(f"===== {scale} =====")
     if not use_sh:
@@ -91,6 +118,7 @@ def run_scale(scale: str, n_full: int, n_narrow: int, narrow_from: list[str], gp
     else:
         sweep("run", "--scale", scale, "--until", "1", "--gpus", *gpus)
     finish_scale(scale, gpus)
+    maybe_extend(scale, gpus, use_sh)
 
 
 def main() -> None:
@@ -106,6 +134,7 @@ def main() -> None:
            f"e5m 模拟：选中的配置比真正最好的差 {sh['regret_rel']:.3%}（阈值 {SH_MAX_REGRET:.1%}），"
            f"全局前 5 名留下 {sh['global_top5_survived']} 个（阈值 {SH_MIN_TOP5}）")
     use_sh = json.loads((RES / "decisions.json").read_text())["successive_halving"]["value"]
+    maybe_extend("e5m", GPUS["small"], use_sh=False)  # e5m 便宜，补搜也全部训满
 
     # 第 3 阶段：放大
     run_scale("e11m", 96, 0, [], GPUS["mid"], use_sh)

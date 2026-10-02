@@ -1,0 +1,43 @@
+{
+  "scale": "e5m",
+  "configs": 128,
+  "finished": 128,
+  "best_all_id": "e5m-103",
+  "best_all_val_bpb": 1.8413702984880587,
+  "best_all_config": {
+    "tokens_per_step": 32768.0,
+    "lr": 0.002262001710689361,
+    "beta1": 0.8975757339600985,
+    "beta2": 0.995490226808448,
+    "warmup_frac": 0.03594735559198656,
+    "weight_decay": 0.003496929820231464,
+    "rope_theta": 464441.50565440435
+  },
+  "full_space_finished": 128,
+  "best_id": "e5m-103",
+  "best_val_bpb": 1.8413702984880587,
+  "best_config": {
+    "tokens_per_step": 32768.0,
+    "lr": 0.002262001710689361,
+    "beta1": 0.8975757339600985,
+    "beta2": 0.995490226808448,
+    "warmup_frac": 0.03594735559198656,
+    "weight_decay": 0.003496929820231464,
+    "rope_theta": 464441.50565440435
+  },
+  "quantiles": {
+    "0.0": 1.8413702984880587,
+    "0.1": 2.0336508505458757,
+    "0.25": 2.3841849391965444,
+    "0.5": 2.639693754405803
+  },
+  "successive_halving": {
+    "survivors_round1": 64,
+    "survivors_round2": 32,
+    "picked": "e5m-103",
+    "picked_val_bpb": 1.8413702984880587,
+    "regret_bpb": 0.0,
+    "regret_rel": 0.0,
+    "global_top5_survived": 5
+  }
+}
