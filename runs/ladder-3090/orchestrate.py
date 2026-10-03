@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shutil
 import subprocess
 import sys
@@ -35,7 +36,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 HERE = REPO / "runs" / "ladder-3090"
 RES = HERE / "results"
-GPUS = {"small": ["0", "1", "2"], "mid": ["0", "1", "2"], "all": ["0", "1", "2"]}
+# 用哪些卡由环境变量 LADDER_GPUS 决定（默认三张卡；2026-10-03 起让出 GPU1 给别的项目：LADDER_GPUS=0,2）
+_CARDS = os.environ.get("LADDER_GPUS", "0,1,2").split(",")
+GPUS = {"small": _CARDS, "mid": _CARDS, "all": _CARDS}
 SH_MAX_REGRET, SH_MIN_TOP5 = 0.005, 3
 EXT_N = {"e5m": 36, "e11m": 24, "e24m": 12, "e44m": 6}  # 边界扩展补搜的配置数
 
