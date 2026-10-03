@@ -305,6 +305,12 @@ def last_ckpt_step(out_dir: Path) -> int:
     return int(p.name.split("_")[1]) if p is not None else 0
 
 
+def reached(cfg: dict, plan: Plan, step: int) -> bool:
+    """训到过这一步：看日志里有没有这一步之后的评估，而不只看 checkpoint——prune 会删掉 checkpoint，
+    只看 checkpoint 会把已经训完的配置从头再训一遍（2026-10-03 重启后发生过）。"""
+    return last_ckpt_step(run_dir(cfg)) >= step or any(s >= step for s in val_at(run_dir(cfg)))
+
+
 def finished_trunk(cfg: dict, plan: Plan) -> bool:
     m, _ = with_decay(plan.stable_steps)
     return m in val_at(run_dir(cfg))
@@ -418,7 +424,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         pl = plans[c["id"]]
         m, f = with_decay(pl.stable_steps)
         stop = 0 if until >= 1 else pl.step_at(until)
-        if (stop and last_ckpt_step(run_dir(c)) >= stop) or (not stop and finished_trunk(c, pl)):
+        if finished_trunk(c, pl) or (stop and reached(c, pl, stop)):
             continue  # 已经训到了
         jobs.append(Job(c["id"], train_cmd(c, pl, run_dir(c), m, f, stop, pl.every, pl.every), run_dir(c)))
     n_failed = sum(failed(run_dir(c)) for c in cfgs)

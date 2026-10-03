@@ -118,3 +118,17 @@ def test_ext_sampling_extends_batch_downward(tmp_path: Path, monkeypatch) -> Non
             if h != "tokens_per_step":
                 assert lo - 1e-9 <= sweep.to_z(h, c[h]) <= hi + 1e-9, h
     assert (tmp_path / "results" / "a_ext_ranges.json").exists()
+
+
+def test_pruned_run_counts_as_reached(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    # prune 删掉 checkpoint 之后，日志里有这一步的评估就算训到过，不能从头重训
+    import json
+
+    monkeypatch.setattr(sweep, "OUT", tmp_path)
+    cfg = {"id": "a-000", "scale": "a", "tokens_per_step": 2**16, "warmup_frac": 0.01}
+    plan = sweep.Plan(stable_steps=80, micro=4, accum=8, warmup_steps=1)
+    d = sweep.run_dir(cfg)
+    d.mkdir(parents=True)
+    (d / "log.jsonl").write_text("\n".join(json.dumps({"step": s, "val_bpb": 2.0}) for s in (10, 20, 30, 40)) + "\n")
+    assert sweep.reached(cfg, plan, 20) and sweep.reached(cfg, plan, 40)
+    assert not sweep.reached(cfg, plan, 50)
