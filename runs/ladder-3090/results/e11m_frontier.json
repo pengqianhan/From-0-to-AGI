@@ -1,17 +1,17 @@
 {
   "scale": "e11m",
-  "configs": 96,
-  "finished": 24,
-  "best_all_id": "e11m-018",
-  "best_all_val_bpb": 1.5079882958830007,
+  "configs": 120,
+  "finished": 48,
+  "best_all_id": "e11m-106",
+  "best_all_val_bpb": 1.4975003827692956,
   "best_all_config": {
-    "tokens_per_step": 32768.0,
-    "lr": 0.001023939238116405,
-    "beta1": 0.8181724360239679,
-    "beta2": 0.9944707402152276,
-    "warmup_frac": 0.0016885397403116071,
-    "weight_decay": 0.015885720589321275,
-    "rope_theta": 399614.1207586105
+    "tokens_per_step": 16384.0,
+    "lr": 0.007544420594297773,
+    "beta1": 0.9135621523069205,
+    "beta2": 0.9987967197881197,
+    "warmup_frac": 0.035845496366314414,
+    "weight_decay": 0.015004427837847082,
+    "rope_theta": 77861.06107927472
   },
   "full_space_finished": 24,
   "best_id": "e11m-018",
