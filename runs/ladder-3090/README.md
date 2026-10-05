@@ -139,3 +139,30 @@
 - **耗时**：训练进程累计 **72.9 GPU·小时**（计划 37）：上面的 ①③，加上小 batch 配置每步开销大、吞吐低。
 - **e24m 的收窄范围**（`results/e24m_narrow_ranges.json`，按 e5m、e11m 最好的 10% 外推）：batch 2¹⁵–2¹⁷、lr 6.7e-4–4.4e-2、β₂ 0.988–0.9999，其余基本是完整范围。注意收窄范围的 batch 下限截在完整空间的 2¹⁵，而两档的最优都是 2¹⁴——如果 e24m 的最好配置又落在 2¹⁵，边界扩展规则会再补搜 2¹³–2¹⁵。
 - **2026-10-05 10:00 再次让出 GPU1**：用户要用一张卡。停掉调度器，用 `LADDER_GPUS=0,2` 重启，从 e24m 的第二轮逐轮淘汰接着走（已训完的配置都跳过，已完成档的分析会重跑一遍）。
+
+### ⏸ 暂停（2026-10-05 15:12，用户要求）
+
+**暂停时的状态**
+
+| 档 | N_eff | 状态 | 最好 val_bpb |
+|---|---:|---|---:|
+| e5m | 4.83M | ✅ 完成：128 组完整空间 + 36 组边界扩展，最好 8 组的衰减分叉 | 1.8230（e5m-143，batch 2¹⁴） |
+| e11m | 11.2M | ✅ 完成：96 组完整空间（逐轮淘汰）+ 24 组边界扩展，衰减分叉 | 1.4975（e11m-106，batch 2¹⁴） |
+| e24m | 23.9M | 🔄 进行到最后一轮：48 组（24 完整空间 + 24 收窄）都训到 2/8，前 24 组训到 4/8，前 12 组训满中——已训满 2 组，其余停在各自最近的 checkpoint | 暂为 1.3458（e24m-045，收窄空间，batch 2¹⁶；只有 2 组训满，不是最终结果） |
+| e44m | 44.3M | 未开始 | — |
+| e83m | 83.0M | 未开始（留出检验） | — |
+
+`results/e24m.csv` 是暂停时的快照（161 行）。已用 GPU 时间：e5m 约 60、e11m 约 73、e24m 到目前约 40 GPU·小时。
+
+**恢复方法**（每一步都幂等：已训完的配置跳过，训到一半的从最近的 checkpoint 接着训——checkpoint 每 1/8 存一次，暂停最多损失每个在训配置 1/8 的进度）：
+
+```bash
+cd From-0-to-AGI
+# LADDER_GPUS 写这次能用的卡，例如三张卡 0,1,2，两张卡 0,2
+setsid nohup env UV_NO_SYNC=1 LADDER_GPUS=0,1,2 .venv/bin/python runs/ladder-3090/orchestrate.py \
+    >> out/ladder3090/orchestrate.log 2>&1 < /dev/null &
+ps -eo pid,args | awk '$2 ~ /python/ && $3 == "runs/ladder-3090/orchestrate.py" {print $1}' > out/ladder3090/orchestrate.pid
+tail -f out/ladder3090/orchestrate.log    # 先快速重跑已完成档的分析（几分钟），然后从 e24m 最后一轮接着训
+```
+
+恢复后剩下的工作：e24m 最后一轮 + 衰减分叉 +（如果最好的 batch 又落在 2¹⁵）边界扩展，约 1 天（两张卡）；e44m 约 2.5–3 天；e83m 约 2.5–3 天（三张卡各快约三分之一）。数据（`data/ladder3090/`、`/mnt/DataSets/phan635/From-0-to-AGI/ladder/`）和 checkpoint（`out/ladder3090/`）都保留着，不进 git。
