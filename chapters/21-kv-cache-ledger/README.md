@@ -262,6 +262,8 @@ MLA 不是免费的午餐，写作时能查到的几点：
 uv run python chapters/21-kv-cache-ledger/code/04_attention_variants.py
 ```
 
+> 关于数字：本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同机器、不同版本的底层数学库，浮点运算的顺序略有不同，训练几百步后会把这些微小差异放大，你本机跑出的数字可能从小数点后第二三位开始就不一样；请以下文不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-21-23.md](../../runs/2026-10-01-gpu0-check/chapters-21-23.md)。
+
 | 方案 | 每层每位置缓存 | 每 token（4 层，FP32） | 生成 512 字后实测缓存 | 注意力参数 | 验证 loss 均值 | 三个种子 | 缓存版 = 朴素版 |
 |---|---:|---:|---:|---:|---:|---|---|
 | MHA | 256 个数 | 4,096 B | 2,150,400 B（1×） | 262,144 | 1.858 | 1.838 / 1.869 / 1.867 | 是 |
@@ -293,6 +295,44 @@ GOAL.md 第五部分的"第二步"会在约 1 亿参数的 ladder 配置上用�
 
 ---
 
+## GPU 实测（单张 RTX 3090）
+
+> 上面正文里的数字都来自 CPU 运行。本节换到一张 NVIDIA GeForce RTX 3090（24 GB 显存，Ampere 架构；规格表：BF16 张量核稠密峰值约 71 TFLOPS，FP32 约 35.6 TFLOPS，显存带宽约 936 GB/s）上实测，环境：PyTorch 2.11.0+cu128、CUDA 12.8，2026 年 10 月。这张卡的功耗上限被服务器设成了 240 W（出厂默认 350 W），持续满载时会降频，所以算力、带宽的绝对值比满功耗的 3090 偏低，看相对关系更可靠。没有 GPU 可以跳过本节。
+
+运行：
+
+```bash
+uv run python chapters/21-kv-cache-ledger/code/05_gpu_decode_ledger.py
+```
+
+脚本按主线模型的形状（28 层、宽 1280、16 个查询头、8 个 KV 头、head_dim 128、FFN 3584、词表 65,536）搭一个随机权重的 decode 步（BF16），KV cache 预先填满 T 个位置，测"再生成 1 个 token"要多久。"理论下限"直接调用 `02_prefill_decode.py` 的 `decode_step`，公式不变，只把硬件规格换成 3090 的 71 TFLOPS、936 GB/s；"等效带宽"= 实际读的字节（权重 + KV cache）÷ 实测耗时。整步用 CUDA Graph 录下来重放（不这样做的话，T = 1,024 时一步要 7.51 ms，一多半花在 Python 逐个发射 kernel 上）。作为参照，同一张卡上把 1 GiB 连续读一遍的实测带宽是 873 GB/s。
+
+主线模型（GQA 16/8），decode 一步（30 次取中位数）：
+
+| 上下文 T | batch B | 读权重 | 读 KV cache | 理论下限 | 实测 | 实测 / 理论 | 等效带宽 | 吞吐（token/s） |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1,024 | 1 | 1.28 GiB | 0.11 GiB | 1.60 ms | 3.40 ms | 2.13× | 440 GB/s | 294 |
+| 4,096 | 1 | 1.28 GiB | 0.44 GiB | 1.98 ms | 4.09 ms | 2.07× | 452 GB/s | 244 |
+| 4,096 | 16 | 1.28 GiB | 7.00 GiB | 9.50 ms | 17.10 ms | 1.80× | 520 GB/s | 936 |
+| 32,768 | 1 | 1.28 GiB | 3.50 GiB | 5.49 ms | 9.25 ms | 1.69× | 555 GB/s | 108 |
+| 32,768 | 4 | 1.28 GiB | 14.00 GiB | 17.53 ms | 27.48 ms | 1.57× | 597 GB/s | 146 |
+| 131,072 | 1 | 1.28 GiB | 14.00 GiB | 17.53 ms | 27.23 ms | 1.55× | 603 GB/s | 37 |
+
+batch 1 从 T = 1,024 到 131,072：KV cache 多读 13.89 GiB，一步多花 23.83 ms，折合 626 GB/s。
+
+同一个上下文（T = 32,768、batch 1），只换注意力（MLA 取 512 + 64，走 `03_mla.py` 的吸收路径）：
+
+| 方案 | 每层每位置 | 账本 KV | 实际分配 | 权重 | 理论下限 | 实测 | 等效带宽 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| MHA | 4,096 个数 | 7.00 GiB | 7.00 GiB | 1.42 GiB | 9.66 ms | 15.57 ms | 581 GB/s |
+| **GQA（主线）** | 2,048 | 3.50 GiB | 3.50 GiB | 1.28 GiB | 5.49 ms | 9.33 ms | 550 GB/s |
+| MQA | 256 | 0.44 GiB | 0.44 GiB | 1.16 GiB | 1.84 ms | 4.36 ms | 395 GB/s |
+| MLA | 576 | 0.98 GiB | 0.98 GiB | 1.36 GiB | 3.70 ms | 7.75 ms | 447 GB/s |
+
+（权重不一样大，是因为 K/V 投影的形状跟着方案变。MLA 的理论下限按实际读的字节算：算分数读一遍 576 维潜向量，加权平均再读一遍前 512 维；FlashMLA 这类融合 kernel 只读一遍。）
+
+这两张表把第 1.2 节的公式变成了实物。batch 1 时上下文从 1K 涨到 128K，每多读 1 GiB KV cache，一步就多花约 1.7 ms；"4 条 32K 的对话"和"1 条 128K 的对话"要读的 KV cache 一样多（都是 14 GiB），一步的耗时也几乎一样（27.48 ms 对 27.23 ms）——decode 只认要读多少字节，不管这些字节属于几条对话。拼批的规律也和账本一致：4K 时 batch 从 1 到 16，吞吐涨了约 3.8 倍（244 → 936），32K 时 batch 从 1 到 4 只涨了约 1.35 倍（108 → 146），KV cache 拼批省不掉。第 3 节的账本在显存里分毫不差（实际分配 7.00 / 3.50 / 0.44 / 0.98 GiB），decode 时间也按 KV cache 的大小排队；只是 MLA 的缓存只有 GQA 的 28%，一步却只省了约 17%：没有融合 kernel 时潜向量要读两遍、注意力里的矩阵乘又小又碎，这正是第 4.5 节说"需要 FlashMLA 这类专门 kernel"的原因。出乎意料的是离理论下限的距离：同一张卡纯读能到 873 GB/s，可短上下文时等效带宽只有 440 GB/s——每层的几个权重矩阵只有 5–18 MB，batch 1 时是一串小的矩阵-向量乘，每个都来不及把带宽跑满；上下文越长，大块连续读 KV cache 的比重越高，等效带宽才往 600 GB/s 靠。
+
 ## 从极简到生产级
 
 | 极简版（`code/`） | 生产级 | 多做了什么、为什么 |
@@ -300,7 +340,7 @@ GOAL.md 第五部分的"第二步"会在约 1 亿参数的 ladder 配置上用�
 | `01_kv_ledger.py`：手写的模型字典 + `layer_list` / `kv_bytes` | `zero/tools/kv_cache_calc.py`：`kv_cache_bytes(cfg, seq_len, batch, dtype_bytes)`、`kv_bytes_per_token`、`fixed_state_bytes`、`breakdown`；命令行 `uv run python -m zero.tools.kv_cache_calc configs/main/pretrain.toml --seq 32768` | 直接读 zero 的 `ModelConfig` / TOML、Hugging Face 的 `config.json`（含多模态模型的 `text_config` 嵌套、`layer_types`、Kimi 的 `linear_attn_config`、Mistral 原生 `params.json` 的字段名）；自动识别 MLA、滑动窗口、线性注意力层；单独估算线性层的固定状态；`--dtype-bytes 1` 可以算 FP8 KV cache |
 | `03_mla.py` 的 `MLA`：接口对齐第 10 章小模型，借用它的 `torch.cat` 式缓存 | `zero/arch/mla.py`：`MLAConfig`（字段名与 DeepSeek-V3 的 config 一致）、`MLAAttention`（接口与 `zero.model.Attention` 相同，可直接换进 `Transformer`，见 `mla_transformer`）、`MLACache`（预分配潜向量与 RoPE key，`nbytes()`） | 支持 query 也做低秩压缩（`q_lora_rank`，DeepSeek-V3 为 1536，省训练激活、不省缓存）；有缓存时自动走吸收路径、无缓存时走显式路径 + SDPA；支持分块 prefill；softmax 至少在 float32 上算 |
 | `04_attention_variants.py`：MHA/GQA/MQA/MLA 同配置对比 | 第二步可选：用 `mla_transformer(model_cfg, mla_cfg)` 在约 1 亿参数的 ladder 配置上重跑 | 生产级模块与主线 `Transformer` 共用 RMSNorm、SwiGLU、训练循环，换注意力只改一处 |
-| 无 | 行业实现：vLLM 的 PagedAttention（第 10 章）按页管理 KV cache；DeepSeek 开源的 FlashMLA 是 MLA decode 的 GPU kernel；vLLM、SGLang 都有 MLA 后端 | 本课的 MLA 只追求可读和正确，**尚未在 GPU 上验证性能**；真正上线要用这些专门实现 |
+| 无 | 行业实现：vLLM 的 PagedAttention（第 10 章）按页管理 KV cache；DeepSeek 开源的 FlashMLA 是 MLA decode 的 GPU kernel；vLLM、SGLang 都有 MLA 后端 | 本课的 MLA 只追求可读和正确：CUDA + BF16 下的正确性已在 RTX 3090 上验证（见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 11 节），性能没有优化、尚未在 GPU 上验证（本章"GPU 实测"一节有一组 decode 耗时参考）；真正上线要用这些专门实现 |
 
 **对拍**（`uv run pytest tests/test_kv_cache_calc.py tests/test_arch_mla.py`，本机 12 项全部通过，约 3 秒）：
 

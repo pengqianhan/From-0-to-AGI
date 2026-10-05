@@ -240,3 +240,36 @@ def test_logits_kd_requires_same_tokenizer(
     d["model"]["max_seq_len"] = 512
     with pytest.raises(ValueError, match="同一个分词器"):
         run_distill(d, log=lambda _: None)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="需要 CUDA")
+def test_run_distill_trains_student_on_cuda(
+    tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt
+) -> None:  # noqa: ANN001
+    """[train] device = "cuda" 时学生必须在 GPU 上训练（原来固定 DistInfo()，学生和教师都留在 CPU；2026-10 发现）。"""
+    from zero.post.common import write_jsonl
+    from zero.post.sft import env_conversations
+
+    write_jsonl(tmp_path / "sft.jsonl", env_conversations(8, 0, "train"))
+    d = post_config(
+        tmp_path,
+        chat_tok_path,
+        tiny_ckpt,
+        chat_tok.vocab_size,
+        train={"device": "cuda", "dtype": "auto"},
+        data={"format": "sft", "seq_len": 512},
+        teacher={"backend": "local", "path": str(tiny_ckpt), "name": "self", "max_new_tokens": 12},
+        distill={
+            "out_jsonl": str(tmp_path / "kd.jsonl"),
+            "n_tasks": 2,
+            "samples_per_task": 2,
+            "mix_sft_jsonl": str(tmp_path / "sft.jsonl"),
+            "mix_sft_max": 8,
+            "kd_alpha": 0.5,
+        },
+    )
+    d["model"]["max_seq_len"] = 512
+    logs: list[str] = []
+    s = run_distill(d, log=logs.append)
+    assert s["history"][-1]["step"] == 2
+    assert any("设备 cuda" in m for m in logs), logs

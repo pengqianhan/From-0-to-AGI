@@ -25,7 +25,8 @@ decode 阶段一次只喂 1 个 token，算力吃不饱、时间花在读权重�
 MTP 模块当草稿（自推测）见 `zero/arch/mtp.py` 的 `mtp_speculative_generate`，复用本文件的 `verify`。
 
 只支持 batch = 1：批量推测解码要处理每条序列接受个数不同带来的"参差"，vLLM / SGLang 在调度器里做这件事。
-本文件只追求可读和正确，尚未在 GPU 上验证性能。
+本文件只追求可读和正确：CUDA 上贪心与目标模型逐字相同已在 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/），
+尚未在 GPU 上验证性能。
 """
 
 from __future__ import annotations

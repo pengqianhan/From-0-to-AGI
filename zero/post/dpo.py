@@ -219,13 +219,13 @@ def run_dpo(
     overrides: Sequence[str] | None = None,
     log: Callable[[str], None] = print,
 ) -> list[dict[str, Any]]:
-    """单进程实现（CPU / 单卡）。多卡 DDP 尚未在 GPU 上验证，第二步按 RUNBOOK 的说明改用 torchrun。"""
+    """单进程实现（CPU / 单卡）。单卡已在 RTX 3090 上验证（2026-10）；多卡 DDP 尚未在 GPU 上验证，第二步按 RUNBOOK 的说明改用 torchrun。"""
     cfg, sec = load_post_config(src, {"dpo": DPOConfig}, overrides)
     dc: DPOConfig = sec["dpo"]
     tc = cfg.train
     set_threads(tc.cpu_threads)
     torch.manual_seed(tc.seed)
-    # 尚未在 GPU 上验证：CUDA 上用 BF16 autocast（与 Trainer 相同的规则）
+    # CUDA 上用 BF16 autocast（与 Trainer 相同的规则）：已在单张 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）
     device = torch.device(
         "cuda" if tc.device in ("auto", "cuda") and torch.cuda.is_available() else "cpu"
     )

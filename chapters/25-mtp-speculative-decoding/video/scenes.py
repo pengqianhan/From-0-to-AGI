@@ -756,7 +756,7 @@ truncate(cache, len(seq) - 1)   # 回滚""",
             right = VGroup(
                 zh("主线模型不加 MTP（不冒架构风险）", 22, theme.PARAM),
                 zh("第二步：另训一个同分词器的小草稿", 22, theme.FG),
-                zh("在 vLLM / SGLang 上实测加速（尚未在 GPU 上验证）", 20, theme.MUTED),
+                zh("vLLM / SGLang 上的实测加速尚未验证", 20, theme.MUTED),
             ).arrange(DOWN, aligned_edge=LEFT, buff=0.3)
             right.scale_to_fit_width(min(right.width, 6.0)).move_to([3.6, 0.5, 0])
             self.play(FadeIn(left), run_time=self.fit(1.5))

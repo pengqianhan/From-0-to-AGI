@@ -264,10 +264,12 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(r1[0]), FadeIn(r2[0]), run_time=self.fit(1))
             self.play(Create(r1[1]), Create(r2[1]), run_time=self.fit(1.5))
             t1 = zh("“了”的输出，两句的最大差", 24, theme.FG).move_to([3.6, 1.3, 0])
+            # 两句的差别在浮点误差以内；有的机器上恰好是 0（sci(0) 会显示成 0.00×10⁰）
             v1 = VGroup(zh("无位置信息：", 24, theme.MUTED),
-                        MathTex(sci(d_none), font_size=38, color=theme.GRAD)).arrange(RIGHT, buff=0.2)
+                        MathTex(sci(d_none) if d_none > 0 else "0", font_size=38,
+                                color=theme.GRAD)).arrange(RIGHT, buff=0.2)
             v1.move_to([3.6, 0.4, 0])
-            note = zh("= 浮点误差：完全一样", 22, theme.GRAD).next_to(v1, DOWN, 0.2)
+            note = zh("浮点误差以内：完全一样", 22, theme.GRAD).next_to(v1, DOWN, 0.2)
             self.wait(self.remaining() * 0.2)
             self.play(FadeIn(t1), run_time=self.fit(0.8))
             self.play(FadeIn(v1), run_time=self.fit(1))

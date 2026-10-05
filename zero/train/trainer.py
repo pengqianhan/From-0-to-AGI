@@ -67,7 +67,8 @@ def build_optimizer(model: nn.Module, cfg: Any, device: torch.device) -> torch.o
     ]
     kwargs: dict[str, Any] = {}
     if device.type == "cuda":
-        kwargs["fused"] = True  # 尚未在 GPU 上验证：fused AdamW 内核
+        # fused AdamW 内核：已在单张 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）
+        kwargs["fused"] = True
     return torch.optim.AdamW(groups, lr=cfg.lr, betas=(cfg.beta1, cfg.beta2), eps=cfg.eps, **kwargs)
 
 
@@ -141,7 +142,8 @@ class Trainer:
             self.log(f"从 {tc.init_from} 加载模型权重（step {self.init_meta.get('step')}）")
         self.raw_model = model
         if tc.compile:
-            model = torch.compile(model)  # type: ignore[assignment]  # 尚未在 GPU 上验证
+            # 单卡与 2 卡 DDP 组合已在 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）；与 FSDP 的组合尚未在 GPU 上验证
+            model = torch.compile(model)  # type: ignore[assignment]
         self.model = wrap_model(model, self.info, tc.parallel)
         self.optimizer = build_optimizer(self.model, tc.optim, self.device)
         self.scheduler = LRScheduler(self.optimizer, tc.schedule, tc.optim.lr, tc.max_steps)
@@ -270,8 +272,11 @@ class Trainer:
 
     # ---- 主循环 ----
     def train(self, stop_at: int | None = None) -> list[dict[str, Any]]:
-        """训练到 max_steps。stop_at 用于测试"训练到一半被打断"：到这一步就返回（不额外存 checkpoint）。"""
+        """训练到 max_steps。stop_at 用于测试"训练到一半被打断"：到这一步就返回（不额外存 checkpoint）。
+        没传 stop_at 时用配置里的 train.stop_step（0 = 不提前停）。"""
         tc = self.cfg.train
+        if stop_at is None and tc.stop_step > 0:
+            stop_at = tc.stop_step
         accum = tc.grad_accum_steps
         use_no_sync = self.info.is_distributed and tc.parallel == "ddp"
         self.model.train()

@@ -124,7 +124,7 @@ for new_id in range(256, vocab_size):
 uv run python chapters/07-tokenization-language-model/code/02_bpe.py
 ```
 
-训练文本是英文、中文、代码各取开头 60,000 个字符，共 305,302 字节。做 768 次合并（词表 256 → 1024），纯 Python 用时约 4 秒。**最先学到的 20 个合并**（`␣` 表示空格，`\xef\xbc` 是没法单独显示的字节片段）：
+训练文本是英文、中文、代码各取开头 60,000 个字符，共 305,302 字节。做 768 次合并（词表 256 → 1024），纯 Python 用时几秒（取决于机器）。**最先学到的 20 个合并**（`␣` 表示空格，`\xef\xbc` 是没法单独显示的字节片段）：
 
 | id | 新 token | 次数 | id | 新 token | 次数 |
 |---:|---|---:|---:|---|---:|
@@ -321,7 +321,7 @@ bigram 最大的问题写在它的定义里：**只看前 1 个 token**。"学�
 
 | 极简版 | 生产级（`zero/`） | 多做了什么、为什么 |
 |---|---|---|
-| `02_bpe.py` 的 `BPE.train`（纯 Python，305KB 语料 4 秒） | `zero/tokenizer.py` 的 `train_bpe(texts, vocab_size, special_tokens)`，基于 Hugging Face `tokenizers`（Rust） | 主线分词器要在 GB 级语料上训练，纯 Python 太慢；同样 768 次合并，zero 用时 0.74 秒，手写版 4.55 秒（本机实测，受机器负载影响） |
+| `02_bpe.py` 的 `BPE.train`（纯 Python，305KB 语料几秒） | `zero/tokenizer.py` 的 `train_bpe(texts, vocab_size, special_tokens)`，基于 Hugging Face `tokenizers`（Rust） | 主线分词器要在 GB 级语料上训练，纯 Python 太慢；同样 768 次合并，一次实测 zero 用时 0.74 秒，手写版 4.55 秒；2026-10 换一台服务器复跑是 1.08 秒对 1.62 秒。语料这么小时，倍数随机器和负载变化很大 |
 | `PATTERN`：Python `re` 的简化正则，用 `[^\W\d_]` 表示字母 | `PRETOKENIZE_REGEX`：与 Qwen2/Qwen3 的 `tokenizer.json` 完全相同的正则，用 `\p{L}`、`\p{N}` | Unicode 类别更精确；数字 `\p{N}` 逐个切；和 Qwen 保持一致，便于对照 |
 | 无规范化 | `normalizers.NFC()` | 把"e + 组合重音符"这类写法合成一个码位，同一个字不会因为写法不同而被切成不同 token（与 Qwen3 一致） |
 | 没有特殊 token | 16 个特殊 token 固定在 id 0–15：`<|endoftext|>`、`<|im_start|>`/`<|im_end|>`（对话）、`<tool_call>`/`</tool_call>`、`<tool_response>`/`</tool_response>`（工具调用）、`<think>`/`</think>`、7 个预留位 | 对话和工具调用格式（第 16 章）需要不会被 BPE 拆开的边界标记：zero 把 `<|im_start|>` 编成一个 id（1），手写版会把它拆成 8 个普通 token；预留位让以后加特殊 token 不必改词表大小 |

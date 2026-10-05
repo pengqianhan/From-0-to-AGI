@@ -76,9 +76,19 @@ SIZE_COLORS = {"s1": theme.INPUT, "s2": theme.OUTPUT, "s3": theme.PARAM, "s4": t
 MUON = json.loads((sw.OUT / "muon.json").read_text()) if (sw.OUT / "muon.json").exists() else []
 
 
+# 课程构建机（README 第 5 节贴出的那次运行）的拟合与留出结论。画面上的数都是本机现算的，
+# 只有这两项是写死的对照：同一套极小阶梯换一台机器，α 能差将近一倍（README 第 5 节）。
+BUILD_MACHINE = {"alpha": 0.52, "beta": 0.58, "held_inside": 3}
+
+
+@lru_cache(maxsize=1)
+def boot_fits():
+    return lad.bootstrap(PTS)
+
+
 @lru_cache(maxsize=1)
 def held_out_ci():
-    fits = lad.bootstrap(PTS)
+    fits = boot_fits()
     out = []
     for h in HELD:
         boots = [lad.predict(g, h["N"], h["D"]) for g in fits]
@@ -393,13 +403,22 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() * 0.25)
             self.play(LaggedStart(*[Create(f) for f in fits], lag_ratio=0.2), run_time=self.fit(2))
             errs = [abs(lad.predict(LFIT, p["N"], p["D"]) - p["loss"]) / p["loss"] for p in PTS]
+            a_lo, a_hi = np.percentile([f["alpha"] for f in boot_fits()], [2.5, 97.5])
             info = VGroup(tex(rf"\alpha\approx{LFIT['alpha']:.2f},\ \ \beta\approx{LFIT['beta']:.2f}", 30),
                           zh(f"{len(PTS)} 个点，最大误差 {max(errs):.1%}", 22),
                           zh("两个小模型补了“过训练”预算", 20, theme.MUTED)).arrange(DOWN, aligned_edge=LEFT, buff=0.25)
-            info.move_to([4.3, 0.2, 0])
+            fragile = VGroup(zh(f"课程构建机上：α≈{BUILD_MACHINE['alpha']:.2f}、β≈{BUILD_MACHINE['beta']:.2f}", 20, theme.MUTED),
+                             zh(f"bootstrap：α 的 95% 区间 {a_lo:.2f}–{a_hi:.2f}", 20, theme.GRAD),
+                             zh("极小阶梯定不住指数，要看留出检验", 20, theme.GRAD)).arrange(DOWN, aligned_edge=LEFT, buff=0.18)
+            col = VGroup(info, fragile).arrange(DOWN, aligned_edge=LEFT, buff=0.4)
+            if col.width > 5.4:
+                col.scale_to_fit_width(5.4)
+            col.move_to([4.25, -0.3, 0])
             self.play(FadeIn(info), run_time=self.fit(1))
+            self.wait(self.remaining() * 0.25)
+            self.play(FadeIn(fragile), run_time=self.fit(1))
             self.wait(self.remaining() - 0.6)
-            self.play(*[FadeOut(m) for m in [ax, lab, xl, yl, dots, fits, wsd, info]], run_time=self.fit(0.6))
+            self.play(*[FadeOut(m) for m in [ax, lab, xl, yl, dots, fits, wsd, info, fragile]], run_time=self.fit(0.6))
 
         # ── S10 外推检验（极小配置演示）──────────────────────────────────
         with self.shot("S10"):
@@ -428,13 +447,19 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() * 0.2)
             self.play(LaggedStart(*[FadeIn(a, scale=1.5) for a in acts], lag_ratio=0.4), run_time=self.fit(2))
             self.play(FadeIn(errs), run_time=self.fit(0.8))
-            inside = all(lo <= act <= hi for _, lo, hi, act, _ in ci)
-            verdict = zh("全部落在区间内" if inside else "有点落在区间外", 26, theme.OUTPUT if inside else theme.GRAD)
+            n_out = sum(not (lo <= act <= hi) for _, lo, hi, act, _ in ci)
+            verdict = zh("全部落在区间内" if n_out == 0 else f"{n_out} 个点落在区间外", 26,
+                         theme.OUTPUT if n_out == 0 else theme.GRAD)
             verdict.move_to([4.2, -0.4, 0])
             lr_note = zh(f"学习率也是外推的：η = {HELD[0]['lr']:.4f}", 20, theme.MUTED).next_to(verdict, DOWN, 0.3)
             self.play(FadeIn(verdict), FadeIn(lr_note), run_time=self.fit(0.8))
+            self.wait(self.remaining() * 0.3)
+            n_in = BUILD_MACHINE["held_inside"]
+            other = zh(f"课程构建机上：{n_in} 个都在区间内" if n_in == len(ci) else f"课程构建机上：{n_in} 个在区间内",
+                       20, theme.MUTED).next_to(lr_note, DOWN, 0.3)
+            self.play(FadeIn(other), run_time=self.fit(0.6))
             self.wait(self.remaining() - 0.6)
-            self.play(*[FadeOut(m) for m in [ax, lab, ticks, xl, bars, preds, acts, errs, key, verdict, lr_note]],
+            self.play(*[FadeOut(m) for m in [ax, lab, ticks, xl, bars, preds, acts, errs, key, verdict, lr_note, other]],
                       FadeOut(badge), run_time=self.fit(0.6))
 
         # ── S11 Delphi ─────────────────────────────────────────────────

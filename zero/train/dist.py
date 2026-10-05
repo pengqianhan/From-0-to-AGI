@@ -59,7 +59,8 @@ def init_distributed(device_pref: str = "auto") -> DistInfo:
     if world_size > 1:
         backend = "nccl" if device.type == "cuda" else "gloo"
         if device.type == "cuda":
-            torch.cuda.set_device(device)  # 尚未在 GPU 上验证
+            # 只在多卡时执行；已在 2×RTX 3090（PCIe）上验证（2026-10，见 runs/2026-10-01-gpu0-check/）
+            torch.cuda.set_device(device)
         if not dist.is_initialized():
             dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
     return DistInfo(
@@ -96,7 +97,9 @@ def wrap_model(model: nn.Module, info: DistInfo, parallel: str = "ddp") -> nn.Mo
         device_ids = [info.local_rank] if info.device.type == "cuda" else None
         return DDP(model, device_ids=device_ids)
     if parallel == "fsdp":
-        # 尚未在 GPU 上验证：FSDP2 按 Block 逐层切分，再对整个模型切分剩余参数（embedding、最后的 norm）。
+        # FSDP2 按 Block 逐层切分，再对整个模型切分剩余参数（embedding、最后的 norm）。
+        # 已在 2×RTX 3090（PCIe）上验证（2026-10，见 runs/2026-10-01-gpu0-check/）：真正切分到 2 卡，与同数据的 DDP 50 步 loss
+        # 最大相差 0.10%（lr 3e-4）；单卡通路（world_size=1 的 NCCL 进程组）也验证过。8 卡与 NVLink 下的吞吐尚未在 GPU 上测。
         # 混合精度：参数以 bf16 参与计算，梯度 reduce 用 fp32。
         from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 

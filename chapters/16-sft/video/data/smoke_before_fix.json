@@ -1,0 +1,45 @@
+{
+ "note": "冒烟测试（uv run python -m zero.smoke，极小配置演示，约 1.3M 参数）SFT 阶段与评测的真实输出，记录于修复工具调用判分器（第 19 章第 6 节）之前，与 README「主线进度 → 极小配置演示」同一次运行。重跑冒烟测试会覆盖 out/smoke（换一台机器训练，SFT 的数字也会在第 2–3 位小数上不同），所以冻结在这里，让视频与 README 一致。",
+ "source": "README「主线进度 → 极小配置演示」的指标表（当时 out/smoke/summary.json 的 sft 阶段、out/smoke/eval/results.json 的 sft/tool_dev）与 05_smoke_samples.py 的样例输出（dev 集第 1 题）。call_exact 取 4/30：与第 11 章 code/04_paired_bootstrap.py 里 SMOKE[('sft', 'tool_dev')]（同一次运行逐题抄下）的 4 个 1 一致。",
+ "sft": {
+  "steps": 240,
+  "loss": 0.56,
+  "val_loss": 0.62
+ },
+ "eval": {
+  "n": 30,
+  "format_ok": 1.0,
+  "call_exact": 0.13333333333333333
+ },
+ "sample": {
+  "q": "深圳和巴黎今天哪个更热？",
+  "gold": [
+   {
+    "name": "get_weather",
+    "arguments": {
+     "city": "深圳"
+    }
+   },
+   {
+    "name": "get_weather",
+    "arguments": {
+     "city": "巴黎"
+    }
+   }
+  ],
+  "calls": [
+   {
+    "name": "get_weather",
+    "arguments": {
+     "city": "东京"
+    }
+   },
+   {
+    "name": "get_weather",
+    "arguments": {
+     "city": "东京"
+    }
+   }
+  ]
+ }
+}

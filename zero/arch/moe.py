@@ -242,7 +242,8 @@ class MoEFFN(nn.Module):
             self.last_dropped = 0
 
         # ---- 专家计算 + 合并（combine）----
-        # CPU 版：逐专家循环。GPU 上应换成 grouped GEMM（尚未在 GPU 上验证）。
+        # 逐专家循环。CUDA + BF16 下能跑（RTX 3090，2026-10，见 runs/2026-10-01-gpu0-check/），但慢；
+        # GPU 上应换成 grouped GEMM（尚未实现，尚未在 GPU 上验证）。
         out = torch.zeros_like(x)
         xs = x[flat_t]
         for e, seg in enumerate(
@@ -252,7 +253,9 @@ class MoEFFN(nn.Module):
                 continue
             h = xs[seg]
             y = (F.silu(h @ self.w_gate[e]) * (h @ self.w_up[e])) @ self.w_down[e]
-            out.index_add_(0, flat_t[seg], y * flat_w[seg, None].to(y.dtype))
+            # BF16 autocast 下 y 是 BF16、out 是 FP32（与 x 同精度），index_add_ 要求两者同类型：
+            # 先转成 out 的精度再累加（FP32 训练时是空操作）。2026-10 在 RTX 3090 上发现，见 runs/2026-10-01-gpu0-check/
+            out.index_add_(0, flat_t[seg], (y * flat_w[seg, None].to(y.dtype)).to(out.dtype))
         if self.shared is not None:
             out = out + self.shared(x)
         return out.reshape(shape)

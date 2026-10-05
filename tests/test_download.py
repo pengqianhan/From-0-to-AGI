@@ -74,6 +74,14 @@ def test_make_record_keeps_provenance() -> None:
     assert make_record({"content": "x"}, spec(text_field="content"), 0)["text"] == "x"
 
 
+def test_make_record_keep_field_does_not_clobber_provenance() -> None:
+    # Ultra-FineWeb 自带一个 "source" 字段（上游语料名，如 "Tele"），不能覆盖我们的出处
+    r = make_record({"text": "x", "source": "Tele", "score": 0.5}, spec(keep_fields=["source", "score"]), 0)
+    assert r["source"] == "fw"
+    assert r["orig_source"] == "Tele"
+    assert r["score"] == 0.5
+
+
 def test_download_writes_shards_and_resumes(tmp_path: Path) -> None:
     rows = fake_rows(10)
     # 第一次：最多 5 篇就停（模拟中途停下），complete=False
@@ -100,6 +108,17 @@ def test_target_bytes_stops_early(tmp_path: Path) -> None:
     m = download_source(spec(target_bytes=100), tmp_path, rows=fake_rows(10), log=lambda s: None)
     assert m["complete"] is False
     assert sum(s["bytes"] for s in m["shards"]) >= 100
+
+
+def test_rerun_after_target_reached_does_not_read_again(tmp_path: Path) -> None:
+    download_source(spec(target_bytes=100), tmp_path, rows=fake_rows(10), log=lambda s: None)
+
+    def must_not_read():  # noqa: ANN202
+        raise AssertionError("已经下够了，不该再读数据流")
+        yield
+
+    m = download_source(spec(target_bytes=100), tmp_path, rows=must_not_read(), log=lambda s: None)
+    assert m["complete"] is False and sum(s["bytes"] for s in m["shards"]) >= 100
 
 
 def test_swh_content_fetch(tmp_path: Path) -> None:

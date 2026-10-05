@@ -32,11 +32,13 @@
 
 **口径与局限（务必读）**：
 - 按"所有东西同时在显存里"相加，是偏保守的上界；实际峰值出现在反向途中，部分激活已释放；
-- CUDA 上 autocast 的算子清单与 CPU 略有差别，`torch.compile` 会融合逐元素运算、少存很多中间张量，
-  所以 GPU 上的真实数字**尚未在 GPU 上验证**，以第二步阶段 6 的实测为准；
+- CUDA 上 autocast 的算子清单与 CPU 略有差别，`torch.compile` 会融合逐元素运算、少存很多中间张量。
+  单张 RTX 3090 上的实测（2026-10，见 runs/2026-10-01-gpu0-check/，单卡、eager）：主线配置本估算比 PyTorch
+  实际分配的峰值高 2.1–2.4 GiB，缓存分配器的 reserved 峰值又可能比本估算再高约 2 GiB；"放不放得下"的判断
+  （T=4096 不开检查点 0 条、开检查点 3 条；T=16K/32K 开检查点也放不下）全部与实测一致。多卡数字尚未在 GPU 上验证；
 - 不含 CUDA 上下文、NCCL 缓冲、内存碎片（通常再留 2–5 GB 余量）；
 - 激活检查点（activation checkpointing）：每层只存块的输入（FP32 残差流，4d 字节/token），反向时重算
-  整层 —— 峰值再加一层的完整激活。**zero 目前没有实现激活检查点**，这里给的是"如果实现"的估算；
+  整层 —— 峰值再加一层的完整激活。zero 已实现（`train.activation_checkpointing`，见 zero/model.py）；
 - FSDP / ZeRO 的切分按理想情况（均分到每张卡）计算，FSDP 另加"正在用的那一层 + 预取的下一层"的
   BF16 完整参数。
 """
@@ -191,7 +193,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--strategy", choices=STRATEGIES + ("all",), default="all")
     ap.add_argument("--dtype", choices=("bf16", "fp32"), default="bf16")
     ap.add_argument(
-        "--checkpointing", action="store_true", help="估算开启激活检查点（对应 train.activation_checkpointing；尚未在 GPU 上验证）"
+        "--checkpointing",
+        action="store_true",
+        help="估算开启激活检查点（对应 train.activation_checkpointing；单卡实测见 runs/2026-10-01-gpu0-check/）",
     )
     ap.add_argument(
         "--gpu-mem", type=float, default=80.0, help="单卡显存 GiB（用来判断放不放得下）"

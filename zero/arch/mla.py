@@ -30,7 +30,8 @@ MLA 的 MQA 模式）。本模块两条路径都实现：`absorb=False` 显式�
 qk_rope_head_dim 维做 RoPE，所以用自己的 RoPE 表，忽略传进来的 cos/sin。
 
 行业实现：DeepSeek 开源的 FlashMLA（GPU decode kernel）、vLLM / SGLang 的 MLA 后端。
-本文件只追求可读和正确，尚未在 GPU 上验证性能。
+本文件只追求可读和正确：CUDA 上前向 / 反向与 CPU 对拍、潜向量缓存生成与重算逐字相同已在 RTX 3090 上验证
+（2026-10，见 runs/2026-10-01-gpu0-check/），尚未在 GPU 上验证性能。
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 """第 4 章视频：反向传播与自动微分 —— 让计算机替你求导
 
 画面里的数值由 ../code/ 中的代码真实计算（见 script.md 事实清单）；
-唯一例外是 S11 的计时数字（F8），它是 04_pytorch_compare.py 的一次实测，每次运行会不同。
+S11 的计时数字（F8）用 04_pytorch_compare.py 同样的测法在渲染时现场实测，每次运行会不同。
 渲染：bash chapters/04-backprop-autograd/video/build.sh
 """
 
@@ -138,8 +138,18 @@ def _loss_of_params(*ps):
 GRADCHECK = torch.autograd.gradcheck(_loss_of_params, tuple(_gc_params.values()), eps=1e-6,
                                      atol=1e-6)
 
-# S11 计时：04_pytorch_compare.py 的一次实测（毫秒），每次运行都会不同，见 README 第 9 节
-TIMING = [(20, 43.7, 0.355), (200, 775.3, 0.414)]
+# S11 计时：和 04_pytorch_compare.py 第 3 部分同样的测法，渲染时现场实测（毫秒），每次运行都会不同
+TIMING = []
+random.seed(0)
+_tnet = cmp.train_mlp.MLP(1, [8, 8, 1])   # 用 04 自己加载的引擎建网络，Value 类才对得上
+for _n in (20, 200):
+    _xs_n = [-3 + 6 * i / (_n - 1) for i in range(_n)]
+    _ys_n = [math.sin(v) for v in _xs_n]
+    _tv = cmp.time_value_step(_tnet, _xs_n, _ys_n, reps=10)
+    _xt_n, _yt_n = torch.tensor(_xs_n).unsqueeze(1), torch.tensor(_ys_n).unsqueeze(1)
+    cmp.time_torch_step(_model, _xt_n, _yt_n, reps=20)   # 预热
+    _tt = cmp.time_torch_step(_model, _xt_n, _yt_n, reps=500)
+    TIMING.append((_n, _tv * 1000, _tt * 1000))
 
 MONO = "Noto Sans Mono"
 
@@ -646,7 +656,7 @@ class ChapterScene(NarratedScene):
                           MathTex(rf"{tt:.2f}\,\mathrm{{ms}}", font_size=30)]
             tbl = VGroup(*cells).arrange_in_grid(rows=3, cols=3, buff=(0.6, 0.25))
             tbl.move_to([3.2, 1.4, 0])
-            tcap = zh("一次前向 + 反向（一次实测，因机器而异）", 18, theme.MUTED).next_to(tbl, UP, 0.2)
+            tcap = zh("一次前向 + 反向（本机渲染时实测，因机器而异）", 18, theme.MUTED).next_to(tbl, UP, 0.2)
             self.wait(self.remaining() * 0.1)
             self.play(FadeIn(tcap), FadeIn(tbl), run_time=self.fit(1.2))
             self.wait(self.remaining() * 0.35)

@@ -43,6 +43,8 @@
 
 ## 4. 尚未在 GPU 上验证的部分
 
+> **2026-10 更新**：下面这份清单是第一步结束时的记录，保持原样。其中 BF16、FlashAttention（`enable_gqa=True` 默认走 Flash）、`torch.compile`、激活检查点、DDP / FSDP2 与跨卡断点续训（2 卡）、SFT / 蒸馏 / DPO / GRPO 的单卡 CUDA 通路、Muon 已在单张和 2 张 RTX 3090 上验证，见 [`runs/2026-10-01-gpu0-check/`](2026-10-01-gpu0-check/README.md)；32K 在 24GB 的卡上（单卡、2 卡、3 卡 FSDP）都放不下；vLLM、BFCL、ACEBench 仍未验证。
+
 以下代码都在 CPU 上测过逻辑，但**没有在 GPU 上跑过**（`runs/RUNBOOK.md` 第 2 节"阶段 6"逐项列了验证命令和通过标准，预算 ≤ $50）：
 
 - BF16 autocast、SDPA 走 FlashAttention 后端（`enable_gqa=True` 能否走 Flash 待核实）、`torch.compile`；

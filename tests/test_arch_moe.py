@@ -187,3 +187,21 @@ def test_moe_transformer_trains_and_counts_params() -> None:
     assert model.moe_layers()[0].router.weight.grad is not None
     assert model.load_stats().shape == (2, 4)
     assert "layers.1.ffn.expert_bias" in model.state_dict()
+
+
+def test_moe_forward_backward_under_bf16_autocast() -> None:
+    """BF16 autocast 下专家输出是 BF16、累加缓冲是 FP32，index_add_ 前要统一精度
+    （2026-10 在 RTX 3090 上做 CUDA 对拍时发现；CPU 的 BF16 autocast 同样会触发）。"""
+    mc = ModelConfig(
+        vocab_size=50, dim=32, n_layers=2, n_heads=4, n_kv_heads=2, ffn_dim=64, max_seq_len=32
+    )
+    cfg = MoEConfig.from_model_config(mc, n_experts=4, top_k=2, expert_dim=16, n_shared_experts=1)
+    torch.manual_seed(0)
+    model = moe_transformer(mc, cfg, first_dense=1)
+    x = torch.randint(0, 50, (2, 17))
+    ref = model.loss(x[:, :-1], x[:, 1:]).item()
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        loss = model.loss(x[:, :-1], x[:, 1:])
+    loss.backward()
+    assert math.isfinite(loss.item()) and abs(loss.item() - ref) < 0.05
+    assert model.moe_layers()[0].w_gate.grad is not None

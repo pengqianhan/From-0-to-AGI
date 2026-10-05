@@ -4,10 +4,14 @@
     uv run python -m zero.data.download --config configs/main/data.toml --sources fineweb-edu
     uv run python -m zero.data.download --config configs/main/data.toml --dry-run   # 只打印计划
 
-**尚未验证**：本构建环境访问不了 huggingface.co，下面的网络路径（`datasets` 流式读取、Software Heritage
-S3）一次都没有真正跑过；只有纯函数（配置解析、记录构造、分片写入与续传、下载量规划、许可证检查）有单元测试
-（tests/test_download.py 用假数据代替网络）。第二步第一次下载时，先对每个来源跑 `--max-docs 1000`
-核对字段名和内容，再放开。
+**验证状态**：第一步的构建环境访问不了 huggingface.co，当时只有纯函数（配置解析、记录构造、分片写入与续传、
+下载量规划、许可证检查）有单元测试（tests/test_download.py 用假数据代替网络）。2026-10-01 第一次真正联网：
+`datasets` 流式读取 + 按 `target_bytes` 停止，在 FineWeb-Edu、DCLM、FineMath、FineWeb-2 中文、Ultra-FineWeb
+中文、UltraData-Code 上各下了几 MB（configs/vocab/download.toml，记录见 runs/2026-10-01-vocab-corpus/），
+字段名和出处都核对过，并修了一个 keep_fields 覆盖出处字段的 bug。**仍未验证**：Stack-Edu 的 Software Heritage
+S3 取正文（需要 AWS 凭证）、大规模下载的吞吐与断点续传。已知问题：datasets 流式读取后，解释器退出时会报
+"PyGILState_Release" 致命错误（退出码 134），数据此前已全部写完——以 `_manifest.json` 为准，别依赖退出码。
+第二步第一次下载时，仍先对每个来源跑 `--max-docs 1000` 核对字段名和内容，再放开。
 
 设计要点：
 - **只下登记过的数据**：每个来源必须在 zero/data/sources.py 里登记；许可证还是"待核实"的来源默认拒绝下载
@@ -30,6 +34,7 @@ import gzip
 import hashlib
 import json
 import os
+import sys
 import time
 import tomllib
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -139,9 +144,12 @@ def make_record(row: dict[str, Any], spec: DownloadSpec, index: int) -> dict[str
     }
     if "hf_subset" in row:
         rec["hf_config"] = row["hf_subset"]
+    reserved = set(rec)
     for k in spec.keep_fields:
         if k in row:
-            rec[k] = row[k]
+            # 数据集自带的字段和我们的出处字段重名时（Ultra-FineWeb 的 "source" 是上游语料名），
+            # 改名保留，不能覆盖出处。2026-10 第一次真实下载时发现
+            rec[f"orig_{k}" if k in reserved else k] = row[k]
     return rec
 
 
@@ -244,12 +252,12 @@ class ShardWriter:
 
 
 # ---------------------------------------------------------------------------
-# 网络部分（尚未验证）
+# 网络部分（HF 流式读取 2026-10 已小规模验证；Software Heritage S3 尚未验证）
 # ---------------------------------------------------------------------------
 
 
 def hf_rows(spec: DownloadSpec, skip: int = 0) -> Iterator[dict[str, Any]]:  # pragma: no cover
-    """用 `datasets` 流式读取（不把整个数据集下载到本地）。尚未验证。"""
+    """用 `datasets` 流式读取（不把整个数据集下载到本地）。2026-10 在 6 个数据集的小规模下载上验证过。"""
     try:
         from datasets import load_dataset
     except ImportError as e:
@@ -309,6 +317,13 @@ def download_source(
     if w.manifest.get("complete"):
         log(f"[download] {spec.name} 已完成，跳过")
         return w.manifest
+    # 已经下够了（上次按 target_bytes / max_docs 停下）：别再打开数据流——续传要先从网络把已下载的行
+    # 重读一遍才能跳过它们，等于白白重下一遍
+    if (spec.max_docs and w.docs_done >= spec.max_docs) or (
+        spec.target_bytes and w.bytes_done >= spec.target_bytes
+    ):
+        log(f"[download] {spec.name} 已达到下载目标，跳过")
+        return w.manifest
     skip = w.rows_done
     it = iter(rows) if rows is not None else hf_rows(spec, skip=skip)
     if rows is not None and skip:  # 假数据/本地数据：手动跳过已完成的行
@@ -339,7 +354,7 @@ def download_source(
 
 
 def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover
-    ap = argparse.ArgumentParser(description="第二步：下载预训练数据（尚未验证）")
+    ap = argparse.ArgumentParser(description="第二步：下载预训练数据（大规模下载尚未验证）")
     ap.add_argument("--config", required=True, help="configs/main/data.toml")
     ap.add_argument("--out", default="data/raw")
     ap.add_argument("--sources", nargs="*", help="只下载这些来源（默认全部）")
@@ -356,9 +371,10 @@ def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover
         if args.max_docs:
             s.max_docs = args.max_docs
         lic = SOURCES[s.registry].license if s.registry in SOURCES else "未登记"
+        b = s.target_bytes
+        target = f"{b / 1e9:.0f} GB" if b >= 1e9 else f"{b / 1e6:.1f} MB"
         print(
-            f"{s.name:>18}  {s.repo}  config={s.config}  split={s.split}  许可证={lic}  "
-            f"目标 {s.target_bytes / 1e9:.0f} GB"
+            f"{s.name:>18}  {s.repo}  config={s.config}  split={s.split}  许可证={lic}  目标 {target}"
         )
         if not args.dry_run:
             download_source(s, args.out, allow_unverified=args.allow_unverified)
@@ -366,3 +382,9 @@ def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover
 
 if __name__ == "__main__":  # pragma: no cover
     main()
+    # 分片和 _manifest.json 都已经写完、落盘。datasets 流式读取留下的后台线程会让解释器在退出阶段
+    # 崩溃（PyGILState_Release，退出码 134）或者卡住不退出（2026-10 并行下载时 8 个进程全卡住，
+    # 占满了并发槽位）。所以直接结束进程，跳过解释器的收尾
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)

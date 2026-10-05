@@ -13,11 +13,11 @@
 | F5 | Attention(Q,K,V) = softmax(QKᵀ/√d)V；因果 mask 把非法位置设为 −∞ | Vaswani et al. 2017 式 (1)、§3.2.3 | 已核对 |
 | F6 | q、k 分量独立、均值 0 方差 1 时，q·k 方差为 d | Vaswani et al. 2017 脚注 4；`code/03_why_sqrt_d.py` 实测：d=16/64/256/1024 时方差 15.9/64.7/254.4/1026.8，缩放后都是 1.0 | 已核对 + 代码生成 |
 | F7 | 不缩放时 d=1024 最大权重 0.957、有效个数 1.14；缩放后约 0.245、10.75 | `code/03_why_sqrt_d.py` 输出 | 代码生成 |
-| F8 | 从零实现与 `F.scaled_dot_product_attention(is_causal=True)` 最大差 9.7e-08；改掉位置 5–7 的输入，位置 0–4 的输出变化 0 | `code/02_attention_from_scratch.py` 输出 | 代码生成 |
+| F8 | 从零实现与 `F.scaled_dot_product_attention(is_causal=True)` 最大差约 10⁻⁷（原构建机 9.7e-08，2026-10 复跑服务器 8.9e-08，float32 舍入级）；改掉位置 5–7 的输入，位置 0–4 的输出变化 0 | `code/02_attention_from_scratch.py` 输出 | 代码生成 |
 | F9 | 多头形状：(B,T,C) → (B,H,T,d) → 权重 (B,H,T,T) → 拼回 (B,T,C) → Wo；参数量 4C² 与头数无关 | `code/02_attention_from_scratch.py` 输出 | 代码生成 |
 | F10 | 单层模型验证损失：bigram 2.487、均匀平均 2.463、注意力 2.083 nats/字符（bits-per-byte 3.588 / 3.553 / 3.005） | `code/04_train_attention.py` 输出（画面数字由 scenes.py 调用同一代码算出并缓存） | 代码生成 |
 | F11 | 注意力头的分工：头 1 把 0.62 的权重给前 1 个字符，头 0 把 0.50 给前 2 个字符 | `code/04_train_attention.py` 输出 | 代码生成 |
-| F12 | zero 的 Attention（关掉 QK-Norm 与 RoPE）与极简版最大差 8.9e-08；GQA 与"复制 K/V"最大差 8.9e-08 | `code/05_zero_parity.py` 输出 | 代码生成 |
+| F12 | zero 的 Attention（关掉 QK-Norm 与 RoPE）与极简版最大差约 10⁻⁷（原构建机 8.9e-08，2026-10 复跑服务器 1.5e-07，float32 舍入级）；GQA 与"复制 K/V"最大差 8.9e-08 | `code/05_zero_parity.py` 输出 | 代码生成 |
 | F13 | SDPA 在 CUDA 上可自动选 FlashAttention-2 / Memory-Efficient 内核，其余后端用 C++ 参考实现 | PyTorch `scaled_dot_product_attention` 文档字符串（torch 2.11） | 已核对；GPU 路径尚未在 GPU 上验证 |
 | F14 | Qwen3、Llama 3、OLMo 2、DeepSeek-V3、Gemma 3、gpt-oss 都用多头缩放点积因果注意力（及其 GQA/MLA 变体） | 各技术报告，见 README"采用方与来源" | 已核对 |
 
@@ -68,7 +68,7 @@
 ### S09 对拍与因果性检验
 - 画面：两行结果：从零实现 vs PyTorch 官方 {SDPA|S D P A}，最大差 9.7e-8；改掉后三个位置的输入，前五个位置输出变化 0。
 - 屏幕文字：从零实现 = F.scaled_dot_product_attention(is_causal=True)
-- 旁白：我们用 PyTorch 从零写了一遍注意力，和官方函数 scaled dot product attention 对拍，最大差不到一亿分之一。再做一个因果性检验：把最后三个位置的输入改掉，前五个位置的输出一点都不变。说明 mask 真的挡住了未来。有了这两条，后面的生产级代码就可以放心地用官方函数。
+- 旁白：我们用 PyTorch 从零写了一遍注意力，和官方函数 scaled dot product attention 对拍，最大差在十的负七次方左右，是单精度浮点的舍入误差。再做一个因果性检验：把最后三个位置的输入改掉，前五个位置的输出一点都不变。说明 mask 真的挡住了未来。有了这两条，后面的生产级代码就可以放心地用官方函数。
 
 ### S10 多头注意力
 - 画面：一个宽度 C = 32 的向量切成 4 段，每段 8 维各自做注意力，得到 4 张不同的权重图，拼回 32 维，再乘 Wo；下方逐步显示形状 (B, T, C) → (B, H, T, d) → (B, H, T, T) → (B, T, C)。
@@ -88,7 +88,7 @@
 ### S13 从极简到生产级
 - 画面：`zero/model.py` 里 Attention.forward 的关键几行代码，逐行高亮：wq/wk/wv、q_norm/k_norm、apply_rope、kv_cache.update、F.scaled_dot_product_attention(enable_gqa)、wo；右侧标注"第 9 章""第 10 章""GPU 上是 FlashAttention（未在 GPU 验证）"。
 - 屏幕文字：zero/model.py：Attention = 本章 + QK-Norm + RoPE + GQA + KV cache
-- 旁白：主线模型里的注意力，骨架和我们写的一模一样：三个投影，缩放点积，因果 mask，多头，输出投影。它多了几样东西：对每个头的 q 和 k 做归一化，叫 QK-Norm；用旋转位置编码 RoPE，这两个第九章讲；让几个查询头共用一组 K 和 V，叫 GQA，第十章讲；还有推理用的 KV cache。计算交给 PyTorch 的官方函数，在 GPU 上会自动用 FlashAttention，这条路径我们还没在 GPU 上验证。把额外的部分关掉，它和我们的极简版最大差不到一亿分之一；整个模型和千问三的官方实现对拍，也由测试保证一致。
+- 旁白：主线模型里的注意力，骨架和我们写的一模一样：三个投影，缩放点积，因果 mask，多头，输出投影。它多了几样东西：对每个头的 q 和 k 做归一化，叫 QK-Norm；用旋转位置编码 RoPE，这两个第九章讲；让几个查询头共用一组 K 和 V，叫 GQA，第十章讲；还有推理用的 KV cache。计算交给 PyTorch 的官方函数，在 GPU 上会自动用 FlashAttention，这条路径我们还没在 GPU 上验证。把额外的部分关掉，它和我们的极简版最大差也在十的负七次方左右；整个模型和千问三的官方实现对拍，也由测试保证一致。
 
 ### S14 小结与下一章
 - 画面：一条流程：X → Q、K、V → QKᵀ/√d → mask → softmax → 乘 V → 多头拼接 → Wo；最后出现"下一章：现代 Transformer"。

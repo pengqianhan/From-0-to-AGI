@@ -16,7 +16,7 @@
 | F8 | k3 KL = π_ref/π − log(π_ref/π) − 1，非负 | DeepSeekMath 式 4 | 已核对 |
 | F9 | 冒烟测试：最初奖励只查标签里，十步之内学会去掉标签输出裸 JSON；闲聊题乱写也满分；守卫 #8 修复 | `zero/post/envs/tool_env.py` 模块说明第 8 条 | 构建记录（本章作者未亲见原始日志） |
 | F10 | 玩具重演：天真奖励 120 步后格式错误 0.59→0.00、正确格式调用 0.05→0.00、闲聊正常回复 0.55→0.09、真实成功率 0.14→0.02；修好后 0.14→0.36 | `code/03_reward_hacking.py` 输出 | 代码生成 |
-| F11 | tiny GRPO 冒烟 10 步：奖励 −0.19→−0.07（有噪声），格式/调用率 0.50/0.34 → 0.62/0.62；GRPO vs SFT 工具调用 −0.033 [−0.100, +0.000] 持平 | `out/smoke/grpo/log.jsonl`、`out/smoke/eval/report.md` | 极小配置演示 |
+| F11 | tiny GRPO 冒烟 10 步：奖励 −0.19→−0.07（有噪声），格式/调用率 0.50/0.34 → 0.62/0.62；GRPO vs SFT 工具调用 −0.033 [−0.100, +0.000] 持平 | 修复工具调用判分器之前那次冒烟测试的 `out/smoke/grpo/log.jsonl`、`out/smoke/eval/report.md`，写死在 `scenes.py` 的 SMOKE 里，与 README“主线进度”同一次运行（重跑的 out/smoke 数字不同，视频不读它） | 极小配置演示 |
 | F12 | DeepSeek-R1 推理任务只用规则奖励，理由是神经奖励模型易被 hack | arXiv 2501.12948 2.2 节 | 已核对 |
 | F13 | 采用 GRPO 系 RLVR：DeepSeek-R1、Qwen3、GLM-4.5、OLMo 3、MiMo；Kimi K2 用组均值基线的变体 | 各技术报告（README 采用方表） | 已核对 |
 | F14 | MiMo 的五类环境：可执行测试、规则检查、rubric 判分、视觉判分 | XiaomiMiMo/verl README | 已核对 |

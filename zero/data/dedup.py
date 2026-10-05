@@ -20,8 +20,10 @@
 from __future__ import annotations
 
 import hashlib
+import multiprocessing
 from collections import defaultdict
 from collections.abc import Sequence
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 
@@ -119,6 +121,15 @@ class _UnionFind:
                 self.parent[ra] = rb
 
 
+def _signatures(args: tuple[int, int, int, list[str]]) -> np.ndarray:
+    """一批文档的 MinHash 签名（多进程时每个子进程算一批；同样的种子 → 同样的 a、b → 与单进程逐位相同）。"""
+    num_perm, ngram, seed, texts = args
+    hasher = MinHasher(num_perm=num_perm, ngram=ngram, seed=seed)
+    if not texts:
+        return np.zeros((0, num_perm), np.uint64)
+    return np.stack([hasher.signature(t) for t in texts])
+
+
 def near_dedup(
     texts: Sequence[str],
     threshold: float = 0.8,
@@ -126,20 +137,25 @@ def near_dedup(
     bands: int = 16,
     ngram: int = 5,
     seed: int = 0,
+    n_jobs: int = 1,
 ) -> tuple[list[int], list[list[int]]]:
     """MinHash LSH 近似去重。
 
     返回 (keep, clusters)：keep 是保留的下标；clusters 是所有大小 >= 2 的重复簇（每簇第一个是被保留的）。
+    n_jobs > 1 时用多进程计算签名（最耗时的一步，纯 Python 逐个 n-gram 哈希，单进程约 1 MB/s）；
+    分桶和复核仍在主进程里做，结果与单进程完全相同。
     """
     if num_perm % bands != 0:
         raise ValueError(f"num_perm={num_perm} 必须能被 bands={bands} 整除")
     rows = num_perm // bands
-    hasher = MinHasher(num_perm=num_perm, ngram=ngram, seed=seed)
-    sigs = (
-        np.stack([hasher.signature(t) for t in texts])
-        if texts
-        else np.zeros((0, num_perm), np.uint64)
-    )
+    batch = 2000
+    if n_jobs > 1 and len(texts) > batch:
+        jobs = [(num_perm, ngram, seed, list(texts[i : i + batch])) for i in range(0, len(texts), batch)]
+        # spawn 而不是 fork：流水线进程里已有 numpy / tokenizers 的线程，fork 之后子进程可能死锁
+        with ProcessPoolExecutor(n_jobs, mp_context=multiprocessing.get_context("spawn")) as ex:
+            sigs = np.concatenate(list(ex.map(_signatures, jobs)))
+    else:
+        sigs = _signatures((num_perm, ngram, seed, list(texts)))
 
     uf = _UnionFind(len(texts))
     for band in range(bands):

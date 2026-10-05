@@ -1,0 +1,10 @@
+# 阶梯 e24m：有效参数 N_eff = 23.92M（每 token FLOPs / 6，序列 2048；runs/ladder-3090/README.md 第 3 节）
+base = "base.toml"
+[model]
+dim = 256
+n_layers = 4
+n_heads = 4
+n_kv_heads = 2
+ffn_dim = 704
+[train]
+out_dir = "out/ladder3090/e24m/scratch"

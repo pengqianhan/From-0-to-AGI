@@ -279,7 +279,7 @@ def find_contaminated(docs, eval_items, n=13):
 
 ## 10. 训练主线分词器：词表选多大
 
-第 7 章讲过词表大小的取舍：词表越大，同样的文本切出的 token 越少（字节/token 越大），但 embedding 的参数是 V × d。第 7 章用 2.5MB 的小语料只能扫到 32K；要为主线做决定，需要更像样的语料。[`08_vocab_size.py --corpus`](code/08_vocab_size.py) 用的是从几个开源仓库整理的中英代码文本：中文是《动手学深度学习》中文版、Kubernetes 中文文档、JavaGuide、CS-Notes、Python-100-Days（都去掉了代码块和 HTML 注释里的英文原文），英文是《动手学深度学习》英文版、Kubernetes 英文文档和 CPython 文档，代码是 CPython 的 Python 与 C 源码；分词器训练文本按主线配比取（英 55%、中 30%、代码 15%，共 30MB），每种语言另留约 5% 的文档做验证。训练文本不能太少：只用 12MB 时，出现 2 次以上的相邻对在词表长到约 9 万时就用完了，更大的词表根本训练不出来。这份语料偏技术文档，结论要在第二步用真实的 FineWeb-Edu / FineWeb-2 / Stack-Edu 样本重测。
+第 7 章讲过词表大小的取舍：词表越大，同样的文本切出的 token 越少（字节/token 越大），但 embedding 的参数是 V × d。第 7 章用 2.5MB 的小语料只能扫到 32K；要为主线做决定，需要更像样的语料——最好就是**主线将要训练的那些数据本身**。[`configs/vocab/download.toml`](../../configs/vocab/download.toml) 用第二步的下载器 `zero.data.download` 从主线的预训练来源里各抽一小份：英文是 FineWeb-Edu、DCLM、FineMath，中文是 FineWeb-2（`cmn_Hani`）和 Ultra-FineWeb 中文，代码用 MiniCPM5 的 UltraData-Code-L2（9 种编程语言；主线配置里的 Stack-Edu 只有文件 id，正文要用 AWS 凭证从 Software Heritage 取，这里换成正文直接可下的同类数据），配比和主线一致，6 个数据集都固定到 2026-10-01 的 commit，共 9,361 篇、46MB 正文。[`09_build_vocab_corpus.py`](code/09_build_vocab_corpus.py) 把它们按语言合并、打乱，切出验证集（英 1.75MB、中 0.81MB、代码 1.63MB），其余做训练文本；分词器训练文本按主线配比取（英 55%、中 30%、代码 15%，共 30MB）。训练文本不能太少：只用 12MB 时，出现 2 次以上的相邻对在词表长到约 9 万时就用完了，更大的词表根本训练不出来。下载了什么、各下了多少、每个文件的 sha256，都记在 [runs/2026-10-01-vocab-corpus/](../../runs/2026-10-01-vocab-corpus/README.md)；语料只在本地做测量，不进仓库，也不用于训练。（这一节的第一版用的是从 GitHub 技术文档拼的语料——写书时的构建环境访问不了 Hugging Face；那一版的结果放在下面表格后面，正好用来看"同分布"的影响有多大。）
 
 代价按主线的形状算（`configs/main/pretrain.toml`：28 层、宽 1280、共享 embedding），只换 V：参数 = 非 embedding 605.6M + V × 1280，**总量不能超过 0.8B**；每 token 的训练算力 ≈ 6 × N_matmul（包括 1280 × V 的 lm_head 矩阵乘）+ 注意力。真正要比的是**读完同样多的文本花多少算力**：
 
@@ -287,30 +287,52 @@ def find_contaminated(docs, eval_items, n=13):
 FLOPs / 字节 = (FLOPs / token) ÷ (字节 / token)
 ```
 
-`08_vocab_size.py --corpus <目录> --refs --train-mb 30` 的结果（验证集：英 1.75MB、中 0.77MB、代码 1.63MB；"加权"按英 0.55 / 中 0.30 / 代码 0.15；FLOPs/字节以 V = 65,536 时每 token 的 FLOPs 为单位）：
+`08_vocab_size.py --corpus <目录> --refs --train-mb 30` 的结果（"加权"按英 0.55 / 中 0.30 / 代码 0.15；FLOPs/字节以 V = 65,536 时每 token 的 FLOPs 为单位；CPU 上 16 线程，7 个词表一共训练约 2 分钟）：
 
 | 分词器 | 词表 V | 英文 | 中文 | 代码 | 加权 字节/token | embedding | 总参数 | 每 token 算力 | **FLOPs / 字节** |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| zero BPE | 16,384 | 4.23 | 4.41 | 3.74 | 4.21 | 21.0M | 626.6M | 6.58 GFLOP | 0.2245 |
-| zero BPE | 32,768 | 4.44 | 4.96 | 3.98 | 4.53 | 41.9M | 647.6M | 6.70 GFLOP | 0.2129 |
-| zero BPE | 49,152 | 4.51 | 5.25 | 4.08 | 4.67 | 62.9M | 668.5M | 6.83 GFLOP | **0.2103** |
-| zero BPE | **65,536** | 4.56 | 5.43 | 4.14 | 4.76 | 83.9M | 689.5M | 6.96 GFLOP | **0.2103** |
-| zero BPE | 98,304 | 4.60 | 5.66 | 4.21 | 4.86 | 125.8M | 731.5M | 7.21 GFLOP | 0.2134 |
-| zero BPE | 131,072 | 4.62 | 5.79 | 4.25 | 4.91 | 167.8M | 773.4M | 7.46 GFLOP | 0.2182 |
-| zero BPE | 151,936 | 4.62 | 5.87 | 4.26 | 4.94 | 194.5M | **800.1M（超线）** | 7.62 GFLOP | 0.2217 |
-| Qwen2/Qwen3 分词器（参考） | 151,936 | 4.29 | 4.11 | 4.09 | 4.21 | 194.5M | 800.1M | 7.62 GFLOP | 0.2603 |
-| Llama 3 分词器（参考） | 128,256 | 4.38 | 3.75 | 4.18 | 4.16 | 164.2M | 769.8M | 7.44 GFLOP | 0.2568 |
+| zero BPE | 16,384 | 3.68 | 3.45 | 3.19 | 3.54 | 21.0M | 626.6M | 6.58 GFLOP | 0.2674 |
+| zero BPE | 32,768 | 3.99 | 3.86 | 3.46 | 3.87 | 41.9M | 647.6M | 6.70 GFLOP | 0.2489 |
+| zero BPE | 49,152 | 4.13 | 4.09 | 3.59 | 4.04 | 62.9M | 668.5M | 6.83 GFLOP | 0.2431 |
+| zero BPE | **65,536** | 4.22 | 4.25 | 3.66 | 4.15 | 83.9M | 689.5M | 6.96 GFLOP | **0.2412** |
+| zero BPE | 98,304 | 4.31 | 4.46 | 3.76 | 4.27 | 125.8M | 731.5M | 7.21 GFLOP | 0.2425 |
+| zero BPE | 131,072 | 4.36 | 4.62 | 3.81 | 4.36 | 167.8M | 773.4M | 7.46 GFLOP | 0.2460 |
+| zero BPE | 151,936 | 4.39 | 4.70 | 3.83 | 4.40 | 194.5M | **800.1M（超线）** | 7.62 GFLOP | 0.2491 |
+| Qwen2/Qwen3 分词器（参考） | 151,936 | 4.39 | 3.90 | 4.00 | 4.18 | 194.5M | 800.1M | 7.62 GFLOP | 0.2618 |
+| Llama 3 分词器（参考） | 128,256 | 4.53 | 3.27 | 4.05 | 4.08 | 164.2M | 769.8M | 7.44 GFLOP | 0.2619 |
 
 （参考分词器由 llama.cpp 的 `ggml-vocab-{qwen2,llama-bpe}.gguf` 重建，用 llama.cpp 自带的测试用例核对过切分，参数与算力按"放在主线形状上"计算。）
 
 怎么读这张表：
 
-- **压缩率收益递减**：16K → 32K，加权字节/token 提高 7.5%；64K → 128K 只提高 3.3%。中文涨得最多（中文"词"多，词表大才装得下），英文和代码在 64K 之后几乎不动。
-- **算力/字节在 48K–64K 最低**，之后因为 lm_head 变大反而上升；128K 比 64K 贵 3.8%，151,936 贵 5.4%，而且 Qwen 的词表大小放在这个宽度上总参数 800.1M，**超过 0.8B 的上限**。
-- **在自己的数据上训练的分词器，压缩率高于通用分词器**：同样 151,936 的词表，我们的中文 5.87 字节/token，Qwen 只有 4.11。这不说明 Qwen 的分词器差——它要照顾 119 种语言，而我们的分词器训练文本和验证文本来自同一类技术文档（同分布的好处）。第二步要在真实的 FineWeb-2 / FineWeb-Edu / Stack-Edu 样本上重测。
-- Tao et al.（2024）的词表 scaling law 给 3B 非词表参数、按 Chinchilla 配比训练的模型推荐的最优词表约 4 万；主线非词表参数约 6 亿，但过训练（约 700 token/参数）会把最优值往上推——和这张表"48K–64K 最省算力"的结论方向一致。
+- **压缩率收益递减**：16K → 32K，加权字节/token 提高 9.5%；64K → 128K 只提高 5.1%。中文涨得最多（中文"词"多，词表大才装得下），英文和代码在 64K 之后涨得很慢。
+- **算力/字节在 64K 最低**，两边都往上走：96K 贵 0.5%，48K 贵 0.8%（词表小，切出的 token 多），128K 贵 2.0%，151,936 贵 3.3%（lm_head 变大）；而且 Qwen 的词表大小放在这个宽度上总参数 800.1M，**超过 0.8B 的上限**。
+- **自己训练的分词器在中文上占优，在代码和英文上不占优**：同样 151,936 的词表，我们的中文 4.70 字节/token，Qwen 只有 3.90（高 20%）；英文两者持平（4.39），代码反而是 Qwen 高 4.5%；Llama 3 的英文和代码也都比我们 128K 的分词器好（高 3.9% 和 6.2%）。Qwen 和 Llama 的分词器是在比我们 30MB 大几个数量级、也杂得多的数据上训练的；我们唯一明显的优势是中文配比高（30%，而 Qwen 要照顾 119 种语言）。
+- **同分布的优势比看上去小**：第一版测量（下面折叠的表）用的是技术文档，训练文本和验证文本来自同一类文档，我们的中文比 Qwen 高 43%、代码也更好；换成真实的网页和代码样本，中文优势缩到 20%，代码优势消失。在什么数据上测，比测得多精细更重要。
+- Tao et al.（2024）的词表 scaling law 给 3B 非词表参数、按 Chinchilla 配比训练的模型推荐的最优词表约 4 万；主线非词表参数约 6 亿，但过训练（约 700 token/参数）会把最优值往上推——和这张表"64K 最省算力"的结论方向一致。
 
-**主线的词表定为 65,536**（`configs/main/data.toml` 与 `configs/main/pretrain.toml` 已一致；第 7 章写的"暂定"在这里确认）：它和 48K 并列算力/字节最低，比 48K 多 3.4% 的中文压缩率（中文是我们的弱项数据，token 越省越好），embedding 83.9M 只占总参数的 12%；是 2 的幂次，也是 128 的倍数，GPU 上矩阵乘整齐。第二步在真实数据样本上重测，如果结论变了再改。
+<details>
+<summary>第一版测量：GitHub 技术文档语料（2026-09，写书时的构建环境访问不了 Hugging Face）</summary>
+
+语料：中文是《动手学深度学习》中文版、Kubernetes 中文文档、JavaGuide、CS-Notes、Python-100-Days（去掉代码块和 HTML 注释里的英文原文），英文是《动手学深度学习》英文版、Kubernetes 英文文档和 CPython 文档，代码是 CPython 的 Python 与 C 源码，约 75MB（来源见本章参考文献；整理脚本没有保留）。验证集：英 1.75MB、中 0.77MB、代码 1.63MB。
+
+| 分词器 | 词表 V | 英文 | 中文 | 代码 | 加权 字节/token | **FLOPs / 字节** |
+|---|---:|---:|---:|---:|---:|---:|
+| zero BPE | 16,384 | 4.23 | 4.41 | 3.74 | 4.21 | 0.2245 |
+| zero BPE | 32,768 | 4.44 | 4.96 | 3.98 | 4.53 | 0.2129 |
+| zero BPE | 49,152 | 4.51 | 5.25 | 4.08 | 4.67 | **0.2103** |
+| zero BPE | 65,536 | 4.56 | 5.43 | 4.14 | 4.76 | **0.2103** |
+| zero BPE | 98,304 | 4.60 | 5.66 | 4.21 | 4.86 | 0.2134 |
+| zero BPE | 131,072 | 4.62 | 5.79 | 4.25 | 4.91 | 0.2182 |
+| zero BPE | 151,936 | 4.62 | 5.87 | 4.26 | 4.94 | 0.2217 |
+| Qwen2/Qwen3 分词器（参考） | 151,936 | 4.29 | 4.11 | 4.09 | 4.21 | 0.2603 |
+| Llama 3 分词器（参考） | 128,256 | 4.38 | 3.75 | 4.18 | 4.16 | 0.2568 |
+
+技术文档比网页"整齐"得多，所有分词器的压缩率都更高；当时的结论是"48K 和 64K 并列最省算力"，这次在主线数据样本上 64K 单独最低，选择不变。
+
+</details>
+
+**主线的词表定为 65,536**（`configs/main/data.toml` 与 `configs/main/pretrain.toml` 已一致；第 7 章写的"暂定"在这里确认）：在主线数据样本上它的算力/字节最低（两次测量都在最低点上），比 48K 多 4.0% 的中文压缩率（中文是我们的弱项数据，token 越省越好），embedding 83.9M 只占总参数的 12%；是 2 的幂次，也是 128 的倍数，GPU 上矩阵乘整齐。第二步正式下载完数据后，用完整的训练语料再测一次；这次的样本只来自各数据集最早的几个分片（2013–2014 年的网页，见 runs 目录的记录），如果结论变了再改。
 
 **预切分正则**：第 7 章留了一个问题——zero 的正则和 Qwen2/Qwen3 相同，而 Qwen3.5 把字母串从 `\p{L}+` 改成了 `[\p{L}\p{M}]+`。`\p{M}` 是"组合符号"：天城文、泰文的元音符号，阿拉伯文的变音符号。旧正则会在这些符号处把一个词切碎：
 
@@ -320,7 +342,7 @@ FLOPs / 字节 = (FLOPs / token) ÷ (字节 / token)
 | 泰语 | 16 块 | 1 块 |
 | 中文 / 英文 | 3 / 13 块 | 3 / 13 块（完全相同） |
 
-在我们的中英代码验证集上，英文和代码的词块完全相同；中文只在 4 处不同——emoji 后面的变体选择符 U+FE0F（它属于 \p{M}）。用两种正则各训练一个 65,536 词表的分词器，验证集字节/token 在三种语言上完全相同（英 4.555、中 5.426、代码 4.141）。所以**主线采用 qwen3.5 正则**：对中英代码零代价，对其他语言更合理，和最新的 Qwen 一致；llama.cpp 已经支持这个预切分类型（`qwen35`），导出 GGUF 时把 `pre_tokenizer` 参数设成 `qwen35` 即可。这个选择只通过配置生效（`configs/main/data.toml` 的 `pretokenize = "qwen3.5"`），`zero/tokenizer.py` 的默认值不变，已有的测试和 tiny 流水线照旧。
+在主线数据样本的验证集上（每种语言取前 20 万字符），英文和代码的词块完全相同；中文只在 4 处不同：2 处是 emoji 后面的变体选择符 U+FE0F（它属于 \p{M}），另 2 处是混在中文网页里的一段泰文——真实网页从来不是纯净的单一语言。用两种正则各训练一个 65,536 词表的分词器，验证集字节/token 在三种语言上完全相同（英 4.217、中 4.254、代码 3.665）。所以**主线采用 qwen3.5 正则**：对中英代码零代价，对其他语言更合理，和最新的 Qwen 一致；llama.cpp 已经支持这个预切分类型（`qwen35`），导出 GGUF 时把 `pre_tokenizer` 参数设成 `qwen35` 即可。这个选择只通过配置生效（`configs/main/data.toml` 的 `pretokenize = "qwen3.5"`），`zero/tokenizer.py` 的默认值不变，已有的测试和 tiny 流水线照旧。
 
 ## 11. 许可证与出处：每一步都要留下记录
 
@@ -490,7 +512,8 @@ print(bpb_stats(model, val, tb, steps=8).bpb)
 - Karpathy. nanochat（`nanochat/loss_eval.py` 的 `evaluate_bpb`）：<https://github.com/karpathy/nanochat>
 - Qwen3.5-0.8B 的 `tokenizer.json`（预切分正则，2026-09 读取）：<https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/tokenizer.json>
 - llama.cpp 的预切分类型 `qwen35` 与 vocab 测试文件：<https://github.com/ggml-org/llama.cpp>（`src/llama-vocab.cpp`、`models/ggml-vocab-*.gguf`）
-- 第 10 节词表测量用的语料：[d2l-ai/d2l-zh](https://github.com/d2l-ai/d2l-zh)、[d2l-ai/d2l-en](https://github.com/d2l-ai/d2l-en)、[kubernetes/website](https://github.com/kubernetes/website)（`content/{zh-cn,en}/docs`）、[Snailclimb/JavaGuide](https://github.com/Snailclimb/JavaGuide)、[CyC2018/CS-Notes](https://github.com/CyC2018/CS-Notes)、[jackfrued/Python-100-Days](https://github.com/jackfrued/Python-100-Days)、[python/cpython](https://github.com/python/cpython)（`Lib`、`Objects`、`Doc`）——只在本地做测量，不进仓库，也不用于训练
+- 第 10 节词表测量用的语料（2026-10，主线预训练来源的样本，记录见 [runs/2026-10-01-vocab-corpus](../../runs/2026-10-01-vocab-corpus/README.md)）：[FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu)（`sample-10BT`）、[DCLM-baseline 1.0](https://huggingface.co/datasets/mlfoundations/dclm-baseline-1.0)、[FineMath](https://huggingface.co/datasets/HuggingFaceTB/finemath)（`finemath-3plus`）、[FineWeb-2](https://huggingface.co/datasets/HuggingFaceFW/fineweb-2)（`cmn_Hani`）、[Ultra-FineWeb](https://huggingface.co/datasets/openbmb/Ultra-FineWeb)（`zh`）、[UltraData-Code](https://huggingface.co/datasets/openbmb/UltraData-Code)（`UltraData-Code-L2`，MiniCPM5 的代码数据）
+- 第 10 节第一版词表测量用的语料：[d2l-ai/d2l-zh](https://github.com/d2l-ai/d2l-zh)、[d2l-ai/d2l-en](https://github.com/d2l-ai/d2l-en)、[kubernetes/website](https://github.com/kubernetes/website)（`content/{zh-cn,en}/docs`）、[Snailclimb/JavaGuide](https://github.com/Snailclimb/JavaGuide)、[CyC2018/CS-Notes](https://github.com/CyC2018/CS-Notes)、[jackfrued/Python-100-Days](https://github.com/jackfrued/Python-100-Days)、[python/cpython](https://github.com/python/cpython)（`Lib`、`Objects`、`Doc`）——只在本地做测量，不进仓库，也不用于训练
 - CS336 作业 4 仓库：<https://github.com/stanford-cs336/assignment4-data>
 
 **下一章**：数据和分词器都有了，下一步是把几千亿个 token 真正喂进 8 张 GPU——混合精度、FlashAttention、数据并行与 FSDP、MFU、loss spike 和断点续训。第 14 章，预训练工程。

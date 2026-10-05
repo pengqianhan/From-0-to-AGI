@@ -1,0 +1,10 @@
+# 阶梯 e11m：有效参数 N_eff = 11.17M（每 token FLOPs / 6，序列 2048；runs/ladder-3090/README.md 第 3 节）
+base = "base.toml"
+[model]
+dim = 128
+n_layers = 4
+n_heads = 2
+n_kv_heads = 1
+ffn_dim = 320
+[train]
+out_dir = "out/ladder3090/e11m/scratch"

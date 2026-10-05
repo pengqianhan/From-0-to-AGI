@@ -245,6 +245,8 @@ KL(π_DPO‖π*) = 0.0017（起点 KL(π_ref‖π*) = 2.0082）。同一个目�
 2. **偏好数据**：70 道题 × 4 对 = 280 对，chosen = 正确答案，rejected = 参考模型会写出的错答案。另外 30 道题留出，训练时从不出现。
 3. **DPO**：β = 0.1，lr = 1e-3，Adam，每步 32 对，150 步；参考模型的 log 概率训练前算好。
 
+> 关于数字：本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同机器、不同版本的底层数学库，浮点运算的顺序略有不同，训练几百步后会把这些微小差异放大，你本机跑出的数字可能从小数点后第二三位开始就不一样；请以下文不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-16-20.md](../../runs/2026-10-01-gpu0-check/chapters-16-20.md)。
+
 SFT 参考模型在 30 道留出题上：答对的概率 0.369，采样格式正确 1.000，采样答对 0.360。DPO 训练中（训练集上）：
 
 | 步 | 损失 | margin | acc | log π(chosen) | log π(rejected) |
@@ -288,7 +290,7 @@ SFT 参考模型在 30 道留出题上：答对的概率 0.369，采样格式正
 | 1e-2 | +4.26 | 1.00 | 0.071 | 0.473 | 0.063 |
 | 5e-2 | +6.61 | 1.00 | 0.031 | 0.300 | 0.032 |
 
-lr = 1e-2 时 margin 冲到 4.26、训练 acc 1.00，看起来"学得最好"；可采样出来的回答一半多连格式都不对。模型为了把 rejected 的数字压下去，把整片"数字 token"的概率一起压坏了。**margin 高 ≠ 模型好。**
+lr = 1e-2 时 margin 冲到 4 以上、训练 acc 1.00，看起来"学得最好"；可采样出来的回答有一大截连格式都不对，答对的只剩 6%–7%。学习率大的这两行训练很不稳定，对浮点误差特别敏感：2026-10 在另一台服务器上复跑，lr = 1e-2 一行是 +4.20 / 1.00 / 0.068 / 0.618 / 0.068（格式错的从一半多变成近四成），5e-2 一行是 +5.73 / 1.00 / 0.000 / 0.172 / 0.000，前三行几乎不变。具体比例会变，方向不变：模型为了把 rejected 的数字压下去，把整片"数字 token"的概率一起压坏了。**margin 高 ≠ 模型好。**
 
 主线的冒烟测试踩过同一个坑（**极小配置演示**，`configs/tiny/dpo.toml` 的注释）：DPO 学习率 5e-4 时，24 步里 margin 冲到 4.8，接下来 GRPO 阶段的工具调用格式正确率从 0.16 掉到 0；改成 5e-5 才稳住。真实模型的 DPO 学习率通常比 SFT 小一个数量级以上：Zephyr 5e-7，Tülu 3 8B 5e-7、70B 2e-7，OLMo 2 7B 1e-6，Qwen2.5 7e-7；Llama 3 用了 1e-5（外加下面说的正则）。主线配置默认 5e-7，待调。
 
@@ -334,7 +336,7 @@ lr = 1e-2 时 margin 冲到 4.26、训练 acc 1.00，看起来"学得最好"；�
 | 参考 log 概率训练前算好 | `[dpo] ref_mode = "precompute"`（训练前对全部数据算一遍参考 log 概率）或 `"online"`（每步用一份冻结的拷贝现算） | precompute 省下一整份模型的显存；online 适合数据边生成边训练 |
 | 固定的 280 对 | `make_env_preferences`：`generate_pairs > 0` 且文件不存在时，对工具调用环境 `zero/post/envs/tool_env.py` 的任务，从当前策略采样 `samples_per_prompt` 个回答，用可验证奖励打分，最高分（满分才算）当 chosen、否则用标准解答；最低分当 rejected；都满分时把标准调用改坏当 rejected | **on-policy 偏好数据**：rejected 是模型自己真会犯的错；不需要人工标注 |
 | Adam、固定学习率 | `zero.post.common.LoopState`：AdamW、warmup + cosine、梯度裁剪、梯度累积、日志 JSONL、checkpoint、断点续训 | 和其他后训练阶段共用一套训练循环 |
-| 单进程 CPU | 单进程；CUDA 上用 BF16 autocast | 多卡 DDP 尚未实现，**尚未在 GPU 上验证**（`run_dpo` 的文档字符串） |
+| 单进程 CPU | 单进程；CUDA 上用 BF16 autocast | 多卡 DDP 尚未实现；单卡 CUDA + BF16 的通路已在 RTX 3090 上验证（见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 9 节） |
 
 **对拍**（[`tests/test_dpo.py`](../../tests/test_dpo.py)）：`test_dpo_loss_hand_computed` 用两对手算的例子验证损失、acc、margin，并检查 policy = ref 时损失为 ln 2、梯度抬 chosen 压 rejected；`test_batch_logps_only_counts_response` 验证序列 log 概率只算回复 token，与逐 token 手算一致；`test_run_dpo_end_to_end` 在 precompute / online 两种模式下各跑 3 步，第一步损失 = ln 2、之后下降、checkpoint 落盘。本章 `03` 的 ⑤ 又把从零写的损失和 `dpo_loss` 在数值与梯度上对了一遍。
 

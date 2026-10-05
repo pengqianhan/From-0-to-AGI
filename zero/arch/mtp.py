@@ -20,7 +20,8 @@ DeepSeek-V3（arXiv:2412.19437 第 2.2 节）的做法：在主模型后面串�
 - 送进 MTP 的 h^0 是主模型**最后一个 RMSNorm 之后**的隐藏状态（也就是送进 lm_head 的那个）；
 - 每个 MTP 模块有自己的最终 RMSNorm（vLLM 里叫 shared_head.norm），然后乘共享的 lm_head。
 主模型用 `zero.model.Transformer` 原样不动；MTP block 就是 `zero.model.Block`（GQA + QK-Norm + RoPE + SwiGLU）。
-本文件只追求可读和正确，尚未在 GPU 上验证性能。
+本文件只追求可读和正确：CUDA 上前向 / 反向与 CPU 对拍、自推测贪心与主模型逐字相同已在 RTX 3090 上验证
+（2026-10，见 runs/2026-10-01-gpu0-check/），尚未在 GPU 上验证性能。
 """
 
 from __future__ import annotations

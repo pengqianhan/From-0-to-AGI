@@ -1,0 +1,8 @@
+# 多卡 32K 显存试验用：与 longctx_tiny.toml 相同，只把三个来源合成一个。
+# tiny 语料里 code 来源只切得出 2 个 32K 片段，3 个 rank 分不过来；合成一个来源后约 28 个片段。
+base = "longctx_tiny.toml"
+
+[[data.sources]]
+name = "tiny"
+path = "out/gpu0-check/tiny/data/*_train_*.bin"
+weight = 1.0

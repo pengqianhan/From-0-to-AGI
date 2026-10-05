@@ -274,3 +274,15 @@ def test_sources_registry() -> None:
     assert "stack-edu" in unverified_licenses()
     with pytest.raises(KeyError):
         get_source("nope")
+
+
+def test_near_dedup_parallel_matches_serial() -> None:
+    # 多进程算签名（pipeline 的 [dedup] n_jobs）只是更快：保留的下标和重复簇必须与单进程完全相同
+    rng = np.random.default_rng(0)
+    words = [f"w{i}" for i in range(500)]
+    base = [" ".join(rng.choice(words, 60)) for _ in range(2600)]
+    texts = base + [t + " extra" for t in base[:300]]  # 300 篇近似重复
+    serial = near_dedup(texts, n_jobs=1)
+    parallel = near_dedup(texts, n_jobs=4)
+    assert serial == parallel
+    assert len(serial[1]) >= 250  # 大部分近似重复被找出来

@@ -277,6 +277,46 @@ att = att.masked_fill(att < kth, float("-inf"))  # 其余的当作看不见
 
 ---
 
+## GPU 实测（单张 RTX 3090）
+
+> 上面正文里的数字都来自 CPU 运行。本节换到一张 NVIDIA GeForce RTX 3090（24 GB 显存，Ampere 架构；规格表：BF16 张量核稠密峰值约 71 TFLOPS，FP32 约 35.6 TFLOPS，显存带宽约 936 GB/s）上实测，环境：PyTorch 2.11.0+cu128、CUDA 12.8，2026 年 10 月。这张卡的功耗上限被服务器设成了 240 W（出厂默认 350 W），持续满载时会降频，所以算力、带宽的绝对值比满功耗的 3090 偏低，看相对关系更可靠。没有 GPU 可以跳过本节。
+
+运行：
+
+```bash
+uv run python chapters/22-local-sparse-attention/code/06_gpu_flex_window.py
+```
+
+同一个滑动窗口注意力（条件就是第 2 节的 `(j ≤ i) & (i − j < W)`），batch 1、16 个头、head_dim 128、BF16，在 GPU 上用三种算法算：
+
+- **稠密因果 SDPA**：PyTorch 自带的 FlashAttention kernel，`is_causal=True`，窗口外照算不误。它算的其实是全因果注意力，只作速度参照；
+- **布尔掩码 SDPA**：先造一张 T × T 的布尔掩码，交给 SDPA 的 memory-efficient kernel（`attn_mask=`）——窗口外的分数先算出来再掩掉。`zero/arch/sliding_window.py` 现在就是这种写法；
+- **FlexAttention**：`create_block_mask` 先把 T × T 的表按 128 × 128 切块，标出哪些块整个落在窗口外，kernel 直接跳过它们，只算带子经过的块。第一次调用要 `torch.compile` 生成 Triton kernel，本机用了 7 秒。
+
+固定 T = 16,384，改窗口 W（毫秒，10 次取中位数）：
+
+| 窗口 W | FlexAttention 要算的块（占因果全部块） | 稠密因果 SDPA | 布尔掩码 SDPA | FlexAttention | FlexAttention 比稠密快 |
+|---:|---:|---:|---:|---:|---:|
+| 128 | 3.1% | 22.68 | 70.19 | 0.90 | 25.2× |
+| 512 | 7.6% | 23.35 | 70.53 | 2.47 | 9.5× |
+| 1,024 | 13.5% | 23.93 | 70.80 | 3.64 | 6.6× |
+| 4,096 | 44.8% | 23.25 | 71.48 | 9.37 | 2.5× |
+| 16,384（= T，就是全因果） | 100.0% | 23.70 | 73.37 | 19.88 | 1.2× |
+
+W = 1,024 时，除了 q、k、v 之外额外占的显存：稠密 65 MiB；布尔掩码 SDPA 先要一张 256 MiB 的掩码，运行时再占 576 MiB；FlexAttention 66 MiB。
+
+固定 W = 1,024，改序列长 T（毫秒）：
+
+| 序列长 T | 稠密因果 SDPA | 布尔掩码 SDPA | FlexAttention | FlexAttention 比稠密快 |
+|---:|---:|---:|---:|---:|
+| 4,096 | 1.62 | 5.00 | 0.94 | 1.7× |
+| 16,384 | 22.72 | 71.24 | 3.61 | 6.3× |
+| 65,536 | 473.55 | （跳过：布尔掩码本身就要 4 GiB） | 12.06 | 39.3× |
+
+三种算法算的是同一个东西：T = 16,384 时 FlexAttention 与布尔掩码 SDPA 的最大绝对差是 3.9e-03（W = 128 时 7.8e-03），W = T 时稠密因果 SDPA 与布尔掩码 SDPA 也差 3.9e-03，都是 BF16 舍入的量级。
+
+第 2 节说"每个 query 的计算量从 O(T) 变成 O(W)"，这组数字说明它在 GPU 上成立有个前提：**kernel 得真的跳过窗口外的块**。FlexAttention 的耗时跟着"要算的块"走——W 从 128 涨到 4,096，耗时从 0.90 ms 涨到 9.37 ms；固定 W = 1,024 时 T 每翻 4 倍，它的耗时只涨 3–4 倍（线性），稠密因果却涨 14–21 倍（平方），到 T = 65,536 已经快了 39 倍。反过来，"只多一个 `&`"的布尔掩码在 GPU 上一点也不省：不管窗口多小都是 70 ms 左右，耗时是全因果 FlashAttention 的 3 倍——它把 T × T 个分数全算了一遍（连因果掩码的上三角也算），还要额外的 T² 大小的掩码和偏置。有点出乎意料的是，W = T 时 FlexAttention（19.88 ms）比 PyTorch 自带的 FlashAttention（23.70 ms）还快一点；FlexAttention 在 3090 + PyTorch 2.11 上开箱即用，没有碰到兼容问题。
+
 ## 从极简到生产级
 
 生产级实现在 [`zero/arch/sliding_window.py`](../../zero/arch/sliding_window.py)（第五部分的实验模块，**不用于主线模型**）：
@@ -289,7 +329,7 @@ att = att.masked_fill(att < kth, float("-inf"))  # 其余的当作看不见
 | `KVCache.append`：拼接后切片保留最后 W 个 | `SlidingWindowKVCache`：全局层按 `max_seq_len` 预分配，滑动窗口层只分配 W 个槽位的**环形缓冲区**（位置 p → 槽位 `p % W`），另存每个槽位的位置 | 一次分配、不再拷贝；支持一次喂入超过 W 个 token 的分块 prefill（先用"旧 + 新"算注意力，再只写回最后 W 个）；`nbytes()` 与 `kv_cache_bytes(...)` 公式一致 |
 | 每步整段重算 / 截断缓存 | `generate_greedy(model, prompt, n, cache=None)` | 专门用来对拍"有界缓存"和"不用缓存" |
 | `01_masks_and_ledger.py` 的 `kv_bytes` | `zero/arch/sliding_window.py` 的 `kv_cache_bytes(layer_types, window, ...)`；按 `config.json` 自动识别层类型的完整账本在第 21 章的 `zero/tools/kv_cache_calc.py`（已支持 `sliding` 层） | 同一个公式：全局层存 T 个位置、滑动窗口层存 min(W, T) 个 |
-| 手写 `q @ kᵀ` + 掩码 | SDPA + 自定义掩码（CPU） | GPU 上要真正跳过窗口外的块，需要 FlashAttention 的 `flash_attn_func(..., causal=True, window_size=(W − 1, 0))`，或 PyTorch FlexAttention 的滑动窗口 `mask_mod`；vLLM / transformers 读到 `sliding_window` 和 `layer_types` 会自动选 kernel 和分层缓存。**这些 GPU 路径尚未在 GPU 上验证** |
+| 手写 `q @ kᵀ` + 掩码 | SDPA + 自定义掩码（CPU） | GPU 上要真正跳过窗口外的块，需要 FlashAttention 的 `flash_attn_func(..., causal=True, window_size=(W − 1, 0))`，或 PyTorch FlexAttention 的滑动窗口 `mask_mod`；vLLM / transformers 读到 `sliding_window` 和 `layer_types` 会自动选 kernel 和分层缓存。FlexAttention 的块稀疏滑动窗口已在 RTX 3090 上实测（本章"GPU 实测"一节：T = 65,536 时比稠密因果注意力快约 39 倍）；FlashAttention 的 `window_size` 因为没装 `flash_attn`，尚未验证；`zero/arch/sliding_window.py` 在 CUDA 上仍用布尔掩码 SDPA，正确性已验证（[runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 11 节），但比全注意力还慢 |
 
 **对拍**：[`tests/test_arch_sliding_window.py`](../../tests/test_arch_sliding_window.py)（`uv run pytest tests/test_arch_sliding_window.py`，本机 8 项全部通过，几秒内跑完）：
 

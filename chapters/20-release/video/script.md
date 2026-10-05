@@ -7,14 +7,14 @@
 | # | 视频里的主张 / 公式 / 数字 | 来源 | 状态 |
 |---|---|---|---|
 | F1 | 判定规则：95% CI 下界 > 0 超过，上界 < 0 落后，否则持平；对手取思考 / 非思考中较高者 | GOAL.md 3.2；`zero/eval/bootstrap.py` 的 `decide`、`compare_to_opponent` | 已核对 |
-| F2 | 冒烟判定表：grpo vs sft toy_mc +0.133 [+0.033, +0.267] 超过；tool_dev call_exact −0.033 [−0.100, +0.000] 持平；dpo 两项持平 | `out/smoke/eval/results.json`（极小配置演示） | 代码生成 |
+| F2 | 冒烟判定表（修复工具调用判分器之前那次运行）：grpo vs sft toy_mc +0.133 [+0.033, +0.267] 超过；tool_dev call_exact −0.033 [−0.100, +0.000] 持平；dpo 两项持平 | `video/data/smoke_before_fix.json`（逐题结果即第 11 章 `04_paired_bootstrap.py` 的 SMOKE，用 `zero.eval.bootstrap` 重算，与 README 1.3 节判定表逐格一致；极小配置演示）。修复后重跑的 out/smoke 四行都是“持平”，视频与 README 一样用修复前那次 | 真实运行输出 |
 | F3 | HF 目录的组成；架构名 Qwen3ForCausalLM；safetensors 不能藏代码 | `zero/hf.py`；safetensors README | 已核对 |
-| F4 | 冒烟导出：logits 最大误差 0，模板逐字一致，GGUF f16 2.7 MB、Q8_0 1.47 MB，llama-simple 成功 | `out/smoke/summary.json`（极小配置演示） | 代码生成 |
+| F4 | 冒烟导出：logits 最大误差 0，模板逐字一致，GGUF f16 2.7 MB、Q8_0 1.47 MB，llama-simple 成功 | `video/data/smoke_before_fix.json` 的 export（摘自 README“主线进度”表，当时的 `out/smoke/summary.json`；极小配置演示） | 真实运行输出 |
 | F5 | 主线模型 689.5M 参数；bf16 1.28 GiB、Q8_0 0.68 GiB、Q4_K_M 0.40 GiB；KV cache 32K 3.50 GiB | `code/03_memory_calculator.py` 输出；计算器与 llama-quantize 在 51.4M 测试模型上逐字节一致 | 代码生成 |
 | F6 | 分块量化公式 scale = max\|w\|/qmax，q = round(w/scale)，ŵ = scale·q；第一块的 INT8 / INT4 数值 | `code/01_blockwise_quant.py` 输出 | 代码生成 |
 | F7 | INT4 整张一个 scale 误差 93%、每行 36%、分块 32 为 11.3%、两级 scale 8.3%（造出来的带离群值矩阵） | `code/01_blockwise_quant.py` 输出 | 代码生成 |
 | F8 | Q8_0 = 32 个 int8 + 1 个 fp16 = 34 字节 → 8.5 bit；Q4_K = 256 个数 144 字节 → 4.5 bit；Q4_K_M 给输出层与部分 attn_v、ffn_down 用 Q6_K | llama.cpp `ggml/src/ggml-common.h`、`src/llama-quant.cpp`（commit 81bc6b8） | 已核对 |
-| F9 | 小模型量化：8 bit Δloss ≈ 0；INT4 分块 +0.005、一致率 94%；INT3 +0.039；INT2 +0.51 | `code/02_quantize_tiny_model.py` 输出 | 代码生成 |
+| F9 | 小模型量化：8 bit Δloss ≈ 0（第 4 位小数）、贪心生成与 fp32 一字不差；INT4 分块只升千分之几、每十几个位置变一个 top-1；INT3 代价是 INT4 的好几倍；INT2 基本废了。画面数字由渲染机现算：本机（2026-10 复跑）INT4 分块 +0.0066、一致率 93.3%，INT3 +0.0421，INT2 +0.577；README 写作机为 +0.0050 / 94.1%、+0.0391、+0.506 | `code/02_quantize_tiny_model.py` 输出（依赖第 10 章底座，不同机器训练出的底座略有不同） | 代码生成 |
 | F10 | Llama 3 8B：f16 PPL 6.233、Q8_0 6.234、Q4_K_M 6.407 | llama.cpp `tools/perplexity/README.md` | 已核对 |
 | F11 | llama-tokenize 20 个 id 与 zero 相同；zero / f16 / Q8_0 贪心 24 token 逐字相同；Q4_K_M（回退为 Q5_0 + Q8_0）第 10 个 token 分叉 | 本章写作时用 `out/smoke/gguf` 与 llama.cpp 实测（README "从极简到生产级"） | 实测 |
 | F12 | demo 回答为空 | `out/smoke/summary.json`，写作时复现一次 | 实测 |
@@ -73,7 +73,7 @@
 ### S10 质量换大小
 - 画面：左侧表格（第 10 章的小模型，0.86M 参数）：各方案的大小、Δloss、top-1 一致率；右侧 loss 随 bit 数变化的点线：8 bit 平、4 bit 小升、3 bit、2 bit 陡升（悬崖）。下方小字：Llama 3 8B：f16 6.233，Q8_0 6.234，Q4_K_M 6.407。
 - 屏幕文字：8 bit ≈ 无损　4 bit 有代价　更低是悬崖
-- 旁白：误差百分之十一听起来吓人，但模型关心的是预测变没变。把量化套在第十章的小模型上：八 bit 的 loss 变化在第四位小数，生成的文字一字不差。四 bit 分块，loss 升零点零零五，大约每十七个位置有一个最可能的字变了。三 bit 的代价是它的八倍，两 bit 的模型基本废了。llama.cpp 在八十亿参数的模型上测到的是同样的规律。量化的效果取决于具体的权重，所以发布前，一定要在自己的模型上量。
+- 旁白：误差百分之十一听起来吓人，但模型关心的是预测变没变。把量化套在第十章的小模型上：八 bit 的 loss 变化在第四位小数，生成的文字一字不差。四 bit 分块，loss 只升千分之几，但大约每十几个位置就有一个最可能的字变了。三 bit 的代价又大了好几倍，两 bit 的模型基本废了。llama.cpp 在八十亿参数的模型上测到的是同样的规律。量化的效果取决于具体的权重，所以发布前，一定要在自己的模型上量。
 
 ### S11 对拍：导出的还是同一个模型吗
 - 画面：三列 token 序列对齐：zero（fp32）、GGUF f16、GGUF Q8_0，24 个 token 全部绿色对勾；第四列 Q4_K_M（tiny 回退成 Q5_0 + Q8_0）在第 10 个 token 变红分叉。上方：llama-tokenize 20 个 id 全部相同。

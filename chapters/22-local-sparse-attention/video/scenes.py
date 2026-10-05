@@ -716,7 +716,14 @@ class ChapterScene(NarratedScene):
                 FadeIn(rl),
                 run_time=self.fit(2),
             )
-            gpu = zh("GPU 路径尚未在 GPU 上验证", 20, theme.GRAD).next_to(right, DOWN, 0.35)
+            gpu = (
+                VGroup(
+                    zh("RTX 3090：CUDA 上的正确性已验证", 20, theme.MUTED),
+                    zh("FlexAttention 实测：64K 时比稠密因果快 39 倍", 20, theme.MUTED),
+                )
+                .arrange(DOWN, buff=0.15)
+                .next_to(right, DOWN, 0.35)
+            )
             self.play(FadeIn(gpu), run_time=self.fit(0.6))
             self.wait(max(0.1, self.remaining() - 4))
             nxt = zh("下一章：线性注意力与混合架构", 30, theme.HIGHLIGHT).move_to([0, -1.6, 0])

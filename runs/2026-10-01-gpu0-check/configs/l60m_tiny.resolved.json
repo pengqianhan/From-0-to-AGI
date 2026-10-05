@@ -1,0 +1,95 @@
+{
+  "model": {
+    "vocab_size": 65536,
+    "dim": 512,
+    "n_layers": 12,
+    "n_heads": 8,
+    "n_kv_heads": 4,
+    "head_dim": 64,
+    "ffn_dim": 1536,
+    "rope_theta": 10000.0,
+    "rope_scaling": null,
+    "max_seq_len": 2048,
+    "norm_eps": 1e-06,
+    "qk_norm": true,
+    "tie_embeddings": true,
+    "init_std": 0.02
+  },
+  "train": {
+    "seed": 1337,
+    "max_steps": 5440,
+    "micro_batch_size": 8,
+    "grad_accum_steps": 2,
+    "device": "auto",
+    "dtype": "auto",
+    "compile": false,
+    "activation_checkpointing": false,
+    "cpu_threads": 0,
+    "parallel": "ddp",
+    "out_dir": "out/gpu0-check/l60m",
+    "init_from": "",
+    "eval_every": 250,
+    "eval_batches": 20,
+    "gpu_peak_tflops": 71.0,
+    "data": {
+      "tokenizer": "out/gpu0-check/tiny/tokenizer.json",
+      "seq_len": 2048,
+      "sources": [
+        {
+          "name": "shakespeare",
+          "path": "out/gpu0-check/tiny/data/shakespeare_train_*.bin",
+          "weight": 0.45
+        },
+        {
+          "name": "chinese_poetry",
+          "path": "out/gpu0-check/tiny/data/chinese_poetry_train_*.bin",
+          "weight": 0.45
+        },
+        {
+          "name": "code",
+          "path": "out/gpu0-check/tiny/data/code_train_*.bin",
+          "weight": 0.1
+        }
+      ],
+      "val": "out/gpu0-check/tiny/data/*_val_*.bin",
+      "shuffle": true,
+      "prepare": {
+        "raw_files": [
+          "assets/tiny_corpus/*.txt"
+        ],
+        "out_dir": "out/gpu0-check/tiny/data",
+        "vocab_size": 2048,
+        "val_fraction": 0.05,
+        "doc_chars": 2000
+      },
+      "format": "packed"
+    },
+    "optim": {
+      "name": "adamw",
+      "lr": 0.002,
+      "weight_decay": 0.1,
+      "beta1": 0.9,
+      "beta2": 0.95,
+      "eps": 1e-08,
+      "grad_clip": 1.0,
+      "decay_embeddings": false
+    },
+    "schedule": {
+      "kind": "wsd",
+      "warmup_steps": 200,
+      "min_lr_ratio": 0.0,
+      "decay_frac": 0.2,
+      "decay_shape": "linear"
+    },
+    "checkpoint": {
+      "every": 1000,
+      "keep_last": 3,
+      "resume": true,
+      "dir": ""
+    },
+    "logging": {
+      "every": 10,
+      "jsonl": ""
+    }
+  }
+}

@@ -115,7 +115,7 @@ def train_wsd_branches(dim, n_layers, lr, budgets, seed=0, data=None, make_opt=a
 
     主干：warmup 后保持峰值学习率一直训到 0.8 × 最大预算；
     每个预算 D_k：在主干的 0.8·D_k 处复制一份模型 + 优化器，接一段 0.2·D_k 的线性衰减，
-    衰减完测验证 loss。这样 3 个预算只花约 1.35 倍最大预算的算力，而不是 1.75 倍。
+    衰减完测验证 loss。这样 3 个预算只花约 1.15 倍最大预算的算力，而不是 1.75 倍。
     """
     train, val = data or load_bytes()
     torch.manual_seed(seed)

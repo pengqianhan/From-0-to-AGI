@@ -1,0 +1,60 @@
+{
+ "note": "冒烟测试（uv run python -m zero.smoke，极小配置演示，约 1.3M 参数）DPO 阶段训练日志的摘录，记录于修复工具调用判分器（第 19 章第 6 节）之前，与 README「主线进度 → 极小配置演示」同一次运行。修复后蒸馏数据变了，DPO 的日志随之不同（重跑会覆盖 out/smoke），所以冻结在这里，让视频与 README 一致。",
+ "source": "README「主线进度 → 极小配置演示」的训练日志表（当时 out/smoke/dpo/log.jsonl 第 1、5、10、15、20、24 步）。",
+ "log": [
+  {
+   "step": 1,
+   "loss": 0.6931,
+   "acc": 0.0,
+   "margin": 0.0,
+   "chosen_reward": 0.0,
+   "rejected_reward": 0.0,
+   "lr": 1.25e-05
+  },
+  {
+   "step": 5,
+   "loss": 0.6941,
+   "acc": 0.5,
+   "margin": -0.001,
+   "chosen_reward": 0.003,
+   "rejected_reward": 0.005,
+   "lr": 5e-05
+  },
+  {
+   "step": 10,
+   "loss": 0.6125,
+   "acc": 1.0,
+   "margin": 0.17,
+   "chosen_reward": 0.06,
+   "rejected_reward": -0.11,
+   "lr": 4.34e-05
+  },
+  {
+   "step": 15,
+   "loss": 0.3797,
+   "acc": 1.0,
+   "margin": 0.802,
+   "chosen_reward": 0.011,
+   "rejected_reward": -0.79,
+   "lr": 2.75e-05
+  },
+  {
+   "step": 20,
+   "loss": 0.3531,
+   "acc": 1.0,
+   "margin": 0.932,
+   "chosen_reward": 0.017,
+   "rejected_reward": -0.915,
+   "lr": 1.16e-05
+  },
+  {
+   "step": 24,
+   "loss": 0.5262,
+   "acc": 0.75,
+   "margin": 0.394,
+   "chosen_reward": -0.02,
+   "rejected_reward": -0.414,
+   "lr": 5.28e-06
+  }
+ ]
+}

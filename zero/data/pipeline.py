@@ -171,6 +171,7 @@ class DedupSpec:
     bands: int = 16
     ngram: int = 5
     cross_source: bool = False  # 来源内部去重之后，是否再跨来源去一次
+    n_jobs: int = 1  # MinHash 签名用几个进程算（结果与 1 相同，只是快；阶梯数据 16.8GB 单进程约 5 小时）
 
 
 @dataclass
@@ -457,6 +458,7 @@ def dedup_stage(docs: Sequence[Doc], spec: DedupSpec) -> tuple[StageResult, list
             num_perm=spec.num_perm,
             bands=spec.bands,
             ngram=spec.ngram,
+            n_jobs=spec.n_jobs,
         )
         removed["near_duplicate"] += len(kept) - len(keep)
         clusters = [[kept[i]["id"] for i in c] for c in cl]
@@ -588,27 +590,36 @@ def run_pipeline(cfg: PipelineConfig, log: Callable[[str], None] = print) -> dic
         if P.write_stages or stage == "decontam":
             write_jsonl(docs, work / f"{len(funnel[src]):02d}_{stage}" / f"{src}.jsonl")
 
+    def took(t: float) -> str:  # 每个阶段的耗时：大规模运行时用来找慢在哪
+        return f"{time.time() - t:.0f}s"
+
     # 1–5：逐来源
     for spec in cfg.sources:
+        t = time.time()
         docs = list(read_source(spec))
         record(spec.name, "raw", docs)
+        log(f"[pipeline] {spec.name}: 读取 {len(docs)} 篇（{took(t)}）")
         for stage, fn in [
             ("clean", lambda d, s=spec: clean_stage(d, s.min_chars)),
             ("langid", lambda d, s=spec: langid_stage(d, s.lang)),
             ("heuristics", lambda d, s=spec: heuristic_stage(d, s.heuristics, cfg.quality)),
             ("score", lambda d, s=spec: score_stage(d, s)),
         ]:
+            t = time.time()
             res = fn(docs)
             docs = res.kept
             record(spec.name, stage, docs, res)
+            log(f"[pipeline] {spec.name}: {stage} → {len(docs)} 篇（{took(t)}）")
+        t = time.time()
         res, clusters = dedup_stage(docs, cfg.dedup)
         docs = res.kept
         clusters_all[spec.name] = len(clusters)
         record(spec.name, "dedup", docs, res)
         per_source[spec.name] = docs
-        log(f"[pipeline] {spec.name}: {funnel[spec.name][0]['docs']} → {len(docs)} 篇（去重后）")
+        log(f"[pipeline] {spec.name}: {funnel[spec.name][0]['docs']} → {len(docs)} 篇（去重后，去重 {took(t)}）")
 
     # 5'：跨来源去重（可选）：按来源顺序，先出现的来源优先保留
+    t = time.time()
     if cfg.dedup.cross_source and len(per_source) > 1:
         seen: set[str] = set()
         for name, docs in per_source.items():
@@ -624,14 +635,18 @@ def run_pipeline(cfg: PipelineConfig, log: Callable[[str], None] = print) -> dic
                 }
             per_source[name] = keep
 
+    log(f"[pipeline] 跨来源去重（{took(t)}）")
+
     # 6：去污染
     index, eval_sizes = build_eval_index(cfg.decontam)
     contamination: dict[str, list[dict]] = {}
     for name in per_source:
+        t = time.time()
         res, hits = decontam_stage(per_source[name], index)
         per_source[name] = res.kept
         contamination[name] = hits
         record(name, "decontam", res.kept, res)
+        log(f"[pipeline] {name}: 去污染 → {len(res.kept)} 篇（{took(t)}，含写盘）")
 
     # 7：切分
     train: dict[str, list[Doc]] = {}
@@ -652,7 +667,9 @@ def run_pipeline(cfg: PipelineConfig, log: Callable[[str], None] = print) -> dic
             f"[pipeline] 训练分词器：vocab={T.vocab_size}，预切分={T.pretokenize}，"
             f"{sum(len(t.encode()) for t in texts) / 1e6:.2f} MB 文本"
         )
+        t = time.time()
         tok = train_tokenizer(texts, T.vocab_size, T.pretokenize, min_frequency=T.min_frequency)
+        log(f"[pipeline] 分词器训练完（{took(t)}）")
     tok_path = Path(T.path) if T.path else out_dir / "tokenizer.json"
     tok.save(tok_path)
     compression = {
@@ -664,6 +681,7 @@ def run_pipeline(cfg: PipelineConfig, log: Callable[[str], None] = print) -> dic
     # 9：分片
     shards: dict[str, dict[str, Any]] = {}
     for name in per_source:
+        t = time.time()
         info: dict[str, Any] = {}
         for split, docs in (("train", train[name]), ("val", val[name])):
             for stale in out_dir.glob(f"{name}_{split}_*.bin"):  # 上次运行留下的分片（可能更多）
@@ -683,6 +701,7 @@ def run_pipeline(cfg: PipelineConfig, log: Callable[[str], None] = print) -> dic
                 "files": [p.name for p in paths],
             }
         shards[name] = info
+        log(f"[pipeline] {name}: 分片 {info['train']['tokens']:,} + {info['val']['tokens']:,} token（{took(t)}）")
 
     # 10：清单
     mixture = {}
@@ -789,7 +808,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     ap.add_argument("--config", required=True)
     args = ap.parse_args(argv)
     cfg = load_pipeline_config(args.config)
-    m = run_pipeline(cfg)
+    m = run_pipeline(cfg, log=lambda s: print(s, flush=True))  # 立即刷新：大规模运行要几个小时
     print(funnel_table(m))
     for name, mix in m["mixture"].items():
         print(

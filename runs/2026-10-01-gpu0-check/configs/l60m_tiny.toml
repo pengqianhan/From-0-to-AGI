@@ -1,0 +1,35 @@
+# GPU0 验证用：阶梯配置 l60m 的模型形状与优化器，数据换成仓库自带的 tiny 语料（assets/tiny_corpus，
+# 词表 2048 的分词器；模型词表仍是 65,536，与真实阶梯的 logits 开销相同）。只用于验证通路与测吞吐，loss 数值没有意义。
+base = "../../../configs/ladder/l60m.toml"
+
+[train]
+out_dir = "out/gpu0-check/l60m"
+micro_batch_size = 8     # 3090 24GB：阶梯默认 16 × 2048 的 FP32 logits 峰值放不下，改 8 × 累积 2（每步 token 与单卡份额相同）
+grad_accum_steps = 2
+gpu_peak_tflops = 71.0   # RTX 3090 稠密 BF16（FP32 累加）峰值；zero 的查表里没有 3090
+
+[data]
+tokenizer = "out/gpu0-check/tiny/tokenizer.json"
+val = "out/gpu0-check/tiny/data/*_val_*.bin"
+
+[[data.sources]]
+name = "shakespeare"
+path = "out/gpu0-check/tiny/data/shakespeare_train_*.bin"
+weight = 0.45
+
+[[data.sources]]
+name = "chinese_poetry"
+path = "out/gpu0-check/tiny/data/chinese_poetry_train_*.bin"
+weight = 0.45
+
+[[data.sources]]
+name = "code"
+path = "out/gpu0-check/tiny/data/code_train_*.bin"
+weight = 0.1
+
+[data.prepare]
+raw_files = ["assets/tiny_corpus/*.txt"]
+out_dir = "out/gpu0-check/tiny/data"
+vocab_size = 2048
+val_fraction = 0.05
+doc_chars = 2000

@@ -82,7 +82,7 @@
 ## 补充说明（第 12–14 章后）
 
 - **多来源混合与多卡**：`MixtureLoader` 按 `(seed, rank)` 各自抽签选来源，所以多来源数据下"2 卡 = 1 卡双倍 batch"不逐位成立（单来源时成立，见 tests/test_ddp_cpu.py）。每个 rank 的来源比例在期望上一致。
-- **激活检查点**：`train.activation_checkpointing = true` 时每个 Block 只保存输入、反向时重算（tests/test_activation_checkpointing.py 保证梯度一致）；尚未在 GPU 上验证。
+- **激活检查点**：`train.activation_checkpointing = true` 时每个 Block 只保存输入、反向时重算（tests/test_activation_checkpointing.py 保证梯度一致）；已在单张 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/：CUDA 上开关前后梯度逐位相同，主线配置 T=4096 时 24GB 卡上不开放不下 micro batch 1、开了最多放 3）。
 - **优化器**：`optim.name = "muon"` 切换到 `zero/train/muon.py`（二维权重用 Muon，其余 AdamW；第 12 章核实 Muon 满足共识规则，是否用于主线由阶梯实验决定）。
 - **验证集 bits-per-byte**：配置了 `data.tokenizer` 的预训练评估会同时记录 `val_bpb`（`zero/data/bpb.py`）。
 - **主线配置显存**：micro batch 4 × 累积 4（第 14 章 `zero/tools/memory_calc.py` 估算 micro batch 8 超过 80GB）。

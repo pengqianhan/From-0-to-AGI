@@ -47,7 +47,8 @@ def rng_state() -> dict[str, Any]:
         "torch": torch.get_rng_state(),
     }
     if torch.cuda.is_available():
-        state["cuda"] = torch.cuda.get_rng_state_all()  # 尚未在 GPU 上验证
+        # CUDA 随机数状态的保存与恢复：已在单张 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）
+        state["cuda"] = torch.cuda.get_rng_state_all()
     return state
 
 
@@ -56,12 +57,14 @@ def set_rng_state(state: dict[str, Any]) -> None:
     np.random.set_state(state["numpy"])
     torch.set_rng_state(state["torch"])
     if "cuda" in state and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(state["cuda"])  # 尚未在 GPU 上验证
+        # 已在单张 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）
+        torch.cuda.set_rng_state_all(state["cuda"])
 
 
 def _model_state_dict(model: nn.Module, parallel: str, info: DistInfo) -> dict[str, torch.Tensor]:
     if info.is_distributed and parallel == "fsdp":
-        # 尚未在 GPU 上验证：FSDP2 下每个 rank 只有一片参数，要先聚合成完整的 state_dict（集合通信，所有 rank 都要调用）
+        # FSDP2 下每个 rank 只有一片参数，要先聚合成完整的 state_dict（集合通信，所有 rank 都要调用）。
+        # 单卡通路与 2 卡已在 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/：2 卡 FSDP 的 checkpoint 能被单卡 load_policy 严格读回）
         from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
 
         return get_model_state_dict(
@@ -74,7 +77,7 @@ def _optim_state_dict(
     model: nn.Module, optimizer: torch.optim.Optimizer, parallel: str, info: DistInfo
 ) -> Any:
     if info.is_distributed and parallel == "fsdp":
-        # 尚未在 GPU 上验证
+        # 单卡通路与 2 卡已在 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）
         from torch.distributed.checkpoint.state_dict import (
             StateDictOptions,
             get_optimizer_state_dict,
@@ -207,7 +210,7 @@ def load_checkpoint(
 
     model_sd = torch.load(ckpt / "model.pt", map_location="cpu", weights_only=True)
     if info.is_distributed and parallel == "fsdp":
-        # 尚未在 GPU 上验证
+        # 单卡通路与 2 卡已在 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/：2 卡 FSDP 从 checkpoint 续训与不中断逐位相同）
         from torch.distributed.checkpoint.state_dict import (
             StateDictOptions,
             set_model_state_dict,

@@ -19,6 +19,7 @@
 | F10 | 同样只留 k 个键：按位置挑（最近 k 个）远距离捞针掉到瞎猜，按内容挑（分数最高 k 个）保持 100% | `05_topk_sparse.py` 输出 | 代码生成 |
 | F11 | 学习型稀疏注意力的主力采用方：DeepSeek（V3.2 DSA、V4）、智谱 GLM-5（"integrates DeepSeek Sparse Attention"）、MiniMax-M3（MSA）、美团 LongCat-2.0（LSA）；都是 2000 亿参数以上的 MoE | 各模型卡 / `config.json` | 已核对 |
 | F12 | DSA 类稀疏注意力不减少 KV cache（全部历史都可能被选中），省的是注意力算力和读取量 | DeepSeek-V3.2 技术报告；第 21 章前沿观察 | 已核对 |
+| F13 | GPU 状态（2026-10，单张 RTX 3090）：`zero/arch/sliding_window.py` 的 CUDA 正确性已验证；FlexAttention 的块稀疏滑动窗口已实测，T = 65,536、W = 1,024 时 12.06 ms，稠密因果 SDPA 473.55 ms（约 39 倍）；FlashAttention 的 `window_size` 未测（没装 `flash_attn`） | 本章 README"GPU 实测"一节（`code/06_gpu_flex_window.py`）；`runs/2026-10-01-gpu0-check/README.md` 第 11 节 | 已核对 |
 
 需要作者确认：F8 中 sliding 的 loss 略低于 full，是极小模型、短训练下"局部偏置"带来的，不能外推到大模型（正文已说明）。
 
@@ -85,15 +86,15 @@
 - 旁白：当然，先把全部分数算出来再挑，一点也没省。真实系统用一个很小的索引器来打分，再只对选中的几千个 token 做精确注意力。到二〇二六年九月，DeepSeek、智谱 GLM、MiniMax、美团 LongCat 的旗舰模型都用上了这类稀疏注意力，满足我们"至少三家"的共识标准。但要注意两点：它们全是两千亿参数以上的大模型，而且 KV cache 一个也不能扔，因为你不知道将来哪个 token 会被选中。它省的是算力，不是显存。
 
 ### S13 从极简到生产级
-- 画面：左边极简代码的两行掩码；右边 `zero/arch/sliding_window.py` 的三个名字：`make_layer_types`、`SlidingWindowAttention`、`SlidingWindowKVCache`，以及 FlashAttention 的 `window_size`；最后出现"下一章：线性注意力与混合架构"。
-- 屏幕文字：掩码 + 分层 KV cache；GPU 上用 FlashAttention 的 window_size（尚未在 GPU 上验证）
-- 旁白：落到生产级代码，还是这两件事：一个多加一个条件的掩码，和一个按层区分的 KV cache，滑动窗口层用环形缓冲区，全局层照常增长。测试保证窗口覆盖全文时和全注意力完全一致，环形缓存生成和不用缓存逐字相同。到了 GPU 上，要用 {FlashAttention|flash attention} 的窗口参数才能真正跳过窗口外的计算。下一章，我们走另一条路：干脆不存 K 和 V，把历史压进一个固定大小的状态。
+- 画面：左边极简代码的两行掩码；右边 `zero/arch/sliding_window.py` 的三个名字：`make_layer_types`、`SlidingWindowAttention`、`SlidingWindowKVCache`，以及 FlashAttention 的 `window_size`；下方两行 GPU 状态（F13）；最后出现"下一章：线性注意力与混合架构"。
+- 屏幕文字：掩码 + 分层 KV cache；RTX 3090 上正确性已验证，FlexAttention 实测 64K 时快 39 倍
+- 旁白：落到生产级代码，还是这两件事：一个多加一个条件的掩码，和一个按层区分的 KV cache，滑动窗口层用环形缓冲区，全局层照常增长。测试保证窗口覆盖全文时和全注意力完全一致，环形缓存生成和不用缓存逐字相同。到了 GPU 上，要用 {FlashAttention|flash attention} 的窗口参数，或者 PyTorch 的 {FlexAttention|flex attention}，才能真正跳过窗口外的计算。我们在一张 {RTX 3090|R T X 三零九零} 显卡上实测过 {FlexAttention|flex attention}：六万五千个 token 时，比全注意力快将近四十倍。下一章，我们走另一条路：干脆不存 K 和 V，把历史压进一个固定大小的状态。
 
 ## 三、交付检查
 
 - [ ] 公式、矩阵、柱子没有进入字幕区（y < −2.75）
 - [ ] 字幕与旁白同步
 - [ ] 音轨存在且不削波（由 `video_kit.build` 自动检查）
-- [ ] 视频里的数字全部来自 `code/` 的真实运行（F3–F5、F7–F10）或核实过的配置文件（F6、F11）
+- [ ] 视频里的数字全部来自 `code/` 的真实运行（F3–F5、F7–F10）、核实过的配置文件（F6、F11）或 GPU 实测记录（F13）
 
 > ⚠️ 旁白发音与语速未经人工试听。

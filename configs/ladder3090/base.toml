@@ -1,0 +1,74 @@
+# 3×RTX 3090 阶梯实验（runs/ladder-3090/README.md）的公共配置。结构与主线相同（configs/main/pretrain.toml），
+# 只缩小 dim / 层数（见同目录 e*.toml）。被搜索的超参数（学习率、β、weight decay、warmup、RoPE θ、batch）
+# 和步数由 runs/ladder-3090/sweep.py 用 --set 覆盖，这里的值只是占位。
+[model]
+vocab_size = 65536
+head_dim = 64
+rope_theta = 10000.0
+max_seq_len = 2048
+norm_eps = 1e-6
+qk_norm = true
+tie_embeddings = true
+init_std = 0.02
+
+[train]
+seed = 1337
+max_steps = 1000
+micro_batch_size = 8
+grad_accum_steps = 1
+device = "auto"
+dtype = "auto"            # CUDA 上 BF16 autocast
+compile = true
+eval_every = 0            # sweep.py 设成稳定段的 1/8
+eval_batches = 1000000    # 每次评估完整跑一遍固定验证集（1024 个片段，能被任何 2 的幂次 micro batch 整除）
+
+[data]
+tokenizer = "data/ladder3090/tokenizer.json"
+seq_len = 2048
+val = "data/ladder3090/ladder_val.bin"   # runs/ladder-3090/build_val.py：按训练配比从各来源验证分片拼出的固定验证集
+
+# 训练配比同 configs/main/data.toml（第 13 章）；代码用 UltraData-Code-L2 代替 Stack-Edu
+[[data.sources]]
+name = "fineweb-edu"
+path = "data/ladder3090/fineweb-edu_train_*.bin"
+weight = 0.35
+[[data.sources]]
+name = "dclm-baseline"
+path = "data/ladder3090/dclm-baseline_train_*.bin"
+weight = 0.10
+[[data.sources]]
+name = "fineweb-2-zh"
+path = "data/ladder3090/fineweb-2-zh_train_*.bin"
+weight = 0.20
+[[data.sources]]
+name = "ultra-fineweb-zh"
+path = "data/ladder3090/ultra-fineweb-zh_train_*.bin"
+weight = 0.10
+[[data.sources]]
+name = "ultradata-code"
+path = "data/ladder3090/ultradata-code_train_*.bin"
+weight = 0.15
+[[data.sources]]
+name = "finemath"
+path = "data/ladder3090/finemath_train_*.bin"
+weight = 0.10
+
+[optim]
+lr = 1e-3
+weight_decay = 0.1
+beta1 = 0.9
+beta2 = 0.95
+grad_clip = 1.0
+
+[schedule]
+kind = "wsd"              # 稳定段结束后线性衰减到 0；decay_frac 由 sweep.py 按"从第 k/8 个 checkpoint 开始衰减"算出
+warmup_steps = 10
+decay_frac = 0.2
+min_lr_ratio = 0.0
+
+[checkpoint]
+every = 1000
+keep_last = 0             # 全部保留：衰减分叉要从稳定段的每个 1/8 处接出去
+
+[logging]
+every = 10

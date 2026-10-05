@@ -3,7 +3,7 @@
 画面里的数值都由 ../code/ 中的代码真实计算（见 script.md 事实清单）：
   01_rope_wavelengths.py、02_yarn_from_scratch.py 现算；
   03_context_extension.py、04_anneal_mixture.py 读它们的缓存 code/out/*.pt（先运行这两个脚本）。
-tiny 配置的 zero 运行日志（S15）来自 README"主线进度"里的两条命令，数字写在 TINY_RUN 里。
+tiny 配置的 zero 运行日志（S15）来自 README"主线进度"里的两条命令，val 从 out/tiny/ch15/ 的 log.jsonl 现读。
 结果缓存在 video/out/cache.json；删掉它会重新计算。
 渲染：bash chapters/15-midtraining-long-context/video/build.sh
 """
@@ -54,13 +54,22 @@ MONO = "Noto Sans Mono"
 
 NIAH_LENGTHS, NIAH_DEPTHS = (64, 128, 240), (0.0, 0.5, 1.0)
 
-# tiny 配置的真实运行日志（README"主线进度"的两条命令；out/tiny/ch15/）
+# tiny 配置的中期训练（README"主线进度"的两条命令；out/tiny/ch15/）：
+# check_compatible 打印的三条变化由配置决定，写在这里；val 由 compute() 从运行日志现读。
 TINY_RUN = {
-    "pre_val": [(100, 6.0048), (200, 5.7116)],
     "mid_changes": ["rope_scaling: None → yarn ×2（原长 128）", "seq_len: 128 → 256",
                     "配比：英 0.45 / 中 0.45 / 代码 0.1 → 0.3 / 0.6 / 0.1"],
-    "mid_val": [(30, 5.6488), (60, 5.6101)],
 }
+TINY_LOGS = {"pre_val": ROOT / "out/tiny/ch15/pretrain/log.jsonl", "mid_val": ROOT / "out/tiny/ch15/midtrain/log.jsonl"}
+
+
+def _last_val(path: Path) -> list:
+    """训练日志 log.jsonl 里最后一次验证：[step, val_loss]。"""
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    vals = [[r["step"], r["val_loss"]] for r in rows if r.get("val_loss") is not None]
+    if not vals:
+        raise RuntimeError(f"{path} 里没有验证 loss；先按 README「主线进度」跑 tiny 预训练与中期训练")
+    return vals[-1]
 
 
 def _load(name: str, filename: str):
@@ -123,6 +132,7 @@ def compute() -> dict:
     model, tok = load_policy(ROOT / "out/tiny/ch15/midtrain/ckpt", ROOT / "out/tiny/tokenizer.json")
     res = run_grid(model.eval(), tok, NIAH_LENGTHS, NIAH_DEPTHS, n=5)
     d["niah"] = {f"{r.length}_{r.depth}": [r.accuracy, r.nll_gain] for r in res}
+    d["tiny_run"] = {k: _last_val(p) for k, p in TINY_LOGS.items()}
     return d
 
 
@@ -665,8 +675,8 @@ parallel = "fsdp\"""", 18).move_to([-3.8, 1.2, 0])
             self.play(FadeIn(ct), FadeIn(cfg), run_time=self.fit(1))
             log = VGroup(zh("tiny 中期训练（zero.train.midtrain）", 20, theme.HIGHLIGHT),
                          *[zh(c, 17) for c in TINY_RUN["mid_changes"]],
-                         zh(f"预训练 val {TINY_RUN['pre_val'][-1][1]} → 中期训练 val "
-                            f"{TINY_RUN['mid_val'][-1][1]}（长度不同，不能直接比）", 17, theme.MUTED)
+                         zh(f"预训练 val {D['tiny_run']['pre_val'][1]:.4f} → 中期训练 val "
+                            f"{D['tiny_run']['mid_val'][1]:.4f}（长度不同，不能直接比）", 17, theme.MUTED)
                          ).arrange(DOWN, aligned_edge=LEFT, buff=0.14).move_to([3.0, 1.45, 0])
             self.play(FadeIn(log), run_time=self.fit(1))
             self.wait(self.remaining() * 0.2)

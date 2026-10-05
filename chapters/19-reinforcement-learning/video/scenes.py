@@ -3,7 +3,8 @@
 画面里的数值都由 ../code/ 中的代码真实计算（见 script.md 事实清单）：
   01_reinforce_bandit.py、02_grpo_from_scratch.py、03_reward_hacking.py 现算，结果缓存在 video/out/cache.json；
   删掉缓存会重新计算（03 在繁忙的机器上要几分钟）。
-极小配置的冒烟数字（S13）来自 out/smoke/grpo/log.jsonl 与 out/smoke/eval/report.md，写在 SMOKE 里。
+极小配置的冒烟数字（S13）来自修复工具调用判分器之前那次冒烟测试的 out/smoke/grpo/log.jsonl 与
+out/smoke/eval/report.md（与 README「主线进度」同一次运行），写死在 SMOKE 里；重跑冒烟测试后的 out/smoke 数字不同。
 渲染：bash chapters/19-reinforcement-learning/video/build.sh
 """
 
@@ -45,7 +46,7 @@ CODE = HERE.parent / "code"
 CACHE = HERE / "out" / "cache.json"
 MONO = "Noto Sans Mono"
 
-# 冒烟测试的真实记录（极小配置演示）：out/smoke/grpo/log.jsonl、out/smoke/eval/report.md
+# 冒烟测试的真实记录（极小配置演示，修复判分器之前那次）：当时的 out/smoke/grpo/log.jsonl、out/smoke/eval/report.md
 SMOKE = {
     "reward": [-0.1875, -0.14, -0.40, -0.1225, -0.035, -0.3425, -0.1734, -0.175, -0.0163, -0.0725],
     "format": [0.5, 0.625, 0.46875, 0.65625, 0.71875, 0.4375, 0.65625, 0.5625, 0.71875, 0.625],

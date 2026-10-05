@@ -238,18 +238,20 @@ KV cache 只跟着那 6 层全注意力走；另外 18 层 Gated DeltaNet 的状
 
 `04_hybrid_lm.py` 用第 10 章同款的字符级莎士比亚语料，训练四个 4 层小模型（宽度 128、4 个头、SwiGLU FFN、同样的数据顺序和超参，各 800 步），只换每层的 token mixer：A = softmax 注意力（带 RoPE），L = 朴素线性注意力，G = Gated DeltaNet（L 和 G 都带短卷积和输出归一化）。
 
-| 结构 | 参数量 | 验证集 loss（nats/字符） | 推理缓存 T=1,024 | T=65,536 |
-|---|---:|---:|---:|---:|
-| AAAA（纯注意力） | 861,440 | 1.685 | 2,048 KB | 131,072 KB |
-| LLLL（纯朴素线性） | 867,712 | 1.754 | 73 KB | 73 KB |
-| GGGG（纯 Gated DeltaNet） | 871,872 | 1.661 | 73 KB | 73 KB |
-| GGGA（3:1 混合） | 869,264 | **1.649** | 567 KB | 32,823 KB |
+> 关于数字：本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同机器、不同版本的底层数学库，浮点运算的顺序略有不同，训练几百步后会把这些微小差异放大，你本机跑出的数字可能从小数点后第二三位开始就不一样；请以下文不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-21-23.md](../../runs/2026-10-01-gpu0-check/chapters-21-23.md)。
+
+| 结构 | 参数量 | 验证集 loss（nats/字符） | 另一台服务器复跑（2026-10） | 推理缓存 T=1,024 | T=65,536 |
+|---|---:|---:|---:|---:|---:|
+| AAAA（纯注意力） | 861,440 | 1.685 | 1.683 | 2,048 KB | 131,072 KB |
+| LLLL（纯朴素线性） | 867,712 | 1.754 | 1.760 | 73 KB | 73 KB |
+| GGGG（纯 Gated DeltaNet） | 871,872 | 1.661 | 1.648 | 73 KB | 73 KB |
+| GGGA（3:1 混合） | 869,264 | 1.649 | 1.652 | 567 KB | 32,823 KB |
 
 （缓存按"KV 用 BF16、线性状态用 FP32"计算，见 `cache_bytes`。）
 
 - 朴素线性注意力最差（1.754）：只会累加的状态在字符级建模里也吃亏；
 - Gated DeltaNet 在这个规模上甚至比纯注意力略好（1.661 vs 1.685）。这并不说明它"比注意力强"：800 步、0.87M 参数、128 字符的上下文，模型主要在学局部拼写，短卷积 + 门控递推恰好很擅长这种局部模式；
-- 3:1 混合最低（1.649），同时缓存只有纯注意力的约 1/4（T 越长越接近 1/4）。
+- 3:1 混合和纯 Gated DeltaNet 几乎一样低（1.649 vs 1.661；另一台服务器上复跑是 1.652 vs 1.648，名次反了过来），差别在单一种子的随机波动之内。混合相对纯注意力的好处是缓存只有约 1/4（T 越长越接近 1/4）；它相对纯线性模型的真正优势是精确回忆，这在语言建模的 loss 上看不出来——见下一个实验。
 
 **如实说明**：单一随机种子，四者差距（最大 0.1 nats，前三名之间只差 0.04）与第 10 章观察到的种子波动同一量级，这里不能据此排出可靠的名次。它能说明的只是：在同样的参数量下，把大部分层换成线性层**没有让语言建模明显变差**，而缓存省了大半。线性层真正的短板要用专门的任务才看得出来——下一个实验。
 
@@ -269,7 +271,7 @@ KV cache 只跟着那 6 层全注意力走；另外 18 层 Gated DeltaNet 的状
 三个结论，和第 5–7 节的容量实验一致：
 
 - **纯线性模型的准确率随 N 单调下降**：键值对越多，固定大小的状态越装不下。朴素线性注意力在 N = 24 时只剩 17%；
-- **Gated DeltaNet 比朴素线性强得多**（每个 N 上都高 10–20 个百分点），覆盖式写入和门控确实让有限的状态用得更好，但仍然远不如注意力；
+- **Gated DeltaNet 比朴素线性强得多**（每个 N 上都高十几到二十几个百分点），覆盖式写入和门控确实让有限的状态用得更好，但仍然远不如注意力；
 - **只把两层中的一层换成全注意力，回忆能力就回来了大半**（N = 24 时 29% → 79%），而这个混合模型的缓存只有纯注意力的一半多一点。
 
 **如实说明**：这是一个极小规模的实验——2 层、600 步、单一随机种子，线性层的状态被故意设得很小。纯注意力在 N 大时的优势会随训练步数和模型大小变化，混合模型和纯注意力之间的差距（79% vs 94%）在更长的训练下可能缩小，也可能不变，这里没有做；真实模型的对比请看 Zoology、Gated DeltaNet 和 Kimi Linear 论文里的回忆类评测。
@@ -296,6 +298,40 @@ KV cache 只跟着那 6 层全注意力走；另外 18 层 Gated DeltaNet 的状
 - **混合架构**：大量线性层 + 少量全注意力层（Qwen3.5 是 3:1），KV cache 只随全注意力层增长，精确回忆由全注意力层兜底。
 
 ---
+
+## GPU 实测（单张 RTX 3090）
+
+> 上面正文里的数字都来自 CPU 运行。本节换到一张 NVIDIA GeForce RTX 3090（24 GB 显存，Ampere 架构；规格表：BF16 张量核稠密峰值约 71 TFLOPS，FP32 约 35.6 TFLOPS，显存带宽约 936 GB/s）上实测，环境：PyTorch 2.11.0+cu128、CUDA 12.8，2026 年 10 月。这张卡的功耗上限被服务器设成了 240 W（出厂默认 350 W），持续满载时会降频，所以算力、带宽的绝对值比满功耗的 3090 偏低，看相对关系更可靠。没有 GPU 可以跳过本节。
+
+运行：
+
+```bash
+uv run python chapters/23-linear-attention-hybrid/code/06_gpu_linear_vs_softmax.py
+```
+
+形状取 Qwen3.5-0.8B 的 Gated DeltaNet 层：batch 1、16 个头、d_k = d_v = 128；softmax 注意力也用 16 × 128。线性注意力这边原封不动地调用本章代码——04 的 `linear_chunked`、03 的 `gated_delta_chunked` 和 `gated_delta_recurrent`，只是放进 `with torch.device("cuda")` 里，让函数内部新建的张量也落在 GPU 上（纯 PyTorch、FP32、块长 64，Python 逐块循环）；softmax 注意力用 PyTorch 自带的 FlashAttention kernel（BF16）。先确认 GPU 上数学没变：T = 1,024 时 Gated DeltaNet 的分块形式与递推形式最大输出差 6.0e-07，最终状态差 4.8e-07。
+
+整段处理 T 个 token（训练 / prefill；毫秒，取中位数；括号里是输入之外额外占的峰值显存）：
+
+| 序列长 T | softmax（FlashAttention） | 线性注意力·分块 | Gated DeltaNet·分块 | Gated DeltaNet·递推 |
+|---:|---:|---:|---:|---:|
+| 1,024 | 0.2（4 MiB） | 2.9（17 MiB） | 10.7（19 MiB） | 198.8 |
+| 4,096 | 1.3（16 MiB） | 11.2（65 MiB） | 43.1（67 MiB） | 813.5 |
+| 16,384 | 21.9（65 MiB） | 48.8（257 MiB） | 193.5（259 MiB） | — |
+| 65,536 | 460.1（260 MiB） | 180.7（1,025 MiB） | 757.5（1,027 MiB） | — |
+
+（逐 token 递推太慢，只测了前两行。）
+
+decode 一步：已有 T 个 token 的上下文，再来 1 个。Gated DeltaNet 这边先用分块形式把 T 个 token 真的压成状态，再从这个状态递推一步（毫秒，50 次取中位数）：
+
+| 上下文 T | softmax 的 KV cache | softmax 一步 | Gated DeltaNet 的状态 | Gated DeltaNet 一步 |
+|---:|---:|---:|---:|---:|
+| 1,024 | 8 MiB | 0.053 | (1, 16, 128, 128)，1 MiB | 0.259 |
+| 16,384 | 128 MiB | 0.217 | (1, 16, 128, 128)，1 MiB | 0.245 |
+| 65,536 | 512 MiB | 0.705 | (1, 16, 128, 128)，1 MiB | 0.242 |
+| 262,144 | 2,048 MiB | 3.408 | (1, 16, 128, 128)，1 MiB | 0.306 |
+
+第二张表是第 1、2 节那两张表在 GPU 上的样子：softmax 注意力的 KV cache 跟着上下文涨到 2 GiB，每一步都要整块读一遍，耗时从 0.053 ms 涨到 3.4 ms；Gated DeltaNet 的状态从头到尾是同一个 1 MiB 的 (1, 16, 128, 128)，一步 0.24–0.31 ms，和上下文多长无关。1.6 万个 token 时两者还差不多（0.217 对 0.245 ms），6.5 万时 softmax 这一步已经是它的 2.9 倍，26 万时是 11 倍。第一张表印证了第 3 节"训练和 prefill 用分块形式"：T = 4,096 时逐 token 递推要 814 ms，分块只要 43 ms，差了约 19 倍，比 CPU 上（第 3 节的 7 倍）更悬殊；分块形式的耗时随 T 线性涨，FlashAttention 按 T² 涨（16K → 64K 涨了 21 倍），到 T = 65,536 时朴素线性注意力的分块形式（181 ms）已经比 FlashAttention（460 ms）快。出乎意料的是短序列上差得这么远——T = 1,024 时本章的 Gated DeltaNet 分块形式比 FlashAttention 慢几十倍（10.7 对 0.2 ms），decode 一步的耗时也是 1K 上下文 softmax 的 5 倍：时间几乎全花在 Python 循环的固定开销上（分块形式每块约 0.7 ms、朴素线性每块约 0.18 ms，不随 T 变；每块十几个小 kernel，Gated DeltaNet 还有一次三角求解），GPU 本身没忙起来。这正是生产里要用 flash-linear-attention 的 Triton kernel 把整个循环融合成一个 kernel 的原因（本机没装 fla，没有对比）。
 
 ## 从极简到生产级
 
@@ -326,7 +362,7 @@ KV cache 只跟着那 6 层全注意力走；另外 18 层 Gated DeltaNet 的状
 - **flash-linear-attention（fla-org）**：Triton 写的线性注意力 kernel 库，`fla.ops.gated_delta_rule.chunk_gated_delta_rule` / `fused_recurrent_gated_delta_rule` 就是本章两种形式的 GPU 实现，Kimi Linear 的 KDA kernel（`fla.ops.kda`）也开源在里面；HF transformers 的 Qwen3.5 实现在装了 fla 和 causal-conv1d 时会自动换用这些 kernel，否则退回到和本章同构的纯 PyTorch 版本。
 - **vLLM**：`vllm/model_executor/models/qwen3_next.py`、`qwen3_5.py` 等支持这些混合模型；它的混合 KV cache 管理器（Hybrid KV Cache Manager 设计文档）为不同类型的层分配不同的缓存：全注意力层按 token 数分配 KV 页，Mamba / 线性层按请求分配固定大小的状态。
 
-`zero/arch/linear_attention.py` 里这些 GPU 路径都标注了"尚未在 GPU 上验证"：本章只在 CPU 上用纯 PyTorch 验证了数学。
+`zero/arch/linear_attention.py` 在 CUDA 上的前向、反向和生成已在 RTX 3090 上验证（顺带修了 `generate_greedy` 把输入建在 CPU 上的 bug；BF16 下 Gated DeltaNet 的梯度与 FP32 相对差约 20%，纯 PyTorch 分块实现在低精度下不够准，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 11、12 节）；fla、causal-conv1d 这些 CUDA kernel 没有安装，仍未验证。
 
 ---
 

@@ -882,7 +882,7 @@ class ChapterScene(NarratedScene):
                 boxes.add(VGroup(box, txt))
             boxes.arrange(RIGHT, buff=0.15).move_to([0, 1.2, 0])
             self.play(LaggedStart(*[FadeIn(b) for b in boxes], lag_ratio=0.5), run_time=self.fit(4))
-            plan = zh("第二步：先花不到 50 美元在真 GPU 上逐项验证、实测 MFU，再定预训练预算", 22,
+            plan = zh("已在 RTX 3090 上验证；第二步：先在 8×H100 上实测 MFU，再定预训练预算", 22,
                       theme.HIGHLIGHT).move_to([0, -0.4, 0])
             self.wait(self.remaining() * 0.3)
             self.play(FadeIn(plan), run_time=self.fit(0.8))

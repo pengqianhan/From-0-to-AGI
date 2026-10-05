@@ -56,6 +56,27 @@ def test_resume_matches_uninterrupted(tmp_path: Path, random_shards, make_config
     assert rec["step"] == 8 and "tok_per_s" in rec and "mixture_counts" in rec
 
 
+def test_stop_step_then_continue_matches_uninterrupted(tmp_path: Path, random_shards, make_config) -> None:  # noqa: ANN001
+    # 阶梯实验的逐轮淘汰：先用 train.stop_step 训到 checkpoint 处停下，留下的配置再接着训到底
+    src = _sources(tmp_path, random_shards)
+    val = random_shards(tmp_path / "data", "val", 1, 2000, 64, 2)
+    trainer_a = Trainer(make_config(tmp_path / "run_a", src, val), DistInfo(), log=lambda _: None)
+    hist_a = trainer_a.train()
+
+    cfg_b = make_config(tmp_path / "run_b", src, val)
+    cfg_b.train.stop_step = 4  # 与 checkpoint.every 对齐
+    first = Trainer(cfg_b, DistInfo(), log=lambda _: None).train()
+    assert [r["step"] for r in first][-1] == 4
+    assert find_latest(cfg_b.train.checkpoint_dir).name == "step_00000004"
+    cfg_b.train.stop_step = 0
+    trainer_b = Trainer(cfg_b, DistInfo(), log=lambda _: None)
+    hist_b = trainer_b.train()
+    losses_a = {r["step"]: r["loss"] for r in hist_a}
+    assert {r["step"]: r["loss"] for r in hist_b} == {s: losses_a[s] for s in (5, 6, 7, 8)}
+    for k, v in trainer_b.raw_model.state_dict().items():
+        assert torch.equal(v, trainer_a.raw_model.state_dict()[k]), k
+
+
 def test_loss_decreases_and_seed_reproducible(tmp_path: Path, random_shards, make_config) -> None:  # noqa: ANN001
     src = {"a": random_shards(tmp_path / "data", "a", 1, 5000, 64, 3)}
     h1 = Trainer(
