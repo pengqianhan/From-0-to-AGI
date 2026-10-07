@@ -1,4 +1,8 @@
-"""蒸馏：KL 损失手算、top-k、分词器检查、教师后端（本地 / OpenAI 兼容假服务器）、执行验证与元数据（第 17 章）。"""
+"""Distillation (Chapter 17).
+
+KL loss against a hand calculation, top-k, tokenizer check, teacher backends (local / fake
+OpenAI-compatible server), execution check, and metadata.
+"""
 
 from __future__ import annotations
 
@@ -36,13 +40,13 @@ def test_kd_loss_hand_computed() -> None:
     pt = torch.softmax(t[0, 0], -1)
     hand = float((pt * (pt.log() - ps.log())).sum())
     assert kd_loss(s, t, mask).item() == pytest.approx(hand, abs=1e-6)
-    # 温度 τ：两边除以 τ 再 softmax，结果乘 τ²
+    # temperature τ: divide both by τ before the softmax, multiply the result by τ²
     ps2, pt2 = torch.softmax(s[0, 0] / 2, -1), torch.softmax(t[0, 0] / 2, -1)
     hand2 = 4 * float((pt2 * (pt2.log() - ps2.log())).sum())
     assert kd_loss(s, t, mask, temperature=2.0).item() == pytest.approx(hand2, abs=1e-6)
-    # top-1：教师分布变成 one-hot（第 1 个 token），损失 = −log p_S(1)
+    # top-1: the teacher distribution becomes one-hot (token 1), loss = −log p_S(1)
     assert kd_loss(s, t, mask, topk=1).item() == pytest.approx(-math.log(float(ps[1])), abs=1e-6)
-    # 反向 KL
+    # reverse KL
     hand_r = float((ps * (ps.log() - pt.log())).sum())
     assert reverse_kl_loss(s, t, mask).item() == pytest.approx(hand_r, abs=1e-6)
 
@@ -52,9 +56,9 @@ def test_kd_loss_mask_zero_and_shape_check() -> None:
     mask = torch.tensor([[1, 1, 0, 0], [1, 0, 0, 0]], dtype=torch.bool)
     assert kd_loss(x, x, mask).item() == pytest.approx(0.0, abs=1e-6)
     y = x.clone()
-    y[0, 3] += 5.0  # mask 之外的位置不影响损失
+    y[0, 3] += 5.0  # the positions outside the mask have no effect on the loss
     assert kd_loss(x, y, mask).item() == pytest.approx(0.0, abs=1e-6)
-    with pytest.raises(ValueError, match="同一个分词器"):
+    with pytest.raises(ValueError, match="same tokenizer"):
         kd_loss(torch.randn(1, 2, 7), torch.randn(1, 2, 9), torch.ones(1, 2, dtype=torch.bool))
 
 
@@ -99,7 +103,10 @@ def test_openai_message_conversion() -> None:
 
 
 class _FakeOpenAI(BaseHTTPRequestHandler):
-    """假的 OpenAI 兼容服务：对任何任务都返回"正确"的调用 / 回答（从请求里的用户问题查标准答案）。"""
+    """A fake OpenAI-compatible service. It returns the "correct" call / answer for each task.
+
+    It finds the gold answer from the user question in the request.
+    """
 
     tasks: dict = {}
     requests: list = []
@@ -127,7 +134,7 @@ class _FakeOpenAI(BaseHTTPRequestHandler):
                     for i, c in enumerate(task.gold_calls)
                 ],
             }
-        # 第二个样本故意给错
+        # the second sample is wrong on purpose
         bad = {"role": "assistant", "content": '<tool_call>{"name": "calculator"'}
         data = {"choices": [{"message": msg}] + [{"message": bad}] * (body["n"] - 1)}
         out = json.dumps(data, ensure_ascii=False).encode()
@@ -165,7 +172,8 @@ def test_openai_teacher_with_fake_server(tmp_path: Path) -> None:
         srv.shutdown()
     assert (
         meta["n_candidates"] == 12 and meta["n_verified"] == 5
-    )  # 每个任务一对一错，错的被执行验证筛掉；闲聊任务的回答内容无法核对，也不收进蒸馏数据
+    )  # each task has one correct and one wrong sample; the execution check removes the wrong one.
+    # The content of a chat answer cannot be checked, so chat tasks also do not go into the data.
     assert meta["teacher"] == {
         "name": "FakeTeacher",
         "version": "v0",
@@ -209,7 +217,7 @@ def test_run_distill_local_self_teacher(tmp_path: Path, chat_tok, chat_tok_path,
     s = run_distill(d, log=lambda _: None)
     h = s["history"][-1]
     assert h["step"] == 2 and "kd" in h and "ce" in h
-    # 学生与教师初始相同：第一步 KL 为 0
+    # the student and the teacher start the same: the KL of the first step is 0
     assert s["history"][0]["kd"] == pytest.approx(0.0, abs=1e-5)
     assert len(s["on_policy"]) == 1
     from zero.train.checkpoint import find_latest
@@ -238,15 +246,18 @@ def test_logits_kd_requires_same_tokenizer(
         distill={"out_jsonl": str(tmp_path / "kd.jsonl")},
     )
     d["model"]["max_seq_len"] = 512
-    with pytest.raises(ValueError, match="同一个分词器"):
+    with pytest.raises(ValueError, match="same tokenizer"):
         run_distill(d, log=lambda _: None)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="需要 CUDA")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_run_distill_trains_student_on_cuda(
     tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt
 ) -> None:  # noqa: ANN001
-    """[train] device = "cuda" 时学生必须在 GPU 上训练（原来固定 DistInfo()，学生和教师都留在 CPU；2026-10 发现）。"""
+    """With [train] device = "cuda", the student must train on the GPU.
+
+    Before, the code always used DistInfo(), so the student and the teacher stayed on the CPU (found in 2026-10).
+    """
     from zero.post.common import write_jsonl
     from zero.post.sft import env_conversations
 
@@ -272,4 +283,4 @@ def test_run_distill_trains_student_on_cuda(
     logs: list[str] = []
     s = run_distill(d, log=logs.append)
     assert s["history"][-1]["step"] == 2
-    assert any("设备 cuda" in m for m in logs), logs
+    assert any("device cuda" in m for m in logs), logs

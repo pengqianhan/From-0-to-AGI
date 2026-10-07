@@ -1,17 +1,20 @@
-"""第 20 章 · 极简代码 2：把量化套在一个真的小模型上，看 loss 变了多少
+"""Chapter 20 · Minimal code 2: quantize a real small model and measure how much the loss changes
 
-模型：第 10 章训练好的字符级小模型（Pre-Norm RMSNorm、RoPE、SwiGLU、共享 embedding，
-dim=128、4 层，约 0.8M 参数；第一次运行会先训练约一两分钟，之后从缓存加载）。
+Model: the trained character-level small model of Chapter 10 (Pre-Norm RMSNorm, RoPE, SwiGLU,
+shared embedding, dim=128, 4 layers, about 0.8M parameters). The first run trains it for about
+1–2 minutes. Later runs load it from the cache.
 
-做法和 llama.cpp 一样：所有二维权重矩阵（embedding、Q/K/V/O、FFN）量化；RMSNorm 的一维权重保持 fp32。
-每种方案都"量化再反量化"（fake quant）后跑验证集，记录：
+We do the same as llama.cpp: quantize all 2D weight matrices (embedding, Q/K/V/O, FFN), and keep
+the 1D RMSNorm weights in fp32. For each method, we quantize and dequantize the weights (fake quant),
+run the validation set, and record:
 
-- 验证集 loss 和相对 fp32 的变化 Δ；
-- top-1 一致率：在验证集的每个位置，量化模型和 fp32 模型"最可能的下一个字"是否相同；
-- 权重大小（按每种方案的 bit/权重算）；
-- 贪心生成的前 60 个字符，看一眼质量。
+- the validation loss and its change Δ from fp32;
+- the top-1 agreement: at each position of the validation set, do the quantized model and the
+  fp32 model give the same most probable next character?
+- the weight size (from the bits/weight of each method);
+- the first 60 characters of greedy generation, to look at the quality.
 
-运行：uv run python chapters/20-release/code/02_quantize_tiny_model.py
+Run: uv run python chapters/20-release/code/02_quantize_tiny_model.py
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-torch.set_num_threads(1)  # 构建环境里多个任务共享 CPU；读者本机可以删掉这行
+torch.set_num_threads(1)  # many jobs share the CPU of the build machine; on your computer, you can remove this line
 
 HERE = Path(__file__).resolve().parent
 CH10 = HERE.parents[1] / "10-inference" / "code" / "01_tiny_model.py"
@@ -42,18 +45,18 @@ def _load(name: str, path: Path):
 tiny = _load("ch10_tiny_model", CH10)
 quant = _load("ch20_blockwise_quant", HERE / "01_blockwise_quant.py")
 
-# 方案：名字 → 用 01 里的哪种量化（None = 不量化）
+# Methods: display name → quantization method from 01 (None = no quantization)
 SCHEMES = [
     ("fp32", None),
     ("fp16", "fp16"),
-    ("INT8 整张一个 scale", "int8-tensor"),
-    ("INT8 分块 32（≈Q8_0）", "int8-block32"),
-    ("INT4 整张一个 scale", "int4-tensor"),
-    ("INT4 每行一个 scale", "int4-row"),
-    ("INT4 分块 32（≈Q4_0）", "int4-block32"),
-    ("INT4 两级 scale（≈Q4_K）", "int4-kquant"),
-    ("INT3 分块 32", "int3-block32"),
-    ("INT2 分块 32", "int2-block32"),
+    ("INT8, 1 scale/tensor", "int8-tensor"),
+    ("INT8 block32 (≈Q8_0)", "int8-block32"),
+    ("INT4, 1 scale/tensor", "int4-tensor"),
+    ("INT4, 1 scale/row", "int4-row"),
+    ("INT4 block32 (≈Q4_0)", "int4-block32"),
+    ("INT4 2-level (≈Q4_K)", "int4-kquant"),
+    ("INT3 block32", "int3-block32"),
+    ("INT2 block32", "int2-block32"),
 ]
 
 
@@ -64,24 +67,24 @@ def bpw(scheme: str | None, shape: tuple[int, int]) -> float:
 
 
 def quantize_model(model: torch.nn.Module, scheme: str | None) -> tuple[torch.nn.Module, float]:
-    """返回 (量化后的模型副本, 权重总字节数)。"""
+    """Return (a quantized copy of the model, total weight bytes)."""
     m = copy.deepcopy(model)
     total_bits = 0.0
     with torch.no_grad():
         for _, p in m.named_parameters():
-            if p.dim() == 2:  # 矩阵：量化
+            if p.dim() == 2:  # matrix: quantize
                 w = p.detach().numpy().astype(np.float32)
                 total_bits += w.size * bpw(scheme, w.shape)
                 if scheme is not None:
                     p.copy_(torch.from_numpy(quant.fake_quant(w, scheme)))
-            else:             # RMSNorm 的一维权重：保持 fp32（llama.cpp 也这样）
+            else:             # 1D RMSNorm weight: keep fp32 (llama.cpp does the same)
                 total_bits += p.numel() * 32
     return m.eval(), total_bits / 8
 
 
 @torch.no_grad()
 def evaluate(model, ref_model, data, n_batches: int = 20, seq: int = 64) -> tuple[float, float]:
-    """验证集 loss，以及与参考模型的 top-1 一致率（同一批数据）。"""
+    """Validation loss, and the top-1 agreement with the reference model (on the same data)."""
     g = torch.Generator().manual_seed(1234)
     loss, agree, n = 0.0, 0, 0
     for _ in range(n_batches):
@@ -116,13 +119,13 @@ def run() -> list[dict]:
 def main() -> None:
     rows = run()
     n_params = sum(p.numel() for p in tiny.load_or_train(4).parameters())
-    print(f"第 10 章的小模型：{n_params / 1e6:.2f}M 参数\n")
+    print(f"Small model of Chapter 10: {n_params / 1e6:.2f}M parameters\n")
     ref = rows[0]["loss"]
-    print(f"{'方案':<24}{'权重 KiB':>9}{'val loss':>10}{'Δ loss':>9}{'top-1 一致':>11}")
+    print(f"{'Method':<24}{'W KiB':>9}{'val loss':>10}{'Δ loss':>9}{'top-1 agr':>11}")
     for r in rows:
         print(f"{r['name']:<24}{r['kib']:>9.0f}{r['loss']:>10.4f}{r['loss'] - ref:>+9.4f}"
               f"{r['agree']:>11.1%}")
-    print("\n贪心生成（提示词 'ROMEO:\\n'，前 60 个字符）：")
+    print("\nGreedy generation (prompt 'ROMEO:\\n', first 60 characters):")
     for r in rows:
         if r["scheme"] in ("fp32", "int8-block32", "int4-block32", "int4-tensor", "int2-block32"):
             print(f"--- {r['name']}\n{r['text']}")

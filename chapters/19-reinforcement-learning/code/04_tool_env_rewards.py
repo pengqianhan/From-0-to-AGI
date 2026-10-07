@@ -1,7 +1,9 @@
-"""第 19 章 · 04：看一眼生产级判分器 zero/post/envs/tool_env.py 怎么给各种输出打分（秒级）
+"""Chapter 19 · 04: see how the production scorer zero/post/envs/tool_env.py scores different outputs
+(runs in seconds).
 
-极简代码 03 里的"天真奖励 / 修好的奖励"是玩具版；主线模型真正用的是 score_tool_calls。
-这里拿一道计算器题和一道闲聊题，把正常输出和几种典型的作弊输出都喂进去，打印分数和理由。
+The "naive reward / fixed reward" in the minimal code 03 is a toy version. The main-line model uses
+score_tool_calls. Here we take one calculator task and one chat task. We give the scorer a normal output
+and some typical hacking outputs, and print the score and the reason for each.
 
     uv run python chapters/19-reinforcement-learning/code/04_tool_env_rewards.py
 """
@@ -12,7 +14,7 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # 仓库根目录
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # the repository root
 
 from zero.post.chat import format_tool_call  # noqa: E402
 from zero.post.envs.tool_env import generate_tasks, safe_eval, score_tool_calls  # noqa: E402
@@ -25,25 +27,25 @@ def main() -> None:
     gold = calc.gold_calls[0]
     good = format_tool_call(gold)
     bare = json.dumps(gold, ensure_ascii=False)
-    answer = str(safe_eval(gold["arguments"]["expression"]))  # 模型"心算"出的答案
+    answer = str(safe_eval(gold["arguments"]["expression"]))  # the answer that the model calculates "in its head"
 
-    print(f"工具题：{calc.query}    标准调用：{json.dumps(gold, ensure_ascii=False)}")
+    print(f"Tool task: {calc.query}    gold call: {json.dumps(gold, ensure_ascii=False)}")
     cases = {
-        "正确调用": good,
-        "标签里的 JSON 坏了": '<tool_call>{"name": "calculator", "arguments": {"expression": </tool_call>',
-        "去掉标签的裸 JSON（守卫 #8）": bare,
-        "心算后只传答案（守卫 #2）": format_tool_call({"name": "calculator", "arguments": {"expression": answer}}),
-        "同一个调用喷两遍（守卫 #1）": good + "\n" + good,
-        "伪造工具结果（守卫 #3）": good + "\n<tool_response>{\"result\": " + answer + "}</tool_response>",
+        "correct call": good,
+        "broken JSON in tags": '<tool_call>{"name": "calculator", "arguments": {"expression": </tool_call>',
+        "bare JSON (guard #8)": bare,
+        "answer only (guard #2)": format_tool_call({"name": "calculator", "arguments": {"expression": answer}}),
+        "call twice (guard #1)": good + "\n" + good,
+        "fake result (guard #3)": good + "\n<tool_response>{\"result\": " + answer + "}</tool_response>",
     }
     for name, text in cases.items():
         r = score_tool_calls(calc, text)
-        print(f"  {name:<22} 奖励 {r.total:+.2f}  {'；'.join(r.details[:1])}")
+        print(f"  {name:<22} reward {r.total:+.2f}  {'; '.join(r.details[:1])}")
 
-    print(f"\n闲聊题：{chat.query}")
-    for name, text in {"正常回答": "不客气！", "空回复": "", "裸 JSON": bare, "乱调用工具": good}.items():
+    print(f"\nChat task: {chat.query}")
+    for name, text in {"normal answer": "不客气！", "empty reply": "", "bare JSON": bare, "random tool call": good}.items():
         r = score_tool_calls(chat, text)
-        print(f"  {name:<22} 奖励 {r.total:+.2f}  {'；'.join(r.details[:1])}")
+        print(f"  {name:<22} reward {r.total:+.2f}  {'; '.join(r.details[:1])}")
 
 
 if __name__ == "__main__":

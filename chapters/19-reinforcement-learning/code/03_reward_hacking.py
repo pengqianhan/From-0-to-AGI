@@ -1,25 +1,29 @@
-"""第 19 章 · 03：奖励作弊（reward hacking）现场重演 —— 奖励涨了，本事没涨（PyTorch，CPU 约一两分钟）
+"""Chapter 19 · 03: reward hacking, replayed. The reward goes up, the skill does not
+(PyTorch, about 1–2 min on a CPU).
 
-这是冒烟测试里真实发生过的事（zero/post/envs/tool_env.py 模块说明第 8 条）的缩小版：
-tiny 模型的工具调用大多格式坏掉（-1 分），GRPO 十步之内学会了"去掉 <tool_call> 标签、照样输出 JSON"，
-格式错误消失、平均奖励上升，而模型一个调用都没学会。
+This is a small replay of a real event in the smoke test (item 8 in the module docstring of
+zero/post/envs/tool_env.py). Most tool calls of the tiny model had a broken format (reward −1).
+In 10 steps, GRPO learned to "remove the <tool_call> tags and output the JSON anyway".
+The format errors went away and the mean reward went up, but the model did not learn one correct call.
 
-玩具版的"工具调用"：
-    词表  <call>  </call>  <eos>  字（普通文字 / 函数名）  0–9
-    工具题（a, b）：正确的调用是  <call> 字 d </call> <eos>（"函数名 + 参数"），d = (a + b) mod 10
-    闲聊题：不该调用工具，回一句普通文字  字 <eos>
+The toy "tool call":
+    vocabulary  <call>  </call>  <eos>  字 (a "word" token: plain text or a function name)  0–9
+    tool task (a, b): the correct call is  <call> 字 d </call> <eos>  ("function name + argument"),
+                      with d = (a + b) mod 10
+    chat task: do not call a tool; reply with plain text  字 <eos>
 
-两种奖励（除了第 8 条守卫，其余与 tool_env 的打分结构一致）：
+Two rewards (they differ only in guard 8; the rest has the same structure as the tool_env scoring):
 
-| 输出 | 天真的奖励 | 修好的奖励 |
+| Output | Naive reward | Fixed reward |
 |---|---|---|
-| 标签坏了（<call> 没配对 / 标签里不是"字 + 数字"）或超长 | −1 | −1 |
-| 工具题：调用格式对、答案错 / 对 | 0.1 / 1 | 0.1 / 1 |
-| 工具题：没有标签（没调用） | 0 | 0；但**标签外出现数字**（裸调用）→ −1 |
-| 闲聊题：调用了工具 | −0.5 | −0.5 |
-| 闲聊题：没有标签 | 1（不管写了什么） | 空回复 0，裸调用 −1，普通文字 1 |
+| Broken tags (<call> without a pair / not "字 + digit" in the tags) or too long | −1 | −1 |
+| Tool task: call with the correct format, wrong / correct answer | 0.1 / 1 | 0.1 / 1 |
+| Tool task: no tags (no call) | 0 | 0; but **a digit outside the tags** (bare call) → −1 |
+| Chat task: calls a tool | −0.5 | −0.5 |
+| Chat task: no tags | 1 (for any text) | empty reply 0, bare call −1, plain text 1 |
 
-"真实成功率"是另一把尺子（相当于留出的验证器 / 人工抽查）：工具题要调用正确，闲聊题要回普通文字。
+The "true success rate" is a different measure (like a held-out verifier or a human spot check):
+a tool task needs a correct call, and a chat task needs a plain-text reply.
 
     uv run python chapters/19-reinforcement-learning/code/03_reward_hacking.py
 """
@@ -33,11 +37,11 @@ import torch.nn.functional as F
 torch.set_num_threads(1)
 
 OPEN, CLOSE, EOS, WORD = 0, 1, 2, 3
-DIG = 4  # 数字 d 的 token id 是 4 + d
+DIG = 4  # the token ID of digit d is 4 + d
 V, T, BOS = 14, 6, 14
 NAMES = ["<call>", "</call>", "<eos>", "字"] + [str(d) for d in range(10)]
 TOOL = [(a, b) for a in range(10) for b in range(10)]
-N_CHAT = 25  # 闲聊题数目（编号 0..24）
+N_CHAT = 25  # number of chat tasks (IDs 0..24)
 
 
 def show(seq: list[int]) -> str:
@@ -50,9 +54,9 @@ def show(seq: list[int]) -> str:
 
 
 def classify(seq: list[int]) -> str:
-    """把一个输出归类：ok_call / wrong_call / broken / bare / empty / text。"""
+    """Put one output into a class: call / broken / bare / empty / text (reward() checks if a call is correct)."""
     if EOS not in seq:
-        return "broken"  # 超长（没在 T 个 token 内结束）
+        return "broken"  # too long (did not end within T tokens)
     body = seq[: seq.index(EOS)]
     if OPEN in body or CLOSE in body:
         if body[:1] == [OPEN] and body[1:2] == [WORD] and len(body) == 4 and body[2] >= DIG and body[3] == CLOSE:
@@ -61,7 +65,7 @@ def classify(seq: list[int]) -> str:
     if not body:
         return "empty"
     if any(t >= DIG for t in body):
-        return "bare"  # 标签外面出现了"答案"——相当于不带 <tool_call> 的 JSON
+        return "bare"  # an "answer" outside the tags: like JSON without <tool_call>
     return "text"
 
 
@@ -73,18 +77,18 @@ def reward(kind: str, a: int, b: int, seq: list[int], fixed: bool) -> float:
         if c == "call":
             return 1.0 if seq[2] - DIG == (a + b) % 10 else 0.1
         if fixed and c == "bare":
-            return -1.0  # 守卫 #8：标签外出现调用样子的内容 → 格式错误
-        return 0.0  # 该调却没调
-    # 闲聊题
+            return -1.0  # guard #8: content that looks like a call outside the tags → format error
+        return 0.0  # should call, but did not
+    # chat task
     if c == "call":
         return -0.5
     if fixed:
         return {"empty": 0.0, "bare": -1.0, "text": 1.0}[c]
-    return 1.0  # 天真：只要没调用工具就满分
+    return 1.0  # naive: full score for any output without a tool call
 
 
 def success(kind: str, a: int, b: int, seq: list[int]) -> bool:
-    """留出的"真实"判据：和训练用的奖励无关。"""
+    """The held-out "true" criterion: it does not depend on the training reward."""
     c = classify(seq)
     if kind == "tool":
         return c == "call" and seq[2] - DIG == (a + b) % 10
@@ -99,7 +103,7 @@ class TinyPolicy(nn.Module):
         self.ep, self.eprev = nn.Embedding(T, d), nn.Embedding(V + 1, d)
         self.mlp = nn.Sequential(nn.Linear(d, h), nn.GELU(), nn.Linear(h, V))
 
-    def embed_prompt(self, kind, a, b):  # kind 0 = 工具题 (a, b)；1 = 闲聊题（a 是编号）
+    def embed_prompt(self, kind, a, b):  # kind 0 = tool task (a, b); 1 = chat task (a is the ID)
         tool = self.ea(a.clamp(max=9)) + self.ebb(b)
         chat = self.eb(a)
         return self.ek(kind) + torch.where(kind[:, None] == 0, tool, chat)
@@ -136,26 +140,27 @@ def sample(model, kind, a, b, gen):
 
 
 def sft_demo(kind: int, gen: torch.Generator) -> list[int]:
-    """起点模型的示范分布：像 tiny 模型一样，格式经常写坏，内容基本是瞎猜。"""
+    """The demo distribution of the start model: like the tiny model, the format is often broken
+    and the content is mostly a guess."""
     u = torch.rand(1, generator=gen).item()
     d = DIG + int(torch.randint(10, (1,), generator=gen))
-    if kind == 0:  # 工具题
+    if kind == 0:  # tool task
         if u < 0.03:
-            out = [OPEN, WORD, d, CLOSE]  # 格式对（"函数名 + 参数"，数字是瞎猜的）——很少见
+            out = [OPEN, WORD, d, CLOSE]  # correct format ("function name + argument", the digit is a guess): rare
         elif u < 0.27:
-            out = [OPEN, WORD, d]  # 忘了 </call>
+            out = [OPEN, WORD, d]  # forgets </call>
         elif u < 0.51:
-            out = [OPEN, d, WORD, CLOSE]  # 顺序乱了（相当于坏 JSON）
+            out = [OPEN, d, WORD, CLOSE]  # wrong order (like broken JSON)
         elif u < 0.75:
-            out = [OPEN, WORD, WORD, CLOSE]  # 没有参数
+            out = [OPEN, WORD, WORD, CLOSE]  # no argument
         else:
-            out = [WORD, d]  # 裸"调用"：内容一样，只是没有标签
+            out = [WORD, d]  # bare "call": the same content, but no tags
     elif u < 0.5:
-        out = [WORD]  # 闲聊题：一句普通文字
+        out = [WORD]  # chat task: one line of plain text
     elif u < 0.85:
-        out = [WORD, d]  # 闲聊题也常冒出一段"调用样子"的内容
+        out = [WORD, d]  # chat tasks also often get content that looks like a call
     else:
-        out = []  # 空回复
+        out = []  # empty reply
     return out + [EOS] * (T - len(out))
 
 
@@ -193,7 +198,7 @@ def measure(model, gen, n=2000):
     ok = [success("tool" if kind[i] == 0 else "chat", int(a[i]), int(b[i]), seq[i]) for i in range(n)]
     return {
         "format_err": sum(c == "broken" for c in cls) / n,
-        "call_rate": sum(cls[i] == "call" for i in tool) / len(tool),  # 工具题里格式正确的调用
+        "call_rate": sum(cls[i] == "call" for i in tool) / len(tool),  # calls with the correct format on tool tasks
         "bare_rate": sum(cls[i] == "bare" for i in range(n)) / n,
         "chat_ok": sum(cls[i] == "text" for i in chat) / len(chat),
         "success": sum(ok) / n,
@@ -215,7 +220,7 @@ def train(fixed: bool, steps=120, P=16, G=8, lr=2e-3, seed=0, log_every=10, verb
         R = r.view(P, G)
         adv = ((R - R.mean(1, keepdim=True)) / (R.std(1, keepdim=True) + 1e-6)).view(-1)
         m = resp_mask(seq).float()
-        loss = -((adv[:, None] * logps(model, kind, a, b, seq)) * m).sum() / m.sum()  # μ=1：ρ≡1，不用裁剪
+        loss = -((adv[:, None] * logps(model, kind, a, b, seq)) * m).sum() / m.sum()  # μ=1: ρ≡1, no clipping
         opt.zero_grad()
         loss.backward()
         opt.step()
@@ -223,30 +228,30 @@ def train(fixed: bool, steps=120, P=16, G=8, lr=2e-3, seed=0, log_every=10, verb
             ev = measure(model, gen)
             hist.append({"step": step, "reward": float(r.mean()), **ev})
             if verbose:
-                print(f"  第 {step:>3} 步 | 训练奖励 {r.mean():+.2f} | 格式错误 {ev['format_err']:.2f} | "
-                      f"工具题正确格式调用 {ev['call_rate']:.2f} | 裸调用 {ev['bare_rate']:.2f} | "
-                      f"闲聊题正常回复 {ev['chat_ok']:.2f} | 真实成功率 {ev['success']:.2f}")
-        if step == steps:  # 最后一步：工具题、闲聊题各取两个样本
+                print(f"  step {step:>3} | train reward {r.mean():+.2f} | format errors {ev['format_err']:.2f} | "
+                      f"tool: correct-format call {ev['call_rate']:.2f} | bare call {ev['bare_rate']:.2f} | "
+                      f"chat: normal reply {ev['chat_ok']:.2f} | true success {ev['success']:.2f}")
+        if step == steps:  # last step: take two samples of tool tasks and two of chat tasks
             rows = list(zip(kind.tolist(), a.tolist(), b.tolist(), seq.tolist(), r.tolist()))[::G]
             for want in (0, 1):
                 for k, x, y, s, rr in [row for row in rows if row[0] == want][:2]:
-                    examples.append({"kind": "工具题" if k == 0 else "闲聊题",
-                                     "prompt": f"{x}+{y}" if k == 0 else f"闲聊#{x}",
+                    examples.append({"kind": "tool" if k == 0 else "chat",
+                                     "prompt": f"{x}+{y}" if k == 0 else f"chat#{x}",
                                      "output": show(s), "reward": rr})
     return hist, examples
 
 
 def main() -> None:
     for fixed in (False, True):
-        name = "修好的奖励（加上守卫 #8）" if fixed else "天真的奖励（只检查标签里面）"
+        name = "Fixed reward (with guard #8)" if fixed else "Naive reward (checks only inside the tags)"
         print(f"== {name} ==")
         hist, ex = train(fixed)
         h0 = hist[0]
-        print(f"  起点       | 格式错误 {h0['format_err']:.2f} | 工具题正确格式调用 {h0['call_rate']:.2f} | "
-              f"裸调用 {h0['bare_rate']:.2f} | 闲聊题正常回复 {h0['chat_ok']:.2f} | 真实成功率 {h0['success']:.2f}")
-        print("  最后一步的几个样本：")
+        print(f"  start    | format errors {h0['format_err']:.2f} | tool: correct-format call {h0['call_rate']:.2f} | "
+              f"bare call {h0['bare_rate']:.2f} | chat: normal reply {h0['chat_ok']:.2f} | true success {h0['success']:.2f}")
+        print("  Samples from the last step:")
         for e in ex:
-            print(f"    {e['kind']} {e['prompt']:>7} → {e['output']:<24} 奖励 {e['reward']:+.1f}")
+            print(f"    {e['kind']} {e['prompt']:>7} → {e['output']:<24} reward {e['reward']:+.1f}")
         print()
 
 

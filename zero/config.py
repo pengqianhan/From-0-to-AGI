@@ -1,26 +1,30 @@
-"""配置：模型与训练的全部超参数（对应第 9、12 章）。
+"""Configuration: all hyperparameters of the model and the training (Chapters 9 and 12).
 
-所有超参都写在 `configs/*.toml` 里，代码里不写死。这个模块做三件事：
+All hyperparameters are in `configs/*.toml`. The code does not hard-code them. This module does
+three things:
 
-1. 用 dataclass 定义配置的"形状"：`ModelConfig`（模型结构）、`TrainConfig`（训练流程，
-   内含 data / optim / schedule / checkpoint / logging 几个小节）；
-2. `load_config(path)` 用标准库 `tomllib` 读 TOML，支持 `base = "xxx.toml"` 继承另一份配置
-   （中期训练只写和预训练不同的地方）；
-3. 校验：未知字段、类型错误、互相矛盾的取值（比如 n_heads 不能被 n_kv_heads 整除），
-   都在读配置时就报错，并给出"你是不是想写 xxx"的提示，而不是训练到一半才崩。
+1. It defines the "shape" of the config with dataclasses: `ModelConfig` (model structure) and
+   `TrainConfig` (training procedure, with the data / optim / schedule / checkpoint / logging
+   sections).
+2. `load_config(path)` reads TOML with the standard library `tomllib`. A config can inherit from
+   another config with `base = "xxx.toml"` (a mid-training config contains only the differences
+   from pretraining).
+3. Validation: unknown fields, wrong types, and values that conflict (for example, n_heads must be
+   divisible by n_kv_heads) cause an error when the config is read. The error gives a hint such as
+   "did you mean xxx". Thus a bad config does not crash in the middle of training.
 
-TOML 的布局（各节都是顶层表）：
+The TOML layout (each section is a top-level table):
 
-    base = "pretrain.toml"      # 可选：先读这份，再用本文件覆盖
+    base = "pretrain.toml"      # optional: read this file first, then override it with this file
     [model]      -> ModelConfig
-    [train]      -> TrainConfig 的标量字段
-    [data]       -> DataConfig（含 [[data.sources]] 与可选的 [data.prepare]）
+    [train]      -> scalar fields of TrainConfig
+    [data]       -> DataConfig (with [[data.sources]] and the optional [data.prepare])
     [optim]      -> OptimConfig
     [schedule]   -> ScheduleConfig
     [checkpoint] -> CheckpointConfig
     [logging]    -> LoggingConfig
 
-路径字段一律相对于仓库根目录（也就是运行命令时的当前目录）。
+All path fields are relative to the repository root (the current directory when you run a command).
 """
 
 from __future__ import annotations
@@ -36,11 +40,11 @@ from typing import Any
 
 
 class ConfigError(ValueError):
-    """配置文件有问题时抛出，信息里会指出是哪个字段。"""
+    """Raised when a config file has a problem. The message names the field."""
 
 
 # ---------------------------------------------------------------------------
-# 模型结构
+# Model structure
 # ---------------------------------------------------------------------------
 
 _ROPE_SCALING_KEYS = {
@@ -55,23 +59,26 @@ _ROPE_SCALING_KEYS = {
 
 @dataclass
 class ModelConfig:
-    """Transformer 结构超参。字段含义与 Hugging Face `Qwen3Config` 一一对应（见 `zero/hf.py`）。"""
+    """Hyperparameters of the Transformer structure.
+
+    Each field matches one field of the Hugging Face `Qwen3Config` (see `zero/hf.py`).
+    """
 
     vocab_size: int = 32000
-    dim: int = 512  # 隐藏维度 d_model（HF: hidden_size）
+    dim: int = 512  # hidden dimension d_model (HF: hidden_size)
     n_layers: int = 8
-    n_heads: int = 8  # 查询头数
-    n_kv_heads: int = 4  # K/V 头数（GQA：若干个查询头共享一组 K/V）
-    head_dim: int | None = None  # 默认 dim // n_heads；Qwen3 允许 n_heads*head_dim != dim
-    ffn_dim: int = 1536  # SwiGLU 中间维度（HF: intermediate_size）
+    n_heads: int = 8  # number of query heads
+    n_kv_heads: int = 4  # number of K/V heads (GQA: a group of query heads shares one K/V head)
+    head_dim: int | None = None  # default dim // n_heads; Qwen3 allows n_heads*head_dim != dim
+    ffn_dim: int = 1536  # SwiGLU intermediate dimension (HF: intermediate_size)
     rope_theta: float = 10000.0
-    # YaRN 等 RoPE 缩放：{"type": "yarn", "factor": 4.0, "original_max_position_embeddings": 4096,
-    #                    "beta_fast": 32, "beta_slow": 1}；None 表示不缩放
+    # RoPE scaling such as YaRN: {"type": "yarn", "factor": 4.0, "original_max_position_embeddings": 4096,
+    #                             "beta_fast": 32, "beta_slow": 1}; None means no scaling
     rope_scaling: dict[str, Any] | None = None
-    max_seq_len: int = 2048  # RoPE 预计算的最大位置数，也是 KV cache 默认长度
+    max_seq_len: int = 2048  # maximum number of positions that RoPE precomputes; also the default KV cache length
     norm_eps: float = 1e-6
-    qk_norm: bool = True  # Qwen3 的 QK-Norm：对每个头的 q、k 在 head_dim 上做 RMSNorm
-    tie_embeddings: bool = True  # 输入 embedding 与输出 lm_head 共享权重
+    qk_norm: bool = True  # QK-Norm of Qwen3: RMSNorm on q and k of each head, over head_dim
+    tie_embeddings: bool = True  # the input embedding and the output lm_head share weights
     init_std: float = 0.02
 
     def __post_init__(self) -> None:
@@ -92,34 +99,34 @@ class ModelConfig:
             "ffn_dim",
             "max_seq_len",
         ):
-            need(getattr(self, name) > 0, f"{name} 必须是正整数，当前 {getattr(self, name)}")
+            need(getattr(self, name) > 0, f"{name} must be a positive integer, got {getattr(self, name)}")
         need(
             self.n_heads % self.n_kv_heads == 0,
-            f"n_heads={self.n_heads} 必须能被 n_kv_heads={self.n_kv_heads} 整除（GQA 分组）",
+            f"n_heads={self.n_heads} must be divisible by n_kv_heads={self.n_kv_heads} (GQA groups)",
         )
         assert self.head_dim is not None
         need(
             self.head_dim > 0 and self.head_dim % 2 == 0,
-            f"head_dim={self.head_dim} 必须是正偶数（RoPE 两两旋转）",
+            f"head_dim={self.head_dim} must be a positive even number (RoPE rotates pairs)",
         )
-        need(self.rope_theta > 0, "rope_theta 必须 > 0")
-        need(self.norm_eps > 0, "norm_eps 必须 > 0")
-        need(self.init_std > 0, "init_std 必须 > 0")
+        need(self.rope_theta > 0, "rope_theta must be > 0")
+        need(self.norm_eps > 0, "norm_eps must be > 0")
+        need(self.init_std > 0, "init_std must be > 0")
         if self.rope_scaling is not None:
             rs = self.rope_scaling
             unknown = set(rs) - _ROPE_SCALING_KEYS
             need(
                 not unknown,
-                f"rope_scaling 有未知字段 {sorted(unknown)}，可用 {sorted(_ROPE_SCALING_KEYS)}",
+                f"rope_scaling has unknown fields {sorted(unknown)}; available: {sorted(_ROPE_SCALING_KEYS)}",
             )
             need(
                 rs.get("type") == "yarn",
-                f"rope_scaling.type 目前只支持 'yarn'，当前 {rs.get('type')!r}",
+                f"rope_scaling.type supports only 'yarn' at this time, got {rs.get('type')!r}",
             )
-            need(float(rs.get("factor", 0)) >= 1.0, "rope_scaling.factor 必须 >= 1")
+            need(float(rs.get("factor", 0)) >= 1.0, "rope_scaling.factor must be >= 1")
             need(
                 int(rs.get("original_max_position_embeddings", 0)) > 0,
-                "rope_scaling.original_max_position_embeddings 必须给出（预训练时的上下文长度）",
+                "rope_scaling.original_max_position_embeddings is required (the context length of pretraining)",
             )
 
     @property
@@ -134,104 +141,113 @@ class ModelConfig:
 
 
 # ---------------------------------------------------------------------------
-# 训练流程
+# Training procedure
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class DataSourceConfig:
-    """一个数据来源：一组分片 + 采样权重（多来源时按权重混合，见 zero/data/mixture.py）。"""
+    """One data source: a set of shards + a sampling weight.
+
+    With more than one source, the loader mixes them by weight (see zero/data/mixture.py).
+    """
 
     name: str = ""
-    path: str = ""  # 分片的 glob，例如 "out/tiny/data/shakespeare_train_*.bin"
+    path: str = ""  # glob of the shards, for example "out/tiny/data/shakespeare_train_*.bin"
     weight: float = 1.0
 
 
 @dataclass
 class DataPrepareConfig:
-    """可选：分片不存在时，从原始文本现场训练分词器并切分片（只用于 tiny 冒烟）。"""
+    """Optional: if the shards do not exist, train a tokenizer on the raw text and make the shards.
 
-    raw_files: list[str] = field(default_factory=list)  # 原始文本 glob；文件名去掉扩展名就是来源名
-    out_dir: str = ""  # 分片输出目录
-    vocab_size: int = 2048  # 要训练的分词器词表大小（data.tokenizer 不存在时才训练）
-    val_fraction: float = 0.05  # 每个来源留多少比例的文档做验证集
-    doc_chars: int = 4000  # 把原始文本按空行切段后，再拼成约这么长的"文档"
+    Use this only for the tiny smoke test.
+    """
+
+    raw_files: list[str] = field(default_factory=list)  # glob of the raw text; the file name without the extension is the source name
+    out_dir: str = ""  # output directory of the shards
+    vocab_size: int = 2048  # vocabulary size of the tokenizer to train (only if data.tokenizer does not exist)
+    val_fraction: float = 0.05  # fraction of the documents of each source for the validation set
+    doc_chars: int = 4000  # split the raw text at empty lines, then join the parts into "documents" of about this length
 
 
 @dataclass
 class DataConfig:
-    tokenizer: str = ""  # tokenizer.json 路径
-    seq_len: int = 1024  # 训练序列长度（每个样本取 seq_len+1 个 token）
+    tokenizer: str = ""  # path of tokenizer.json
+    seq_len: int = 1024  # training sequence length (each sample takes seq_len+1 tokens)
     sources: list[DataSourceConfig] = field(default_factory=list)
-    val: str = ""  # 验证集分片 glob；空表示不做评估
+    val: str = ""  # glob of the validation shards; empty means no evaluation
     shuffle: bool = True
     prepare: DataPrepareConfig | None = None
-    # 数据格式："packed" = 预训练分片（uint32 token 流，见 zero/data/loader.py 的 PackedDataLoader）；
-    # "sft" = 对话打包窗口 + loss mask（zero/post/sft.py 生成，MaskedWindowLoader 读取）；
-    # "none" = 训练循环自己管数据（DPO / GRPO / 蒸馏），[[data.sources]] 可以为空
+    # Data format: "packed" = pretraining shards (uint32 token stream, see PackedDataLoader in zero/data/loader.py);
+    # "sft" = packed chat windows + loss mask (zero/post/sft.py writes them, MaskedWindowLoader reads them);
+    # "none" = the training loop manages its own data (DPO / GRPO / distillation); [[data.sources]] can be empty
     format: str = "packed"
 
 
 @dataclass
 class OptimConfig:
-    name: str = "adamw"  # "adamw" | "muon"（Muon 用于二维权重矩阵，其余参数仍用 AdamW；见第 12 章）
-    lr: float = 3e-4  # 峰值学习率
+    name: str = "adamw"  # "adamw" | "muon" (Muon is for 2D weight matrices; the other parameters still use AdamW; see Chapter 12)
+    lr: float = 3e-4  # peak learning rate
     weight_decay: float = 0.1
     beta1: float = 0.9
     beta2: float = 0.95
     eps: float = 1e-8
-    grad_clip: float = 1.0  # 全局梯度范数裁剪；<=0 表示不裁剪
-    decay_embeddings: bool = False  # embedding 是否做权重衰减（norm 的权重永远不衰减）
+    grad_clip: float = 1.0  # clipping of the global gradient norm; <=0 means no clipping
+    decay_embeddings: bool = False  # apply weight decay to the embedding or not (norm weights never get weight decay)
 
 
 @dataclass
 class ScheduleConfig:
     kind: str = "cosine"  # "cosine" | "wsd" | "constant"
     warmup_steps: int = 100
-    min_lr_ratio: float = 0.1  # 最低学习率 = lr * min_lr_ratio
-    decay_frac: float = 0.2  # WSD：最后多少比例的步数用来衰减
-    decay_shape: str = "linear"  # WSD 衰减段的形状："linear" | "cosine" | "sqrt"
+    min_lr_ratio: float = 0.1  # minimum learning rate = lr * min_lr_ratio
+    decay_frac: float = 0.2  # WSD: the fraction of the steps at the end that decays
+    decay_shape: str = "linear"  # shape of the WSD decay phase: "linear" | "cosine" | "sqrt"
 
 
 @dataclass
 class CheckpointConfig:
-    every: int = 1000  # 每多少步存一次；<=0 表示只在结束时存
-    keep_last: int = 3  # 只保留最近几个（<=0 全留）
-    resume: bool = True  # 目录里有 checkpoint 时自动续训
-    dir: str = ""  # 默认 <out_dir>/ckpt
+    every: int = 1000  # save every N steps; <=0 means save only at the end
+    keep_last: int = 3  # keep only the last N (<=0 keeps all)
+    resume: bool = True  # resume automatically if the directory contains a checkpoint
+    dir: str = ""  # default <out_dir>/ckpt
 
 
 @dataclass
 class LoggingConfig:
-    every: int = 10  # 每多少步打印/记录一次
-    jsonl: str = ""  # 默认 <out_dir>/log.jsonl
+    every: int = 10  # print/log every N steps
+    jsonl: str = ""  # default <out_dir>/log.jsonl
 
 
 @dataclass
 class TrainConfig:
     seed: int = 1337
     max_steps: int = 1000
-    micro_batch_size: int = 8  # 每张卡每次前向的序列数
-    grad_accum_steps: int = 1  # 梯度累积：有效 batch = micro * accum * world_size
+    micro_batch_size: int = 8  # sequences per forward pass on each GPU
+    grad_accum_steps: int = 1  # gradient accumulation: effective batch = micro * accum * world_size
     device: str = "auto"  # "auto" | "cpu" | "cuda"
-    dtype: str = "auto"  # "auto"（CUDA 用 bf16，CPU 用 fp32）| "bf16" | "fp32"
-    # torch.compile：单卡与 2 卡 DDP 已在 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）；与 FSDP 的组合尚未在 GPU 上验证
+    dtype: str = "auto"  # "auto" (bf16 on CUDA, fp32 on CPU) | "bf16" | "fp32"
+    # torch.compile: verified on RTX 3090 with one GPU and with 2-GPU DDP (2026-10, see runs/2026-10-01-gpu0-check/).
+    # Not verified on GPUs together with FSDP yet.
     compile: bool = False
-    # 激活检查点：每层只存输入、反向时重算（第 14 章）。已在单张 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）
+    # Activation checkpointing: each layer stores only its input and computes again in the backward pass
+    # (Chapter 14). Verified on one RTX 3090 (2026-10, see runs/2026-10-01-gpu0-check/).
     activation_checkpointing: bool = False
     cpu_threads: int = (
-        0  # CPU 上 PyTorch 的线程数；0 表示用默认值。机器被别的进程占满时设 1 反而最快
+        0  # number of PyTorch threads on the CPU; 0 means the default. If other processes use all CPUs, 1 is the fastest
     )
-    parallel: str = "ddp"  # 多进程时的并行方式："ddp" | "fsdp"；单进程忽略
+    parallel: str = "ddp"  # parallel method with more than one process: "ddp" | "fsdp"; ignored with one process
     out_dir: str = "out/run"
-    # 训练到这一步就停（0 = 训练到 max_steps）。学习率调度仍按 max_steps 计算，所以停下再续训与一口气训完一样；
-    # 阶梯实验的逐轮淘汰（successive halving）用它：先训到 2/8 处，留下的配置再接着训（runs/ladder-3090）。
-    # 让停止点落在 checkpoint.every 的整数倍上，续训才能从这一步接上
+    # Stop at this step (0 = train to max_steps). The learning-rate schedule still uses max_steps, so a stop
+    # and a resume give the same result as one full run. The successive halving of the ladder experiments
+    # uses it: train to 2/8, then continue only the configs that remain (runs/ladder-3090).
+    # Put the stop step on a multiple of checkpoint.every, so that a resume can continue from this step
     stop_step: int = 0
-    init_from: str = ""  # 中期训练：从这个 checkpoint 目录（或其父目录里最新的）加载模型权重
-    eval_every: int = 100  # 每多少步算一次验证 loss；<=0 不评估
+    init_from: str = ""  # mid-training: load the model weights from this checkpoint directory (or the latest one in this parent directory)
+    eval_every: int = 100  # compute the validation loss every N steps; <=0 means no evaluation
     eval_batches: int = 10
-    gpu_peak_tflops: float = 0.0  # 用于 MFU；0 表示按设备名自动查表（查不到就不报 MFU）
+    gpu_peak_tflops: float = 0.0  # for MFU; 0 means look up the device name in a table (no MFU if not found)
     data: DataConfig = field(default_factory=DataConfig)
     optim: OptimConfig = field(default_factory=OptimConfig)
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
@@ -243,52 +259,52 @@ class TrainConfig:
             if not cond:
                 raise ConfigError(msg)
 
-        need(self.max_steps > 0, "[train] max_steps 必须 > 0")
-        need(self.stop_step >= 0, "[train] stop_step 必须 >= 0（0 = 训练到 max_steps）")
-        need(self.micro_batch_size > 0, "[train] micro_batch_size 必须 > 0")
-        need(self.grad_accum_steps > 0, "[train] grad_accum_steps 必须 > 0")
+        need(self.max_steps > 0, "[train] max_steps must be > 0")
+        need(self.stop_step >= 0, "[train] stop_step must be >= 0 (0 = train to max_steps)")
+        need(self.micro_batch_size > 0, "[train] micro_batch_size must be > 0")
+        need(self.grad_accum_steps > 0, "[train] grad_accum_steps must be > 0")
         need(
             self.device in ("auto", "cpu", "cuda"),
-            f"[train] device 只能是 auto/cpu/cuda，当前 {self.device!r}",
+            f"[train] device must be auto/cpu/cuda, got {self.device!r}",
         )
         need(
             self.dtype in ("auto", "bf16", "fp32"),
-            f"[train] dtype 只能是 auto/bf16/fp32，当前 {self.dtype!r}",
+            f"[train] dtype must be auto/bf16/fp32, got {self.dtype!r}",
         )
         need(
             self.parallel in ("ddp", "fsdp"),
-            f"[train] parallel 只能是 ddp/fsdp，当前 {self.parallel!r}",
+            f"[train] parallel must be ddp/fsdp, got {self.parallel!r}",
         )
-        need(self.data.seq_len > 0, "[data] seq_len 必须 > 0")
+        need(self.data.seq_len > 0, "[data] seq_len must be > 0")
         need(
             self.data.format in ("packed", "sft", "none"),
-            f"[data] format 只能是 packed/sft/none，当前 {self.data.format!r}",
+            f"[data] format must be packed/sft/none, got {self.data.format!r}",
         )
         need(
             len(self.data.sources) > 0 or self.data.format != "packed",
-            "[data] 至少要有一个 [[data.sources]]",
+            "[data] needs at least one [[data.sources]]",
         )
         for s in self.data.sources:
-            need(bool(s.name) and bool(s.path), "[[data.sources]] 每项都要有 name 和 path")
-            need(s.weight > 0, f"[[data.sources]] {s.name} 的 weight 必须 > 0")
+            need(bool(s.name) and bool(s.path), "[[data.sources]] each entry needs a name and a path")
+            need(s.weight > 0, f"[[data.sources]] the weight of {s.name} must be > 0")
         names = [s.name for s in self.data.sources]
-        need(len(set(names)) == len(names), f"[[data.sources]] 名字重复：{names}")
+        need(len(set(names)) == len(names), f"[[data.sources]] duplicate names: {names}")
         need(
             self.schedule.kind in ("cosine", "wsd", "constant"),
-            f"[schedule] kind 只能是 cosine/wsd/constant，当前 {self.schedule.kind!r}",
+            f"[schedule] kind must be cosine/wsd/constant, got {self.schedule.kind!r}",
         )
         need(
             self.schedule.decay_shape in ("linear", "cosine", "sqrt"),
-            f"[schedule] decay_shape 只能是 linear/cosine/sqrt，当前 {self.schedule.decay_shape!r}",
+            f"[schedule] decay_shape must be linear/cosine/sqrt, got {self.schedule.decay_shape!r}",
         )
-        need(0.0 <= self.schedule.min_lr_ratio <= 1.0, "[schedule] min_lr_ratio 必须在 [0, 1]")
-        need(0.0 <= self.schedule.decay_frac <= 1.0, "[schedule] decay_frac 必须在 [0, 1]")
-        need(self.schedule.warmup_steps >= 0, "[schedule] warmup_steps 必须 >= 0")
-        need(self.optim.lr > 0, "[optim] lr 必须 > 0")
+        need(0.0 <= self.schedule.min_lr_ratio <= 1.0, "[schedule] min_lr_ratio must be in [0, 1]")
+        need(0.0 <= self.schedule.decay_frac <= 1.0, "[schedule] decay_frac must be in [0, 1]")
+        need(self.schedule.warmup_steps >= 0, "[schedule] warmup_steps must be >= 0")
+        need(self.optim.lr > 0, "[optim] lr must be > 0")
         if self.data.prepare is not None:
             p = self.data.prepare
-            need(bool(p.raw_files) and bool(p.out_dir), "[data.prepare] 需要 raw_files 和 out_dir")
-            need(0.0 < p.val_fraction < 1.0, "[data.prepare] val_fraction 必须在 (0, 1)")
+            need(bool(p.raw_files) and bool(p.out_dir), "[data.prepare] needs raw_files and out_dir")
+            need(0.0 < p.val_fraction < 1.0, "[data.prepare] val_fraction must be in (0, 1)")
 
     @property
     def checkpoint_dir(self) -> str:
@@ -301,18 +317,18 @@ class TrainConfig:
 
 @dataclass
 class Config:
-    """一份完整配置：模型 + 训练。"""
+    """A full config: model + training."""
 
     model: ModelConfig = field(default_factory=ModelConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
-    source_path: str = ""  # 从哪个文件读来的（只用于日志）
+    source_path: str = ""  # the file that the config came from (only for logs)
 
     def validate(self) -> None:
         self.model.validate()
         self.train.validate()
         if self.train.data.seq_len > self.model.max_seq_len:
             raise ConfigError(
-                f"[data] seq_len={self.train.data.seq_len} 超过了 [model] max_seq_len={self.model.max_seq_len}"
+                f"[data] seq_len={self.train.data.seq_len} is larger than [model] max_seq_len={self.model.max_seq_len}"
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -320,7 +336,7 @@ class Config:
 
 
 # ---------------------------------------------------------------------------
-# 读 TOML：dict -> dataclass，带校验
+# Read TOML: dict -> dataclass, with validation
 # ---------------------------------------------------------------------------
 
 
@@ -329,7 +345,7 @@ def _type_name(tp: Any) -> str:
 
 
 def _coerce(value: Any, tp: Any, where: str) -> Any:
-    """把 TOML 里读到的值按 dataclass 字段类型检查/转换。"""
+    """Check/convert a value from TOML to the type of the dataclass field."""
     origin = typing.get_origin(tp)
     args = typing.get_args(tp)
     # Optional[X] / X | None
@@ -343,42 +359,42 @@ def _coerce(value: Any, tp: Any, where: str) -> Any:
                 return _coerce(value, a, where)
             except ConfigError as e:
                 errors.append(str(e))
-        raise ConfigError(errors[0] if errors else f"{where}: 类型不对")
+        raise ConfigError(errors[0] if errors else f"{where}: wrong type")
     if dataclasses.is_dataclass(tp):
         if not isinstance(value, dict):
-            raise ConfigError(f"{where}: 应该是一个表（table），实际是 {type(value).__name__}")
+            raise ConfigError(f"{where}: must be a table, got {type(value).__name__}")
         return _from_dict(tp, value, where)
     if origin is list:
         if not isinstance(value, list):
-            raise ConfigError(f"{where}: 应该是列表，实际是 {type(value).__name__}")
+            raise ConfigError(f"{where}: must be a list, got {type(value).__name__}")
         (inner,) = args or (Any,)
         return [_coerce(v, inner, f"{where}[{i}]") for i, v in enumerate(value)]
     if origin is dict:
         if not isinstance(value, dict):
-            raise ConfigError(f"{where}: 应该是表（dict），实际是 {type(value).__name__}")
+            raise ConfigError(f"{where}: must be a table (dict), got {type(value).__name__}")
         return dict(value)
     if tp is Any:
         return value
     if tp is bool:
         if not isinstance(value, bool):
-            raise ConfigError(f"{where}: 应该是 true/false，实际是 {value!r}")
+            raise ConfigError(f"{where}: must be true/false, got {value!r}")
         return value
     if tp is int:
         if isinstance(value, bool) or not isinstance(value, int):
-            # 允许 1e6 这种写法表示整数
+            # allow notation such as 1e6 for an integer
             if isinstance(value, float) and value.is_integer():
                 return int(value)
-            raise ConfigError(f"{where}: 应该是整数，实际是 {value!r}")
+            raise ConfigError(f"{where}: must be an integer, got {value!r}")
         return value
     if tp is float:
         if isinstance(value, bool) or not isinstance(value, int | float):
-            raise ConfigError(f"{where}: 应该是数字，实际是 {value!r}")
+            raise ConfigError(f"{where}: must be a number, got {value!r}")
         return float(value)
     if tp is str:
         if not isinstance(value, str):
-            raise ConfigError(f"{where}: 应该是字符串，实际是 {value!r}")
+            raise ConfigError(f"{where}: must be a string, got {value!r}")
         return value
-    raise ConfigError(f"{where}: 不支持的字段类型 {_type_name(tp)}")
+    raise ConfigError(f"{where}: unsupported field type {_type_name(tp)}")
 
 
 def _from_dict(cls: type, data: dict[str, Any], where: str) -> Any:
@@ -388,8 +404,8 @@ def _from_dict(cls: type, data: dict[str, Any], where: str) -> Any:
     for key, value in data.items():
         if key not in hints:
             close = difflib.get_close_matches(key, names, n=1)
-            hint = f"，你是不是想写 {close[0]!r}？" if close else f"。可用字段：{', '.join(names)}"
-            raise ConfigError(f"{where}: 未知字段 {key!r}{hint}")
+            hint = f", did you mean {close[0]!r}?" if close else f". Available fields: {', '.join(names)}"
+            raise ConfigError(f"{where}: unknown field {key!r}{hint}")
         kwargs[key] = _coerce(value, hints[key], f"{where}.{key}")
     return cls(**kwargs)
 
@@ -407,14 +423,14 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 def _read_toml_with_base(path: Path, seen: tuple[Path, ...] = ()) -> dict[str, Any]:
     path = path.resolve()
     if path in seen:
-        raise ConfigError(f"配置继承出现循环：{' -> '.join(str(p) for p in (*seen, path))}")
+        raise ConfigError(f"Config inheritance has a cycle: {' -> '.join(str(p) for p in (*seen, path))}")
     if not path.exists():
-        raise ConfigError(f"找不到配置文件：{path}")
+        raise ConfigError(f"Config file not found: {path}")
     try:
         with open(path, "rb") as f:
             data = tomllib.load(f)
     except tomllib.TOMLDecodeError as e:
-        raise ConfigError(f"{path}: TOML 语法错误：{e}") from e
+        raise ConfigError(f"{path}: TOML syntax error: {e}") from e
     base = data.pop("base", None)
     if base is not None:
         parent = _read_toml_with_base((path.parent / base), (*seen, path))
@@ -423,14 +439,14 @@ def _read_toml_with_base(path: Path, seen: tuple[Path, ...] = ()) -> dict[str, A
 
 
 def _apply_override(data: dict[str, Any], item: str) -> None:
-    """命令行覆盖：`train.max_steps=10`、`model.rope_theta=1e6`、`data.seq_len=256`。"""
+    """Command-line override: `train.max_steps=10`, `model.rope_theta=1e6`, `data.seq_len=256`."""
     if "=" not in item:
-        raise ConfigError(f"覆盖项 {item!r} 格式应为 section.key=value")
+        raise ConfigError(f"Override {item!r} must have the format section.key=value")
     key, raw = item.split("=", 1)
     try:
         value = tomllib.loads(f"v = {raw}")["v"]
     except tomllib.TOMLDecodeError:
-        value = raw  # 当作裸字符串
+        value = raw  # use it as a plain string
     parts = key.strip().split(".")
     d = data
     for p in parts[:-1]:
@@ -439,21 +455,21 @@ def _apply_override(data: dict[str, Any], item: str) -> None:
 
 
 def config_from_dict(data: dict[str, Any], source_path: str = "") -> Config:
-    """从一个（已经合并好的）dict 构建并校验 Config。"""
+    """Build and validate a Config from a dict (after the merge)."""
     data = dict(data)
     known = {"model", "train", "data", "optim", "schedule", "checkpoint", "logging"}
     unknown = set(data) - known
     if unknown:
         k = sorted(unknown)[0]
         close = difflib.get_close_matches(k, sorted(known), n=1)
-        hint = f"，你是不是想写 [{close[0]}]？" if close else ""
-        raise ConfigError(f"未知的配置节 [{k}]{hint}")
+        hint = f", did you mean [{close[0]}]?" if close else ""
+        raise ConfigError(f"Unknown config section [{k}]{hint}")
     model = _from_dict(ModelConfig, data.get("model", {}), "[model]")
     train_dict = dict(data.get("train", {}))
     for sec in ("data", "optim", "schedule", "checkpoint", "logging"):
         if sec in data:
             if sec in train_dict:
-                raise ConfigError(f"[{sec}] 和 [train.{sec}] 不能同时出现")
+                raise ConfigError(f"[{sec}] and [train.{sec}] cannot both be present")
             train_dict[sec] = data[sec]
     train = _from_dict(TrainConfig, train_dict, "[train]")
     cfg = Config(model=model, train=train, source_path=source_path)
@@ -462,7 +478,7 @@ def config_from_dict(data: dict[str, Any], source_path: str = "") -> Config:
 
 
 def load_config(path: str | Path, overrides: list[str] | None = None) -> Config:
-    """读取 TOML 配置（支持 base 继承与命令行覆盖）并校验。"""
+    """Read a TOML config (with base inheritance and command-line overrides) and validate it."""
     data = _read_toml_with_base(Path(path))
     for item in overrides or []:
         _apply_override(data, item)
@@ -470,12 +486,12 @@ def load_config(path: str | Path, overrides: list[str] | None = None) -> Config:
 
 
 def read_toml(path: str | Path) -> dict[str, Any]:
-    """读 TOML 并展开 base 继承，返回原始 dict（不校验）。"""
+    """Read TOML, resolve the base inheritance, and return the raw dict (no validation)."""
     return _read_toml_with_base(Path(path))
 
 
 def load_model_config(path: str | Path) -> ModelConfig:
-    """只读 [model] 一节（工具脚本用，比如数参数量、估算成本）。"""
+    """Read only the [model] section (for tool scripts, for example to count parameters or estimate cost)."""
     data = _read_toml_with_base(Path(path))
     cfg = _from_dict(ModelConfig, data.get("model", {}), "[model]")
     cfg.validate()

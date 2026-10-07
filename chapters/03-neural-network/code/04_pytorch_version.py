@@ -1,13 +1,14 @@
-"""第 3 章 · 从极简到生产级：同一个两层 MLP 的 PyTorch 标准写法
+"""Chapter 3 · From minimal code to production code: the standard PyTorch code for the same two-layer MLP
 
-和 03_mlp_numpy.py 做的事一样，区别是：
-- 网络用 nn.Sequential(nn.Linear, nn.ReLU, nn.Linear) 搭，不用自己写矩阵乘法；
-- 梯度不再手推，loss.backward() 自动求（第 4 章会亲手实现它）；
-- 更新交给 torch.optim.SGD。
-两个实验：
-1. 对拍：把 NumPy 版的初始参数原样拷进 PyTorch，用 float64、同样的学习率和步数，损失应该逐位一致；
-2. 用 PyTorch 默认的初始化和 float32 从头训练，看能不能达到差不多的拟合效果。
-运行：uv run python chapters/03-neural-network/code/04_pytorch_version.py
+This script does the same task as 03_mlp_numpy.py. The differences are:
+- nn.Sequential(nn.Linear, nn.ReLU, nn.Linear) builds the network. We do not write the matrix products;
+- loss.backward() calculates the gradients. We do not derive them by hand (in Chapter 4, you write it yourself);
+- torch.optim.SGD does the update.
+Two experiments:
+1. Parity check: copy the initial parameters of the NumPy code into PyTorch. Use float64 and the same
+   learning rate and number of steps. The losses must agree digit by digit;
+2. Train from the start with the default PyTorch initialization and float32. Is the fit about as good?
+Run: uv run python chapters/03-neural-network/code/04_pytorch_version.py
 """
 
 import importlib.util
@@ -27,7 +28,7 @@ HIDDEN = 64
 
 def make_model(hidden: int = HIDDEN) -> nn.Sequential:
     return nn.Sequential(
-        nn.Linear(1, hidden),    # Z = X·W1ᵀ + b1（PyTorch 的 weight 形状是 (输出, 输入)）
+        nn.Linear(1, hidden),    # Z = X·W1ᵀ + b1 (the PyTorch weight has the shape (out, in))
         nn.ReLU(),               # A = ReLU(Z)
         nn.Linear(hidden, 1),    # Ŷ = A·W2ᵀ + b2
     )
@@ -38,19 +39,19 @@ def fit(model: nn.Module, x: torch.Tensor, y: torch.Tensor, lr: float, steps: in
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
     for step in range(steps + 1):
-        y_hat = model(x)              # 1. 前向
-        loss = loss_fn(y_hat, y)      # 2. 损失
+        y_hat = model(x)              # 1. forward pass
+        loss = loss_fn(y_hat, y)      # 2. loss
         if verbose and (step in report or step == steps):
-            print(f"   第 {step:>5} 步：损失 = {loss.item():.4f}")
+            print(f"   step {step:>5}: loss = {loss.item():.4f}")
         if step == steps:
             return loss.item()
-        optimizer.zero_grad()         # 3. 清梯度
-        loss.backward()               # 4. 反向：autograd 自动求所有参数的梯度
-        optimizer.step()              # 5. 更新
+        optimizer.zero_grad()         # 3. set the gradients to zero
+        loss.backward()               # 4. backward pass: autograd calculates the gradients of all parameters
+        optimizer.step()              # 5. update
 
 
 def run_match(verbose: bool = True):
-    """对拍：NumPy 的初始参数拷进 PyTorch（float64），返回 (PyTorch 损失, NumPy 损失)。"""
+    """Parity check: copy the NumPy initial parameters into PyTorch (float64). Returns (PyTorch loss, NumPy loss)."""
     x_np, y_np = mlp.make_data()
     torch.set_default_dtype(torch.float64)
     x, y = torch.tensor(x_np), torch.tensor(y_np)
@@ -68,7 +69,7 @@ def run_match(verbose: bool = True):
 
 
 def run_default(verbose: bool = True):
-    """PyTorch 默认初始化 + float32，从头训练。返回 (最终损失, 参数量)。"""
+    """Default PyTorch initialization + float32, train from the start. Returns (final loss, number of parameters)."""
     x_np, y_np = mlp.make_data()
     torch.manual_seed(0)
     x, y = torch.tensor(x_np, dtype=torch.float32), torch.tensor(y_np, dtype=torch.float32)
@@ -78,14 +79,14 @@ def run_default(verbose: bool = True):
 
 
 def main() -> None:
-    print(f"1) 对拍：NumPy 的初始参数拷进 PyTorch（float64），宽 {HIDDEN}，SGD 学习率 {mlp.LR}")
+    print(f"1) Parity check: NumPy initial parameters copied into PyTorch (float64), width {HIDDEN}, SGD learning rate {mlp.LR}")
     loss_torch, loss_numpy = run_match()
-    print(f"   PyTorch {loss_torch:.10f}  vs  手推梯度 NumPy {loss_numpy:.10f}，"
-          f"差 = {abs(loss_torch - loss_numpy):.1e}")
+    print(f"   PyTorch {loss_torch:.10f}  vs  NumPy with manual gradients {loss_numpy:.10f}, "
+          f"difference = {abs(loss_torch - loss_numpy):.1e}")
 
-    print(f"\n2) PyTorch 默认初始化 + float32，宽 {HIDDEN}，同样训练 {mlp.STEPS} 步")
+    print(f"\n2) Default PyTorch initialization + float32, width {HIDDEN}, same training for {mlp.STEPS} steps")
     _, n = run_default()
-    print(f"   参数量 {n}（W1: {HIDDEN}，b1: {HIDDEN}，W2: {HIDDEN}，b2: 1）")
+    print(f"   {n} parameters (W1: {HIDDEN}, b1: {HIDDEN}, W2: {HIDDEN}, b2: 1)")
 
 
 if __name__ == "__main__":

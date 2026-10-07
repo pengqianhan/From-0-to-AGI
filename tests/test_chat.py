@@ -1,4 +1,8 @@
-"""对话模板：渲染与解析互逆、loss mask 只标助手 token、Jinja 模板与 Python 逐字一致（第 16 章）。"""
+"""Chat template (Chapter 16).
+
+Rendering and parsing are inverse operations. The loss mask marks only assistant tokens. The Jinja
+template and the Python code give the same text, character by character.
+"""
 
 from __future__ import annotations
 
@@ -98,7 +102,7 @@ def test_rendered_format_is_qwen_style() -> None:
         '<tool_call>\n{"name": "get_weather", "arguments": {"city": "北京"}}\n</tool_call>\n<tool_call>'
         in text
     )
-    # 两条连续的 tool 消息合并进同一个 user 轮
+    # two consecutive tool messages go into the same user turn
     assert text.count("<|im_start|>user\n<tool_response>") == 1
     assert '<tool_response>\n{"temp_c": 28}\n</tool_response><|im_end|>' in text
 
@@ -121,7 +125,8 @@ def test_render_parse_roundtrip(name: str) -> None:
             for tc in m.get("tool_calls", [])
         ]
         assert parsed.tool_calls == want
-        # 解析结果再渲染，文本不变（arguments 为字符串时规范化成对象，JSON 相同）
+        # render the parsed result again: the text does not change (string arguments become an
+        # object with the same JSON)
         assert assistant_text(parsed.to_message()) == assistant_text(
             {**m, "tool_calls": [{"name": w["name"], "arguments": w["arguments"]} for w in want]}
         )
@@ -131,9 +136,9 @@ def test_parse_think_and_malformed() -> None:
     p = parse_assistant("<think>\n想一想\n</think>\n\n答案<|im_end|>多余")
     assert p.reasoning_content == "想一想" and p.content == "答案" and not p.errors
     assert parse_assistant('<tool_call>{"name": "x", "arguments": {</tool_call>').errors
-    assert parse_assistant('<tool_call>{"name": "x"').errors  # 没有闭合
-    assert parse_assistant('<tool_call>["x"]</tool_call>').errors  # 不是对象
-    assert parse_assistant('<tool_call>{"arguments": {}}</tool_call>').errors  # 没有 name
+    assert parse_assistant('<tool_call>{"name": "x"').errors  # not closed
+    assert parse_assistant('<tool_call>["x"]</tool_call>').errors  # not an object
+    assert parse_assistant('<tool_call>{"arguments": {}}</tool_call>').errors  # no name
     assert parse_assistant('<tool_call>{"name": "x", "arguments": [1]}</tool_call>').errors
     ok = parse_assistant('<tool_call>{"name": "x", "arguments": {"a": 1}}</tool_call>')
     assert not ok.errors and ok.tool_calls == [{"name": "x", "arguments": {"a": 1}}]
@@ -159,12 +164,13 @@ def test_loss_mask_covers_only_assistant_tokens(chat_tok) -> None:  # noqa: ANN0
     assert len(ids) == len(mask)
     text = render_text(msgs, TOOLS)
     assert chat_tok.decode(ids) == text
-    # 被标记的 token 拼起来，恰好是两段助手输出（各自以 <|im_end|> 结尾）
+    # the marked tokens together are exactly the two assistant outputs (each ends with <|im_end|>)
     masked = chat_tok.decode([i for i, m in zip(ids, mask) if m])
     a1 = assistant_text(msgs[2]) + "<|im_end|>"
     a2 = assistant_text(msgs[5]) + "<|im_end|>"
     assert masked == a1 + a2
-    # 两个工具调用的 <tool_call> 在 mask 里（系统提示格式说明里的两个不在）；<|im_start|> 和工具结果不在
+    # the <tool_call> of the two tool calls are in the mask (the two in the format text of the system
+    # prompt are not); <|im_start|> and the tool results are not in the mask
     tc = chat_tok.special_id("<tool_call>")
     tr = chat_tok.special_id("<tool_response>")
     assert sum(1 for i, m in zip(ids, mask) if i == tc and m) == 2
@@ -175,7 +181,7 @@ def test_loss_mask_covers_only_assistant_tokens(chat_tok) -> None:  # noqa: ANN0
 
 
 def test_encode_prompt_response_masks_only_response(chat_tok) -> None:  # noqa: ANN001
-    msgs = CONVERSATIONS["content_and_call"][:4]  # 历史里已经有两条助手消息
+    msgs = CONVERSATIONS["content_and_call"][:4]  # the history already has two assistant messages
     resp = {"role": "assistant", "content": "不客气"}
     ids, mask = encode_prompt_response(msgs + [{"role": "user", "content": "谢谢"}], resp, chat_tok)
     assert chat_tok.decode([i for i, m in zip(ids, mask) if m]) == "不客气<|im_end|>"

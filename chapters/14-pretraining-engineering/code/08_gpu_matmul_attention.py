@@ -1,18 +1,20 @@
-"""第 14 章 · 极简代码 8（GPU 实测）：矩阵乘和注意力，在一张真 GPU 上有多快、占多少显存
+"""Chapter 14 · Minimal code 8 (GPU measurement): matmul and attention on a real GPU. How fast are they, and how much memory do they use?
 
-正文第 3、4 节的结论是在 CPU 上讲出来的：
-  - BF16 让 Tensor Core 算得更快，但只有 7 位尾数，精度约 2–3 位有效数字；
-  - 朴素注意力要把 T×T 的 S 和 P 写进显存，FlashAttention 分块 + online softmax，从不写出它们。
-这个脚本在一张 CUDA GPU 上把它们测出来：
-  ① 方阵矩阵乘 C = A·B：FP32、TF32、BF16、FP16 各自的实测 TFLOPS（CUDA event 计时，取中位数），
-     以及各自和 FP64 结果的相对误差；
-  ② 02_precision.py ⑥ 的同一个 Linear、同一批输入，在 CPU 和 GPU 上各做一次 BF16 autocast；
-  ③ 注意力前向 + 反向（1 条序列，16 个头 × head_dim 128，BF16，因果）：朴素写法 vs SDPA 的
-     FlashAttention 后端，峰值显存和耗时随序列长度 T 怎么涨；
-  ④ zero 的注意力（GQA：16 个查询头、8 个 KV 头，enable_gqa=True）在 GPU 上实际调用了哪个内核，
-     BF16 autocast 和 FP32 各看一次。
+Sections 3 and 4 of the chapter give these results with the CPU:
+  - BF16 lets the Tensor Cores calculate faster, but it has only 7 mantissa bits:
+    a precision of about 2–3 significant digits;
+  - naive attention writes the T×T matrices S and P to GPU memory. FlashAttention uses tiles + online
+    softmax and never writes them out.
+This script measures them on one CUDA GPU:
+  ① square matmul C = A·B: the measured TFLOPS of FP32, TF32, BF16, and FP16 (CUDA event timing,
+     median), and the relative error of each against the FP64 result;
+  ② the same Linear and the same inputs as 02_precision.py ⑥, with BF16 autocast on the CPU and on the GPU;
+  ③ attention forward + backward pass (1 sequence, 16 heads × head_dim 128, BF16, causal): naive code vs
+     the FlashAttention backend of SDPA. How do the peak memory and the time grow with the sequence length T?
+  ④ which kernel the attention of zero (GQA: 16 query heads, 8 KV heads, enable_gqa=True) really calls
+     on the GPU, once with BF16 autocast and once with FP32.
 
-运行：uv run python chapters/14-pretraining-engineering/code/08_gpu_matmul_attention.py   （需要 CUDA GPU，RTX 3090 上约 15 秒）
+Run: uv run python chapters/14-pretraining-engineering/code/08_gpu_matmul_attention.py   (needs a CUDA GPU; about 15 s on an RTX 3090)
 """
 
 import contextlib
@@ -30,20 +32,21 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.profiler import ProfilerActivity, profile
 
 ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(ROOT))  # 让 `import zero` 在仓库任意位置运行都能找到
-warnings.filterwarnings("ignore", message=".*no current CUDA context")    # 无害的提示，免得打乱输出
+sys.path.insert(0, str(ROOT))  # so that `import zero` works from any folder of the repository
+warnings.filterwarnings("ignore", message=".*no current CUDA context")    # a harmless message; hide it to keep the output clean
 warnings.filterwarnings("ignore", message=".*Profiler clears events")
 
-# 规格表的稠密峰值（TFLOPS）。RTX 3090：NVIDIA Ampere GA102 白皮书；Tensor Core 按 FP32 累加计，
-# TF32 与 FP32 的规格峰值都是 35.6（GeForce 卡上 TF32 不比 FP32 快）。其他卡不查表，只报实测值。
+# Dense peak values from the spec sheets (TFLOPS). RTX 3090: NVIDIA Ampere GA102 whitepaper; Tensor Cores
+# with FP32 accumulation. The spec peak of TF32 and of FP32 is 35.6 (on GeForce cards, TF32 is not faster
+# than FP32). For other cards, the script does not use a table and shows only the measured values.
 SPEC = {"3090": {"FP32": 35.6, "TF32": 35.6, "BF16": 71.0, "FP16": 71.0}}
 FORMATS = [("FP32", torch.float32, False), ("TF32", torch.float32, True),
            ("BF16", torch.bfloat16, False), ("FP16", torch.float16, False)]
-H, D = 16, 128  # 主线模型：16 个查询头 × head_dim 128
+H, D = 16, 128  # main-line model: 16 query heads × head_dim 128
 
 
 def cuda_time(fn, warmup: int = 3, reps: int = 10) -> float:
-    """fn() 一次的耗时（秒）：先预热，再用 CUDA event 计时 reps 次，取中位数。"""
+    """Time of one call of fn() in seconds: warm up first, then time reps calls with CUDA events and take the median."""
     for _ in range(warmup):
         fn()
     torch.cuda.synchronize()
@@ -62,7 +65,7 @@ def matmul_tflops(n: int, dtype: torch.dtype, tf32: bool) -> float:
     torch.backends.cuda.matmul.allow_tf32 = tf32
     a = torch.randn(n, n, device="cuda").to(dtype)
     b = torch.randn(n, n, device="cuda").to(dtype)
-    inner = max(1, int(1e11 // (2 * n**3)))  # 每次计时至少约 1000 亿次运算，减小计时误差
+    inner = max(1, int(1e11 // (2 * n**3)))  # each timing has at least about 10^11 operations, to make the timing error small
 
     def run():
         for _ in range(inner):
@@ -74,18 +77,21 @@ def matmul_tflops(n: int, dtype: torch.dtype, tf32: bool) -> float:
 
 
 def naive_attention(q, k, v, mask):
-    s = q @ k.transpose(-2, -1) / math.sqrt(D)       # (1, H, T, T)：完整写进显存
+    s = q @ k.transpose(-2, -1) / math.sqrt(D)       # (1, H, T, T): written to GPU memory in full
     s = s.masked_fill(mask, float("-inf"))
-    return torch.softmax(s, dim=-1) @ v               # P 也是 (1, H, T, T)，为反向保存
+    return torch.softmax(s, dim=-1) @ v               # P is also (1, H, T, T) and is saved for the backward pass
 
 
 def flash_attention(q, k, v, mask):
-    with sdpa_kernel(SDPBackend.FLASH_ATTENTION):     # 只允许 FlashAttention 后端，不满足条件就报错
+    with sdpa_kernel(SDPBackend.FLASH_ATTENTION):     # allow only the FlashAttention backend; if it cannot run, raise an error
         return F.scaled_dot_product_attention(q, k, v, is_causal=True)
 
 
 def attention_cost(fn, T: int) -> tuple[float | None, int | None]:
-    """前向 + 反向一次的耗时（秒）和峰值显存增量（字节，不含 q、k、v 本身）；显存不够返回 None。"""
+    """Time (s) of one forward + backward pass and the increase of peak memory (bytes, without q, k, v).
+
+    Return None if there is not sufficient memory.
+    """
     torch.cuda.empty_cache()
     q, k, v = (torch.randn(1, H, T, D, device="cuda", dtype=torch.bfloat16, requires_grad=True)
                for _ in range(3))
@@ -107,7 +113,10 @@ def attention_cost(fn, T: int) -> tuple[float | None, int | None]:
 
 
 def attention_kernels(cfg, T: int, bf16: bool) -> tuple[list[str], bool]:
-    """跑一层 zero 的 Transformer（前向 + 反向），返回 (调用到的融合注意力内核, 有没有单独的 softmax 内核)。"""
+    """Run one layer of the zero Transformer (forward + backward pass).
+
+    Return (the fused attention kernels that it calls, whether there is a separate softmax kernel).
+    """
     from zero.model import Transformer
 
     model = Transformer(cfg).cuda()
@@ -116,7 +125,7 @@ def attention_kernels(cfg, T: int, bf16: bool) -> tuple[list[str], bool]:
     def step():
         with torch.autocast("cuda", dtype=torch.bfloat16) if bf16 else contextlib.nullcontext():
             logits = model(tokens)
-        logits.float().square().mean().backward()    # 故意不用交叉熵：它自带 softmax，会混淆判断
+        logits.float().square().mean().backward()    # do not use cross-entropy here: it has its own softmax, which would confuse the result
 
     step()
     torch.cuda.synchronize()
@@ -126,22 +135,22 @@ def attention_kernels(cfg, T: int, bf16: bool) -> tuple[list[str], bool]:
     keys = ("flash", "fmha", "efficient", "attention", "cudnn")
     names = {e.name for e in prof.events() if e.device_type.name == "CUDA"}
     fused = {re.sub(r"<.*", "", n).removeprefix("void ") for n in names if any(k in n.lower() for k in keys)}
-    return sorted(fused), any("softmax" in n.lower() for n in names)   # 只留函数名，去掉模板参数
+    return sorted(fused), any("softmax" in n.lower() for n in names)   # keep only the function name, without template arguments
 
 
 def main():
     if not torch.cuda.is_available():
-        print("本脚本需要 CUDA GPU；没有 GPU 可以跳过，正文里贴了一次 RTX 3090 上的结果。")
+        print("This script needs a CUDA GPU. Without a GPU, skip it: the chapter shows one result from an RTX 3090.")
         sys.exit(0)
     torch.manual_seed(0)
     name = torch.cuda.get_device_name()
     spec = next((v for k, v in SPEC.items() if k in name), None)
-    print(f"GPU：{name}，{torch.cuda.get_device_properties(0).total_memory / 2**30:.1f} GiB；"
-          f"PyTorch {torch.__version__}，CUDA {torch.version.cuda}")
+    print(f"GPU: {name}, {torch.cuda.get_device_properties(0).total_memory / 2**30:.1f} GiB; "
+          f"PyTorch {torch.__version__}, CUDA {torch.version.cuda}")
 
-    print("\n① 方阵矩阵乘 C = A·B 的实测吞吐（TFLOPS，CUDA event 计时，10 次取中位数）")
+    print("\n① Measured throughput of square matmul C = A·B (TFLOPS, CUDA event timing, median of 10)")
     sizes = (1024, 2048, 4096, 8192)
-    print(f"  {'格式':<6}" + "".join(f"{f'n={n}':>10}" for n in sizes) + f"{'规格峰值':>10}{'最高/峰值':>10}")
+    print(f"  {'format':<6}" + "".join(f"{f'n={n}':>10}" for n in sizes) + f"{'spec peak':>10}{'best/peak':>10}")
     best = {}
     for fmt, dtype, tf32 in FORMATS:
         row = [matmul_tflops(n, dtype, tf32) for n in sizes]
@@ -149,22 +158,22 @@ def main():
         peak = spec[fmt] if spec else None
         tail = f"{peak:>10.1f}{best[fmt] / peak:>10.0%}" if peak else f"{'—':>10}{'—':>10}"
         print(f"  {fmt:<6}" + "".join(f"{x:>10.1f}" for x in row) + tail)
-    print(f"  BF16 比 FP32 快 {best['BF16'] / best['FP32']:.1f} 倍（各取最快的尺寸）")
+    print(f"  BF16 is {best['BF16'] / best['FP32']:.1f} times faster than FP32 (fastest size of each)")
 
     n = 4096
     a = torch.randn(n, n, device="cuda")
     b = torch.randn(n, n, device="cuda")
     ref = a.double() @ b.double()
-    print(f"\n  同一对 {n}×{n} 随机矩阵，与 FP64 结果的相对误差 ‖C − C₆₄‖ / ‖C₆₄‖：")
+    print(f"\n  The same pair of {n}×{n} random matrices. Relative error against the FP64 result, ‖C − C₆₄‖ / ‖C₆₄‖:")
     for fmt, dtype, tf32 in FORMATS:
         torch.backends.cuda.matmul.allow_tf32 = tf32
         c = (a.to(dtype) @ b.to(dtype)).double()
         torch.backends.cuda.matmul.allow_tf32 = False
         print(f"    {fmt:<5} {((c - ref).norm() / ref.norm()).item():.1e}")
 
-    print("\n② 02_precision.py ⑥ 的同一个 Linear 与输入：BF16 autocast 在 CPU 和 GPU 上")
+    print("\n② The same Linear and inputs as 02_precision.py ⑥: BF16 autocast on the CPU and on the GPU")
     torch.manual_seed(0)
-    torch.randn(100_000)                         # 02_precision.py 在 ⑥ 之前只抽过这一次全局随机数
+    torch.randn(100_000)                         # before ⑥, 02_precision.py draws global random numbers only this one time
     lin = torch.nn.Linear(1024, 1024, bias=False)
     xin = torch.randn(64, 1024)
     ref_cpu = lin(xin)
@@ -177,36 +186,36 @@ def main():
         return ((out.float().cpu() - ref_cpu).norm() / ref_cpu.norm()).item()
 
     same = (out_gpu.cpu() == out_cpu).float().mean().item()
-    print(f"  与 FP32 结果的相对误差：CPU {rel(out_cpu):.2e}，GPU {rel(out_gpu):.2e}；"
-          f"输出 dtype {out_gpu.dtype}；两边 BF16 输出逐元素相同的比例 {same:.1%}")
-    torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False  # 默认 True
+    print(f"  Relative error against the FP32 result: CPU {rel(out_cpu):.2e}, GPU {rel(out_gpu):.2e}; "
+          f"output dtype {out_gpu.dtype}; fraction of BF16 outputs that are the same on both: {same:.1%}")
+    torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False  # the default is True
     with torch.autocast("cuda", dtype=torch.bfloat16):
         out_gpu2 = lin_gpu(x_gpu)
     torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = True
-    print(f"  GPU 上禁止 cuBLAS 用 BF16 做中间规约（allow_bf16_reduced_precision_reduction=False）："
-          f"相对误差 {rel(out_gpu2):.2e}")
+    print(f"  On the GPU, do not let cuBLAS use BF16 for intermediate reductions (allow_bf16_reduced_precision_reduction=False): "
+          f"relative error {rel(out_gpu2):.2e}")
 
-    print(f"\n③ 注意力前向 + 反向（1 条序列，{H} 个头 × {D}，BF16，因果；5 次取中位数）")
-    print(f"  {'T':>6} {'S+P 理论':>9} {'朴素 峰值显存':>13} {'Flash 峰值显存':>14} "
-          f"{'朴素 耗时':>10} {'Flash 耗时':>10} {'Flash 快':>8}")
+    print(f"\n③ Attention forward + backward pass (1 sequence, {H} heads × {D}, BF16, causal; median of 5)")
+    print(f"  {'T':>6} {'S+P size':>9} {'naive peak':>13} {'Flash peak':>14} "
+          f"{'naive time':>10} {'Flash time':>10} {'speedup':>8}")
     for T in (1024, 2048, 4096, 8192, 16384):
-        sp = 2 * H * T * T * 2                                   # S 和 P 各 H·T² 个 BF16
+        sp = 2 * H * T * T * 2                                   # S and P, each H·T² BF16 values
         tn, mn = attention_cost(naive_attention, T)
         tf, mf = attention_cost(flash_attention, T)
-        naive_mem = f"{mn / 2**20:>12,.0f}M" if mn is not None else f"{'显存不够':>9}"
+        naive_mem = f"{mn / 2**20:>12,.0f}M" if mn is not None else f"{'out of memory':>9}"
         naive_t = f"{tn * 1e3:>8.2f}ms" if tn is not None else f"{'—':>10}"
         speed = f"{tn / tf:>7.1f}×" if tn is not None else f"{'—':>8}"
         print(f"  {T:>6} {sp / 2**20:>8,.0f}M {naive_mem} {mf / 2**20:>13,.0f}M "
               f"{naive_t} {tf * 1e3:>8.2f}ms {speed}")
-    print("  （峰值显存 = 一次前向 + 反向里比 q、k、v 多出来的最高点；M = MiB）")
+    print("  (S+P size = theoretical size. Peak = the highest memory above q, k, v in one forward + backward pass; M = MiB)")
 
-    print("\n④ zero 的注意力在 GPU 上走哪个内核（主线形状取 1 层：16 个查询头、8 个 KV 头、enable_gqa=True）")
+    print("\n④ Which kernel the attention of zero uses on the GPU (main-line shape, 1 layer: 16 query heads, 8 KV heads, enable_gqa=True)")
     from zero.config import load_model_config
 
     cfg = dataclasses.replace(load_model_config(ROOT / "configs/main/pretrain.toml"), n_layers=1)
     for label, bf16 in (("BF16 autocast", True), ("FP32", False)):
         fused, softmax = attention_kernels(cfg, 2048, bf16)
-        print(f"  {label}：单独的 softmax 内核{'有' if softmax else '没有'}；融合注意力内核{'：' if fused else '没有'}")
+        print(f"  {label}: separate softmax kernel: {'yes' if softmax else 'no'}; fused attention kernels{':' if fused else ': none'}")
         for kname in fused:
             print(f"    {kname}")
     q = torch.randn(1, H, 256, D, device="cuda", dtype=torch.bfloat16)
@@ -214,12 +223,12 @@ def main():
     for backend in (SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.CUDNN_ATTENTION):
         try:
             with warnings.catch_warnings(), sdpa_kernel(backend):
-                warnings.simplefilter("ignore")        # 不支持时 PyTorch 会先打印一串原因
+                warnings.simplefilter("ignore")        # if a backend is not supported, PyTorch first prints a list of reasons
                 F.scaled_dot_product_attention(q, kv, kv, is_causal=True, enable_gqa=True)
-            status = "可以"
+            status = "OK"
         except RuntimeError:
-            status = "不支持（报错）"
-        print(f"  只允许 {backend.name:<20} + enable_gqa=True：{status}")
+            status = "not supported (error)"
+        print(f"  Only {backend.name:<20} + enable_gqa=True: {status}")
 
 
 if __name__ == "__main__":

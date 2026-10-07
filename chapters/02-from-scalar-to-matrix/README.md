@@ -1,101 +1,105 @@
-# 第 2 章：从标量到矩阵 —— y = XW + b
+# Chapter 2: From scalars to matrices — y = XW + b
 
-> **一句话目标**：读完这一章，你能在白纸上写出 `Y = XW + b` 并标对每个矩阵的形状，用形状规则 `(m, k) @ (k, n) → (m, n)` 检查一行代码能不能跑，并且用矩阵形式的梯度 `2/N · Xᵀ(ŷ − y)` 训练一个多元线性回归。
+**English** · [中文](README.zh.md)
 
-📺 **本章视频**：待发布（本地渲染：`bash chapters/02-from-scalar-to-matrix/video/build.sh`）
-🧪 **本章自检**：学完后在 Claude Code 里输入 `/ch02-matrix`
+> **Goal**: After this chapter, you can write `Y = XW + b` on paper and give the correct shape of each matrix. You can use the shape rule `(m, k) @ (k, n) → (m, n)` to check if a line of code can run. You can also train a multivariate linear regression with the gradient in matrix form, `2/N · Xᵀ(ŷ − y)`.
+
+📺 **Video**: Not published yet. To render it on your computer, run `bash chapters/02-from-scalar-to-matrix/video/build.sh`.
+🧪 **Self-check**: After the chapter, type `/ch02-matrix` in Claude Code.
 
 ---
 
-上一章我们用 `ŷ = a·x + b` 学会了训练的四个步骤：模型、损失、梯度、更新。但那个模型只有**一个输入**、**两个参数**。真实世界里，预测房价不会只看面积；大语言模型的一层，输入是几千维的向量，一次还要处理成百上千个样本。这一章要解决的问题是：**输入从一个数变成一组数、样本从一个变成一批时，模型和训练该怎么写？** 答案是向量和矩阵。你会看到，四个步骤一个都不用改，只是把标量换成了矩阵——而且换完之后，代码反而更短、跑得更快。
+In the last chapter, we used `ŷ = a·x + b` to learn the four steps of training: model, loss, gradient, and update. But that model has only **one input** and **two parameters**. In the real world, a house price does not depend only on the area. In one layer of a large language model, the input is a vector with thousands of dimensions. The layer also processes hundreds or thousands of samples at the same time.
 
-## 1. 直觉：一个输入不够
+This chapter answers one question: **the input changes from one number to a set of numbers, and the samples change from one to a batch. How do we write the model and the training?** The answer is vectors and matrices. None of the four steps changes. Only the scalars become matrices. After this change, the code is shorter, and it also runs faster.
 
-还是预测房价。第 1 章只看面积 x，现在每套房子有三个特征：
+## 1. Intuition: one input is not enough
 
-| 特征 | 例子 |
+We predict house prices again. Chapter 1 used only the area x. Now each house has three features:
+
+| Feature | Example |
 |---|---|
-| x₁ 面积 | 80 ㎡ |
-| x₂ 卧室数 | 2 间 |
-| x₃ 距市中心 | 5 km |
+| x₁ area | 80 m² |
+| x₂ number of bedrooms | 2 |
+| x₃ distance to the city center | 5 km |
 
-最自然的推广是：每个特征配一个**权重（weight）**，表示它对价格的影响有多大，再加上一个偏置 b：
+The most natural extension is this: give each feature a **weight**. The weight tells how much the feature changes the price. Then add a bias b:
 
 ```
 ŷ = w₁·x₁ + w₂·x₂ + w₃·x₃ + b
 ```
 
-第 1 章的斜率 a 就是"只有一个特征时的权重"。如果每平米值 0.8 万、每间卧室值 5 万、离市中心每远 1 公里少 3 万，再加 20 万底价，这套房子的预测就是 `0.8×80 + 5×2 − 3×5 + 20 = 79` 万。
+The slope a of Chapter 1 is "the weight when there is only one feature". We give all prices in units of 10,000 yuan (10k yuan). Assume that each square meter adds 0.8 and each bedroom adds 5. Each 1 km of distance from the city center subtracts 3. The base price is 20. Then the prediction for this house is `0.8×80 + 5×2 − 3×5 + 20 = 79` (10k yuan).
 
-问题来了：特征不止 3 个时（大模型里是几千个），难道一项一项写下去？我们需要一种记号，把"一组数"当成一个整体来操作。
+Now there is a problem. What if there are more than 3 features (thousands in a large model)? Must we write all the terms one by one? We need a notation that treats "a set of numbers" as one object.
 
-## 2. 向量与点积
+## 2. Vectors and the dot product
 
-把三个特征排成一列，叫作**向量（vector）**：`x = [80, 2, 5]`；三个权重也排成一个向量：`w = [0.8, 5, −3]`。上面那一长串乘加，就是**点积（dot product）**：对应位置相乘，再全部加起来。
+Put the three features in a list. This list is a **vector**: `x = [80, 2, 5]`. Put the three weights in a vector too: `w = [0.8, 5, −3]`. The long sum of products above is the **dot product**: multiply the items at the same position, then add all the products.
 
 ```
 w · x = w₁x₁ + w₂x₂ + w₃x₃ = Σ wᵢxᵢ
 ŷ = w · x + b
 ```
 
-运行：
+Run:
 
 ```bash
 uv run python chapters/02-from-scalar-to-matrix/code/01_matrix_basics.py
 ```
 
-对应的代码（[`code/01_matrix_basics.py`](code/01_matrix_basics.py)）：
+The code ([`code/01_matrix_basics.py`](code/01_matrix_basics.py)) is:
 
 ```python
-dot_loop = sum(w[i] * x[i] for i in range(3))   # Σ wᵢxᵢ，一项一项加
-dot_np = w @ x                                  # 同一件事，NumPy 一行
+dot_loop = sum(w[i] * x[i] for i in range(3))   # Σ wᵢxᵢ, one term at a time
+dot_np = w @ x                                  # the same calculation in one line of NumPy
 ```
 
-输出：`w · x = 59.0`，`ŷ = w · x + b = 79.0`。
+The output is `w · x = 59.0` and `ŷ = w · x + b = 79.0`.
 
-点积还有一个几何意义，后面会反复用到：两个向量方向越一致，点积越大；互相垂直时点积为 0。第 8 章的注意力机制，就是用点积来衡量"两个词有多相关"。
+The dot product also has a geometric meaning. We use it many times in later chapters. When two vectors point in more similar directions, their dot product is larger. When two vectors are perpendicular, their dot product is 0. The attention mechanism in Chapter 8 uses the dot product to measure "how related two words are".
 
-## 3. 一批样本：矩阵
+## 3. A batch of samples: the matrix
 
-一套房子做一次点积。一万套呢？把每套房子的特征向量当作一**行**，摞在一起，就得到一个**矩阵（matrix）** X：
+One house needs one dot product. What about 10,000 houses? Put the feature vector of each house in one **row**. Then put the rows on top of each other. The result is a **matrix** X:
 
 ```
-        面积  卧室  距离
-X = [[  80,   2,   5.0],    ← 第 1 套房子
-     [ 120,   3,   2.0],    ← 第 2 套
-     [  60,   1,   8.0],    ← 第 3 套
-     [ 100,   3,   3.5]]    ← 第 4 套         形状 (4, 3)
+      area  rooms dist
+X = [[  80,   2,   5.0],    ← house 1
+     [ 120,   3,   2.0],    ← house 2
+     [  60,   1,   8.0],    ← house 3
+     [ 100,   3,   3.5]]    ← house 4         shape (4, 3)
 ```
 
-**每一行是一个样本，每一列是一个特征。** 形状（shape）写成 `(行数, 列数)` = `(4, 3)`。
+**Each row is one sample. Each column is one feature.** We write the shape as `(number of rows, number of columns)` = `(4, 3)`.
 
-把权重竖着排成一列 W（形状 `(3, 1)`），一次**矩阵乘法** `X @ W` 就同时算出了四套房子的点积：
+Put the weights in one column W (shape `(3, 1)`). Then one **matrix multiplication** `X @ W` calculates the dot products of all four houses at the same time:
 
 ```python
 scores = X @ w          # (4, 3) @ (3,) → (4,)
 scores + b              # [ 79. 125.  49. 104.5]
 ```
 
-这四个数就是四套房子的预测价格。**一次矩阵乘法 = 所有样本各做一次点积。**
+These four numbers are the predicted prices of the four houses. **One matrix multiplication = one dot product for each sample.**
 
-## 4. 矩阵乘法怎么算，形状规则从哪来
+## 4. How to calculate a matrix multiplication, and where the shape rule comes from
 
-矩阵乘法 `C = A @ B` 的定义只有一句话：
+The definition of the matrix multiplication `C = A @ B` is only one sentence:
 
 ```
-C[i][j] = A 的第 i 行 · B 的第 j 列
+C[i][j] = row i of A · column j of B
 ```
 
-最直白的实现是三重循环（[`code/02_matrix_multiply.py`](code/02_matrix_multiply.py)）：
+The most direct implementation uses three nested loops ([`code/02_matrix_multiply.py`](code/02_matrix_multiply.py)):
 
 ```python
-for i in range(m):              # 结果的第 i 行
-    for j in range(n):          # 结果的第 j 列
-        for p in range(k):      # 第 i 行和第 j 列做点积
+for i in range(m):              # row i of the result
+    for j in range(n):          # column j of the result
+        for p in range(k):      # dot product of row i and column j
             C[i][j] += A[i][p] * B[p][j]
 ```
 
-运行 `uv run python chapters/02-from-scalar-to-matrix/code/02_matrix_multiply.py`，会打印每一格的计算过程：
+Run `uv run python chapters/02-from-scalar-to-matrix/code/02_matrix_multiply.py`. The script prints the calculation for each cell:
 
 ```
 C[0][0] = 1×7 + 2×9 + 3×11 = 58
@@ -104,43 +108,43 @@ C[1][0] = 4×7 + 5×9 + 6×11 = 139
 C[1][1] = 4×8 + 5×10 + 6×12 = 154
 ```
 
-从定义直接得到这一章最重要的规则——**形状规则**：
+The definition gives the most important rule of this chapter, the **shape rule**:
 
 ```
 (m, k) @ (k, n) → (m, n)
 ```
 
-- 中间的 k 必须相等：A 的一行和 B 的一列要做点积，两个向量必须一样长。
-- 结果的行数来自 A、列数来自 B，中间的 k 在求和里"消掉"了。
+- The two inner k values must be equal. A row of A and a column of B make a dot product, so the two vectors must have the same length.
+- The number of rows of the result comes from A. The number of columns comes from B. The inner k "disappears" in the sum.
 
-脚本最后验证了三个例子：
+At the end, the script tests three examples:
 
-| 左 | 右 | 结果 |
+| Left | Right | Result |
 |---|---|---|
 | (4, 3) | (3, 1) | (4, 1) |
 | (32, 128) | (128, 64) | (32, 64) |
-| (3, 2) | (3, 5) | 报错：中间的 2 ≠ 3 |
+| (3, 2) | (3, 5) | Error: the inner dimensions 2 ≠ 3 |
 
-写深度学习代码，很多 bug 都是形状没对上。养成习惯：每写一行矩阵运算，在注释里写下形状。
+In deep-learning code, many bugs come from shapes that do not agree. Make this a habit: for each line of matrix code, write the shapes in a comment.
 
-> **`@` 和 `*` 是两回事。** `A @ B` 是矩阵乘法；`A * B` 是**元素级乘法**（Hadamard 乘积），对应位置相乘。`01_matrix_basics.py` 里 `M @ N = [[19, 22], [43, 50]]`，`M * N = [[5, 12], [21, 32]]`。形状恰好相同时两者都不报错，结果却完全不同——这是最难查的一类 bug。
+> **Note:** `@` and `*` are two different operations. `A @ B` is matrix multiplication. `A * B` is **element-wise multiplication** (the Hadamard product): it multiplies the items at the same position. In `01_matrix_basics.py`, `M @ N = [[19, 22], [43, 50]]` and `M * N = [[5, 12], [21, 32]]`. When the two shapes are the same, neither operation gives an error, but the results are completely different. This type of bug is the most difficult to find.
 
-## 5. Y = XW + b：给每个字母标上形状
+## 5. Y = XW + b: give each letter a shape
 
-把第 3 节推广到"多个输出"，就是神经网络里最常见的一行：
+Extend Section 3 to "many outputs". The result is the most common line in a neural network:
 
 ```
 Y   =   X    @   W    +   b
 (N,n)  (N,k)    (k,n)    (n,)
 ```
 
-- **N**：这一批有多少个样本，叫**批量维（batch dimension）**。
-- **k**：每个样本的输入特征数。
-- **n**：输出个数。W 的**第 j 列**是算第 j 个输出用的 k 个权重。
+- **N**: the number of samples in this batch. This is the **batch dimension**.
+- **k**: the number of input features of each sample.
+- **n**: the number of outputs. **Column j** of W holds the k weights that calculate output j.
 
-一个关键观察：**W 的形状和 N 无关**。一次喂 4 个样本还是 1 万个样本，用的是同一个 W。这就是为什么训练时可以随意调 batch 大小，模型本身不用改。
+An important observation: **the shape of W does not depend on N**. You can give the model 4 samples or 10,000 samples at one time: it uses the same W. This is why you can change the batch size during training without a change to the model.
 
-[`code/03_linear_layer.py`](code/03_linear_layer.py) 把 4 套房子依次送进两层：
+[`code/03_linear_layer.py`](code/03_linear_layer.py) sends the 4 houses through two layers, one after the other:
 
 ```python
 def linear(X, W, b):
@@ -151,55 +155,55 @@ def linear(X, W, b):
 (4, 3) --[@W1 + b1]--> (4, 2) --[@W2 + b2]--> (4, 1)
 ```
 
-### 广播：b 怎么加到每一行
+### Broadcasting: how to add b to each row
 
-`X @ W` 是 `(N, n)`，而 b 只有 `(n,)`，形状不一样怎么相加？NumPy 和 PyTorch 会自动把 b 加到**每一行**上，效果像把 b 复制了 N 份，但内存里并没有真的复制。这叫**广播（broadcasting）**。
+`X @ W` has the shape `(N, n)`, but b has only the shape `(n,)`. How can we add two different shapes? NumPy and PyTorch automatically add b to **each row**. The effect is the same as N copies of b, but there are no real copies in memory. This is **broadcasting**.
 
-规则：两个形状**从最后一维开始对齐**，每一维要么相等，要么其中一个是 1（或者缺失），才能广播。`01_matrix_basics.py` 的输出：
+The rule: **align the two shapes from the last dimension**. Broadcasting is possible only when, in each dimension, the two sizes are equal, or one of them is 1 (or missing). The output of `01_matrix_basics.py` is:
 
 ```
-(4, 2) 的矩阵 + 形状 (2,) 的向量 → 每一行都加上 [10, -1]
-(4, 2) + (3,) 会报错：operands could not be broadcast together with shapes (4,2) (3,)
+(4, 2) matrix + vector of shape (2,) → [10, -1] is added to each row
+(4, 2) + (3,) gives an error: operands could not be broadcast together with shapes (4,2) (3,)
 ```
 
-所以 b 的长度必须等于输出个数 n。广播很方便，也很危险：形状"碰巧"能广播时，代码不会报错，但算的可能根本不是你想要的东西（引导问题 4）。
+Thus, the length of b must be equal to the number of outputs n. Broadcasting is convenient, but it is also dangerous. Two shapes can broadcast "by accident". Then the code gives no error, but it can calculate something completely different from what you want (guided question 4).
 
-## 6. 梯度也写成矩阵
+## 6. The gradient in matrix form
 
-模型变成了 `ŷ = XW + b`，损失还是均方误差 `L = 1/N · Σ (ŷᵢ − yᵢ)²`。梯度怎么算？
+The model is now `ŷ = XW + b`. The loss is still the mean squared error `L = 1/N · Σ (ŷᵢ − yᵢ)²`. How do we calculate the gradient?
 
-回忆第 1 章：`∂L/∂a = 2/N · Σ (ŷᵢ − yᵢ) · xᵢ`。现在有 k 个权重，第 j 个权重的梯度同理：
+Remember Chapter 1: `∂L/∂a = 2/N · Σ (ŷᵢ − yᵢ) · xᵢ`. Now there are k weights. The gradient of weight j has the same form:
 
 ```
 ∂L/∂w_j = 2/N · Σᵢ (ŷᵢ − yᵢ) · x_ij
 ```
 
-把 j = 1…k 摞成一列，这正好是矩阵乘法 `Xᵀ @ (ŷ − y)`：Xᵀ 的第 j 行就是所有样本的第 j 个特征。于是：
+Put the gradients for j = 1…k in one column. The result is exactly the matrix multiplication `Xᵀ @ (ŷ − y)`, because row j of Xᵀ holds feature j of all samples. Thus:
 
 ```
 ∂L/∂W = 2/N · Xᵀ (ŷ − y)        (k, N) @ (N, 1) → (k, 1)
 ∂L/∂b = 2/N · Σ (ŷ − y)
 ```
 
-检查形状：结果是 `(k, 1)`，和 W 一模一样。**梯度和参数永远同形状**，因为每个参数都需要自己的一个梯度。以后遇到再复杂的公式，先用形状检查一遍，能挡掉一半错误。
+Check the shape: the result is `(k, 1)`, the same as W. **A gradient always has the same shape as its parameter**, because each parameter needs its own gradient. Later, when you see a more complex formula, check the shapes first. This check stops half of all errors.
 
-`Xᵀ` 是 X 的**转置（transpose）**：行变列、列变行，`(N, k)` 变成 `(k, N)`。
+`Xᵀ` is the **transpose** of X: rows become columns, and columns become rows. `(N, k)` becomes `(k, N)`.
 
-## 7. 极简代码：训练多元线性回归
+## 7. Minimal code: train a multivariate linear regression
 
-运行：
+Run:
 
 ```bash
 uv run python chapters/02-from-scalar-to-matrix/code/04_multivariate_regression.py
 ```
 
-核心和第 1 章几乎一字不差（[`code/04_multivariate_regression.py`](code/04_multivariate_regression.py)）：
+The core is almost the same as in Chapter 1 ([`code/04_multivariate_regression.py`](code/04_multivariate_regression.py)):
 
 ```python
 def gradients(W, b, X, y):
     n = len(X)
-    err = X @ W + b - y                  # (N, 1)：残差 ŷ − y
-    grad_W = 2 / n * X.T @ err           # ∂L/∂W = 2/N · Xᵀ(ŷ − y)，(3, 1)
+    err = X @ W + b - y                  # (N, 1): residual ŷ − y
+    grad_W = 2 / n * X.T @ err           # ∂L/∂W = 2/N · Xᵀ(ŷ − y), (3, 1)
     grad_b = 2 / n * err.sum(axis=0)     # ∂L/∂b = 2/N · Σ(ŷ − y)
     return grad_W, grad_b
 
@@ -209,20 +213,22 @@ for _ in range(steps):
     b = b - lr * grad_b                  # b ← b − η · ∂L/∂b
 ```
 
-我们造了 200 套房子，真实规律是 `价格 = 0.8·面积 + 5·卧室 − 3·距离 + 20`，再加标准差 5 万的噪声。
+We made 200 houses. The true relation is `price = 0.8·area + 5·bedrooms − 3·distance + 20`, plus noise with a standard deviation of 5 (10k yuan).
 
-**先标准化。** 三个特征的尺度差很多：标准差分别是 30.14、1.11、5.19。用第 1 章的办法算临界学习率 `2/λ_max`：
+**Standardize first.** The three features have very different scales: their standard deviations are 30.14, 1.11, and 5.19. Calculate the critical learning rate `2/λ_max` with the method of Chapter 1:
 
-| | 临界学习率 |
+| | Critical learning rate |
 |---|---:|
-| 原始特征 | 8.45 × 10⁻⁵ |
-| 标准化后（每个特征减均值、除以标准差） | 0.879 |
+| Original features | 8.45 × 10⁻⁵ |
+| After standardization (subtract the mean of each feature, divide by its standard deviation) | 0.879 |
 
-原始特征下，面积方向的"碗"又窄又陡，学习率必须小于万分之一；而最平缓的方向（几乎就是偏置 b 的方向）弯曲程度只有最陡方向的约二十四万分之一，用这么小的学习率要走几十万步才能走到碗底（动手任务 2 会让你亲眼看到）。**标准化（standardization）**让每个方向的弯曲程度差不多，学习率可以大很多。这就是第 1 章引导问题 3 的答案，也是第 6 章"归一化"的前身。
+With the original features, the "bowl" is narrow and steep in the direction of the area. Thus the learning rate must be less than 1/10,000. The flattest direction is almost the direction of the bias b. Its curvature is only about 1/240,000 of the curvature in the steepest direction. With such a small learning rate, hundreds of thousands of steps are necessary to get to the bottom of the bowl. In Hands-on task 2, you see this yourself.
 
-从 W = 0、b = 0 出发，学习率 0.1（标准化空间里的参数）：
+**Standardization** makes the curvature about the same in all directions. Then the learning rate can be much larger. This is the answer to guided question 3 of Chapter 1. It is also the predecessor of "normalization" in Chapter 6.
 
-| 步数 | w_面积 | w_卧室 | w_距离 | b | 损失 |
+Start from W = 0 and b = 0, with a learning rate of 0.1 (the parameters are in the standardized space):
+
+| Step | w_area | w_rooms | w_dist | b | Loss |
 |---:|---:|---:|---:|---:|---:|
 | 0 | 0.000 | 0.000 | 0.000 | 0.000 | 7875.146 |
 | 1 | 5.014 | 1.332 | −3.077 | 16.682 | 5043.738 |
@@ -231,164 +237,170 @@ for _ in range(steps):
 | 50 | 24.571 | 5.248 | −15.918 | 83.410 | 21.942 |
 | 200 | 24.571 | 5.248 | −15.918 | 83.411 | 21.942 |
 
-换算回原始单位（万元）：
+Converted back to the original units (10k yuan):
 
-| | 梯度下降 | 解析解（最小二乘） | 真实值 |
+| | Gradient descent | Closed-form solution (least squares) | True value |
 |---|---:|---:|---:|
-| w_面积（每㎡） | 0.815 | 0.815 | 0.800 |
-| w_卧室（每间） | 4.734 | 4.734 | 5.000 |
-| w_距离（每 km） | −3.070 | −3.070 | −3.000 |
+| w_area (per m²) | 0.815 | 0.815 | 0.800 |
+| w_rooms (per bedroom) | 4.734 | 4.734 | 5.000 |
+| w_dist (per km) | −3.070 | −3.070 | −3.000 |
 | b | 19.837 | 19.837 | 20.000 |
 
-几个值得注意的地方：
+Look at these results:
 
-- **50 步就收敛了**，和第 1 章一样：先大步下降，再越走越慢。
-- **最终损失 21.94，接近噪声方差 5² = 25**：模型学到了规律，剩下的是数据本身的噪声，任何模型都消不掉。
-- **梯度下降和解析解到小数点后三位完全一致**，和真实值的小偏差来自噪声。
-- 用学到的模型预测一套新房子（100 ㎡、3 室、距市中心 5 km）：100.2 万元。
+- **The training converges in 50 steps**, as in Chapter 1. First, the loss decreases in large steps. Then it decreases more and more slowly.
+- **The final loss is 21.94, near the noise variance 5² = 25.** The model learned the relation. The rest is the noise in the data, and no model can remove it.
+- **Gradient descent and the closed-form solution agree to three decimal places.** The small differences from the true values come from the noise.
+- Use the learned model to predict the price of a new house (100 m², 3 bedrooms, 5 km to the city center). The prediction is 100.2 (10k yuan).
 
-## 8. 循环 vs 向量化：到底差多少
+## 8. Loops vs vectorization: how large is the difference?
 
-同一个公式，可以用 Python 循环一项一项算，也可以用一次矩阵运算算完。后者叫**向量化（vectorization）**。运行：
+You can calculate the same formula with a Python loop, one term at a time. You can also calculate it with one matrix operation. The second method is **vectorization**. Run:
 
 ```bash
 uv run python chapters/02-from-scalar-to-matrix/code/05_loop_vs_vectorized.py
 ```
 
-脚本先核对几种写法结果一致，再计时（取多次运行中最快的一次）。本机（4 核 CPU）一次运行的结果：
+The script first makes sure that the different versions give the same result. Then it measures the time (the fastest of many runs). The results of one run on our machine (4-core CPU) are:
 
-**对比 1：一次前向 `Y = X @ W`，X 是 (1000, 100)，W 是 (100, 10)**
+**Comparison 1: one forward pass `Y = X @ W`, X is (1000, 100), W is (100, 10)**
 
-| 写法 | 耗时 | 相对三重循环 |
+| Version | Time | Compared with three loops |
 |---|---:|---:|
-| Python 三重循环（`02` 里的 `matmul`） | 62.70 ms | 1× |
-| 只循环样本，每行一次 `np.dot` | 1.94 ms | 快 32 倍 |
-| 一次 `X @ W` | 0.057 ms | 快 1091 倍 |
+| Three nested Python loops (`matmul` in `02`) | 62.70 ms | 1× |
+| Loop only over samples, one `np.dot` for each row | 1.94 ms | 32× faster |
+| One `X @ W` | 0.057 ms | 1091× faster |
 
-**对比 2：多元线性回归（5000 套房子，3 个特征）训练 200 步**
+**Comparison 2: multivariate linear regression (5000 houses, 3 features), 200 training steps**
 
-| 写法 | 耗时 |
+| Version | Time |
 |---|---:|
-| 逐样本、逐特征循环算梯度 | 538.99 ms |
-| 矩阵形式 `2/N · Xᵀ(ŷ − y)` | 21.73 ms（快 25 倍） |
+| Gradient with a loop over each sample and each feature | 538.99 ms |
+| Matrix form `2/N · Xᵀ(ŷ − y)` | 21.73 ms (25× faster) |
 
-两种训练写法学到的参数最大差 3.6 × 10⁻¹⁵，即浮点误差。计时随机器和负载变化：同一台机器多跑几次，前向对比的倍数在 950–1170 倍之间波动；2026-10 换一台服务器复跑，前向对比是 1400–1650 倍，训练对比约 50 倍；机器同时忙别的事（比如渲染视频）时还会更慢。看数量级即可。
+The parameters from the two training versions differ by at most 3.6 × 10⁻¹⁵. This is floating-point error. The times change with the machine and its load. On the same machine, in more runs, the speedup of the forward pass was between 950× and 1170×. In 2026-10, a run on a different server gave 1400–1650× for the forward pass and about 50× for training. When the machine does other work at the same time (for example, it renders a video), the code runs even more slowly. Look only at the order of magnitude.
 
-对比 2 只快了几十倍（具体多少取决于机器），比对比 1 的上千倍少得多，这本身就说明了问题：这里每次矩阵运算只处理 5000×3 个数，还有 200 次 Python 层面的循环和函数调用。**每次交给底层库的活越大，向量化的优势越明显**——这也是 GPU 训练时要用大 batch 的原因之一。
+Comparison 2 is only tens of times faster (the exact value depends on the machine). This is much less than the thousands of times in comparison 1, and this difference is important. Here, each matrix operation processes only 5000×3 numbers. There are also 200 iterations of a Python loop, with function calls. **The more work each call gives to the low-level library, the larger the advantage of vectorization.** This is also one reason why GPU training uses large batches.
 
-**为什么快？** Python 循环每做一次乘加，都要解释一行代码、检查类型、创建新的数字对象，真正的计算只占很小一部分。`X @ W` 则把整块数据交给用 C 和汇编写好的线性代数库（BLAS）：数据在内存里连续存放，一条 CPU 指令能同时算好几个数（SIMD），还能用上多个核心。到了 GPU 上，成千上万个核心同时做乘加，而它们最擅长的恰恰就是矩阵乘法。大模型训练和推理的绝大部分计算量都在矩阵乘法里（第 12 章估算训练算力的 `C ≈ 6ND`，主要数的就是矩阵乘法里的乘加次数），所以整个深度学习都写成矩阵的形式。
+**Why is vectorization faster?** For each multiply-add, a Python loop must interpret a line of code, check types, and make a new number object. The real calculation is only a small part of the work. `X @ W` gives the full block of data to a linear algebra library (BLAS) that is written in C and assembly. The data is contiguous in memory. One CPU instruction can calculate several numbers at the same time (SIMD), and the library can use many cores.
 
-## 9. 小结
+On a GPU, thousands of cores do multiply-adds at the same time, and matrix multiplication is the operation that GPUs do best. Most of the computation in the training and inference of large models is in matrix multiplications. (In Chapter 12, the estimate of the training compute, `C ≈ 6ND`, counts mainly the multiply-adds in matrix multiplications.) This is why all of deep learning is written in matrix form.
 
-- **一组输入 → 向量**，`ŷ = w · x + b`，点积 = 对应相乘再求和。
-- **一批样本 → 矩阵**，每行一个样本；`Y = XW + b`，形状 `(N, k) @ (k, n) + (n,) → (N, n)`。
-- **形状规则** `(m, k) @ (k, n) → (m, n)`：中间的 k 必须相等。
-- **广播**：b 从最后一维对齐，自动加到每一行。
-- **梯度** `∂L/∂W = 2/N · Xᵀ(ŷ − y)`，和 W 同形状。
-- **向量化**：同一个计算，一次矩阵运算比 Python 循环快几十到上千倍。
-- 训练的四个步骤——模型、损失、梯度、更新——一个没变。
+## 9. Summary
+
+- **A set of inputs → a vector**: `ŷ = w · x + b`. The dot product multiplies the items at the same position and adds the products.
+- **A batch of samples → a matrix**, with one sample in each row: `Y = XW + b`, shape `(N, k) @ (k, n) + (n,) → (N, n)`.
+- **Shape rule** `(m, k) @ (k, n) → (m, n)`: the two inner k values must be equal.
+- **Broadcasting**: NumPy aligns b from the last dimension and adds it to each row automatically.
+- **Gradient** `∂L/∂W = 2/N · Xᵀ(ŷ − y)`: it has the same shape as W.
+- **Vectorization**: for the same calculation, one matrix operation is tens to thousands of times faster than a Python loop.
+- The four steps of training (model, loss, gradient, update) did not change.
 
 ---
 
-## GPU 实测（单张 RTX 3090）
+## GPU measurements (one RTX 3090)
 
-> 上面正文里的数字都来自 CPU 运行。本节换到一张 NVIDIA GeForce RTX 3090（24 GB 显存，Ampere 架构；规格表：BF16 张量核稠密峰值约 71 TFLOPS，FP32 约 35.6 TFLOPS，显存带宽约 936 GB/s）上实测，环境：PyTorch 2.11.0+cu128、CUDA 12.8，2026 年 10 月。这张卡的功耗上限被服务器设成了 240 W（出厂默认 350 W），持续满载时会降频，所以算力、带宽的绝对值比满功耗的 3090 偏低，看相对关系更可靠。没有 GPU 可以跳过本节。
+> **Note:** All numbers in the text above come from CPU runs. This section uses one NVIDIA GeForce RTX 3090 (24 GB of GPU memory, Ampere architecture). The data sheet gives these values: BF16 tensor-core dense peak about 71 TFLOPS, FP32 about 35.6 TFLOPS, memory bandwidth about 936 GB/s. Software: PyTorch 2.11.0+cu128, CUDA 12.8, October 2026. The server sets the power limit of this card to 240 W (the factory default is 350 W). Under a continuous full load, the card decreases its clock frequency. Thus the absolute values of compute and bandwidth are lower than on a 3090 at full power, and the relative values are more reliable. If you do not have a GPU, skip this section.
 
-运行：
+Run:
 
 ```bash
 uv run python chapters/02-from-scalar-to-matrix/code/07_gpu_matmul.py
 ```
 
-同一个方阵乘法 `(N, N) @ (N, N)`，N 从 64 扫到 8192，每次 2N³ 次浮点运算。CPU 是 AMD Threadripper PRO 3995WX，固定用 8 个线程；两边都是 float32（GPU 关掉了 TF32），最后一列换成 GPU 的 BF16 张量核。GPU 每次调用后都等它算完再停表，所以测的是"从 Python 发起一次矩阵乘到拿到结果"的时间；数据事先已在各自的内存/显存里。耗时取中位数：
+The script calculates the same square matrix multiplication `(N, N) @ (N, N)`, for N from 64 to 8192. Each multiplication has 2N³ floating-point operations. The CPU is an AMD Threadripper PRO 3995WX, with a fixed number of 8 threads. Both sides use float32 (TF32 is off on the GPU). The last column uses the BF16 tensor cores of the GPU. After each GPU call, the script waits for the GPU to finish before it stops the timer. Thus it measures the time "from the start of one matrix multiplication in Python to the result". The data is already in CPU memory or GPU memory before the timing. The times are medians:
 
-| N | CPU float32 | GPU float32 | GPU 比 CPU 快 | CPU TFLOPS | GPU float32 TFLOPS | GPU BF16 TFLOPS |
+| N | CPU float32 | GPU float32 | GPU speedup over CPU | CPU TFLOPS | GPU float32 TFLOPS | GPU BF16 TFLOPS |
 |---:|---:|---:|---:|---:|---:|---:|
-| 64 | 0.014 ms | 0.024 ms | 0.60 倍（更慢） | 0.037 | 0.02 | 0.02 |
-| 128 | 0.025 ms | 0.039 ms | 0.63 倍（更慢） | 0.170 | 0.11 | 0.18 |
-| 256 | 0.089 ms | 0.030 ms | 2.93 倍 | 0.376 | 1.10 | 1.05 |
-| 512 | 0.860 ms | 0.040 ms | 21.26 倍 | 0.312 | 6.64 | 10.31 |
-| 1024 | 5.356 ms | 0.136 ms | 39.46 倍 | 0.401 | 15.82 | 34.82 |
-| 2048 | 39.707 ms | 0.776 ms | 51.15 倍 | 0.433 | 22.13 | 56.43 |
-| 4096 | 310.047 ms | 8.138 ms | 38.10 倍 | 0.443 | 16.89 | 51.60 |
-| 8192 | 2.40 s | 63.960 ms | 37.54 倍 | 0.458 | 17.19 | 50.62 |
+| 64 | 0.014 ms | 0.024 ms | 0.60× (slower) | 0.037 | 0.02 | 0.02 |
+| 128 | 0.025 ms | 0.039 ms | 0.63× (slower) | 0.170 | 0.11 | 0.18 |
+| 256 | 0.089 ms | 0.030 ms | 2.93× | 0.376 | 1.10 | 1.05 |
+| 512 | 0.860 ms | 0.040 ms | 21.26× | 0.312 | 6.64 | 10.31 |
+| 1024 | 5.356 ms | 0.136 ms | 39.46× | 0.401 | 15.82 | 34.82 |
+| 2048 | 39.707 ms | 0.776 ms | 51.15× | 0.433 | 22.13 | 56.43 |
+| 4096 | 310.047 ms | 8.138 ms | 38.10× | 0.443 | 16.89 | 51.60 |
+| 8192 | 2.40 s | 63.960 ms | 37.54× | 0.458 | 17.19 | 50.62 |
 
-这张表把第 8 节"每次交给底层库的活越大，向量化的优势越明显"又演了一遍，只是主角换成了 GPU。N ≤ 512 时，GPU 那一列几乎不动，一直是 0.02–0.04 ms：这是"启动一次 GPU 计算、再等它返回"的固定开销，和矩阵多大没关系。所以 64、128 这种小矩阵，CPU 反而更快。等 N 到了 1024 以上，固定开销被摊薄，GPU 快了 38–51 倍，BF16 张量核又比 float32 快 2–3 倍。这就是"GPU 训练要用大 batch"和"从极简到生产级"表里"第 14 章还会降到 BF16"的底气：GPU 得喂足够大的矩阵才吃得饱。出乎意料的是，float32 在 2048 时最快，更大的矩阵反而掉到 17 TFLOPS 左右，只有规格表的一半。原因是这张卡的功耗上限被设成了 240 W（出厂默认 350 W）。我们另外连续跑了几秒大矩阵乘，功耗一直顶在 240 W，核心频率从空闲时的约 1.7 GHz 掉到 0.8–1.0 GHz。算得越久，频率压得越低。所以你自己的卡上，大矩阵这几行的数字多半会更好看。
+This table shows the statement of Section 8 again, but now on a GPU: "the more work each call gives to the low-level library, the larger the advantage of vectorization". For N ≤ 512, the GPU column almost does not change. It stays at 0.02–0.04 ms. This time is the fixed cost to start one GPU calculation and wait for the result. The fixed cost does not depend on the size of the matrix. Thus, for small matrices such as 64 and 128, the CPU is faster.
 
-## 从极简到生产级
+For N of 1024 and more, the fixed cost becomes a small part of the total time. Then the GPU is 38–51× faster, and the BF16 tensor cores are 2–3× faster than float32. This result supports two statements: "GPU training uses large batches", and "Chapter 14 goes down to BF16" (in the table of "From minimal code to production code"). A GPU needs sufficiently large matrices to be fully used.
 
-同一件事的 PyTorch 标准写法在 [`code/06_pytorch_version.py`](code/06_pytorch_version.py)。模型换成 `nn.Linear(3, 1)`，训练循环和第 1 章的五行**一字未改**：
+One result was unexpected: float32 is fastest at 2048. Larger matrices drop to about 17 TFLOPS, only half of the data-sheet value. The cause is the power limit of this card, 240 W (the factory default is 350 W). In a separate test, we ran large matrix multiplications for several seconds without a pause. The power stayed at 240 W, and the core clock dropped from about 1.7 GHz (idle) to 0.8–1.0 GHz. The longer the calculation, the lower the clock. Thus, on your own card, the numbers for large matrices will probably be better.
+
+## From minimal code to production code
+
+The standard PyTorch code for the same task is in [`code/06_pytorch_version.py`](code/06_pytorch_version.py). The model becomes `nn.Linear(3, 1)`. The five lines of the training loop from Chapter 1 **do not change at all**:
 
 ```python
-model = nn.Linear(in_features=3, out_features=1)   # 三进一出的线性层
+model = nn.Linear(in_features=3, out_features=1)   # linear layer with 3 inputs and 1 output
 optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
 loss_fn = nn.MSELoss()
 
 for step in range(200):
-    y_hat = model(x)              # 1. 前向：(200, 3) → (200, 1)，一次处理整个 batch
-    loss = loss_fn(y_hat, t)      # 2. 损失
-    optimizer.zero_grad()         # 3. 清梯度
-    loss.backward()               # 4. 反向：autograd 算出 ∂L/∂W = 2/N·Xᵀ(ŷ−y)
-    optimizer.step()              # 5. 更新
+    y_hat = model(x)              # 1. forward pass: (200, 3) → (200, 1), the full batch at one time
+    loss = loss_fn(y_hat, t)      # 2. loss
+    optimizer.zero_grad()         # 3. set the gradients to zero
+    loss.backward()               # 4. backward pass: autograd calculates ∂L/∂W = 2/N·Xᵀ(ŷ−y)
+    optimizer.step()              # 5. update
 ```
 
-运行 `uv run python chapters/02-from-scalar-to-matrix/code/06_pytorch_version.py`，输出：
+Run `uv run python chapters/02-from-scalar-to-matrix/code/06_pytorch_version.py`. The output is:
 
 ```
-nn.Linear(3, 1)：weight 形状 (1, 3)，bias 形状 (1,)
-输入 batch (4, 3) → 输出 (4, 1)；与 x @ weight.T + bias 的最大差 0.0e+00
+nn.Linear(3, 1): weight shape (1, 3), bias shape (1,)
+Input batch (4, 3) → output (4, 1); maximum difference from x @ weight.T + bias 0.0e+00
 ...
-200 步后（标准化空间）：
-  PyTorch  W = [ 24.571   5.248 -15.918]，b = [83.411]
-  NumPy    W = [ 24.571   5.248 -15.918]，b = [83.411]
-  float64 最大差 = 0.0e+00
-  float32（PyTorch 默认精度）最大差 = 1.8e-05
+After 200 steps (standardized space):
+  PyTorch  W = [ 24.571   5.248 -15.918], b = [83.411]
+  NumPy    W = [ 24.571   5.248 -15.918], b = [83.411]
+  float64 maximum difference = 0.0e+00
+  float32 (default precision of PyTorch) maximum difference = 1.8e-05
 ```
 
-它比极简版多做了什么，为什么：
+The table shows what the production code adds and why:
 
-| 极简版 | 生产级写法 | 为什么 |
+| Minimal code | Production code | Why |
 |---|---|---|
-| 手推 `grad_W = 2/N * X.T @ err` | `loss.backward()` | 这一章的梯度还能手推；第 3 章加了非线性、层数一多就推不动了，第 4 章会亲手实现 autograd |
-| W 形状 `(k, n)`，算 `X @ W` | `weight` 形状 `(n, k)` = `(输出, 输入)`，算 `x @ weight.T + bias` | PyTorch 的约定，文档写作 `y = xAᵀ + b`。读别人的代码、加载别人的权重时一定要注意这个转置 |
-| 输入必须是 `(N, k)` | 输入可以是 `(*, k)`：任意多个前导维 | 第 9 章的 Transformer 里，输入是 `(batch, 序列长度, 维度)`，`nn.Linear` 只作用在最后一维 |
-| float64 | 默认 float32 | 单精度省一半内存、在 GPU 上快得多；代价是约 10⁻⁵ 量级的数值差（上面的 1.8e-05）。第 14 章还会降到 BF16 |
+| Derive `grad_W = 2/N * X.T @ err` by hand | `loss.backward()` | In this chapter, we can still derive the gradient by hand. Chapter 3 adds a nonlinearity. With many layers, a derivation by hand is no longer possible. In Chapter 4, you write autograd yourself. |
+| W has the shape `(k, n)`; calculate `X @ W` | `weight` has the shape `(n, k)` = `(output, input)`; calculate `x @ weight.T + bias` | This is the PyTorch convention. The documentation writes it as `y = xAᵀ + b`. When you read the code of other people or load their weights, be careful with this transpose. |
+| The input must be `(N, k)` | The input can be `(*, k)`: any number of leading dimensions | In the Transformer of Chapter 9, the input is `(batch, sequence length, dimension)`. `nn.Linear` operates only on the last dimension. |
+| float64 | float32 by default | Single precision uses half the memory and is much faster on a GPU. The cost is a numerical difference of about 10⁻⁵ (the 1.8e-05 above). Chapter 14 goes down to BF16. |
 
-**对拍**：用 float64 时，PyTorch 和手写矩阵梯度的 NumPy 版 200 步后**完全相同**（差为 0）；用默认的 float32，差在 10⁻⁵ 量级。生产级代码和极简代码对得上，才能相信它。
-
----
-
-## 引导问题
-
-带着这些问题去问 Claude Code，直到你能用自己的话讲清楚：
-
-1. 两个向量的点积在几何上代表什么？如果两个向量互相垂直，点积是多少？为什么第 8 章的注意力机制会用点积来衡量两个词的"相关性"？试着让 Claude Code 画图解释。
-2. 矩阵 A 是 `(2, 3)`、B 是 `(3, 5)`，`A @ B` 是什么形状？`B @ A` 呢？矩阵乘法满足交换律吗？
-3. `03_linear_layer.py` 里有一行 `H = X @ W1 + b1`。权重矩阵 W1 的每一**列**代表什么？每一**行**呢？如果把 W1 全部初始化为 0，两个输出会有什么区别？
-4. `y` 的形状是 `(200,)`，`y_hat` 的形状是 `(200, 1)`，`y_hat - y` 会得到什么形状？为什么这个 bug 不会报错，却会让训练悄悄出错？（先猜，再在 Python 里试。）
-5. 为什么 `05` 里训练对比只快了几十倍，而前向对比快了上千倍？如果把房子数从 5000 改成 50，倍数会变大还是变小？
-6. 第 7 节不标准化时，临界学习率只有 8.45 × 10⁻⁵。用这个学习率训练，面积的权重和卧室的权重，哪个学得快？为什么？
-
-## 动手任务
-
-每个任务都要真的运行代码、看到结果。
-
-**任务 1（基础）**：不用 NumPy，只用 Python 列表，写一个函数计算两个向量的点积，用 `[1, 2, 3]` 和 `[4, 5, 6]` 验证结果是 32。然后改进 `02_matrix_multiply.py` 里的 `matmul`：维度不匹配时打印清晰的错误信息，比如"A 是 (3, 2)，B 是 (3, 5)：A 的列数 2 ≠ B 的行数 3，无法相乘"。
-
-**任务 2（核心）**：在 `04_multivariate_regression.py` 里去掉标准化，直接用原始特征训练。先用 `critical_lr` 算出临界值，分别试它的 0.9 倍和 1.05 倍，记录 200 步后的损失和四个参数；再看 0.9 倍时 200 步后哪个参数离真实值最远，把步数加到 2 万、20 万再看。用"碗在不同方向弯曲程度不同"解释你看到的现象。
-
-**任务 3（挑战）**：把 `03_linear_layer.py` 改成三层（在中间加一个 `2 维 → 3 维` 的层），打印每一步的张量形状。然后把三层的权重合并成**一个** W 和**一个** b，验证合并后的单层和三层的输出完全一样。想一想：既然叠多少层都等于一层，深度学习的"深"是从哪里来的？——这正是第 3 章要回答的问题。
+**Parity check**: with float64, the PyTorch version and the NumPy version (matrix gradients by hand) are **exactly the same** after 200 steps (the difference is 0). With the default float32, the difference is about 10⁻⁵. Only when the production code agrees with the minimal code can we trust it.
 
 ---
 
-## 本章参考文献
+## Guided questions
 
-- NumPy 文档 *Broadcasting*（广播规则的官方说明）：<https://numpy.org/doc/stable/user/basics.broadcasting.html>
-- NumPy 文档 *What is NumPy?*（"Why is NumPy fast?"：向量化与预编译 C 代码）：<https://numpy.org/doc/stable/user/whatisnumpy.html>
-- PyTorch 文档 `torch.nn.Linear`（`y = xAᵀ + b`，输入形状 `(*, in_features)`）：<https://docs.pytorch.org/docs/stable/generated/torch.nn.Linear.html>
-- 3Blue1Brown. *Essence of Linear Algebra*（线性代数的本质，有中文字幕版；矩阵乘法 = 线性变换的复合）：<https://www.3blue1brown.com/topics/linear-algebra>
-- Goodfellow, Bengio, Courville. *Deep Learning*, 第 2 章"线性代数"：<https://www.deeplearningbook.org/contents/linear_algebra.html>
-- Zhang et al. *Dive into Deep Learning*, 3.1 节"线性回归"（含向量化提速的对比）：<https://d2l.ai/chapter_linear-regression/linear-regression.html>
-- Andrew Ng. *CS229 Lecture Notes*, 第 1 章（多元线性回归与正规方程）：<https://cs229.stanford.edu/main_notes.pdf>
+Ask Claude Code these questions. Continue until you can explain the answers in your own words:
 
-**下一章**：`03_linear_layer.py` 最后验证了一件事——两个线性层叠在一起，`W1 @ W2` 还是一个矩阵，两层等于一层。线性函数叠多少层都还是线性的，永远画不出一条曲线。可现实中的规律大多是弯的。第 3 章，我们在两层之间加一点"非线性"，看看它如何让模型学会拟合曲线——这就是神经网络。
+1. What does the dot product of two vectors mean geometrically? If two vectors are perpendicular, what is their dot product? Why does the attention mechanism in Chapter 8 use the dot product to measure how "related" two words are? Ask Claude Code to explain it with a figure.
+2. Matrix A is `(2, 3)` and B is `(3, 5)`. What is the shape of `A @ B`? What about `B @ A`? Is matrix multiplication commutative?
+3. `03_linear_layer.py` has the line `H = X @ W1 + b1`. What does each **column** of the weight matrix W1 represent? What does each **row** represent? If you initialize all of W1 to 0, what is the difference between the two outputs?
+4. The shape of `y` is `(200,)`, and the shape of `y_hat` is `(200, 1)`. What is the shape of `y_hat - y`? Why does this bug not give an error, but silently makes the training wrong? (Guess first, then try it in Python.)
+5. In `05`, why is the training comparison only tens of times faster, but the forward-pass comparison thousands of times faster? If you change the number of houses from 5000 to 50, does the speedup become larger or smaller?
+6. In Section 7, without standardization, the critical learning rate is only 8.45 × 10⁻⁵. Train with this learning rate. Which weight learns faster, the weight of the area or the weight of the bedrooms? Why?
+
+## Hands-on tasks
+
+For each task, run the code and look at the result.
+
+**Task 1 (basic)**: Write a function that calculates the dot product of two vectors. Use only Python lists, not NumPy. Test it with `[1, 2, 3]` and `[4, 5, 6]`: the result must be 32. Then improve `matmul` in `02_matrix_multiply.py`: when the dimensions do not agree, print a clear error message. For example: "A is (3, 2), B is (3, 5): A has 2 columns ≠ B has 3 rows, so A @ B is not possible".
+
+**Task 2 (core)**: In `04_multivariate_regression.py`, remove the standardization and train on the original features. First, use `critical_lr` to calculate the critical value. Try 0.9 times and 1.05 times this value. Record the loss and the four parameters after 200 steps. Then, for 0.9 times, find the parameter that is farthest from its true value after 200 steps. Increase the number of steps to 20,000 and to 200,000, and look again. Explain the result with this idea: "the bowl curves by different amounts in different directions".
+
+**Task 3 (challenge)**: Change `03_linear_layer.py` to three layers (add a `2-dim → 3-dim` layer in the middle). Print the shape of the tensor after each step. Then merge the weights of the three layers into **one** W and **one** b. Make sure that the merged single layer gives exactly the same output as the three layers. Think about this: if any number of layers is equal to one layer, where does the "deep" in deep learning come from? Chapter 3 answers this question.
+
+---
+
+## References
+
+- NumPy documentation, *Broadcasting* (the official description of the broadcasting rules): <https://numpy.org/doc/stable/user/basics.broadcasting.html>
+- NumPy documentation, *What is NumPy?* ("Why is NumPy fast?": vectorization and precompiled C code): <https://numpy.org/doc/stable/user/whatisnumpy.html>
+- PyTorch documentation, `torch.nn.Linear` (`y = xAᵀ + b`, input shape `(*, in_features)`): <https://docs.pytorch.org/docs/stable/generated/torch.nn.Linear.html>
+- 3Blue1Brown. *Essence of Linear Algebra* (matrix multiplication = composition of linear transformations): <https://www.3blue1brown.com/topics/linear-algebra>
+- Goodfellow, Bengio, Courville. *Deep Learning*, Chapter 2, "Linear Algebra": <https://www.deeplearningbook.org/contents/linear_algebra.html>
+- Zhang et al. *Dive into Deep Learning*, Section 3.1, "Linear Regression" (includes a comparison of the speedup from vectorization): <https://d2l.ai/chapter_linear-regression/linear-regression.html>
+- Andrew Ng. *CS229 Lecture Notes*, Chapter 1 (multivariate linear regression and the normal equations): <https://cs229.stanford.edu/main_notes.pdf>
+
+**Next chapter**: At the end, `03_linear_layer.py` shows one fact. Two linear layers in a stack are still one matrix, `W1 @ W2`, so two layers are equal to one layer. A stack of any number of linear functions is still linear, and it can never draw a curve. But most relations in the real world are curved. In Chapter 3, we add a small "nonlinearity" between the two layers. We see how it lets the model fit curves. This is a neural network.

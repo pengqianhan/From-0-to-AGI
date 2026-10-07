@@ -1,16 +1,19 @@
-"""第 18 章 · 极简代码 4：在一个小语言模型上跑 DPO
+"""Chapter 18 · Minimal code 4: DPO on a small language model.
 
-任务：提示词 "a+b="（a、b 是 0–9），回答是和的数字，最后以 ";" 结束。
-① "SFT"：用**质量参差不齐**的数据训练一个小 GRU 语言模型——同一道题，40% 的示范是对的，
-   60% 是随便写的错数字。它学会了格式，也学会了"经常答错"。这就是参考模型 π_ref。
-② 偏好数据：70 道题，每道 4 对（chosen = 正确答案，rejected = π_ref 会写出的错答案）。
-   另外 30 道题留出，训练时从不出现。
-③ DPO：看训练中隐式奖励的 margin、准确率、chosen / rejected 的 log 概率怎么动；
-   留出题上"答对的概率"、采样的格式正确率。
-④ 扫 β。
-学习率太大、chosen 的概率也一起掉等坑，见 05_dpo_pitfalls.py。
+Task: the prompt is "a+b=" (a and b are 0–9). The answer is the digits of the sum, and then ";".
+① "SFT": train a small GRU language model on data of **mixed quality**. For the same prompt, 40% of
+   the demonstrations are correct, and 60% are random wrong numbers. The model learns the format,
+   and it also learns to "answer wrong often". This model is the reference model π_ref.
+② Preference data: 70 prompts, 4 pairs each (chosen = the correct answer, rejected = a wrong
+   answer that π_ref can write). The other 30 prompts are held out. Training never sees them.
+③ DPO: see how the implicit-reward margin, the accuracy, and the log-probabilities of chosen and
+   rejected change during training. On the held-out prompts: "the probability of the correct
+   answer" and the fraction of well-formed samples.
+④ Sweep β.
+For pitfalls (a learning rate that is too large, the probability of chosen goes down too), see
+05_dpo_pitfalls.py.
 
-运行：uv run python chapters/18-preference-alignment/code/04_toy_dpo.py   （CPU 时间约半分钟；机器繁忙时墙钟几分钟）
+Run: uv run python chapters/18-preference-alignment/code/04_toy_dpo.py   (about 30 s of CPU time; a few minutes of wall time on a busy machine)
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from functools import lru_cache
 import torch
 import torch.nn.functional as F
 
-torch.set_num_threads(1)  # 构建机多任务共享 CPU（本机可删）
+torch.set_num_threads(1)  # The build machine shares its CPU between jobs (you can remove this line).
 
 VOCAB = list("0123456789+=;")
 STOI = {c: i for i, c in enumerate(VOCAB)}
@@ -40,14 +43,17 @@ def encode(s: str) -> list[int]:
 
 
 def wrong_answers(a: int, b: int, mistakes: str = "random") -> list[int]:
-    """错答案。"random"：0–18 里任何一个错数字；"near"：只差 1 或 2（05 用它演示一个坑）。"""
+    """Wrong answers. "random": any wrong number in 0–18. "near": off by only 1 or 2 (05 uses it to show a pitfall)."""
     if mistakes == "near":
         return [a + b + d for d in (-2, -1, 1, 2) if a + b + d >= 0]
     return [x for x in range(19) if x != a + b]
 
 
 class TinyLM(torch.nn.Module):
-    """字符级 GRU 语言模型（约 2.0 万参数）。换成 Transformer，下面的 DPO 代码一行都不用改。"""
+    """Character-level GRU language model (about 20k parameters).
+
+    If you use a Transformer here, no line of the DPO code below changes.
+    """
 
     def __init__(self, d: int = 32, h: int = 64) -> None:
         super().__init__()
@@ -69,7 +75,10 @@ def pad(seqs: list[list[int]]) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def response_logps(model: TinyLM, prompts: list[tuple[int, int]], answers: list[int]) -> torch.Tensor:
-    """每条"提示词 + 回答"里**只对回答部分**求 log 概率之和（提示词不算，和 zero 一样）。"""
+    """For each "prompt + answer", sum the log-probabilities **of the answer part only**.
+
+    The prompt does not count, the same as in zero.
+    """
     seqs, starts = [], []
     for (a, b), ans in zip(prompts, answers):
         p = encode(f"{a}+{b}=")
@@ -77,14 +86,14 @@ def response_logps(model: TinyLM, prompts: list[tuple[int, int]], answers: list[
         starts.append(len(p))
     ids, lens = pad(seqs)
     logp = torch.log_softmax(model(ids[:, :-1]), -1).gather(-1, ids[:, 1:, None]).squeeze(-1)
-    pos = torch.arange(ids.shape[1] - 1)[None, :] + 1  # logp[:, t] 预测的是第 t+1 个 token
+    pos = torch.arange(ids.shape[1] - 1)[None, :] + 1  # logp[:, t] predicts token t+1
     mask = (pos >= torch.tensor(starts)[:, None]) & (pos < lens[:, None])
     return (logp * mask).sum(-1)
 
 
 @lru_cache(maxsize=2)
 def sft_model(mistakes: str = "random") -> TinyLM:
-    """① 在参差不齐的示范上做 SFT：答对 40%，答错 60%。"""
+    """① SFT on demonstrations of mixed quality: 40% correct, 60% wrong."""
     torch.manual_seed(0)
     g = random.Random(1)
     model = TinyLM()
@@ -101,7 +110,7 @@ def sft_model(mistakes: str = "random") -> TinyLM:
 
 
 def make_pairs(mistakes: str = "random", seed: int = 0, per_prompt: int = 4) -> list[tuple[tuple[int, int], int, int]]:
-    """② 偏好对：(提示词, chosen = 正确答案, rejected = 一个 π_ref 会犯的错)。"""
+    """② Preference pairs: (prompt, chosen = the correct answer, rejected = a mistake that π_ref can make)."""
     g = random.Random(seed)
     return [((a, b), a + b, g.choice(wrong_answers(a, b, mistakes)))
             for a, b in TRAIN_PROMPTS for _ in range(per_prompt)]
@@ -109,7 +118,7 @@ def make_pairs(mistakes: str = "random", seed: int = 0, per_prompt: int = 4) -> 
 
 @torch.no_grad()
 def sample(model: TinyLM, prompts: list[tuple[int, int]], n: int, seed: int, max_new: int = 4) -> list[str]:
-    """温度 1 采样，返回生成的字符串（不含提示词）。"""
+    """Sample at temperature 1. Return the generated strings (without the prompt)."""
     g = torch.Generator().manual_seed(seed)
     outs = []
     for a, b in prompts:
@@ -136,7 +145,8 @@ def well_formed(s: str) -> bool:
 
 @torch.no_grad()
 def evaluate(model: TinyLM, ref: TinyLM, n_samples: int = 20, mistakes: str = "random") -> dict:
-    """留出题：答对的概率、采样的格式正确率与正确率、隐式奖励的偏好准确率（β 无关，只看符号）。"""
+    """Held-out prompts: probability of the correct answer, fractions of well-formed and correct samples,
+    and the preference accuracy of the implicit reward (independent of β: only the sign counts)."""
     prompts = HELDOUT_PROMPTS
     p_correct = response_logps(model, prompts, [a + b for a, b in prompts]).exp().mean()
     outs = sample(model, prompts, n_samples, seed=123)
@@ -154,7 +164,8 @@ def evaluate(model: TinyLM, ref: TinyLM, n_samples: int = 20, mistakes: str = "r
 
 def run_dpo(beta: float = 0.1, lr: float = 1e-3, steps: int = 150, bsz: int = 32, seed: int = 0,
             log_every: int = 0, mistakes: str = "random") -> tuple[TinyLM, list[dict]]:
-    """③ DPO 训练。参考模型的 log 概率预先算好（zero 的 ref_mode = "precompute"）。"""
+    """③ DPO training. The log-probabilities of the reference model are computed before training
+    (ref_mode = "precompute" in zero)."""
     ref = sft_model(mistakes)
     policy = copy.deepcopy(ref).train()
     pairs = make_pairs(mistakes)
@@ -179,8 +190,8 @@ def run_dpo(beta: float = 0.1, lr: float = 1e-3, steps: int = 150, bsz: int = 32
         idx = torch.randint(0, len(pairs), (bsz,), generator=g)
         pw = response_logps(policy, [prompts[i] for i in idx], [yw[i] for i in idx])
         pl = response_logps(policy, [prompts[i] for i in idx], [yl[i] for i in idx])
-        h = beta * ((pw - ref_w[idx]) - (pl - ref_l[idx]))  # 隐式奖励差
-        loss = -F.logsigmoid(h).mean()                       # DPO 损失
+        h = beta * ((pw - ref_w[idx]) - (pl - ref_l[idx]))  # implicit reward difference
+        loss = -F.logsigmoid(h).mean()                       # DPO loss
         opt.zero_grad()
         loss.backward()
         opt.step()
@@ -188,7 +199,7 @@ def run_dpo(beta: float = 0.1, lr: float = 1e-3, steps: int = 150, bsz: int = 32
 
 
 def main_results() -> dict:
-    """04 的全部数字（视频 scenes.py 也调用它）。"""
+    """All numbers of 04 (the video scenes.py also calls this function)."""
     ref = sft_model()
     base = evaluate(ref, ref)
     policy, hist = run_dpo(beta=0.1, lr=1e-3, steps=150, log_every=25)
@@ -207,21 +218,23 @@ def main_results() -> dict:
 def main() -> None:
     R = main_results()
     base, hist, after = R["base"], R["hist"], R["after"]
-    print(f"① SFT 参考模型（示范里 {P_CORRECT_SFT:.0%} 是对的）在 30 道留出题上：")
-    print(f"   答对的概率 {base['p_correct']:.3f} | 采样格式正确 {base['format']:.3f} | 采样答对 {base['sample_acc']:.3f}")
-    print(f"\n② 偏好数据：{R['n_pairs']} 对（70 道题 × 4），chosen = 正确答案，rejected = 错答案")
-    print("③ DPO（β = 0.1，lr = 1e-3，每步 32 对，150 步），训练集上的指标：")
-    print(f"   {'步':>4} | {'损失':>6} | {'margin':>7} | {'acc':>5} | {'log π(chosen)':>13} | {'log π(rejected)':>15}")
+    print(f"① SFT reference model ({P_CORRECT_SFT:.0%} of the demonstrations are correct) on 30 held-out prompts:")
+    print(f"   P(correct) {base['p_correct']:.3f} | well-formed samples {base['format']:.3f} | "
+          f"correct samples {base['sample_acc']:.3f}")
+    print(f"\n② Preference data: {R['n_pairs']} pairs (70 prompts × 4), chosen = correct answer, rejected = wrong answer")
+    print("③ DPO (β = 0.1, lr = 1e-3, 32 pairs per step, 150 steps), metrics on the training set:")
+    print(f"   {'step':>4} | {'loss':>6} | {'margin':>7} | {'acc':>5} | {'log π(chosen)':>13} | {'log π(rejected)':>15}")
     for h in hist:
         print(f"   {h['step']:>4} | {h['loss']:.4f} | {h['margin']:>+7.3f} | {h['acc']:.2f} | "
               f"{h['logp_w']:>13.3f} | {h['logp_l']:>15.3f}")
-    print(f"   留出题：答对的概率 {base['p_correct']:.3f} → {after['p_correct']:.3f} | "
-          f"采样答对 {base['sample_acc']:.3f} → {after['sample_acc']:.3f} | "
-          f"格式 {base['format']:.3f} → {after['format']:.3f} | 隐式奖励排序正确 {after['pref_acc']:.2f}")
+    print(f"   held-out: P(correct) {base['p_correct']:.3f} → {after['p_correct']:.3f} | "
+          f"correct samples {base['sample_acc']:.3f} → {after['sample_acc']:.3f} | "
+          f"well-formed {base['format']:.3f} → {after['format']:.3f} | implicit reward ranks correctly {after['pref_acc']:.2f}")
 
-    print("\n④ 扫 β（lr = 1e-3，150 步）：")
-    print("   margin 是隐式奖励之差（已乘 β）；margin/β 是 log 比值之差——策略离 π_ref 走了多远")
-    print(f"   {'β':>5} | {'最终损失':>7} | {'margin':>7} | {'margin/β':>8} | {'Δlog π(chosen)':>14} | {'Δlog π(rejected)':>16} | {'留出答对概率':>10}")
+    print("\n④ Sweep β (lr = 1e-3, 150 steps; values at the last step):")
+    print("   margin = difference of the implicit rewards (β is included). margin/β = difference of the log ratios: "
+          "how far the policy moved from π_ref. P(correct) is on the held-out prompts.")
+    print(f"   {'β':>5} | {'loss':>7} | {'margin':>7} | {'margin/β':>8} | {'Δlog π(chosen)':>14} | {'Δlog π(rejected)':>16} | {'P(correct)':>10}")
     for r in R["beta_sweep"]:
         print(f"   {r['beta']:>5} | {r['loss']:>7.4f} | {r['margin']:>+7.3f} | {r['margin'] / r['beta']:>+8.2f} | "
               f"{r['d_logp_w']:>+14.3f} | {r['d_logp_l']:>+16.3f} | {r['p_correct']:>10.3f}")

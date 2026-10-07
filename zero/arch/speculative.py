@@ -1,32 +1,41 @@
-"""推测解码（speculative decoding，对应第 25 章）。实验模块，不用于主线模型的训练。
+"""Speculative decoding (Chapter 25). Experiment module; the main-line training does not use it.
 
-decode 阶段一次只喂 1 个 token，算力吃不饱、时间花在读权重和 KV cache 上（第 10、21 章），
-所以目标模型一次前向验证 k+1 个位置，和生成 1 个 token 的时间差不多。推测解码利用这一点：
+In the decode phase, the model gets only 1 token at a time. The compute units are not fully used,
+and the time goes into reading the weights and the KV cache (Chapters 10 and 21).
+Thus one forward pass of the target model on k+1 positions takes about the same time as
+generating 1 token. Speculative decoding uses this fact:
 
-1. 便宜的草稿（draft）自回归地提出 k 个 token；
-2. 目标模型（target）把它们一次喂进去，得到 k+1 个位置的分布 p_1..p_{k+1}；
-3. 从左往右逐个验证草稿 x_i（草稿分布 q_i）：
-   - 贪心（temperature <= 0）：x_i == argmax p_i 就接受；
-   - 采样：以概率 min(1, p_i(x_i) / q_i(x_i)) 接受；被拒时从残差分布
-     norm(max(0, p_i − q_i)) 重抽一个，本轮结束；
-   k 个全部接受时，再从 p_{k+1} 抽一个"奖励" token；
-4. 被拒绝的草稿已经写进了两个模型的 KV cache：回滚（只需把"有效长度"退回去——
-   `zero.kv_cache.KVCache.update` 按 start_pos 覆盖写入、只返回 [0, start_pos+T)，
-   后面残留的旧数据不会被读到）。
+1. A cheap draft proposes k tokens autoregressively.
+2. The target model gets all of them in one pass and gives the distributions p_1..p_{k+1}
+   for k+1 positions.
+3. Verify the drafts x_i (draft distribution q_i) one at a time, from left to right:
+   - Greedy (temperature <= 0): accept x_i if x_i == argmax p_i.
+   - Sampling: accept with probability min(1, p_i(x_i) / q_i(x_i)). On a rejection, sample
+     a new token from the residual distribution norm(max(0, p_i − q_i)), and end the round.
+   If all k drafts are accepted, sample one more "bonus" token from p_{k+1}.
+4. The rejected drafts are already in the KV caches of both models. Roll back: only move the
+   "valid length" back. `zero.kv_cache.KVCache.update` overwrites from start_pos and returns
+   only [0, start_pos+T), so nothing reads the old data that stays after that.
 
-**质量不变**：贪心时输出与目标模型自己贪心解码逐字相同；采样时每个 token 的分布恰好是目标模型
-（经过同样的 temperature / top-p 处理后）的分布（Leviathan 等 2023 附录 A.1；Chen 等 2023）。
-一次接受的概率 α = Σ_x min(p(x), q(x))。
+**The quality does not change**: with greedy decoding, the output is identical to greedy decoding
+of the target model alone. With sampling, the distribution of each token is exactly the
+distribution of the target model (after the same temperature / top-p processing)
+(Leviathan et al. 2023, Appendix A.1; Chen et al. 2023).
+The probability of one acceptance is α = Σ_x min(p(x), q(x)).
 
-草稿有两种来源：
-- 另一个同词表的小模型（`draft=Transformer`）；
-- `draft=None`：提示词查找（prompt lookup / n-gram）——在已有文本里找和末尾 n 个 token 相同的片段，
-  把它后面的 token 当草稿；草稿分布是 one-hot，采样时接受概率就是 p(x)。
-MTP 模块当草稿（自推测）见 `zero/arch/mtp.py` 的 `mtp_speculative_generate`，复用本文件的 `verify`。
+There are two sources of drafts:
+- another small model with the same vocabulary (`draft=Transformer`);
+- `draft=None`: prompt lookup (n-gram). Find a segment in the existing text that is the same as
+  the last n tokens, and use the tokens after it as the draft. The draft distribution is one-hot,
+  so the acceptance probability in sampling is p(x).
+For the MTP module as the draft (self-speculative), see `mtp_speculative_generate` in
+`zero/arch/mtp.py`. It uses `verify` from this file.
 
-只支持 batch = 1：批量推测解码要处理每条序列接受个数不同带来的"参差"，vLLM / SGLang 在调度器里做这件事。
-本文件只追求可读和正确：CUDA 上贪心与目标模型逐字相同已在 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/），
-尚未在 GPU 上验证性能。
+Only batch = 1 is supported. Batched speculative decoding must handle the "ragged" sequences that
+come from different numbers of accepted tokens. vLLM / SGLang do this in the scheduler.
+This file has only two goals: easy to read and correct. On RTX 3090, greedy output on CUDA is
+identical to the target model (2026-10, see runs/2026-10-01-gpu0-check/). The performance is not
+verified on GPU yet.
 """
 
 from __future__ import annotations
@@ -42,43 +51,52 @@ from zero.model import Transformer
 
 @dataclass
 class SpeculativeResult:
-    """生成结果和接受统计。"""
+    """Generation result and acceptance statistics."""
 
-    tokens: list[int]  # 新 token（不含提示词；遇到 eos 时不含 eos）
-    rounds: int = 0  # 目标模型的验证前向次数（不含 prefill）
-    proposed: int = 0  # 草稿一共提出的 token 数
-    accepted: int = 0  # 被接受的草稿数
-    examined: int = 0  # 真正被比较过的草稿数（第一个被拒之后的草稿不算）
+    tokens: list[int]  # new tokens (no prompt; no eos if eos occurs)
+    rounds: int = 0  # number of verification forward passes of the target model (no prefill)
+    proposed: int = 0  # total number of tokens that the draft proposed
+    accepted: int = 0  # number of accepted drafts
+    examined: int = 0  # number of drafts actually compared (drafts after the first rejection do not count)
     accepted_per_round: list[int] = field(default_factory=list)
 
     @property
     def acceptance_rate(self) -> float:
-        """逐 token 接受率 α 的估计：接受数 / 被比较数（在 α 独立同分布的假设下是最大似然估计）。"""
+        """Estimate of the per-token acceptance rate α: accepted / compared.
+
+        This is the maximum likelihood estimate if α is i.i.d.
+        """
         return self.accepted / self.examined if self.examined else 0.0
 
     @property
     def tokens_per_round(self) -> float:
-        """目标模型每次前向平均产出几个 token（普通解码是 1）。"""
+        """Mean number of tokens for each forward pass of the target model (1 for normal decoding)."""
         return (self.accepted + self.rounds) / self.rounds if self.rounds else 0.0
 
 
 def expected_tokens_per_round(alpha: float, k: int) -> float:
-    """Leviathan 等 2023 的公式 (1)：(1 − α^{k+1}) / (1 − α)。"""
+    """Formula (1) of Leviathan et al. 2023: (1 − α^{k+1}) / (1 − α)."""
     if alpha >= 1.0:
         return float(k + 1)
     return (1 - alpha ** (k + 1)) / (1 - alpha)
 
 
 def expected_speedup(alpha: float, k: int, c: float) -> float:
-    """Leviathan 等 2023 的定理 3.8：(1 − α^{k+1}) / ((1 − α)(k·c + 1))，c = 草稿一步 / 目标一步的耗时。
-    假设目标模型验证 k+1 个位置和生成 1 个 token 一样快。"""
+    """Theorem 3.8 of Leviathan et al. 2023: (1 − α^{k+1}) / ((1 − α)(k·c + 1)),
+    c = time of one draft step / time of one target step.
+
+    Assumption: the target model verifies k+1 positions as fast as it generates 1 token.
+    """
     return expected_tokens_per_round(alpha, k) / (k * c + 1)
 
 
 def warp_probs(logits: torch.Tensor, temperature: float, top_p: float = 1.0) -> torch.Tensor:
-    """logits (..., V) → 经过 temperature 和 top-p 处理后的概率（与 `zero.generate.sample_next` 同一个分布）。
+    """logits (..., V) → probabilities after temperature and top-p
+    (the same distribution as `zero.generate.sample_next`).
 
-    推测解码的保证是针对"处理后的目标分布"的：p 和 q 要用同样的处理。"""
+    The guarantee of speculative decoding is for the "processed target distribution":
+    p and q must use the same processing.
+    """
     probs = torch.softmax(logits.float() / temperature, dim=-1)
     if top_p < 1.0:
         sorted_probs, idx = torch.sort(probs, dim=-1, descending=True)
@@ -97,12 +115,13 @@ def verify(
     top_p: float = 1.0,
     generator: torch.Generator | None = None,
 ) -> tuple[int, list[int]]:
-    """一轮验证。
+    """One round of verification.
 
-    p_logits: (k+1, V) 目标模型在"每个草稿位置 + 最后一个位置"的 logits；
-    drafts:   k 个草稿 token；
-    q_probs:  (k, V) 草稿分布（已经过同样的 temperature / top-p）；None 表示草稿是确定性的（one-hot）。
-    返回 (接受个数 m, 本轮确定的新 token：m 个草稿 + 1 个纠正或奖励 token)。
+    p_logits: (k+1, V) logits of the target model at "each draft position + the last position";
+    drafts:   k draft tokens;
+    q_probs:  (k, V) draft distributions (after the same temperature / top-p); None means the draft
+              is deterministic (one-hot).
+    Return (number of accepted tokens m, new tokens of this round: m drafts + 1 correction or bonus token).
     """
     k = len(drafts)
     if temperature <= 0:
@@ -121,9 +140,9 @@ def verify(
             q_i = q_probs[i].float()
         ratio = p[i, x] / q_i[x] if q_i[x] > 0 else torch.tensor(0.0)
         if torch.rand((), generator=generator, device=p.device) < torch.clamp(ratio, max=1.0):
-            continue  # 接受
+            continue  # accept
         residual = torch.clamp(p[i] - q_i, min=0.0)
-        if residual.sum() <= 0:  # p == q（数值上）时残差为 0；此时拒绝本不会发生，退回按 p 抽
+        if residual.sum() <= 0:  # if p == q (numerically), the residual is 0; a rejection cannot occur then, so sample from p
             residual = p[i]
         tok = int(torch.multinomial(residual / residual.sum(), 1, generator=generator))
         return i, list(drafts[:i]) + [tok]
@@ -132,12 +151,16 @@ def verify(
 
 
 def prompt_lookup_draft(seq: Sequence[int], k: int, max_ngram: int = 3) -> list[int]:
-    """提示词查找（n-gram）草稿：在 seq 里从后往前找与末尾 n 个 token 相同的片段（n 从大到小），
-    返回它后面最多 k 个 token；找不到返回空列表。代价几乎为零（c ≈ 0）。"""
+    """Prompt lookup (n-gram) draft. Search seq from the end for a segment that is the same as
+    the last n tokens (n from large to small).
+
+    Return a maximum of k tokens after that segment, or an empty list if there is no match.
+    The cost is almost zero (c ≈ 0).
+    """
     L = len(seq)
     for n in range(min(max_ngram, L - 1), 0, -1):
         tail = list(seq[L - n :])
-        for start in range(L - n - 1, -1, -1):  # 最近的匹配优先
+        for start in range(L - n - 1, -1, -1):  # the most recent match first
             if list(seq[start : start + n]) == tail:
                 cont = list(seq[start + n : start + n + k])
                 if cont:
@@ -146,7 +169,10 @@ def prompt_lookup_draft(seq: Sequence[int], k: int, max_ngram: int = 3) -> list[
 
 
 def rollback(cache: KVCache, length: int) -> None:
-    """KV cache 回滚到前 length 个位置。预分配缓存不需要清数据，只记录有效长度。"""
+    """Roll back the KV cache to the first length positions.
+
+    A preallocated cache does not need to clear data. It only records the valid length.
+    """
     cache.seq_len = min(cache.seq_len, length)
 
 
@@ -163,21 +189,24 @@ def speculative_generate(
     eos_id: int | None = None,
     max_ngram: int = 3,
 ) -> SpeculativeResult:
-    """用草稿模型（或 draft=None 时用提示词查找）给目标模型做推测解码。batch = 1。
+    """Speculative decoding for the target model with a draft model
+    (or with prompt lookup if draft=None). batch = 1.
 
-    temperature <= 0：贪心，输出与 `zero.generate.generate(target, ..., temperature=0)` 逐字相同。
-    temperature > 0：采样，每个 token 的分布与目标模型（同样 temperature / top-p）的分布相同，
-    但具体抽到的序列与 `generate` 不同（随机数的用法不同）。
+    temperature <= 0: greedy. The output is identical to
+    `zero.generate.generate(target, ..., temperature=0)`.
+    temperature > 0: sampling. The distribution of each token is the same as the distribution of
+    the target model (same temperature / top-p). But the sampled sequence is different from
+    `generate` (the random numbers are used in a different way).
     """
     if k < 1:
-        raise ValueError("k 至少为 1")
+        raise ValueError("k must be at least 1")
     if draft is not None and draft.config.vocab_size != target.config.vocab_size:
-        raise ValueError("草稿模型和目标模型必须共用同一个词表")
+        raise ValueError("The draft model and the target model must use the same vocabulary")
     prompt = (
         prompt_ids.flatten().tolist() if isinstance(prompt_ids, torch.Tensor) else list(prompt_ids)
     )
     if not prompt:
-        raise ValueError("提示词不能为空")
+        raise ValueError("The prompt must not be empty")
     device = next(target.parameters()).device
     dtype = next(target.parameters()).dtype
     max_len = min(len(prompt) + max_new_tokens + k + 1, target.config.max_seq_len)
@@ -191,7 +220,7 @@ def speculative_generate(
 
     t_cache = KVCache.from_config(target.config, 1, max_len, device, dtype)
     d_cache = KVCache.from_config(draft.config, 1, max_len, device, dtype) if draft else None
-    t_len = d_len = 0  # 两个缓存里有效的位置数
+    t_len = d_len = 0  # number of valid positions in the two caches
     seq = list(prompt)
     res = SpeculativeResult(tokens=[])
     models = [target] + ([draft] if draft is not None else [])
@@ -201,9 +230,9 @@ def speculative_generate(
     try:
         while len(seq) - len(prompt) < max_new_tokens:
             remaining = max_new_tokens - (len(seq) - len(prompt))
-            kk = min(k, remaining - 1, max_len - len(seq) - 1)  # 留出纠正/奖励 token 的位置
+            kk = min(k, remaining - 1, max_len - len(seq) - 1)  # keep a position for the correction/bonus token
 
-            # ── 1. 草稿提出 kk 个 token ──
+            # ── 1. The draft proposes kk tokens ──
             drafts: list[int] = []
             q_rows: list[torch.Tensor] = []
             if kk > 0 and draft is not None:
@@ -227,21 +256,21 @@ def speculative_generate(
             elif kk > 0:
                 drafts = prompt_lookup_draft(seq, kk, max_ngram)
 
-            # ── 2. 目标模型一次前向验证 ──
+            # ── 2. One forward pass of the target model verifies them ──
             n = len(drafts)
             inp = torch.tensor([seq[t_len:] + drafts], device=device)
             p_logits = target(inp, kv_cache=t_cache, start_pos=t_len)[0, -(n + 1) :]
             q_probs = torch.stack(q_rows) if q_rows else None
             m, new = verify(p_logits, drafts, q_probs, temperature, top_p, gen)
 
-            # ── 3. 记账、接上新 token、回滚缓存 ──
+            # ── 3. Bookkeeping, append the new tokens, roll back the caches ──
             res.rounds += 1
             res.proposed += n
             res.accepted += m
             res.examined += m + (1 if m < n else 0)
             res.accepted_per_round.append(m)
             seq += new
-            t_len = len(seq) - 1  # 最后一个新 token 还没进缓存
+            t_len = len(seq) - 1  # the last new token is not in the cache yet
             rollback(t_cache, t_len)
             if d_cache is not None:
                 d_len = min(d_len, len(seq) - 1)

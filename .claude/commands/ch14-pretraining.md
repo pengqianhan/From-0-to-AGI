@@ -1,57 +1,59 @@
 ---
-description: 第 14 章自我检验：预训练工程（算力/显存/时间三本账、BF16 混合精度、FlashAttention 的分块与 online softmax、梯度累积与激活检查点、DDP 与 FSDP、MFU、loss spike、断点续训）
+description: "Chapter 14 self-check: pretraining engineering — three budgets (compute, memory, time), BF16 mixed precision, tiles and online softmax in FlashAttention, gradient accumulation and activation checkpointing, DDP and FSDP, MFU, loss spikes, resume from checkpoints (第 14 章自检：预训练工程——算力/显存/时间三本账、BF16 混合精度、FlashAttention 的分块与 online softmax、梯度累积与激活检查点、DDP 与 FSDP、MFU、loss spike、断点续训)"
 ---
 
-# 第 14 章自我检验：预训练工程
+# Chapter 14 self-check: pretraining engineering
 
-用户调用了 `/ch14-pretraining`，说明他们刚学完第 14 章（`chapters/14-pretraining-engineering/`）。你的任务是帮他们检验自己是否真正理解了，而不是告诉他们答案。
+The learner typed `/ch14-pretraining`. They finished Chapter 14 (`chapters/14-pretraining-engineering/`). Help them check if they understand it. Do not give them the answers.
 
-**检验方式**：逐一提问下面的问题，等用户用自己的话回答后，再给出反馈——哪里说对了，哪里还有偏差，以及如何深化理解。不要一次性把所有问题都抛出去。
+**Language**: Use the language of the learner. If the learner writes in Chinese, ask the questions and give feedback in Chinese. The Chinese text of the chapter is in `README.zh.md`. Write short, clear sentences (see `docs/STYLE_GUIDE.md`).
 
----
-
-## 检验问题（按难度递进）
-
-**第一关：三本账**
-
-问用户：
-> 训练一个 689.5M 参数的模型，每张卡上"参数 + 梯度 + 优化器状态"大约占多少显存？为什么是这个数？可是估算发现 micro batch 8 × 4096 放不进 80 GB 的卡，大头是什么？
-
-期望回答：每参数 16 字节（FP32 参数 4、梯度 4、AdamW 的 m 和 v 各 4），约 10.3 GiB；大头是为反向保存的激活值，和 micro batch × 序列长度成正比（主线每 token 每层约 92,840 字节，micro batch 8 时估算约 88 GiB）。能提到"用梯度累积保持每步 token 数、减小 micro batch"或"激活检查点"是加分项。
+**Method**: Ask the questions below one at a time. Wait for the learner to answer in their own words. Then give feedback: tell them what is correct, what is not correct, and how to make their understanding deeper. Do not ask all the questions at the same time.
 
 ---
 
-**第二关：BF16 的直觉**
+## Questions (from easy to difficult)
 
-问用户：
-> BF16 和 FP16 都是 16 位，为什么大模型训练选 BF16？既然 BF16 可以用，为什么优化器里还要留一份 FP32 的权重？
+**Level 1: the three budgets**
 
-期望回答：BF16 有 8 位指数（和 FP32 一样的范围），不会像 FP16 那样上溢成 inf、小梯度下溢成 0，不需要 loss scaling；代价是只有 7 位尾数、精度粗。权重更新 η·g 往往比权重小几个数量级，在 BF16 里会被舍入掉（`02_precision.py`：w = 1.0 减 1000 次 10⁻³ 仍是 1.0），所以主权重、梯度累加、优化器状态用 FP32，只有矩阵乘在 BF16 里算。
+Ask the learner:
+> You train a model with 689.5M parameters. About how much memory do "parameters + gradients + optimizer state" use on each GPU? Why this number? An estimate shows that micro batch 8 × 4096 does not fit on an 80 GB GPU. What is the largest part?
 
----
-
-**第三关：FlashAttention 为什么对、为什么快**
-
-问用户：
-> 分块算 softmax 时，第一块里的最大值是 3，读到第二块发现最大值变成了 5。之前累加的指数和怎么办？FlashAttention 比朴素注意力多算了一些东西（反向时重算 P），为什么反而更快？
-
-期望回答：旧的指数和是以 3 为基准算的，乘 exp(3 − 5) 改正到新基准（输出 O 也同样乘这个系数），扫完再除以 l，结果与标准 softmax 完全相同（精确，不是近似）。更快是因为注意力是 memory-bound：朴素写法要把 T×T 的 S、P 写进显存再读回来，时间主要花在读写上；分块后只在片上缓存里处理小块，反向只存每行一个 logsumexp，多出的计算比省下的读写便宜得多。如果用户说"FlashAttention 是近似注意力"，要纠正。
+Expected answer: 16 bytes per parameter (FP32 parameter 4, gradient 4, AdamW m and v 4 each), about 10.3 GiB. The largest part is the activations that the forward pass saves for the backward pass. They are proportional to micro batch × sequence length (in the main line, about 92,840 bytes per token per layer; the estimate at micro batch 8 is about 88 GiB). Extra credit: "use gradient accumulation to keep the tokens per step and make the micro batch smaller", or "activation checkpointing".
 
 ---
 
-**第四关：迁移——数据并行与续训**
+**Level 2: intuition for BF16**
 
-问用户：
-> 你用 8 张卡 DDP 训练到第 10,000 步存了 checkpoint，然后只租到 4 张卡。(1) 如果想保持训练动态不变，每卡的 micro batch 或梯度累积要怎么改？(2) zero 为什么拒绝在卡数变化时"精确续训"？(3) 另外，续训后 loss 和不中断时不一样，你会依次检查哪些状态？
+Ask the learner:
+> BF16 and FP16 both have 16 bits. Why does large-model training use BF16? If BF16 works, why does the optimizer still keep FP32 weights?
 
-期望回答：(1) 每步的全局 batch = micro batch × 累积步数 × 卡数，卡数减半就把累积步数（或 micro batch）翻倍，保持每步 token 数不变，这样平均梯度的定义不变；(2) 数据加载器按 rank 分片（第 g 个样本给 rank g % world_size），每个 rank 各存了自己的读取位置，卡数变了，"下一批是哪些样本"就对不上了，只能放弃逐位一致（例如重新从某个全局位置分片）；(3) 优化器状态（m、v、步数）、学习率调度器、数据位置、所有 RNG 状态、步数与 token 计数——`07_resume.py` 显示少恢复任何一项都会偏离。能提到 checkpoint 要原子写入（临时目录 + 改名）是加分项。
+Expected answer: BF16 has 8 exponent bits (the same range as FP32). It does not overflow to inf like FP16, and small gradients do not underflow to 0, so it does not need loss scaling. The cost is only 7 mantissa bits, so the precision is low. A weight update η·g is often several orders of magnitude smaller than the weight, and BF16 rounds it away (`02_precision.py`: w = 1.0 minus 10⁻³, 1000 times, is still 1.0). Thus the master weights, the gradient accumulation, and the optimizer state stay in FP32. Only the matrix multiplications run in BF16.
 
 ---
 
-## 反馈原则
+**Level 3: why FlashAttention is correct and fast**
 
-- 答对了：认可，然后追问一个更深的"为什么"（例如"激活检查点为什么会让 MFU 下降，却可能让训练更快？"）。
-- 答错了：不要直接给答案，给一个提示，让他们回到对应的脚本跑一跑：`01_step_cost.py`（算账）、`02_precision.py`（精度）、`03_online_softmax.py` / `04_tiled_attention.py`（FlashAttention）、`05_memory.py`（显存）、`06_ddp_by_hand.py`（DDP）、`07_resume.py`（续训），或者用 `uv run python -m zero.tools.memory_calc configs/main/pretrain.toml` 看显存账。
-- 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
+Ask the learner:
+> You calculate the softmax block by block. The maximum in the first block is 3. In the second block, the maximum becomes 5. What do you do with the sum of exponentials so far? FlashAttention calculates more than naive attention (the backward pass calculates P again). Why is it faster?
 
-四关都通过后，告诉用户可以进入第 15 章（`chapters/15-midtraining-long-context/`，学完后用 `/ch15-midtraining` 自检）。
+Expected answer: the old sum of exponentials uses 3 as its reference. Multiply it by exp(3 − 5) to correct it to the new reference (also multiply the output O by this factor). After the scan, divide by l. The result is the same as the standard softmax (exact, not an approximation). It is faster because attention is memory-bound. The naive method writes the T×T matrices S and P to GPU memory and reads them back, and most of the time goes into these reads and writes. With tiles, only small blocks are processed in the on-chip cache, and the backward pass stores only one logsumexp per row. The extra calculation is much cheaper than the reads and writes that it saves. If the learner says "FlashAttention is approximate attention", correct them.
+
+---
+
+**Level 4: transfer — data parallelism and resume**
+
+Ask the learner:
+> You train with DDP on 8 GPUs and save a checkpoint at step 10,000. Then you can rent only 4 GPUs. (1) To keep the training dynamics the same, how must you change the micro batch per GPU or the gradient accumulation? (2) Why does zero refuse an "exact resume" when the number of GPUs changes? (3) After a resume, the loss is different from the uninterrupted run. Which states do you check, and in which order?
+
+Expected answer: (1) The global batch per step = micro batch × accumulation steps × number of GPUs. When the number of GPUs is halved, double the accumulation steps (or the micro batch). Then the tokens per step stay the same, and the definition of the mean gradient does not change. (2) The data loader splits the data by rank (global sample g goes to rank g % world_size), and each rank saves its own read position. When the number of GPUs changes, "which samples are in the next batch" no longer matches. Thus you must give up bit-identical results (for example, split the data again from one global position). (3) The optimizer state (m, v, step count), the learning-rate scheduler, the data position, all RNG states, and the step and token counters. `07_resume.py` shows that each missing item causes a deviation. Extra credit: the checkpoint must be written atomically (temporary folder + rename).
+
+---
+
+## Rules for feedback
+
+- If the answer is correct: say so. Then ask a deeper "why" question (for example, "Why does activation checkpointing make MFU lower, but can make training faster?").
+- If the answer is not correct: do not give the answer. Give a hint, and ask the learner to run the related script: `01_step_cost.py` (the budgets), `02_precision.py` (precision), `03_online_softmax.py` / `04_tiled_attention.py` (FlashAttention), `05_memory.py` (memory), `06_ddp_by_hand.py` (DDP), `07_resume.py` (resume). They can also use `uv run python -m zero.tools.memory_calc configs/main/pretrain.toml` to see the memory budget.
+- If the learner says "I do not know": ask them to guess first. A wrong guess is better than no guess.
+
+When the learner passes all four levels, tell them to continue to Chapter 15 (`chapters/15-midtraining-long-context/`). After Chapter 15, they can check themselves with `/ch15-midtraining`.

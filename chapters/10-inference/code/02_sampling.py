@@ -1,9 +1,11 @@
-"""第 10 章 · 极简代码 2：解码策略——贪心、温度、top-k、top-p
+"""Chapter 10 · Minimal code 2: decoding strategies (greedy, temperature, top-k, top-p)
 
-同一个模型、同一段提示词，"怎么从概率分布里挑下一个字"决定了生成的样子。
-这里拿 01 训练好的小模型，打印真实的下一个字符分布，看温度、top-k、top-p 怎么改它，
-再用不同策略各生成一段文字。
-运行：uv run python chapters/10-inference/code/02_sampling.py
+Same model, same prompt: the method that picks the next character from the probability
+distribution decides what the generated text looks like.
+This script uses the small model that 01 trained. It prints the real distribution of the next
+character and shows how temperature, top-k, and top-p change it.
+Then it generates one text with each strategy.
+Run: uv run python chapters/10-inference/code/02_sampling.py
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ import torch
 def _load(name: str, filename: str):
     spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name(filename))
     mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod  # dataclass 需要模块已登记
+    sys.modules[name] = mod  # dataclass needs the module in sys.modules
     spec.loader.exec_module(mod)
     return mod
 
@@ -28,23 +30,26 @@ tiny = _load("tiny_model", "01_tiny_model.py")
 
 def filtered_probs(logits: torch.Tensor, temperature: float = 1.0, top_k: int = 0,
                    top_p: float = 1.0) -> torch.Tensor:
-    """把 logits 变成"真正用来抽样"的分布：先除以温度再 softmax，然后按 top-k / top-p 截断并重新归一化。"""
-    probs = torch.softmax(logits / temperature, dim=-1)  # 第 5 章的带温度 softmax
-    if top_k > 0:  # 只留概率最大的 k 个
+    """Change logits into the distribution that we sample from.
+
+    Divide by the temperature and apply softmax. Then cut with top-k / top-p and normalize again.
+    """
+    probs = torch.softmax(logits / temperature, dim=-1)  # softmax with temperature (Chapter 5)
+    if top_k > 0:  # keep only the k most probable tokens
         kth = torch.topk(probs, top_k).values[-1]
         probs = torch.where(probs >= kth, probs, 0.0)
-    if top_p < 1.0:  # nucleus：从大到小累加，刚好够 top_p 就停
+    if top_p < 1.0:  # nucleus: add from the largest down; stop when the sum reaches top_p
         sorted_p, idx = torch.sort(probs, descending=True)
-        before = torch.cumsum(sorted_p, 0) - sorted_p  # 加上自己之前的累计概率
+        before = torch.cumsum(sorted_p, 0) - sorted_p  # cumulative probability before this token
         keep = torch.zeros_like(probs, dtype=torch.bool)
-        keep[idx] = before < top_p  # 保证至少留下最大的那个
+        keep[idx] = before < top_p  # this always keeps the largest one
         probs = torch.where(keep, probs, 0.0)
     return probs / probs.sum()
 
 
 def sample_next(logits: torch.Tensor, temperature: float = 1.0, top_k: int = 0,
                 top_p: float = 1.0, g: torch.Generator | None = None) -> int:
-    if temperature == 0:  # 贪心：永远挑最大的
+    if temperature == 0:  # greedy: always pick the largest one
         return int(logits.argmax())
     probs = filtered_probs(logits, temperature, top_k, top_p)
     return int(torch.multinomial(probs, 1, generator=g))
@@ -57,7 +62,10 @@ def next_logits(model, data, prompt: str) -> torch.Tensor:
 
 @torch.no_grad()
 def generate(model, data, prompt: str, n: int, seed: int = 0, **kw) -> str:
-    """最朴素的生成循环（每步重算整段；03 会把它换成 KV cache 版）。"""
+    """The most basic generation loop.
+
+    It calculates the full sequence again at each step. 03 replaces it with a KV cache version.
+    """
     g = torch.Generator().manual_seed(seed)
     ids = data.encode(prompt)
     for _ in range(n):
@@ -67,7 +75,7 @@ def generate(model, data, prompt: str, n: int, seed: int = 0, **kw) -> str:
 
 
 def distinct_4gram(text: str) -> float:
-    """不重复的 4 字符片段占比：越低说明越在原地打转。"""
+    """Fraction of distinct 4-character pieces. A lower value means that the text repeats itself more."""
     grams = [text[i : i + 4] for i in range(len(text) - 3)]
     return len(set(grams)) / max(1, len(grams))
 
@@ -77,6 +85,8 @@ def show(ch: str) -> str:
 
 
 PROMPT = "ROMEO:\nI will "
+# The Chinese video (video/scenes.py) uses these labels as keys, so they stay in Chinese.
+# LABEL_EN gives the English names for the printed output.
 CONTEXTS = {"确定": "KING RICHARD III:\nWhat is th", "不确定": "ROMEO:\n"}
 STRATEGIES = [
     ("贪心 (T=0)", dict(temperature=0)),
@@ -86,31 +96,33 @@ STRATEGIES = [
     ("T=1.0, top-p=0.9", dict(temperature=1.0, top_p=0.9)),
     ("T=1.5", dict(temperature=1.5)),
 ]
+LABEL_EN = {"确定": "certain", "不确定": "uncertain", "贪心 (T=0)": "greedy (T=0)"}
 
 
 if __name__ == "__main__":
     model, data = tiny.load_or_train(4), tiny.CharData()
     logits = next_logits(model, data, PROMPT)
 
-    print(f"提示词 {PROMPT!r} 之后，下一个字符的真实分布（前 8 名）：")
+    print(f"Real distribution of the next character after the prompt {PROMPT!r} (top 8):")
     order = torch.argsort(logits, descending=True)[:8]
-    print("  温度     " + "  ".join(f"{show(data.chars[i]):>5}" for i in order) + "    熵(nats)")
+    print("  temp    " + "  ".join(f"{show(data.chars[i]):>5}" for i in order) + "    entropy (nats)")
     for T in (0.5, 1.0, 1.5):
         p = filtered_probs(logits, T)
         ent = -(p * p.clamp_min(1e-12).log()).sum()
         print(f"  T={T:<4}  " + "  ".join(f"{p[i]:5.3f}" for i in order) + f"    {ent:.2f}")
 
-    print("\ntop-k 固定留 k 个；top-p 按累计概率留，个数随上下文变化：")
+    print("\ntop-k always keeps k tokens. top-p keeps tokens by cumulative probability, "
+          "so the number changes with the context:")
     for name, ctx in CONTEXTS.items():
         lg = next_logits(model, data, ctx)
         p = torch.softmax(lg, -1)
         top1 = int(p.argmax())
         n90 = int((filtered_probs(lg, 1.0, top_p=0.9) > 0).sum())
-        print(f"  {name}：{ctx!r:32} 最可能 {show(data.chars[top1])!r} p={p[top1]:.3f}  "
-              f"top-p=0.9 留下 {n90} 个字符，top-k=5 永远留 5 个")
+        print(f"  {LABEL_EN[name]}: {ctx!r:32} most likely {show(data.chars[top1])!r} p={p[top1]:.3f}  "
+              f"top-p=0.9 keeps {n90} characters, top-k=5 always keeps 5")
 
-    print("\n同一提示词，不同解码策略各生成 200 个字符（种子 0）：")
+    print("\nSame prompt, 200 characters from each decoding strategy (seed 0):")
     for name, kw in STRATEGIES:
         text = generate(model, data, PROMPT, 200, seed=0, **kw)
-        print(f"\n[{name}]  不重复 4-gram 占比 {distinct_4gram(text):.2f}")
+        print(f"\n[{LABEL_EN.get(name, name)}]  distinct 4-gram ratio {distinct_4gram(text):.2f}")
         print("  " + text[:110].replace("\n", "\n  "))

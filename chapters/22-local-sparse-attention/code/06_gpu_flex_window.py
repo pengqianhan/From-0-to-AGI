@@ -1,15 +1,20 @@
-"""第 22 章 · GPU 实测：滑动窗口要"真的跳过"窗口外的块，才会变快
+"""Chapter 22 · GPU measurements: a sliding window is faster only if the kernel really skips the blocks outside the window.
 
-同一个滑动窗口注意力（mask = (j ≤ i) & (i − j < W)，01 的 sliding_mask），在 GPU 上三种算法：
-  1. 稠密因果 SDPA（FlashAttention kernel）：窗口外照算不误，作为基准；
-  2. 布尔掩码 SDPA（memory-efficient kernel + attn_mask）：窗口外的分数算出来再掩掉，
-     还要先造一张 T × T 的布尔掩码；
-  3. FlexAttention 的块稀疏滑动窗口：create_block_mask 先按 128 × 128 的块标出哪些块全在窗口外，
-     kernel 直接跳过它们，只算带子经过的块。
-先固定 T 改窗口 W，再固定 W 改 T，看耗时怎么变；最后确认三者算出来的是同一个东西。
-FlexAttention 要 torch.compile 生成 Triton kernel，第一次调用要先编译（本机几秒，之后读缓存）。
-没有 GPU 可以跳过；正文里贴了一次 RTX 3090 上的结果。
-运行：uv run python chapters/22-local-sparse-attention/code/06_gpu_flex_window.py
+The same sliding-window attention (mask = (j ≤ i) & (i − j < W), sliding_mask in 01), with three
+algorithms on the GPU:
+  1. Dense causal SDPA (FlashAttention kernel): it also calculates everything outside the window.
+     It is the baseline.
+  2. Boolean-mask SDPA (memory-efficient kernel + attn_mask): it calculates the scores outside the window
+     and then masks them. It must also build a T × T boolean mask first.
+  3. Block-sparse sliding window of FlexAttention: create_block_mask divides the table into blocks of
+     128 × 128 and marks the blocks that are fully outside the window. The kernel skips these blocks and
+     calculates only the blocks on the band.
+First, fix T and change the window W. Then fix W and change T. Look at how the time changes.
+At the end, make sure that the three algorithms calculate the same result.
+FlexAttention uses torch.compile to generate a Triton kernel. The first call must compile it
+(a few seconds on this machine; later calls read the cache).
+If you have no GPU, skip this script. The README shows one result on an RTX 3090.
+Run: uv run python chapters/22-local-sparse-attention/code/06_gpu_flex_window.py
 """
 
 from __future__ import annotations
@@ -21,12 +26,12 @@ import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-B, H, D = 1, 16, 128  # 主线模型的查询头数和 head_dim
-WINDOW = None  # 当前窗口（GPU 上的一个整数张量）；mask_mod 读它，换窗口不用重新编译
+B, H, D = 1, 16, 128  # the number of query heads and the head_dim of the main-line model
+WINDOW = None  # current window (an integer tensor on the GPU); mask_mod reads it, so a new window needs no new compilation
 
 
 def sliding_mask_mod(b, h, q_idx, kv_idx):
-    """FlexAttention 的 mask_mod：和 01 的 sliding_mask 同一个条件。"""
+    """The mask_mod for FlexAttention: the same condition as sliding_mask in 01."""
     return (kv_idx <= q_idx) & (q_idx - kv_idx < WINDOW)
 
 
@@ -37,7 +42,7 @@ def bool_mask(T: int, W: int) -> torch.Tensor:
 
 
 def cuda_ms(fn, reps: int = 10) -> float:
-    for _ in range(2):  # 预热
+    for _ in range(2):  # warmup
         fn()
     torch.cuda.synchronize()
     times = []
@@ -52,7 +57,7 @@ def cuda_ms(fn, reps: int = 10) -> float:
 
 
 def peak_extra_mib(fn) -> float:
-    """fn 运行时在已有张量之外额外占了多少显存（MiB）。"""
+    """The extra GPU memory (MiB) that fn uses while it runs, in addition to the tensors that already exist."""
     torch.cuda.synchronize()
     base = torch.cuda.memory_allocated()
     torch.cuda.reset_peak_memory_stats()
@@ -64,15 +69,16 @@ def peak_extra_mib(fn) -> float:
 def main() -> None:
     global WINDOW
     if not torch.cuda.is_available():
-        print("本脚本需要 CUDA GPU；没有 GPU 可以跳过，正文里贴了一次 RTX 3090 上的结果。")
+        print("This script needs a CUDA GPU. If you have no GPU, skip it. The README shows one result on an RTX 3090.")
         sys.exit(0)
     from torch.nn.attention.flex_attention import create_block_mask, flex_attention
 
     torch.manual_seed(0)
-    print(f"GPU：{torch.cuda.get_device_name(0)}，PyTorch {torch.__version__}，CUDA {torch.version.cuda}")
-    print(f"形状：batch {B}，{H} 个头，head_dim {D}，BF16；FlexAttention 块大小 128 × 128")
+    print(f"GPU: {torch.cuda.get_device_name(0)}, PyTorch {torch.__version__}, CUDA {torch.version.cuda}")
+    print(f"Shape: batch {B}, {H} heads, head_dim {D}, BF16; FlexAttention block size 128 × 128")
     flex = torch.compile(flex_attention)
-    # 造 block mask 也编译：按块生成，不在显存里铺开 T × T 的整张表（T = 65,536 时那要 32 GiB）
+    # Compile the block-mask builder too. It builds the mask block by block and does not put the full
+    # T × T table in GPU memory (at T = 65,536, that table needs 32 GiB).
     make_block_mask = torch.compile(create_block_mask)
     WINDOW = torch.tensor(1, device="cuda")
 
@@ -80,8 +86,8 @@ def main() -> None:
         q, k, v = (torch.randn(B, H, T, D, device="cuda", dtype=torch.bfloat16) for _ in range(3))
         WINDOW.fill_(W)
         bm = make_block_mask(sliding_mask_mod, None, None, T, T, device="cuda")
-        n_blocks = (T // 128) * (T // 128 + 1) // 2  # 因果下三角里的块数
-        frac = (1 - bm.sparsity() / 100) * (T // 128) ** 2 / n_blocks  # 实际要算的块 / 因果全部块
+        n_blocks = (T // 128) * (T // 128 + 1) // 2  # the number of blocks in the causal lower triangle
+        frac = (1 - bm.sparsity() / 100) * (T // 128) ** 2 / n_blocks  # blocks to calculate / all causal blocks
 
         def dense():
             with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
@@ -92,7 +98,7 @@ def main() -> None:
 
         r = dict(frac=frac, dense=cuda_ms(dense), flex=cuda_ms(flex_run))
         if with_mask:
-            m = bool_mask(T, W)  # 一张 T × T 的布尔表，一次前向里各层可以共用，不计入耗时
+            m = bool_mask(T, W)  # one T × T boolean table; all layers of a forward pass can share it, so we do not time it
             r["mask_mib"] = m.nbytes / 2**20
 
             def masked():
@@ -110,12 +116,12 @@ def main() -> None:
         return r
 
     t0 = time.time()
-    run_all(1024, 256, with_mask=False)  # 触发一次编译
-    print(f"（FlexAttention 首次编译用了 {time.time() - t0:.0f} s）")
+    run_all(1024, 256, with_mask=False)  # start one compilation
+    print(f"(The first compilation of FlexAttention took {time.time() - t0:.0f} s)")
 
     T = 16384
-    print(f"\n1. 固定 T = {T:,}，改窗口 W（毫秒，10 次取中位数）")
-    print("       W   flex 要算的块   稠密因果 SDPA   布尔掩码 SDPA   FlexAttention   flex 比稠密快")
+    print(f"\n1. Fix T = {T:,} and change the window W (milliseconds, median of 10 runs)")
+    print("        W     % blocks   dense SDPA    masked SDPA  FlexAttention     speedup")
     diffs = []
     for W in (128, 512, 1024, 4096, T):
         r = run_all(T, W)
@@ -123,24 +129,24 @@ def main() -> None:
         print(f"   {W:6,d}   {r['frac']:10.1%}   {r['dense']:10.2f}   {r['masked']:12.2f}"
               f"   {r['flex']:12.2f}   {r['dense'] / r['flex']:8.1f}×")
     r = diffs[2][1]
-    print(f"   运行时在 q、k、v 之外额外占的显存（W = 1,024）：稠密 {r['dense_mem']:.0f} MiB；"
-          f"布尔掩码 SDPA 先要一张 {r['mask_mib']:.0f} MiB 的掩码，运行时再占 {r['masked_mem']:.0f} MiB；"
+    print(f"   Extra GPU memory at run time, in addition to q, k, v (W = 1,024): dense {r['dense_mem']:.0f} MiB; "
+          f"boolean-mask SDPA first needs a mask of {r['mask_mib']:.0f} MiB, then {r['masked_mem']:.0f} MiB more at run time; "
           f"flex {r['flex_mem']:.0f} MiB")
 
     W = 1024
-    print(f"\n2. 固定 W = {W:,}，改序列长 T（毫秒）")
-    print("        T   稠密因果 SDPA   布尔掩码 SDPA   FlexAttention   flex 比稠密快")
+    print(f"\n2. Fix W = {W:,} and change the sequence length T (milliseconds)")
+    print("        T   dense SDPA    masked SDPA  FlexAttention     speedup")
     for T in (4096, 16384, 65536):
         r = run_all(T, W, with_mask=T <= 16384)
-        masked = f"{r['masked']:12.2f}" if "masked" in r else f"{'（跳过）':>10}"
+        masked = f"{r['masked']:12.2f}" if "masked" in r else f"{'   (skipped)':>10}"
         print(f"   {T:6,d}   {r['dense']:10.2f}   {masked}   {r['flex']:12.2f}"
               f"   {r['dense'] / r['flex']:8.1f}×")
-    print("   （T = 65,536 时布尔掩码本身就要 4 GiB，转成加性偏置再翻一倍，跳过）")
+    print("   (At T = 65,536, the boolean mask alone needs 4 GiB, and the conversion to an additive bias doubles it. We skip it.)")
 
-    print("\n3. 三者算的是同一个东西（与布尔掩码 SDPA 的最大绝对差，BF16）")
+    print("\n3. The three algorithms calculate the same result (maximum absolute difference from boolean-mask SDPA, BF16)")
     for W, r in diffs:
-        extra = f"；W ≥ T 时稠密因果 SDPA {r['diff_dense']:.1e}" if "diff_dense" in r else ""
-        print(f"   T = 16,384、W = {W:>6,d}：FlexAttention {r['diff_flex']:.1e}{extra}")
+        extra = f"; at W ≥ T, dense causal SDPA {r['diff_dense']:.1e}" if "diff_dense" in r else ""
+        print(f"   T = 16,384, W = {W:>6,d}: FlexAttention {r['diff_flex']:.1e}{extra}")
 
 
 if __name__ == "__main__":

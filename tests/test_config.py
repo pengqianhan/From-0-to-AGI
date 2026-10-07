@@ -1,4 +1,4 @@
-"""配置：所有 configs/*.toml 都能读、校验能抓住常见错误、参数量公式与真实模型一致。"""
+"""Config: all configs/*.toml can be read, validation catches common errors, and the parameter formula agrees with the real model."""
 
 from __future__ import annotations
 
@@ -34,35 +34,35 @@ POST_SECTIONS = {s: (lambda s=s: _sections(s)) for s in ("sft", "distill", "dpo"
 @pytest.mark.parametrize("path", ALL_CONFIGS, ids=lambda p: str(p.relative_to(REPO)))
 def test_all_configs_load(path: Path) -> None:
     if path.name == "base.toml":
-        load_model_config(path)  # 阶梯公共配置只有部分字段
+        load_model_config(path)  # the shared ladder config has only some of the fields
         return
-    if path.stem == "data":  # 数据流水线配置（第 13 章，zero/data/pipeline.py；tests/test_pipeline.py 另测）
+    if path.stem == "data":  # data pipeline config (Chapter 13, zero/data/pipeline.py; tests/test_pipeline.py tests it)
         from zero.data.pipeline import load_pipeline_config
 
         load_pipeline_config(path)
         return
-    if path.stem == "download":  # 只给下载器用的配置（如 configs/vocab/download.toml，第 13 章词表测量）
+    if path.stem == "download":  # a config only for the downloader (such as configs/vocab/download.toml, the vocabulary measurement of Chapter 13)
         import tomllib
 
         from zero.data.download import check_license, specs_from_config
 
         specs = specs_from_config(tomllib.loads(path.read_text("utf-8")))
         assert specs
-        for s in specs:  # 每个来源都要在 zero/data/sources.py 登记，且许可证已核实
+        for s in specs:  # each source must be registered in zero/data/sources.py, with a verified license
             check_license(s)
         return
-    if path.stem == "eval":  # 评测配置只有 [eval]（tests/test_post_configs.py 另测）
+    if path.stem == "eval":  # an evaluation config has only [eval] (tests/test_post_configs.py tests it)
         from zero.eval.harness import load_eval_config
 
         load_eval_config(path)
         return
-    if path.stem in POST_SECTIONS:  # 后训练配置多出各阶段自己的小节
+    if path.stem in POST_SECTIONS:  # post-training configs add a section for each stage
         from zero.post.common import load_post_config
 
         cfg, _ = load_post_config(path, POST_SECTIONS[path.stem]())
     else:
         cfg = load_config(path)
-    # 参数量公式 == 真实构建的模型（在 meta 设备上构建，不分配内存）
+    # parameter formula == the model that we really build (built on the meta device, so no memory is allocated)
     with torch.device("meta"):
         model = Transformer(cfg.model)
     assert model.num_params() == count_params(cfg.model)["total"]
@@ -108,11 +108,11 @@ def _minimal(**model) -> dict:
 
 def test_validation_errors() -> None:
     config_from_dict(_minimal())
-    with pytest.raises(ConfigError, match="你是不是想写 .n_layers."):
-        config_from_dict(_minimal(n_layer=3))  # 拼错：提示正确字段
-    with pytest.raises(ConfigError, match="整除"):
+    with pytest.raises(ConfigError, match="did you mean .n_layers."):
+        config_from_dict(_minimal(n_layer=3))  # wrong spelling: the hint gives the correct field
+    with pytest.raises(ConfigError, match="divisible"):
         config_from_dict(_minimal(n_heads=3, n_kv_heads=2, head_dim=8))
-    with pytest.raises(ConfigError, match="整数"):
+    with pytest.raises(ConfigError, match="integer"):
         config_from_dict(_minimal(dim="16"))
     with pytest.raises(ConfigError, match="yarn"):
         config_from_dict(_minimal(rope_scaling={"type": "linear", "factor": 2.0}))
@@ -130,7 +130,7 @@ def test_flops_formula() -> None:
     cfg = load_model_config(REPO / "configs/main/pretrain.toml")
     c = count_params(cfg)
     fpt = estimate_flops_per_token(cfg, 4096)
-    # 6N 项（N 含 lm_head 的矩阵乘、不含 norm）+ 注意力项
+    # 6N term (N includes the lm_head matmul, not the norms) + attention term
     n_matmul = (
         c["non_embedding"]
         - cfg.n_layers * (2 * cfg.dim + 2 * cfg.head_dim)

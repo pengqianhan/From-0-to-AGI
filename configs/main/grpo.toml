@@ -1,10 +1,11 @@
-# 主线模型 GRPO（第 19 章）。第二步默认值，待调。
+# GRPO of the main-line model (Chapter 19). Default values for Step 2; tune them later.
 #   uv run python -m zero.post.grpo --config configs/main/grpo.toml
-# zero 的 GRPO 是可读的单进程实现（采样用 zero.generate + KV cache，没有连续批处理）。
-# 第二步如果吞吐不够，按 zero/post/grpo.py 模块说明先与 verl 在同一小任务上对拍，再用 verl 做实际训练。
-# 尚未在 GPU 上验证。
+# The GRPO in zero is a readable implementation in one process (sampling uses zero.generate + KV cache,
+# without continuous batching). If the throughput in Step 2 is not sufficient, follow the module docstring
+# of zero/post/grpo.py: first do a parity check against verl on the same small task, then use verl for the real training.
+# Not verified on a GPU yet.
 
-[model]                  # 与 configs/main/longctx.toml 的 checkpoint 形状一致（689.5M 参数）
+[model]                  # Same shape as the checkpoint of configs/main/longctx.toml (689.5M parameters)
 vocab_size = 65536
 dim = 1280
 n_layers = 28
@@ -12,7 +13,7 @@ n_heads = 16
 n_kv_heads = 8
 head_dim = 128
 ffn_dim = 3584
-rope_theta = 1000000.0   # 长上下文阶段调大后的底数
+rope_theta = 1000000.0   # The larger base from the long-context stage
 max_seq_len = 32768
 tie_embeddings = true
 
@@ -31,11 +32,11 @@ seq_len = 8192
 
 [grpo]
 group_size = 16
-prompts_per_step = 64    # 每步 1024 条回复
+prompts_per_step = 64    # 1024 responses per step
 max_new_tokens = 512
 temperature = 1.0
 clip_eps = 0.2
-clip_eps_high = 0.28     # clip-higher（DAPO），属"GRPO 改进"，待核实是否达到共识；设 0 即关闭
+clip_eps_high = 0.28     # clip-higher (DAPO), a "GRPO improvement". Not verified yet if it is a consensus. Set 0 to turn it off
 kl_coef = 0.0
 ppo_epochs = 1
 loss_agg = "token_mean"

@@ -1,10 +1,14 @@
-"""提示词格式敏感性：同一个模型、同一批题，只改提示词的"长相"，分数能差出好几倍。
+"""Prompt format sensitivity: same model, same questions. Change only the "look" of the prompt.
+Then the highest score can be several times the lowest score.
 
     uv run python chapters/11-evaluation/code/03_prompt_sensitivity.py
 
-复用 02 的玩具世界和字符级最长后缀模型，只换 6 种提示词格式（意思完全一样），都用对数似然判分。
-真实的大模型没有这么极端，但方向一样：Sclar 等（ICLR 2024）在 LLaMA-2-13B 上发现，
-意思相同的格式之间准确率最多差 76 个百分点。所以预注册必须把模板一字不差地写死。
+The script uses the toy world and the character-level longest-suffix model from 02 again.
+It changes only the prompt format: 6 formats with exactly the same meaning.
+All formats use log-likelihood scoring.
+Real large models are not this extreme, but the direction is the same. Sclar et al. (ICLR 2024)
+found that on LLaMA-2-13B, accuracy can differ by up to 76 percentage points between formats
+with the same meaning. Thus the pre-registration must fix the template word for word.
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ HERE = Path(__file__).resolve().parent
 def _load(name: str):  # noqa: ANN202
     spec = importlib.util.spec_from_file_location(name, HERE / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod  # dataclass 需要能在 sys.modules 里找到模块
+    sys.modules[name] = mod  # dataclass needs to find the module in sys.modules
     spec.loader.exec_module(mod)
     return mod
 
@@ -27,14 +31,15 @@ def _load(name: str):  # noqa: ANN202
 toy = _load("02_loglik_vs_generate")
 LETTERS = "ABCD"
 
-# 名字 → (提示词函数, 选项怎么写)。"letter" 表示让模型输出选项字母，而不是选项内容。
+# name → (prompt function, how to write the choices).
+# "letter" means that the model outputs the letter of the choice, not the text of the choice.
 FORMATS = {
-    "完形填空": (lambda it: it.stem, "text"),
-    "完形填空 + 末尾空格": (lambda it: it.stem + " ", "text"),
-    "问答（练习册格式）": (lambda it: f"问：{it.question}\n答：", "text"),
-    "问答（英文标签）": (lambda it: f"Q: {it.question}\nA: ", "text"),
-    "问答（冒号换空格）": (lambda it: f"问 {it.question}\n答 ", "text"),
-    "字母选择题": (
+    "Cloze": (lambda it: it.stem, "text"),
+    "Cloze + trailing space": (lambda it: it.stem + " ", "text"),
+    "QA (workbook format)": (lambda it: f"问：{it.question}\n答：", "text"),
+    "QA (English labels)": (lambda it: f"Q: {it.question}\nA: ", "text"),
+    "QA (colon → space)": (lambda it: f"问 {it.question}\n答 ", "text"),
+    "Letter choice": (
         lambda it: f"问：{it.question}\n"
         + "".join(f"{LETTERS[i]}. {c}\n" for i, c in enumerate(it.choices))
         + "答：",
@@ -56,7 +61,8 @@ def score_format(lm, items, prompt_fn, mode: str) -> list[dict]:  # noqa: ANN001
 
 
 def run_formats() -> list[dict]:
-    """返回每种格式在 全部 / 泄漏 / 干净 三组题上的正确率（视频也用这个函数）。"""
+    """Return the accuracy of each format on three groups: all, leaked, and clean questions.
+    The video also uses this function."""
     world = toy.build_world()
     lm = toy.SuffixLM(world.corpus)
     rows = []
@@ -76,17 +82,19 @@ def run_formats() -> list[dict]:
 
 def main() -> None:
     rows = run_formats()
-    print("同一个模型（02 的字符级最长后缀模型）、同样 32 道四选一题、同样的对数似然判分，只换提示词格式：\n")
-    print("| 提示词格式 | 全部 32 题 | 泄漏的 12 题 | 干净的 20 题 | 最常选的那个位置占比 |")
+    print("Same model (the character-level longest-suffix model from 02), same 32 four-choice questions, "
+          "same log-likelihood scoring. Only the prompt format changes:\n")
+    print("| Prompt format | All 32 | Leaked 12 | Clean 20 | Share of most-picked position |")
     print("|---|---:|---:|---:|---:|")
     for r in rows:
         print(f"| {r['name']} | {r['acc']:.3f} | {r['leaked']:.3f} | {r['clean']:.3f} | "
               f"{r['most_common_pred_share']:.2f} |")
     accs = [r["acc"] for r in rows]
-    print(f"\n最高 {max(accs):.3f}，最低 {min(accs):.3f}，相差 {max(accs) - min(accs):.3f}"
-          "（随机猜的期望是 0.25）")
-    print("最后一列：字母选择题里，模型几乎总选同一个字母——小模型还不会'看选项、报字母'，"
-          "所以 Base 小模型通常用完形填空式的对数似然评测。")
+    print(f"\nHighest {max(accs):.3f}, lowest {min(accs):.3f}, difference {max(accs) - min(accs):.3f}"
+          " (the expected value of a random guess is 0.25)")
+    print("Last column: with letter choice, the model almost always picks the same letter. "
+          "A small model cannot yet 'read the choices and give a letter'. "
+          "Thus we usually evaluate a small base model with cloze-style log-likelihood.")
 
 
 if __name__ == "__main__":

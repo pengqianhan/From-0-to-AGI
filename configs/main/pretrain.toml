@@ -1,25 +1,30 @@
-# 主线模型预训练配置（第 12、14 章）。第二步才会真正运行；所有数值待闸门 1 的阶梯实验确认。
+# Pretraining config of the main-line model (Chapters 12 and 14). It runs only in Step 2.
+# The ladder experiment of gate 1 must confirm all values.
 #
-# 形状：参照 Qwen3-0.6B（28 层、16 个查询头、8 个 K/V 头、head_dim 128、QK-Norm、共享 embedding），
-# 把宽度从 1024 加到 1280、FFN 从 3072 加到 3584，把参数预算更多放在"非 embedding"部分：
+# Shape: based on Qwen3-0.6B (28 layers, 16 query heads, 8 K/V heads, head_dim 128, QK-Norm, tied embeddings).
+# The width increases from 1024 to 1280 and the FFN from 3072 to 3584. Thus more of the parameter budget
+# goes to the "non-embedding" part:
 #   uv run python -m zero.tools.count_params configs/main/pretrain.toml
-#   → 总参数 689.5M，其中 embedding 83.9M，非 embedding 605.6M（Qwen3-0.6B 同口径约 596M / 441M）。
-# 约束：总参数（含 embedding）≤ 0.8B（GOAL.md 3.3）。
+#   → 689.5M total parameters: embedding 83.9M, non-embedding 605.6M (Qwen3-0.6B, counted the same way: about 596M / 441M).
+# Constraint: total parameters (with embedding) ≤ 0.8B (GOAL.md 3.3).
 #
-# 词表 65,536 是**暂定值**，第 13 章按实测压缩率决定：
-#   - 小模型的 embedding 很贵：Qwen3 的 151,936 词表放在这个宽度上要 194M 参数，总量 800.1M，刚好超线；
-#   - 65,536（2^16）对中英代码三语的压缩率与参数代价是个折中起点；换成 131,072 时总量 773.4M，仍 ≤ 0.8B。
-#   改词表时务必重新跑 count_params 确认不超过 0.8B。
+# The vocabulary of 65,536 is **provisional**. Chapter 13 decides it from the measured compression:
+#   - The embedding is expensive for a small model. The Qwen3 vocabulary of 151,936 needs 194M parameters at this width.
+#     Then the total is 800.1M, just above the limit.
+#   - 65,536 (2^16) is a starting point that balances the compression on Chinese, English, and code against the
+#     parameter cost. With 131,072, the total is 773.4M, still ≤ 0.8B.
+#   When you change the vocabulary, always run count_params again. Make sure that the total stays at or below 0.8B.
 #
-# 预训练 token 预算：第 12 章的建议是约 400B（MFU 0.4、$2.5/卡时下约 $4.9K，不超过 GOAL.md 3.4 的
-# $5K 预训练线；500B 约 $6.1K 会超）。预训练停在 WSD 的稳定段，按阶段 6 实测吞吐"花完预算即停"，
-# 衰减留给中期训练。闸门 1 定稿。
-#   每步 token = micro_batch_size 4 × grad_accum_steps 4 × 8 卡 × seq_len 4096 = 524,288
+# Pretraining token budget: Chapter 12 recommends about 400B (about $4.9K at MFU 0.4 and $2.5/GPU-hour).
+# This is inside the $5K pretraining limit of GOAL.md 3.4; 500B costs about $6.1K and is above it.
+# Pretraining stops in the stable phase of WSD. With the throughput that stage 6 measures, train until the budget is used.
+# Mid-training does the decay. Gate 1 makes the final decision.
+#   tokens per step = micro_batch_size 4 × grad_accum_steps 4 × 8 GPUs × seq_len 4096 = 524,288
 #   max_steps = 400e9 / 524,288 ≈ 762,940
 #   uv run python -m zero.tools.estimate_cost --config configs/main/pretrain.toml --tokens 400B --gpu h100-sxm
-# 显存：第 14 章 zero/tools/memory_calc.py 估算 micro batch 8 × 4096 在 eager 模式下每卡约 114 GiB，
-# 超过 80GB，所以用 4 × 累积 4（每步 token 不变）；仍不够时打开 activation_checkpointing。
-# 尚未在 GPU 上验证，阶段 6 实测后调整。
+# Memory: zero/tools/memory_calc.py (Chapter 14) estimates about 114 GiB per GPU for micro batch 8 × 4096 in eager mode.
+# This is more than 80GB, so we use 4 × accumulation 4 (the same tokens per step). If the memory is still not
+# sufficient, turn on activation_checkpointing. Not verified on a GPU yet. Adjust after the measurements of stage 6.
 
 [model]
 vocab_size = 65536
@@ -29,7 +34,7 @@ n_heads = 16
 n_kv_heads = 8
 head_dim = 128
 ffn_dim = 3584
-rope_theta = 10000.0     # 预训练用 1 万；长上下文阶段再调大（见 longctx.toml）
+rope_theta = 10000.0     # 10,000 for pretraining. The long-context stage makes it larger (see longctx.toml)
 max_seq_len = 4096
 norm_eps = 1e-6
 qk_norm = true
@@ -41,11 +46,11 @@ seed = 1337
 max_steps = 762940
 micro_batch_size = 4
 grad_accum_steps = 4
-activation_checkpointing = false  # 显存不够时改成 true（第 14 章）
+activation_checkpointing = false  # Change to true if the memory is not sufficient (Chapter 14)
 device = "auto"
-dtype = "auto"           # CUDA 上 BF16 autocast
-compile = true           # 尚未在 GPU 上验证
-parallel = "ddp"         # 0.7B + AdamW 在 80GB 卡上放得下；显存不够时改 "fsdp"
+dtype = "auto"           # BF16 autocast on CUDA
+compile = true           # Not verified on a GPU yet
+parallel = "ddp"         # 0.7B + AdamW fits on an 80GB GPU. If the memory is not sufficient, change to "fsdp"
 out_dir = "out/main/pretrain"
 eval_every = 1000
 eval_batches = 50
@@ -55,7 +60,7 @@ tokenizer = "data/tokenizer/tokenizer.json"
 seq_len = 4096
 val = "data/pretrain/val_*.bin"
 
-# 数据配比待第 13 章消融实验确定；许可证见 zero/data/sources.py
+# The ablations of Chapter 13 will set the data mix. For the licenses, see zero/data/sources.py
 [[data.sources]]
 name = "fineweb-edu"
 path = "data/pretrain/fineweb-edu_*.bin"
@@ -82,16 +87,16 @@ path = "data/pretrain/finemath_*.bin"
 weight = 0.08
 
 [optim]
-lr = 3e-4                # 起点，第 12 章用阶梯实验扫描后确定
+lr = 3e-4                # Starting point. Chapter 12 sets it after a sweep in the ladder experiment
 weight_decay = 0.1
 beta1 = 0.9
 beta2 = 0.95
 grad_clip = 1.0
 
 [schedule]
-kind = "wsd"             # 稳定段结束后由中期训练（midtrain.toml）完成衰减
+kind = "wsd"             # After the stable phase, mid-training (midtrain.toml) does the decay
 warmup_steps = 2000
-decay_frac = 0.0         # 预训练本身不衰减，衰减放到中期训练
+decay_frac = 0.0         # Pretraining itself does not decay; the decay occurs in mid-training
 min_lr_ratio = 0.0
 
 [checkpoint]

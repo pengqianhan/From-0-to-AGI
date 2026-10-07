@@ -115,6 +115,30 @@ def data() -> dict:
     return d
 
 
+# code/ 里的格式名、判定结论、变体名已改成英文；视频仍显示原来的中文。
+# 旧缓存里存的是中文，所以查不到时原样返回。
+NAME_ZH = {
+    "Cloze": "完形填空",
+    "Cloze + trailing space": "完形填空 + 末尾空格",
+    "QA (workbook format)": "问答（练习册格式）",
+    "QA (English labels)": "问答（英文标签）",
+    "QA (colon → space)": "问答（冒号换空格）",
+    "Letter choice": "字母选择题",
+    "ahead": "超过",
+    "tie": "持平",
+    "behind": "落后",
+    "Exact copy": "原文照抄",
+    "Change case, punctuation, and whitespace": "改大小写、标点和空白",
+    "Copy of the first half only": "只抄了前半句",
+    "Paraphrase (other words, other word order)": "改写（换词换语序）",
+    "Translation into Chinese": "翻译成中文",
+}
+
+
+def name_zh(s: str) -> str:
+    return NAME_ZH.get(s, s)
+
+
 # 已核实的外部数字（出处见 README 与 script.md 事实清单）
 QWEN35 = {"MMLU-Redux": (48.5, 59.5), "IFEval": (52.1, 44.0)}  # (非思考, 思考)，Qwen3.5-0.8B 模型卡
 BFCL_WEIGHTS = [("Non-Live", 10), ("Live", 10), ("相关性", 10), ("Multi-Turn", 30), ("Agentic", 40)]
@@ -359,8 +383,8 @@ class ChapterScene(NarratedScene):
             chance_t = zh("随机猜 0.25", 18, theme.MUTED).next_to(chance, UP, buff=0.05)
             items = VGroup()
             for r, y in zip(rows, ys):
-                col = theme.GRAD if "空格" in r["name"] else theme.INPUT
-                lab = zh(r["name"], 22, col).move_to([x0 - 0.2, y, 0], aligned_edge=RIGHT)
+                col = theme.GRAD if "空格" in name_zh(r["name"]) else theme.INPUT
+                lab = zh(name_zh(r["name"]), 22, col).move_to([x0 - 0.2, y, 0], aligned_edge=RIGHT)
                 bar = Rectangle(width=r["acc"] * scale, height=0.45, stroke_width=0, fill_color=col,
                                 fill_opacity=0.85).move_to([x0, y, 0], aligned_edge=LEFT)
                 note = f"{r['acc']:.3f}"
@@ -487,7 +511,7 @@ class ChapterScene(NarratedScene):
                         Line(ax.c2p(bt["hi"], ytop * 0.93), ax.c2p(bt["hi"], ytop), color=theme.HIGHLIGHT, stroke_width=5))
             ci_t = zh(f"95% 区间 [{bt['lo']:+.3f}, {bt['hi']:+.3f}]", 22, theme.HIGHLIGHT)
             ci_t.next_to(ci, UP, buff=0.1)
-            dec = VGroup(zh(f"差值 {bt['diff']:+.3f}", 24), zh(f"下界 > 0 → {bt['decision']}", 26, theme.OUTPUT)
+            dec = VGroup(zh(f"差值 {bt['diff']:+.3f}", 24), zh(f"下界 > 0 → {name_zh(bt['decision'])}", 26, theme.OUTPUT)
                          ).arrange(DOWN, buff=0.25).move_to([5.3, 0.6, 0])
             self.wait(self.remaining() * 0.12)
             self.play(Create(ci), FadeIn(ci_t), run_time=self.fit(0.8))
@@ -563,7 +587,7 @@ class ChapterScene(NarratedScene):
             table.arrange(RIGHT, buff=0.8)
             rows = VGroup()
             for name, o in d["variants"]:
-                rows.add(VGroup(zh(name, 20), zh(str(o), 22, theme.GRAD if o else theme.OUTPUT)))
+                rows.add(VGroup(zh(name_zh(name), 20), zh(str(o), 22, theme.GRAD if o else theme.OUTPUT)))
             tab = VGroup()
             for i, (a_, b_) in enumerate([tuple(table)] + [tuple(r) for r in rows]):
                 a_.move_to([1.3, 1.9 - 0.55 * i, 0], aligned_edge=LEFT)

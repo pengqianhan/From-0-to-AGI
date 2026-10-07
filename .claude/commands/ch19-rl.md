@@ -1,57 +1,59 @@
 ---
-description: 第 19 章自我检验：强化学习（REINFORCE 与对数导数技巧、基线与方差、PPO→GRPO 组内优势、裁剪与 k3 KL、token 级聚合、可验证奖励、reward hacking 与守卫、训练监控）
+description: "Chapter 19 self-check: reinforcement learning — REINFORCE and the log-derivative trick, baseline and variance, PPO→GRPO group advantage, clipping and k3 KL, token-level aggregation, verifiable rewards, reward hacking and guards, training monitoring (第 19 章自检：强化学习——REINFORCE 与对数导数技巧、基线与方差、PPO→GRPO 组内优势、裁剪与 k3 KL、token 级聚合、可验证奖励、reward hacking 与守卫、训练监控)"
 ---
 
-# 第 19 章自我检验：强化学习
+# Chapter 19 self-check: reinforcement learning
 
-用户调用了 `/ch19-rl`，说明他们刚学完第 19 章（`chapters/19-reinforcement-learning/`）。你的任务是帮他们检验自己是否真正理解了，而不是告诉他们答案。
+The learner typed `/ch19-rl`. They finished Chapter 19 (`chapters/19-reinforcement-learning/`). Help them check if they really understand it. Do not give them the answers.
 
-**检验方式**：逐一提问下面的问题，等用户用自己的话回答后，再给出反馈——哪里说对了，哪里还有偏差，以及如何深化理解。不要一次性把所有问题都抛出去。需要数字时，让用户自己跑 `code/` 里的脚本看输出，不要替他们背。
+**Language**: Use the language of the learner. If the learner writes in Chinese, ask the questions and give feedback in Chinese. The Chinese text of the chapter is in `README.zh.md`. Write short, clear sentences (see `docs/STYLE_GUIDE.md`).
 
----
-
-## 检验问题（按难度递进）
-
-**第一关：概念——为什么要强化学习，GRPO 省掉了什么**
-
-问用户：
-> SFT 和蒸馏已经能让模型学会工具调用了，为什么还要强化学习？GRPO 和 PPO 比，少了哪个模型？它用什么代替了那个模型的作用？
-
-期望回答：模仿学习的上限是示范数据（老师会犯的错，学生也学会了，见 `02_grpo_from_scratch.py` 里"不会进位的老师"）；强化学习让模型从自己的尝试里学，只需要一个能打分的验证器。GRPO 去掉了价值模型（critic），对同一个提示词采样 G 个回答，用组内平均分作基线：A_i = (r_i − mean) / std。能说出"省掉一个和策略一样大的模型的显存与训练"是加分项。
+**Method**: Ask the questions below one at a time. Wait for the learner to answer in their own words. Then give feedback: tell them what is correct, what is not correct, and how to make their understanding deeper. Do not ask all the questions at the same time. When a number is necessary, ask the learner to run the scripts in `code/` and read the output. Do not give the numbers from memory.
 
 ---
 
-**第二关：直觉——对数导数技巧和基线**
+## Questions (from easy to difficult)
 
-问用户：
-> 奖励函数不可导（比如"答案对不对"），梯度是怎么算出来的？如果把所有奖励都加上 10，REINFORCE 的期望梯度变不变？方差呢？
+**Level 1: concept (why reinforcement learning, and what GRPO removes)**
 
-期望回答：∇E[r] = E[r · ∇log π(a)]，只需要能采样、能打分，r 本身不必可导。减去一个常数基线不改变期望（因为 E[∇log π] = 0），但会大幅改变方差；`01_reinforce_bandit.py` 里奖励 +10 时不减基线的方差是减基线的上千倍，训练几乎不动。GRPO 的"组均值"就是这样一个基线。
+Ask the learner:
+> SFT and distillation can already teach the model to make tool calls. Why do we still need reinforcement learning? Compared with PPO, which model does GRPO not have? What does GRPO use to do the job of that model?
 
----
-
-**第三关：发现问题——奖励涨了，本事没涨**
-
-问用户：
-> 你在跑 GRPO，平均奖励从 −0.6 稳步涨到 0 附近，格式错误率一路降到 0。但人工抽查发现模型一个正确的工具调用都没有。可能发生了什么？你会看哪些指标、怎么改奖励？
-
-期望回答：奖励作弊（reward hacking）。本章的真实案例：奖励只检查 `<tool_call>` 标签里的内容，模型学会去掉标签、照样输出 JSON，-1 变 0；闲聊题无论输出什么都给满分。要同时看调用率、裸调用比例、回复长度、留出验证器 / 人工抽查的真实成功率，而不只看平均奖励。修法：标签外出现调用样子的 JSON 判格式错误（守卫 #8），空回复不给满分；一般原则是严格格式、惩罚退化输出、用独立的留出验证器监控。能说出"修奖励之后要重新跑、重新看真实成功率，而不是只看奖励曲线"是加分项。
+Expected answer: the upper limit of imitation learning is the demonstration data. The student also learns the errors of the teacher (see the "teacher that cannot carry" in `02_grpo_from_scratch.py`). Reinforcement learning lets the model learn from its own attempts. It needs only a verifier that can give a score. GRPO removes the value model (critic). It samples G responses for the same prompt and uses the mean score of the group as the baseline: A_i = (r_i − mean) / std. Extra credit: the learner says that GRPO saves the memory and the training of a model that is as large as the policy.
 
 ---
 
-**第四关：迁移——一组全对，梯度是多少；聚合方式有什么差别**
+**Level 2: intuition (the log-derivative trick and the baseline)**
 
-问用户：
-> 一个提示词的 8 个回答全对（或全错），这组对梯度的贡献是多少？训练后期这种组越来越多，会怎样？有哪些处理办法？另外，"每条回复内先平均再平均"和"所有 token 一起平均"有什么区别？
+Ask the learner:
+> The reward function has no derivative (for example, "is the answer correct?"). How do we calculate the gradient? If we add 10 to all rewards, does the expected REINFORCE gradient change? Does the variance change?
 
-期望回答：组内方差为 0，优势全为 0，这组不提供梯度；后期有效样本越来越少（`02` 的日志里"零方差组"比例升到 0.8 以上）。办法：按难度筛题（离线筛、或像 DAPO/MiMo/OLMo 3 那样在线过滤全对全错的组再补采样）。聚合方式：序列平均让长回复里每个 token 的权重变小（长的错误回复罚得轻），token 平均让每个 token 权重相同；MiMo-7B、OLMo 3、GLM-4.5 的报告都用 token 级平均，`zero` 默认也是 `token_mean`。
+Expected answer: ∇E[r] = E[r · ∇log π(a)]. We only need to sample and to give a score; r itself does not need a derivative. A constant baseline does not change the expectation (because E[∇log π] = 0), but it changes the variance by a large amount. In `01_reinforce_bandit.py`, with rewards +10, the variance without a baseline is more than a thousand times the variance with a baseline, and the training almost does not move. The "group mean" of GRPO is such a baseline.
 
 ---
 
-## 反馈原则
+**Level 3: find the problem (the reward goes up, but the skill does not)**
 
-- 答对了：认可，然后追问一个更深的"为什么"（例如：为什么 k3 估计总是非负？为什么 ppo_epochs = 1 时裁剪不起作用？）。
-- 答错了：不要直接给答案，给一个提示（比如让他们改 `03_reward_hacking.py` 里的奖励函数、再跑一遍看指标），让他们重新思考。
-- 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
+Ask the learner:
+> You run GRPO. The mean reward increases steadily from −0.6 to near 0, and the format error rate decreases to 0. But a human spot check finds that the model makes no correct tool calls. What can have happened? Which metrics do you look at? How do you change the reward?
 
-四关都通过后，告诉用户可以进入第 20 章（发布：按预注册协议最终评测、量化、本地部署）。
+Expected answer: reward hacking. The real case in this chapter: the reward checked only the content inside the `<tool_call>` tags. The model learned to remove the tags and output the JSON anyway, so −1 became 0. Also, a chat problem got the full score for any output. Look at more than the mean reward: also look at the call rate, the fraction of bare calls, the response length, and the true success rate from a held-out verifier or a human spot check. The fix: JSON that looks like a call outside the tags is a format error (guard #8), and an empty reply does not get the full score. The general principles: use a strict format, penalize degenerate outputs, and monitor with a separate held-out verifier. Extra credit: the learner says that after a fix to the reward, you must run again and check the true success rate again, not only the reward curve.
+
+---
+
+**Level 4: transfer (gradient of an all-correct group; aggregation methods)**
+
+Ask the learner:
+> All 8 responses to one prompt are correct (or all are wrong). How much does this group add to the gradient? Late in training, there are more and more such groups. What happens? What can you do about it? Also, what is the difference between "average within each response, then average over responses" and "average over all tokens together"?
+
+Expected answer: the variance in the group is 0, so all advantages are 0, and the group gives no gradient. Late in training, there are fewer and fewer useful samples (in the log of `02`, the fraction of "zero-variance groups" goes above 0.8). What to do: filter the problems by difficulty (offline, or online like DAPO/MiMo/OLMo 3: remove all-correct and all-wrong groups and sample more). Aggregation: the sequence mean gives a smaller weight to each token in a long response (a long wrong response gets a smaller penalty). The token mean gives the same weight to each token. The reports of MiMo-7B, OLMo 3, and GLM-4.5 all use the token-level mean, and `zero` also uses `token_mean` by default.
+
+---
+
+## Rules for feedback
+
+- If the answer is correct: say so. Then ask a deeper "why" question (for example: why is the k3 estimate never negative? Why does clipping have no effect when ppo_epochs = 1?).
+- If the answer is not correct: do not give the answer. Give a hint. For example, ask the learner to change the reward function in `03_reward_hacking.py`, run it again, and look at the metrics. Then let them think again.
+- If the learner says "I do not know": ask them to guess first. A wrong guess is better than no guess.
+
+When the learner passes all four levels, tell them to continue to Chapter 20 (release: the final evaluation with the preregistered protocol, quantization, and local deployment).

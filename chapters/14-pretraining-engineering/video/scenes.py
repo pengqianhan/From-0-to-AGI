@@ -158,8 +158,9 @@ def compute() -> dict:
                           text=True, check=True, cwd=ROOT).stdout
     rows = re.findall(r"^\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*$", outp, re.M)
     d["ddp_rows"] = [[int(r[0]), float(r[1]), float(r[2]), float(r[3])] for r in rows]
-    d["ddp_pdiff"] = re.search(r"2 进程 ([\d.e+-]+)", outp).group(1)
-    d["ring_send"] = re.search(r"每张卡发出 ([\d,]+)", outp).group(1)
+    # 06 的输出已改成英文；两种输出都能解析
+    d["ddp_pdiff"] = re.search(r"(?:2 进程|2 processes) ([\d.e+-]+)", outp).group(1)
+    d["ring_send"] = re.search(r"(?:每张卡发出|Each GPU sends) ([\d,]+)", outp).group(1)
 
     # 断点续训（07）
     rs = _load("resume_demo", "07_resume.py")

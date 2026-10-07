@@ -1,12 +1,14 @@
-# 主线模型蒸馏（第 17 章）。第二步默认值，待调。
-# 教师用 vLLM 起 OpenAI 兼容服务（在另一组 GPU 或同机先生成数据、再训练）：
-#   vllm serve <教师 HF 目录或名称> --tensor-parallel-size 2 --enable-auto-tool-choice --tool-call-parser hermes
+# Distillation of the main-line model (Chapter 17). Default values for Step 2; tune them later.
+# The teacher runs as an OpenAI-compatible server in vLLM (on a different group of GPUs, or on the same machine:
+# generate the data first, then train):
+#   vllm serve <teacher HF folder or name> --tensor-parallel-size 2 --enable-auto-tool-choice --tool-call-parser hermes
 #   uv run python -m zero.post.distill --config configs/main/distill.toml
-# 我们自训的分词器与任何开源教师都不同 → 只能做序列级蒸馏（logits_kd = false）。
-# 教师的名称 / 版本 / 许可证必须在运行前填好并核实（GOAL.md 3.3）；license_allows_distillation 默认 false，
-# 没核实就拒绝运行。尚未在 GPU 上验证。
+# Our own tokenizer is different from the tokenizer of all open teachers → only sequence-level distillation is possible (logits_kd = false).
+# Fill in and verify the name / version / license of the teacher before the run (GOAL.md 3.3).
+# license_allows_distillation is false by default: without verification, the program does not run.
+# Not verified on a GPU yet.
 
-[model]                  # 与 configs/main/longctx.toml 的 checkpoint 形状一致（689.5M 参数）
+[model]                  # Same shape as the checkpoint of configs/main/longctx.toml (689.5M parameters)
 vocab_size = 65536
 dim = 1280
 n_layers = 28
@@ -14,7 +16,7 @@ n_heads = 16
 n_kv_heads = 8
 head_dim = 128
 ffn_dim = 3584
-rope_theta = 1000000.0   # 长上下文阶段调大后的底数
+rope_theta = 1000000.0   # The larger base from the long-context stage
 max_seq_len = 32768
 tie_embeddings = true
 
@@ -38,7 +40,7 @@ seq_len = 8192
 backend = "openai"
 base_url = "http://localhost:8000/v1"
 model = "teacher"                  # vllm serve --served-model-name teacher
-name = "待定（第二步确定）"          # 例：Qwen3 系列中许可证为 Apache-2.0 的模型，需核实
+name = "待定（第二步确定）"          # Example: a Qwen3 model with the Apache-2.0 license (must be verified)
 version = "待定"
 license = "待核实"
 license_allows_distillation = false
@@ -49,14 +51,14 @@ max_new_tokens = 1024
 [distill]
 out_jsonl = "data/distill/teacher.jsonl"
 shard_dir = "data/distill/packed"
-n_tasks = 200000         # tool_env 只是玩具环境；第二步还要接入真实的工具调用任务集（第 17、19 章）
+n_tasks = 200000         # tool_env is only a toy environment. Step 2 must also connect real tool-calling task sets (Chapters 17 and 19)
 samples_per_task = 4
 keep_per_task = 1
 env_seed = 17
 mix_sft_jsonl = "data/sft/train.jsonl"
 mix_sft_max = 200000
 logits_kd = false
-on_policy_steps = 0      # 在线策略蒸馏：待核实（GOAL.md 2.1）
+on_policy_steps = 0      # On-policy distillation: to be verified (GOAL.md 2.1)
 
 [optim]
 lr = 3e-5

@@ -1,114 +1,120 @@
-# 第 5 章：分类与概率 —— 从"猜一个数"到"猜哪一类"
+# Chapter 5: Classification and probability — From "predict a number" to "predict a class"
 
-> **一句话目标**：读完这一章，你能手写 softmax 和交叉熵、推出它们合起来的梯度就是 `p − onehot`，用数字说明分类为什么不用 MSE，并且能解释"语言模型就是一个在词表上做分类的分类器"。
+**English** · [中文](README.zh.md)
 
-📺 **本章视频**：待发布（本地渲染：`bash chapters/05-classification-probability/video/build.sh`）
-🧪 **本章自检**：学完后在 Claude Code 里输入 `/ch05-classification`
+> **Goal**: After this chapter, you can write softmax and cross-entropy by hand. You can derive that the gradient of the two together is `p − onehot`. You can use numbers to show why classification does not use MSE. You can also explain why "a language model is a classifier over the vocabulary".
+
+📺 **Video**: Not published yet. To render it on your computer, run `bash chapters/05-classification-probability/video/build.sh`.
+🧪 **Self-check**: After the chapter, type `/ch05-classification` in Claude Code.
 
 ---
 
-上一章我们亲手写了自动微分：不管网络怎么搭，只要能写出前向计算，梯度就能自动算出来。但到目前为止，我们的模型都只会输出**一个数**——房价、曲线上的 y 值，损失也一直是均方误差。这一章要解决的问题是：**如果答案不是一个数，而是"哪一类"呢？** 这张图是猫、狗还是鸟？这封邮件是不是垃圾邮件？以及和这门课关系最大的一个：**这句话的下一个字是什么？**
+In the last chapter, we wrote automatic differentiation ourselves. For any network structure, if we can write the forward pass, autograd calculates the gradients. But until now, all our models output **one number**: a house price, or the y value on a curve. The loss was always the mean squared error.
 
-这一章讲完，大语言模型的训练目标就已经完整地出现了。后面二十多章再怎么复杂，模型最后一层做的事，都是这一章的内容。
+This chapter solves a new problem: **what if the answer is not a number, but a class?** Does this image show a cat, a dog, or a bird? Is this email spam? And the question that is most important for this course: **what is the next character in this sentence?**
 
-## 1. 直觉：为什么不能直接"预测类别编号"
+At the end of this chapter, you have the complete training objective of a large language model. The more than twenty chapters after this one become much more complex. But the last layer of the model always does what this chapter shows.
 
-最偷懒的做法：把猫、狗、鸟编号成 0、1、2，然后像第 1 章那样用回归去预测这个数。
+## 1. Intuition: why not predict the class number directly?
 
-问题马上就来了：
+The laziest method is this: give cat, dog, and bird the numbers 0, 1, and 2. Then predict this number with regression, as in Chapter 1.
 
-- **编号带来了不存在的顺序**。预测值 1.5 是什么意思？"介于狗和鸟之间"？如果模型在猫和鸟之间拿不准，回归会输出它们的平均值 1——那恰好是"狗"。
-- **我们其实想要的是"有多确定"**。"70% 是猫、26% 是狗、4% 是鸟"比一个编号有用得多：可以设阈值、可以排序、可以在第 10 章里按概率采样出下一个字。
+Problems occur immediately:
 
-所以换一个思路：**有几类，模型就输出几个数，每类一个分数**；再想办法把这组分数变成一个概率分布。
+- **The numbers add an order that does not exist.** What does a prediction of 1.5 mean? "Between dog and bird"? If the model is not sure between cat and bird, regression outputs their mean, 1. But 1 is "dog".
+- **What we want is "how sure" the model is.** "70% cat, 26% dog, 4% bird" is much more useful than one number. We can set a threshold, sort the classes, or sample the next character from the probabilities (Chapter 10).
 
-## 2. logits 与 softmax：把分数变成概率
+Thus we use a different method: **the model outputs one number for each class, one score per class**. Then we change this set of scores into a probability distribution.
 
-模型最后一层（第 2、3 章的 `h @ W + b`）为每一类输出一个任意实数，叫作 **logits**。它可正可负，加起来也不等于 1。我们贯穿全章的例子是：
+## 2. Logits and softmax: change scores into probabilities
+
+The last layer of the model (`h @ W + b` from Chapters 2 and 3) outputs one real number for each class. These numbers are the **logits**. A logit can be positive or negative, and the logits do not add up to 1. The example for the whole chapter is:
 
 ```
-logits z = [2.0, 1.0, −1.0]    # 猫、狗、鸟
+logits z = [2.0, 1.0, −1.0]    # cat, dog, bird
 ```
 
-要把它变成概率，需要两件事：每个数都是正的，并且加起来等于 1。**softmax** 用最直接的办法做到这两点——先取指数（一定为正），再除以总和（一定归一）：
+To change the logits into probabilities, we need two things: each number must be positive, and the numbers must add up to 1. **Softmax** does both in the most direct way. First, it applies the exponential function (the result is always positive). Then it divides by the sum (the result always adds up to 1):
 
 ```
 p_k = exp(z_k) / Σ_j exp(z_j)
 ```
 
-运行 [`code/01_softmax.py`](code/01_softmax.py)：
+Run [`code/01_softmax.py`](code/01_softmax.py):
 
 ```bash
 uv run python chapters/05-classification-probability/code/01_softmax.py
 ```
 
-| | 猫 | 狗 | 鸟 |
+| | Cat | Dog | Bird |
 |---|---:|---:|---:|
 | logits `z` | 2.0 | 1.0 | −1.0 |
 | `exp(z)` | 7.3891 | 2.7183 | 0.3679 |
 | softmax `p` | 0.7054 | 0.2595 | 0.0351 |
 
-几个性质值得记住：
+Remember these properties:
 
-- **保序**：分数越高，概率越大。softmax 是 argmax 的一个"软"版本——不是非此即彼地挑出最大的，而是按指数比例分配概率，这就是名字的由来。
-- **只看差值**：给所有 logits 加同一个常数，结果不变（`exp(z + c) = exp(z)·exp(c)`，`exp(c)` 分子分母约掉了）。代码里给三个 logits 都加上 100，算出来还是 `[0.7054, 0.2595, 0.0351]`。
-- **指数放大差距**：logits 差 1，概率差 e ≈ 2.7 倍；差 3，概率差约 20 倍。
+- **Softmax keeps the order**: a higher score gives a higher probability. Softmax is a "soft" version of argmax. It does not select only the largest score. It gives probabilities in proportion to the exponentials. This is the origin of the name.
+- **Only the differences are important**: add the same constant to all logits, and the result does not change. The reason: `exp(z + c) = exp(z)·exp(c)`, and `exp(c)` cancels in the numerator and the denominator. The code adds 100 to all three logits. The result is still `[0.7054, 0.2595, 0.0351]`.
+- **The exponential makes differences larger**: a difference of 1 in the logits gives a ratio of e ≈ 2.7 in the probabilities. A difference of 3 gives a ratio of about 20.
 
-**数值稳定：先减最大值。** 指数长得太快了。float32 里 `exp(x)` 在 x 超过约 88.7 时就溢出成 `inf`（float64 是 709.8）。训练大模型时 logits 到几十上百并不罕见。把 logits 放大到 `[1000, 500, −500]`，按定义直接算会得到 `[nan, 0, 0]`。解决办法正是上面"只看差值"那条性质：先把所有 logits 减去最大值，最大的那项变成 `exp(0) = 1`，永远不会溢出：
+**Numerical stability: subtract the maximum first.** The exponential grows too fast. In float32, `exp(x)` overflows to `inf` when x is more than about 88.7 (709.8 in float64). When we train a large model, logits of tens or hundreds are not rare. Scale the logits up to `[1000, 500, −500]`. Then the calculation from the definition gives `[nan, 0, 0]`.
+
+The solution is the property "only the differences are important". First, subtract the maximum from all logits. Then the largest term becomes `exp(0) = 1`, and it never overflows:
 
 ```python
 def softmax(z, temperature=1.0):
     z = np.asarray(z, dtype=np.float64) / temperature
-    z = z - z.max(axis=-1, keepdims=True)   # 减最大值：结果不变，但不会溢出
+    z = z - z.max(axis=-1, keepdims=True)   # subtract the maximum: same result, but no overflow
     e = np.exp(z)
     return e / e.sum(axis=-1, keepdims=True)
 ```
 
-稳定版对 `[1000, 500, −500]` 给出 `[1, 0, 0]`，完全正常。所有深度学习框架里的 softmax 都这么写。
+For `[1000, 500, −500]`, the stable version gives `[1, 0, 0]`. This result is correct. The softmax in all deep-learning frameworks uses this method.
 
-## 3. 最大似然：让正确答案的概率尽量大
+## 3. Maximum likelihood: make the probability of the correct answer as large as possible
 
-有了概率，"训练"要优化什么就很自然了：**模型给正确答案的概率越大越好**。
+With probabilities, the objective of training follows directly: **the higher the probability that the model gives to the correct answer, the better**.
 
-对一个样本，正确类别是 y，模型给它的概率是 `p_y`。对整个数据集（样本之间相互独立），模型"猜中所有正确答案"的概率是每个样本概率的乘积：
+For one sample, the correct class is y, and the model gives it the probability `p_y`. Assume that the samples are independent. Then, for the full data set, the probability that the model "guesses all correct answers" is the product of the probabilities of all samples:
 
 ```
-似然 = Π_i p_{i, y_i}
+likelihood = Π_i p_{i, y_i}
 ```
 
-把它当成参数的函数，找让它最大的参数，这叫**最大似然估计（Maximum Likelihood Estimation, MLE）**。
+Use this product as a function of the parameters, and find the parameters that make it largest. This method is **maximum likelihood estimation (MLE)**.
 
-直接算乘积有个现实问题：它会**下溢**。代码里算了一下，假设每个样本都给正确答案 0.9 的概率：
+The product has a practical problem: it **underflows**. The code calculates it for a model that gives each correct answer the probability 0.9:
 
-| 样本数 | 似然 0.9ⁿ | 对数似然 n·ln 0.9 |
+| Samples | Likelihood 0.9ⁿ | Log-likelihood n·ln 0.9 |
 |---:|---:|---:|
 | 10 | 3.487 × 10⁻¹ | −1.05 |
 | 100 | 2.656 × 10⁻⁵ | −10.54 |
 | 1000 | 1.748 × 10⁻⁴⁶ | −105.36 |
 | 10000 | 2.470 × 10⁻³²³ | −1053.61 |
 
-一万个样本，乘积已经贴着 float64 能表示的最小正数了；一个语言模型的训练集有上万亿个 token。所以取对数：**log 把乘积变成求和**，而且 log 单调递增，最大化似然和最大化对数似然是同一件事。再加个负号变成"越小越好"，除以 N 取平均，就得到了**负对数似然（Negative Log-Likelihood, NLL）**：
+With 10000 samples, the product is already near the smallest positive number that float64 can represent. The training set of a language model has trillions of tokens. Thus we take the logarithm: **log changes a product into a sum**. Also, log is monotonically increasing, so to maximize the likelihood is the same as to maximize the log-likelihood. Add a minus sign so that "smaller is better", and divide by N to get the mean. The result is the **negative log-likelihood (NLL)**:
 
 ```
 L = −1/N · Σ_i log p_{i, y_i}
 ```
 
-## 4. 交叉熵，以及它漂亮的梯度
+## 4. Cross-entropy and its clean gradient
 
-上面这个 NLL 有一个更常用的名字：**交叉熵（Cross-Entropy）**。一般地，真实分布 q 和模型分布 p 的交叉熵是 `H(q, p) = −Σ_k q_k log p_k`。分类任务里真实分布是 onehot（正确类别为 1，其余为 0），求和里只剩下一项 `−log p_y`——正好就是 NLL。所以在分类里，**"最大似然"、"最小化负对数似然"、"最小化交叉熵"说的是同一件事**。
+The NLL above has a more common name: **cross-entropy**. In general, the cross-entropy of the true distribution q and the model distribution p is `H(q, p) = −Σ_k q_k log p_k`. In classification, the true distribution is onehot: 1 for the correct class, 0 for all other classes. Then only one term stays in the sum, `−log p_y`. This term is exactly the NLL. Thus in classification, **"maximum likelihood", "minimize the negative log-likelihood", and "minimize the cross-entropy" are the same thing**.
 
-回到猫狗鸟的例子，看看不同答案下的损失：
+Go back to the cat-dog-bird example. The table shows the loss for each possible correct answer:
 
-| 正确答案 | 模型给它的概率 p | 损失 −ln p |
+| Correct answer | Probability p from the model | Loss −ln p |
 |---|---:|---:|
-| 猫 | 0.7054 | 0.3490 |
-| 狗 | 0.2595 | 1.3490 |
-| 鸟 | 0.0351 | 3.3490 |
-| （三类均匀乱猜） | 1/3 | 1.0986 |
+| Cat | 0.7054 | 0.3490 |
+| Dog | 0.2595 | 1.3490 |
+| Bird | 0.0351 | 3.3490 |
+| (uniform guess over 3 classes) | 1/3 | 1.0986 |
 
-猜对且有把握，损失小；把正确答案的概率压得越低，损失越大，而且没有上限——p → 0 时 −ln p → ∞。最后一行也很有用：**一个什么都没学的模型，损失应该约等于 ln(类别数)**。这是检查训练代码有没有写错的第一个"对拍点"，后面的螺旋数据初始损失 1.0919 ≈ ln 3，语言模型的初始损失 ≈ ln(词表大小)，都是这个道理。
+A correct and confident guess gives a small loss. The lower the probability of the correct answer, the larger the loss, with no upper limit: when p → 0, −ln p → ∞. The last row is also useful: **a model that learned nothing must have a loss of about ln(number of classes)**. This is the first check point for errors in training code. For the same reason, the spiral data later in this chapter has an initial loss of 1.0919 ≈ ln 3, and a language model has an initial loss of ≈ ln(vocabulary size).
 
-实现时同样要注意数值稳定。不要先算 softmax 再取 log（概率下溢成 0 时 log 得到 −∞），而是直接算 **log-softmax**：`log p_k = z_k − logsumexp(z)`，同样先减最大值：
+The implementation must also be numerically stable. Do not calculate softmax first and then take the log: if a probability underflows to 0, the log gives −∞. Calculate **log-softmax** directly: `log p_k = z_k − logsumexp(z)`. Here too, subtract the maximum first:
 
 ```python
 def log_softmax(z):
@@ -119,45 +125,45 @@ def cross_entropy(logits, y):
     return -log_softmax(logits)[np.arange(len(y)), y].mean()
 ```
 
-**梯度：`p − onehot`。** 这是全章最重要的一个结论。对一个样本，把 softmax 代进去：
+**Gradient: `p − onehot`.** This is the most important result of the chapter. For one sample, put softmax into the loss:
 
 ```
 L = −log p_y = −z_y + log Σ_j exp(z_j)
 ```
 
-对第 k 个 logit 求导：第一项只有 k = y 时贡献 −1；第二项的导数是 `exp(z_k) / Σ_j exp(z_j)`，正好是 `p_k`。所以
+Take the derivative for the k-th logit. The first term gives −1, but only when k = y. The derivative of the second term is `exp(z_k) / Σ_j exp(z_j)`, which is exactly `p_k`. Thus:
 
 ```
-∂L/∂z_k = p_k − [k = y]      即   ∂L/∂z = p − onehot(y)
+∂L/∂z_k = p_k − [k = y]      that is,   ∂L/∂z = p − onehot(y)
 ```
 
-softmax 和 log 的所有复杂性在求导时互相抵消了，剩下的就是"模型的预测减去正确答案"——和第 1 章 MSE 的残差 `ŷ − y` 长得一模一样。代码里只有一行：
+In the derivative, all the complexity of softmax and log cancels. What stays is "the prediction of the model minus the correct answer". It has the same form as the MSE residual `ŷ − y` in Chapter 1. In the code, it is one line:
 
 ```python
 def ce_grad(logits, y):
     p = softmax(logits)
     p[np.arange(len(y)), y] -= 1.0      # p − onehot
-    return p / len(y)                  # 除以 N：因为损失取了平均
+    return p / len(y)                  # divide by N because the loss is a mean
 ```
 
-用第 1、4 章的老办法，中心差分做**梯度检验**（[`code/02_cross_entropy.py`](code/02_cross_entropy.py)）：
+Use the method from Chapters 1 and 4: a **gradient check** with central differences ([`code/02_cross_entropy.py`](code/02_cross_entropy.py)):
 
-| | 猫 | 狗 | 鸟 |
+| | Cat | Dog | Bird |
 |---|---:|---:|---:|
-| 解析梯度 `p − onehot`（正确答案 = 猫） | −0.2946 | 0.2595 | 0.0351 |
-| 数值梯度（中心差分） | −0.2946 | 0.2595 | 0.0351 |
+| Analytic gradient `p − onehot` (correct answer = cat) | −0.2946 | 0.2595 | 0.0351 |
+| Numerical gradient (central difference) | −0.2946 | 0.2595 | 0.0351 |
 
-最大差 2.18 × 10⁻¹²；换成随机的 8 个样本 × 5 类，最大差 3.63 × 10⁻¹¹。推导是对的。
+The maximum difference is 2.18 × 10⁻¹². For 8 random samples × 5 classes, the maximum difference is 3.63 × 10⁻¹¹. The derivation is correct.
 
-读一下这个梯度：正确类别的 logit 被往上推（梯度为负，减去它就是增大），推的力度是 `1 − p_y`——还差多少就推多少；每个错误类别的 logit 被往下压，力度正是模型错给它的概率 `p_k`。
+Read this gradient. Gradient descent pushes the logit of the correct class up (the gradient is negative, so to subtract it is to increase the logit). The force of the push is `1 − p_y`: it is equal to the distance that is still missing. Gradient descent pushes the logit of each wrong class down. The force is exactly the probability `p_k` that the model gave to that wrong class.
 
-## 5. 为什么分类不用 MSE
+## 5. Why classification does not use MSE
 
-既然有了概率，能不能继续用老朋友 MSE，让 `p` 去逼近 onehot，也就是 `L = Σ_k (p_k − t_k)²`？可以算，也能训练，但它有一个致命弱点：**模型"自信地错了"的时候，它几乎不给梯度。**
+We have probabilities now. Can we continue to use MSE and make `p` move toward the onehot target, with `L = Σ_k (p_k − t_k)²`? We can calculate this loss, and it can train. But it has a serious weakness: **when the model is "confidently wrong", MSE gives almost no gradient.**
 
-做个实验：真实类别是 0，让模型把错误类别 1 的 logit 抬到 s，其余为 0。s 越大，模型越确信那个错误答案。两种损失对 logits 的梯度大小（`02_cross_entropy.py` 第 4 部分）：
+Do an experiment. The true class is 0. The model raises the logit of the wrong class 1 to s, and the other logits are 0. A larger s means that the model is more sure of the wrong answer. The table shows the size of the gradient for the logits, for the two losses (part 4 of `02_cross_entropy.py`):
 
-| 错误类别 logit s | p(正确) | CE 损失 | ‖CE 梯度‖ | MSE 损失 | ‖MSE 梯度‖ |
+| Wrong-class logit s | p(correct) | CE loss | ‖CE gradient‖ | MSE loss | ‖MSE gradient‖ |
 |---:|---:|---:|---:|---:|---:|
 | 0 | 3.33 × 10⁻¹ | 1.099 | 0.8165 | 0.6667 | 5.44 × 10⁻¹ |
 | 2 | 1.07 × 10⁻¹ | 2.240 | 1.1954 | 1.4290 | 5.08 × 10⁻¹ |
@@ -166,18 +172,22 @@ def ce_grad(logits, y):
 | 8 | 3.35 × 10⁻⁴ | 8.001 | 1.4135 | 1.9980 | 2.51 × 10⁻³ |
 | 10 | 4.54 × 10⁻⁵ | 10.000 | 1.4141 | 1.9997 | 3.40 × 10⁻⁴ |
 
-两列梯度走向正好相反：
+The two gradient columns go in opposite directions:
 
-- **交叉熵**：错得越离谱，梯度越大，最后稳定在 √2 ≈ 1.414（就是 `p − onehot` ≈ `[−1, 1, 0]` 的长度）。损失也跟着 s 线性增长，永远"感到疼"。
-- **MSE**：错得越离谱，梯度反而越小，s = 10 时只剩 3.4 × 10⁻⁴，比交叉熵小四千多倍。它的损失被封顶在 2（两个概率各差 1），到了顶上是一片平地。
+- **Cross-entropy**: the worse the error, the larger the gradient. At the end, the gradient stays at √2 ≈ 1.414 (the length of `p − onehot` ≈ `[−1, 1, 0]`). The loss also grows linearly with s. The model always "feels the pain".
+- **MSE**: the worse the error, the smaller the gradient. At s = 10, the gradient is only 3.4 × 10⁻⁴, more than 4000 times smaller than the cross-entropy gradient. The MSE loss has an upper limit of 2 (two probabilities are each wrong by 1). At this limit, the loss surface is flat.
 
-原因在链式法则里。MSE 的梯度要穿过 softmax 的导数 `∂p/∂z = diag(p) − ppᵀ`，里面每一项都乘着某个 `p_k`。当正确类别的概率已经接近 0 时，这个因子把梯度也乘没了——这和 sigmoid 在两端"饱和"、导数趋于 0 是同一类现象（第 3 章见过 sigmoid 的形状）。交叉熵里的 `log` 恰好把 softmax 的指数"抵消"掉了，于是梯度干干净净是 `p − onehot`，不会饱和。
+The reason is in the chain rule. The MSE gradient goes through the derivative of softmax, `∂p/∂z = diag(p) − ppᵀ`. Each term of this matrix is multiplied by some `p_k`. When the probability of the correct class is near 0, this factor also makes the gradient almost 0.
 
-> 关于数字：本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同机器、不同版本的底层数学库，浮点运算的顺序略有不同，训练几百步后会把这些微小差异放大，你本机跑出的数字可能从小数点后第二三位开始就不一样；请以下文不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-01-06.md](../../runs/2026-10-01-gpu0-check/chapters-01-06.md)。
+This is the same type of effect as the "saturation" of sigmoid at its two ends, where the derivative goes to 0. (Chapter 3 showed the shape of sigmoid.) In cross-entropy, the `log` cancels the exponential of softmax. Thus the gradient is exactly `p − onehot`, and it does not saturate.
 
-这不只是一张表里的现象。在第 6 节的螺旋分类器上，我们故意把输出层权重的标准差放大到 10，让模型一开始就"自信地乱猜"，再分别用交叉熵和 MSE 训练（同一个网络、同样的学习率 1.0）。下表前三列是课程构建机上的输出，最后一列是 2026-10 在另一台服务器上复跑同一份代码的 MSE 结果（那次交叉熵一列和构建机一位不差）：
+> **Note:** The numbers of the training experiments in this chapter come from one CPU run on the course build machine. Different machines and different versions of the low-level math libraries use a slightly different order of floating-point operations. A few hundred training steps make these small differences larger. On your computer, the numbers can be different from the second or third decimal place. Trust the conclusions below that do not depend on exact values. For a second run on another server in 2026-10, see [runs/2026-10-01-gpu0-check/chapters-01-06.md](../../runs/2026-10-01-gpu0-check/chapters-01-06.md).
 
-| 步数 | 交叉熵训练：准确率 | MSE 训练：准确率 | MSE 训练：准确率（另一台服务器复跑） |
+This effect is not only in one table. We use the spiral classifier from Section 6. On purpose, we increase the standard deviation of the output-layer weights to 10. Then the model makes "confident random guesses" from the start. We train it once with cross-entropy and once with MSE (the same network and the same learning rate, 1.0).
+
+In the table below, the first three columns are the output on the course build machine. The last column is the MSE result of the same code on another server in 2026-10. In that second run, the cross-entropy column was identical to the build machine, digit for digit.
+
+| Step | Cross-entropy training: accuracy | MSE training: accuracy | MSE training: accuracy (second run, another server) |
 |---:|---:|---:|---:|
 | 0 | 30.7% | 30.7% | 30.7% |
 | 100 | 85.7% | 65.3% | 53.3% |
@@ -186,30 +196,40 @@ def ce_grad(logits, y):
 | 1000 | 99.0% | 95.3% | 99.3% |
 | 3000 | 99.3% | 99.3% | 99.0% |
 
-在构建机上，MSE 版在 65% 附近**卡了七八百步**。训练 500 步时，交叉熵版里"给正确答案的概率不到 1%"的样本是 0 个；MSE 版有 103 个——三分之一的数据自信地错着，却几乎推不动参数。换到另一台服务器上，MSE 版卡得短得多：100 步时只有 53.3%，有 136 个样本 p(正确) < 1%；但两三百步就爬了出来，500 步时这样的样本只剩 7 个（交叉熵版仍是 0 个）。
+On the build machine, the MSE version **was stuck near 65% for 700 to 800 steps**. At step 500, the cross-entropy version had 0 samples with "a probability below 1% for the correct answer". The MSE version had 103 such samples. One third of the data was confidently wrong, but it almost could not move the parameters.
 
-这本身就是一课：**小实验对数值细节非常敏感**。两台机器的矩阵乘法只在舍入上有微小差别，可 MSE 在饱和区的梯度被压到接近 0，哪些样本先"翻过来"就由这点舍入差决定，所以卡多久从七八百步变成了两三百步；而梯度不饱和的交叉熵，两台机器上的轨迹一位不差。别把"卡了多少步"当成结论，两次运行都成立的是：交叉熵从第一步就稳稳地推，MSE 起步明显更慢，最初有一大批样本自信地错着却推不动参数——正是上面那张梯度表说的情形。MSE 最后都爬出来了（这个问题很小），但在大模型上，你付不起这几百步。
+On the other server, the MSE version was stuck for a much shorter time. At step 100, it had only 53.3%, with 136 samples at p(correct) < 1%. But it got out after 200 to 300 steps, and at step 500 only 7 such samples were left (the cross-entropy version still had 0).
 
-如果初始化正常（初始预测接近均匀），两者都能学会，3000 步后准确率都是 99.3%，只是 MSE 版的交叉熵更高一点（0.0490 vs 0.0293）。所以更准确的说法是：**MSE 在分类上不是"不能用"，而是在最需要纠正的时候最没劲**。Golik 等人 2013 年在语音识别上做过系统对比，结论也是：随机初始化时，用平方误差训练的网络收敛不到好的解。再加上交叉熵有"最大似然"这个干净的概率解释，它成了分类的默认损失。
+This result is a lesson in itself: **small experiments are very sensitive to numerical details**. The matrix multiplications on the two machines differ only by very small rounding errors. But in the saturated region, MSE pushes the gradient to almost 0. Then these small rounding differences decide which samples "flip" first. Thus the stuck time changed from 700–800 steps to 200–300 steps. Cross-entropy does not saturate, and its trajectory was identical on the two machines, digit for digit.
 
-## 6. 训练一个分类器：三条螺旋
+Do not use "the number of steps that MSE was stuck" as a conclusion. Two results are true in both runs. First, cross-entropy pushes steadily from the first step. Second, MSE starts much more slowly: at first, many samples are confidently wrong, but they cannot move the parameters. This is the case that the gradient table above shows.
 
-现在把所有零件装起来。数据是三条交错的螺旋臂（CS231n 的经典玩具数据），每类 100 个点，在代码里生成，不用下载。直线显然切不开它，所以模型用第 3 章的两层 MLP：2 → 64（ReLU）→ 3。反向传播照第 4 章手写，只是最后一层的梯度换成了 `p − onehot`：
+In both runs, MSE got out at the end (this problem is small). But for a large model, you cannot pay for these hundreds of steps.
+
+With a normal initialization (the initial predictions are almost uniform), both losses learn the task. After 3000 steps, both have an accuracy of 99.3%. Only the cross-entropy of the MSE version is a little higher (0.0490 vs 0.0293). Thus a more exact statement is: **MSE for classification is not "unusable". But it is weakest when the model most needs a correction.**
+
+Golik et al. made a systematic comparison on speech recognition in 2013. Their conclusion is the same: from a random initialization, a network that trains with the squared error does not converge to a good solution. Cross-entropy also has a clean probabilistic meaning (maximum likelihood). For these reasons, cross-entropy became the default loss for classification.
+
+## 6. Train a classifier: three spirals
+
+Now put all the parts together. The data is three spiral arms that cross each other (a classic toy data set from CS231n). Each class has 100 points. The code makes the data, so you do not need to download anything.
+
+A straight line cannot separate the spirals. Thus the model is the two-layer MLP from Chapter 3: 2 → 64 (ReLU) → 3. We write backpropagation by hand, as in Chapter 4. The only change is that the gradient of the last layer is now `p − onehot`:
 
 ```python
 logits, cache = forward(params, X)             # z = ReLU(X W1 + b1) W2 + b2
-grads = backward(params, cache, ce_grad(logits, y))   # 从 dlogits = (p − onehot)/N 开始往回传
+grads = backward(params, cache, ce_grad(logits, y))   # start the backward pass from dlogits = (p − onehot)/N
 for k in params:
     params[k] -= lr * grads[k]
 ```
 
-运行 [`code/03_train_classifier.py`](code/03_train_classifier.py)（CPU 上几秒）：
+Run [`code/03_train_classifier.py`](code/03_train_classifier.py) (a few seconds on a CPU):
 
 ```bash
 uv run python chapters/05-classification-probability/code/03_train_classifier.py
 ```
 
-| 步数 | 交叉熵 | 训练准确率 |
+| Step | Cross-entropy | Training accuracy |
 |---:|---:|---:|
 | 0 | 1.0919 | 30.7% |
 | 100 | 0.2641 | 93.0% |
@@ -218,139 +238,143 @@ uv run python chapters/05-classification-probability/code/03_train_classifier.py
 | 1000 | 0.0526 | 99.3% |
 | 3000 | 0.0293 | 99.3% |
 
-- **初始损失 1.0919 ≈ ln 3 = 1.0986**：输出层初始化得很小，模型一开始几乎在均匀地猜，和第 4 节的预期一致。
-- **另造一份测试数据**（同样的螺旋、不同的随机噪声），准确率 99.0%。
-- **对照：去掉隐藏层**，只用线性的 softmax 分类器（`logits = XW + b`，也叫多项逻辑回归），3000 步后只有 54.0%——每两类之间的边界都是直线，切不开螺旋。分类问题照样需要第 3 章的非线性。
+- **The initial loss is 1.0919 ≈ ln 3 = 1.0986.** The initial output-layer weights are very small, so at the start the model guesses almost uniformly. This agrees with the expectation from Section 4.
+- **On a separate test set** (the same spirals, different random noise), the accuracy is 99.0%.
+- **Comparison: remove the hidden layer.** A linear softmax classifier (`logits = XW + b`, also called multinomial logistic regression) gets only 54.0% after 3000 steps. The boundary between each pair of classes is a straight line, and straight lines cannot separate the spirals. Classification also needs the nonlinearity from Chapter 3.
 
-视频里会看到这个过程：平面上每一点都被涂成模型预测的类别颜色，一开始几乎是一片，随着训练，三种颜色的区域慢慢卷成三条螺旋。
+The video shows this process. Each point of the plane has the color of the class that the model predicts. At the start, almost the full plane has one color. During training, the regions of the three colors slowly curl into three spirals.
 
-## 7. 温度：让分布更尖或更平
+## 7. Temperature: make the distribution sharper or flatter
 
-softmax 还有一个旋钮：把 logits 先除以一个**温度（temperature）T** 再做 softmax。
+Softmax has one more control: divide the logits by a **temperature T** before softmax.
 
-| 温度 T | 猫 | 狗 | 鸟 |
+| Temperature T | Cat | Dog | Bird |
 |---:|---:|---:|---:|
 | 0.5 | 0.8789 | 0.1189 | 0.0022 |
 | 1.0 | 0.7054 | 0.2595 | 0.0351 |
 | 2.0 | 0.5465 | 0.3315 | 0.1220 |
 | 10.0 | 0.3780 | 0.3420 | 0.2800 |
 
-T 越小，差距被放大，分布越"尖"，T → 0 时就是 argmax；T 越大，差距被压小，分布越"平"，T → ∞ 时变成均匀分布。训练时 T 一般就是 1。它真正登场是第 10 章：语言模型生成文字时，温度决定了是"总挑最可能的字"还是"更大胆地尝试"。
+A smaller T makes the differences larger and the distribution "sharper". When T → 0, softmax becomes argmax. A larger T makes the differences smaller and the distribution "flatter". When T → ∞, it becomes the uniform distribution.
 
-## 8. 语言模型就是一个在词表上做分类的分类器
+In training, T is usually 1. Temperature becomes important in Chapter 10. When a language model generates text, the temperature decides between "always select the most probable character" and "try other characters more boldly".
 
-这是本章最重要的一节。**语言模型做的事，就是"看前面的字，猜下一个字"**。把"下一个字"当成类别，这就是一个分类问题——类别数就是**词表（vocabulary）**大小 V。模型最后一层对每个候选 token 输出一个 logit，softmax 给出下一个 token 的概率分布，损失就是正确的下一个 token 的交叉熵。仅此而已。
+## 8. A language model is a classifier over the vocabulary
 
-[`code/04_next_token.py`](code/04_next_token.py) 用一小段中文演示这件事。模型是最简单的一种：一张 V × V 的表，"当前字"那一行就是下一个字的 logits（第 7 章会正式讲这个 **bigram** 模型）。训练用的正是上面的 `cross_entropy` 和 `ce_grad`，一行没改：
+This is the most important section of the chapter. **A language model does one thing: it looks at the previous characters and guesses the next character.** Use "the next character" as the class, and you have a classification problem. The number of classes is the size V of the **vocabulary**.
+
+The last layer of the model outputs one logit for each candidate token. Softmax gives the probability distribution of the next token. The loss is the cross-entropy of the correct next token. That is all.
+
+[`code/04_next_token.py`](code/04_next_token.py) shows this with a short Chinese text. Each Chinese character is one token. The model is the simplest type: a V × V table. The row of the "current character" contains the logits of the next character (Chapter 7 explains this **bigram** model in detail). Training uses the `cross_entropy` and `ce_grad` functions from above, with no changes:
 
 ```bash
 uv run python chapters/05-classification-probability/code/04_next_token.py
 ```
 
-语料 104 个字，词表 V = 65，训练样本 103 对：
+The corpus has 104 characters, the vocabulary has V = 65 characters, and there are 103 training pairs:
 
-| 步数 | 损失（nats） | 损失（bits） | 困惑度 |
+| Step | Loss (nats) | Loss (bits) | Perplexity |
 |---:|---:|---:|---:|
 | 0 | 4.1744 | 6.0224 | 65.00 |
 | 10 | 0.9503 | 1.3709 | 2.59 |
 | 50 | 0.5027 | 0.7253 | 1.65 |
 | 500 | 0.4622 | 0.6668 | 1.59 |
 
-对照：直接数频率，`p(下一个字 | 当前字) = 出现次数 / 总次数`，得到的损失是 0.4585——梯度下降正在逼近它。**对 bigram 来说，"数频率"就是最大似然的解析解**，就像第 1 章的最小二乘解。学到的东西也和数频率一致：「分」后面是「数」的概率 0.67、「类」0.33，因为语料里"分数"出现了两次、"分类"一次。
+For comparison, count the frequencies directly: `p(next character | current character) = count / total count`. This gives a loss of 0.4585, and gradient descent moves toward this value. **For a bigram model, "count the frequencies" is the closed-form maximum-likelihood solution**, like the least-squares solution in Chapter 1. What the model learned also agrees with the counts. After 「分」 ("divide"), the probability of 「数」 is 0.67 and the probability of 「类」 is 0.33. The reason: in the corpus, 分数 ("score") occurs two times and 分类 ("classification") occurs one time.
 
-表里有三种单位，都是同一个量：
+The table uses three units for the same quantity:
 
-- **nats**：用自然对数 ln 算的交叉熵，就是我们一直在算的数。
-- **bits**：换成以 2 为底，`bits = nats / ln 2`。含义是"平均每个 token 还需要多少个二进制位来描述"，损失越低，模型压缩得越好。第 7 章会用一个相关的指标 **bits-per-byte**，把 bits 平摊到原始文本的每个字节上，好让用不同分词器的模型能公平比较。
-- **困惑度（perplexity）**：`exp(nats) = 2^bits`。直觉是"模型相当于在几个候选里均匀地犹豫"。第 0 步困惑度 65，恰好等于词表大小——在 65 个字里瞎猜；训练后 1.59，相当于每一步只在一两个候选之间犹豫。
+- **nats**: the cross-entropy with the natural logarithm ln. This is the number that we calculated in this whole chapter.
+- **bits**: the same quantity with log base 2, `bits = nats / ln 2`. It means "the mean number of binary digits that are still necessary to describe each token". A lower loss means better compression. Chapter 7 uses a related metric, **bits per byte (BPB)**. It divides the bits over the bytes of the raw text. Then we can compare models with different tokenizers fairly.
+- **perplexity**: `exp(nats) = 2^bits`. The intuition is "the model hesitates uniformly among this number of candidates". At step 0, the perplexity is 65, which is exactly the vocabulary size: a random guess among 65 characters. After training, it is 1.59: at each step, the model hesitates between only one or two candidates.
 
-换到真实规模：GPT-2 的词表有 50257 个 token，一个未经训练的模型的损失应该在 ln 50257 = 10.82 nats（15.62 bits）附近。你以后看训练日志，第一步 loss 在 10.8 左右，就知道它在"均匀乱猜"，代码大概率没写错。
+At a real scale: the GPT-2 vocabulary has 50257 tokens. The loss of a model before training must be near ln 50257 = 10.82 nats (15.62 bits). Later, you will read training logs. If the loss at the first step is about 10.8, you know that the model "guesses uniformly", and the code is probably correct.
 
-## 9. 小结
+## 9. Summary
 
-- **logits**：模型给每一类一个任意实数分数。
-- **softmax**：`p_k = exp(z_k)/Σexp(z_j)`，把分数变成概率分布；实现时先减最大值。
-- **最大似然**：让正确答案的概率尽量大；取 log 把连乘变成求和，得到**负对数似然 = 交叉熵** `−log p_y`。
-- **梯度**：`∂L/∂z = p − onehot`，预测减答案。
-- **不用 MSE**：自信地错时，MSE 的梯度会消失，交叉熵不会。
-- **温度**：logits 除以 T，控制分布的尖锐程度。
-- **语言模型**：在词表上做分类，损失就是交叉熵；nats、bits、困惑度是同一个量的三种写法。
+- **logits**: the model gives each class a score, which can be any real number.
+- **softmax**: `p_k = exp(z_k)/Σexp(z_j)` changes the scores into a probability distribution. In the implementation, subtract the maximum first.
+- **Maximum likelihood**: make the probability of the correct answer as large as possible. The log changes the product into a sum. The result is **negative log-likelihood = cross-entropy**, `−log p_y`.
+- **Gradient**: `∂L/∂z = p − onehot`, the prediction minus the answer.
+- **No MSE**: when the model is confidently wrong, the MSE gradient vanishes. The cross-entropy gradient does not.
+- **Temperature**: divide the logits by T to control how sharp the distribution is.
+- **Language model**: classification over the vocabulary, and the loss is the cross-entropy. Nats, bits, and perplexity are three forms of the same quantity.
 
 ---
 
-## 从极简到生产级
+## From minimal code to production code
 
-第 1–6 章的生产级写法就是 PyTorch 的标准写法。见 [`code/05_pytorch_version.py`](code/05_pytorch_version.py)：
+For Chapters 1–6, the production code is the standard PyTorch code. See [`code/05_pytorch_version.py`](code/05_pytorch_version.py):
 
 ```python
 model = nn.Sequential(nn.Linear(2, 64), nn.ReLU(), nn.Linear(64, 3))
 optimizer = torch.optim.SGD(model.parameters(), lr=1.0)
 
 for step in range(3000):
-    logits = model(X)                    # 1. 前向：得到 logits（不做 softmax！）
-    loss = F.cross_entropy(logits, Y)    # 2. 交叉熵：内部融合了 log-softmax + NLL
-    optimizer.zero_grad()                # 3. 清梯度
-    loss.backward()                      # 4. 反向：autograd 自动得到 (p − onehot)/N
-    optimizer.step()                     # 5. 更新
+    logits = model(X)                    # 1. forward pass: get the logits (no softmax!)
+    loss = F.cross_entropy(logits, Y)    # 2. cross-entropy: log-softmax + NLL, fused inside
+    optimizer.zero_grad()                # 3. set the gradients to zero
+    loss.backward()                      # 4. backward pass: autograd gets (p − onehot)/N
+    optimizer.step()                     # 5. update
 ```
 
-运行结果（全部用 float64 对拍）：
+The results (all parity checks in float64):
 
-| 对拍项 | PyTorch | 我们的 NumPy 版 |
+| Parity check | PyTorch | Our NumPy version |
 |---|---:|---:|
-| `F.cross_entropy`，随机 8 样本 × 5 类 | 3.1764553511 | 3.1764553511 |
-| 梯度：autograd vs 手写 `(p − onehot)/N` | 最大差 6.94 × 10⁻¹⁸ | — |
-| `label_smoothing=0.1` vs 手写 `−Σ q_k log p_k` | 3.1633053590 | 3.1633053590 |
-| 螺旋分类器 3000 步后的交叉熵（同一初始化） | 0.0293 | 0.0293（差 7.85 × 10⁻¹¹） |
-| logits `[1000, 500, −500]`、正确答案 = 第 3 类 | 1500.0 | 朴素写法 `−log(softmax)` 得到 `inf` |
+| `F.cross_entropy`, 8 random samples × 5 classes | 3.1764553511 | 3.1764553511 |
+| Gradient: autograd vs manual `(p − onehot)/N` | max difference 6.94 × 10⁻¹⁸ | — |
+| `label_smoothing=0.1` vs manual `−Σ q_k log p_k` | 3.1633053590 | 3.1633053590 |
+| Spiral classifier, cross-entropy after 3000 steps (same initialization) | 0.0293 | 0.0293 (difference 7.85 × 10⁻¹¹) |
+| logits `[1000, 500, −500]`, correct answer = class 3 | 1500.0 | the naive code `−log(softmax)` gives `inf` |
 
-生产级写法比极简版多做了什么、为什么：
+The table shows what the production code adds to the minimal code and why:
 
-| 极简版 | 生产级写法 | 为什么 |
+| Minimal code | Production code | Why |
 |---|---|---|
-| `softmax` 再 `−log`（或手写 `log_softmax`） | `F.cross_entropy(logits, y)` 直接吃 logits | 把 log-softmax 和 NLL 融合成一个算子，用 logsumexp 保证数值稳定。**最常见的 bug 是先做了 softmax 再传进去**——它不会报错，只会悄悄地训练得很差 |
-| 手写 `ce_grad` | `loss.backward()` | autograd 自动得到同样的 `p − onehot`（上表逐位一致） |
-| 目标是 onehot | `label_smoothing=ε` | 把目标变成"正确类 1 − ε + ε/K，其余 ε/K"，防止模型把 logit 推到无穷大、过度自信（Szegedy 等 2016）。它是可选项，本课主线的预训练不用 |
-| 每个样本都算损失 | `ignore_index=-100` | 某些位置不算损失。第 16 章 SFT 的 loss mask 就靠它：只在回答部分算损失，不在提问部分算 |
-| logits 形状 `(N, K)` | 语言模型里 logits 是 `(B, T, V)`，拉平成 `(B·T, V)` | 每条序列的每个位置都是一次分类。nanoGPT 和 minimind 的模型代码里都是这一行：`F.cross_entropy(logits.view(-1, V), targets.view(-1), ignore_index=...)` |
-| float64 | 混合精度训练（BF16） | 矩阵乘法用 BF16，但 PyTorch 自动混合精度会把 `cross_entropy`、`log_softmax`、`softmax` 自动提升到 float32 计算——指数和对数对精度很敏感（第 14 章） |
+| `softmax`, then `−log` (or a manual `log_softmax`) | `F.cross_entropy(logits, y)` takes the logits directly | It fuses log-softmax and NLL into one operator and uses logsumexp for numerical stability. **The most common bug is to apply softmax first and then pass the result in.** This bug gives no error. It only makes the training quietly bad. |
+| Manual `ce_grad` | `loss.backward()` | Autograd gets the same `p − onehot` (identical digit by digit in the table above). |
+| The target is onehot | `label_smoothing=ε` | It changes the target to "1 − ε + ε/K for the correct class, ε/K for each other class". This stops the model from pushing a logit to infinity and becoming overconfident (Szegedy et al. 2016). It is optional. The pretraining of the main-line model in this course does not use it. |
+| Calculate the loss for every sample | `ignore_index=-100` | Some positions do not count in the loss. The loss mask of SFT in Chapter 16 uses this: calculate the loss only on the answer, not on the question. |
+| logits with the shape `(N, K)` | In a language model, the logits have the shape `(B, T, V)`. Flatten them to `(B·T, V)` | Each position of each sequence is one classification. nanoGPT and minimind both have this line in their model code: `F.cross_entropy(logits.view(-1, V), targets.view(-1), ignore_index=...)` |
+| float64 | Mixed-precision training (BF16) | Matrix multiplications use BF16. But PyTorch automatic mixed precision runs `cross_entropy`, `log_softmax`, and `softmax` in float32 automatically. The exponential and the log are sensitive to precision (Chapter 14). |
 
-脚本最后一段就是语言模型里的写法：logits 形状 `(2, 4, 50257)`，全 0（均匀乱猜），拉平后算出的损失是 10.8249，正好等于 ln 50257。
-
----
-
-## 引导问题
-
-带着这些问题去问 Claude Code，直到你能用自己的话讲清楚：
-
-1. 二分类时，softmax 只有两个 logits `z₁, z₂`。证明 `p₁ = sigmoid(z₁ − z₂)`。这说明 sigmoid 和 softmax 是什么关系？
-2. 为什么 `F.cross_entropy` 要求传入 logits 而不是概率？如果你传了 softmax 之后的概率，会发生什么？（提示：softmax 会被做两次，试着在 `05_pytorch_version.py` 里改一下看看损失和准确率。）
-3. 交叉熵 `H(q, p)` 和熵 `H(q)` 的差叫 **KL 散度**。在分类任务里 q 是 onehot，它的熵是多少？这说明最小化交叉熵和最小化 KL 散度是什么关系？（第 17 章的 logits 蒸馏和第 18 章的 DPO 会用到 KL 散度。）
-4. 训练集上的交叉熵能降到 0 吗？要降到 0，logits 需要变成什么样？这和 label smoothing 想解决的问题有什么关系？
-5. 困惑度 1.59 的直觉是"在 1.59 个候选里均匀犹豫"。如果一个语言模型在中文上的困惑度是 20，在代码上是 3，这说明什么？为什么不同分词器的模型不能直接比困惑度？（第 7 章 bits-per-byte 的动机。）
-
-## 动手任务
-
-每个任务都要真的运行代码、看到结果。
-
-**任务 1（基础）**：在 `01_softmax.py` 里验证 T → 0 时 softmax 趋近于 argmax 的 onehot，T → ∞ 时趋近于均匀分布：分别取 T = 0.01 和 T = 1000 打印结果。再解释为什么 `softmax(z / T)` 里 T 不能取 0。
-
-**任务 2（核心）**：在 `03_train_classifier.py` 里，把类别数改成 5（`make_spirals(n_classes=5)`，网络输出也改成 5），先预测初始损失应该是多少，再运行验证；然后记录训练 3000 步后的准确率。如果准确率明显变差，试试加大隐藏层或训练步数。
-
-**任务 3（挑战）**：`02_cross_entropy.py` 的 MSE 对照是"softmax 概率 vs onehot"。另一种常见的错误做法是"直接拿 logits 去回归 onehot"（不经过 softmax，`L = Σ(z_k − t_k)²`）。在螺旋数据上用这种损失训练，看准确率能到多少，并用本章的语言解释：它的问题和"softmax + MSE"的问题是同一种吗？
+The last part of the script is the code from a language model. The logits have the shape `(2, 4, 50257)` and are all 0 (a uniform guess). After flattening, the loss is 10.8249. This is exactly ln 50257.
 
 ---
 
-## 本章参考文献
+## Guided questions
 
-- Goodfellow, Bengio, Courville. *Deep Learning*, 第 5.5 节"最大似然估计"、第 6.2.2 节"softmax 输出单元"：<https://www.deeplearningbook.org/contents/ml.html>、<https://www.deeplearningbook.org/contents/mlp.html>
-- Stanford CS231n. *Putting it together: Minimal Neural Network Case Study*（三类螺旋数据、softmax 线性分类器 vs 两层网络）：<https://cs231n.github.io/neural-networks-case-study/>
-- Golik, Doetsch, Ney. *Cross-Entropy vs. Squared Error Training: a Theoretical and Experimental Comparison*, Interspeech 2013：<https://www.isca-archive.org/interspeech_2013/golik13_interspeech.html>
-- Szegedy et al. *Rethinking the Inception Architecture for Computer Vision*（label smoothing 的出处），2016：<https://arxiv.org/abs/1512.00567>
-- Hinton, Vinyals, Dean. *Distilling the Knowledge in a Neural Network*（带温度的 softmax，第 17 章蒸馏会再见到），2015：<https://arxiv.org/abs/1503.02531>
-- Radford et al. *Language Models are Unsupervised Multitask Learners*（GPT-2，词表 50257）：<https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf>
-- PyTorch 文档 `torch.nn.functional.cross_entropy`（输入是 unnormalized logits；`label_smoothing`、`ignore_index` 参数）：<https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.cross_entropy.html>
-- PyTorch 文档 *Automatic Mixed Precision*（"CUDA Ops that can autocast to float32" 列表含 `cross_entropy`、`log_softmax`、`softmax`）：<https://docs.pytorch.org/docs/stable/amp.html>
-- [nanoGPT](https://github.com/karpathy/nanoGPT) 的 `model.py`、[minimind](https://github.com/jingyaogong/minimind) 的 `model/model_minimind.py`：语言模型的损失都是一行 `F.cross_entropy`
+Ask Claude Code these questions. Continue until you can explain the answers in your own words:
 
-**下一章**：螺旋分类器只有两层，训练起来顺顺利利。可如果把网络加深到十几层、几十层呢？你会发现损失要么纹丝不动，要么突然爆炸成 NaN——本章 MSE 的"梯度消失"只是冰山一角。第 6 章，我们来看初始化、归一化、残差连接、AdamW 和学习率调度，这些让深层网络变得"训得动"的技巧。
+1. For two classes, softmax has only two logits, `z₁, z₂`. Prove that `p₁ = sigmoid(z₁ − z₂)`. What does this tell you about the relation between sigmoid and softmax?
+2. Why does `F.cross_entropy` need logits as input, not probabilities? What happens if you pass the probabilities after softmax? (Hint: then softmax occurs two times. Change `05_pytorch_version.py` and look at the loss and the accuracy.)
+3. The difference between the cross-entropy `H(q, p)` and the entropy `H(q)` is the **KL divergence**. In classification, q is onehot. What is its entropy? What does this tell you about the relation between minimizing the cross-entropy and minimizing the KL divergence? (Logit distillation in Chapter 17 and DPO in Chapter 18 use the KL divergence.)
+4. Can the cross-entropy on the training set decrease to 0? For a loss of 0, what must the logits look like? How is this related to the problem that label smoothing tries to solve?
+5. The intuition for a perplexity of 1.59 is "the model hesitates uniformly among 1.59 candidates". A language model has a perplexity of 20 on Chinese text and 3 on code. What does this tell you? Why can we not compare the perplexity of models with different tokenizers directly? (This is the reason for bits per byte in Chapter 7.)
+
+## Hands-on tasks
+
+For each task, run the code and look at the result.
+
+**Task 1 (basic)**: In `01_softmax.py`, check that softmax goes to the onehot of argmax when T → 0, and to the uniform distribution when T → ∞. Print the results for T = 0.01 and T = 1000. Then explain why T cannot be 0 in `softmax(z / T)`.
+
+**Task 2 (core)**: In `03_train_classifier.py`, change the number of classes to 5 (`make_spirals(n_classes=5)`, and change the network output to 5). First, predict the initial loss. Then run the script to check your prediction. Record the accuracy after 3000 training steps. If the accuracy is much worse, try a larger hidden layer or more training steps.
+
+**Task 3 (challenge)**: The MSE comparison in `02_cross_entropy.py` uses "softmax probabilities vs onehot". Another common wrong method is "regress the logits directly onto the onehot target" (no softmax, `L = Σ(z_k − t_k)²`). Train with this loss on the spiral data and record the accuracy. Then use the terms of this chapter to explain: is its problem the same type as the problem of "softmax + MSE"?
+
+---
+
+## References
+
+- Goodfellow, Bengio, Courville. *Deep Learning*, Section 5.5, "Maximum Likelihood Estimation", and Section 6.2.2, "Softmax Units for Multinoulli Output Distributions": <https://www.deeplearningbook.org/contents/ml.html>, <https://www.deeplearningbook.org/contents/mlp.html>
+- Stanford CS231n. *Putting it together: Minimal Neural Network Case Study* (three-class spiral data, a linear softmax classifier vs a two-layer network): <https://cs231n.github.io/neural-networks-case-study/>
+- Golik, Doetsch, Ney. *Cross-Entropy vs. Squared Error Training: a Theoretical and Experimental Comparison*, Interspeech 2013: <https://www.isca-archive.org/interspeech_2013/golik13_interspeech.html>
+- Szegedy et al. *Rethinking the Inception Architecture for Computer Vision* (the source of label smoothing), 2016: <https://arxiv.org/abs/1512.00567>
+- Hinton, Vinyals, Dean. *Distilling the Knowledge in a Neural Network* (softmax with temperature; distillation in Chapter 17 uses it again), 2015: <https://arxiv.org/abs/1503.02531>
+- Radford et al. *Language Models are Unsupervised Multitask Learners* (GPT-2, vocabulary of 50257 tokens): <https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf>
+- PyTorch documentation, `torch.nn.functional.cross_entropy` (the input is unnormalized logits; the parameters `label_smoothing` and `ignore_index`): <https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.cross_entropy.html>
+- PyTorch documentation, *Automatic Mixed Precision* (the list "CUDA Ops that can autocast to float32" includes `cross_entropy`, `log_softmax`, and `softmax`): <https://docs.pytorch.org/docs/stable/amp.html>
+- [nanoGPT](https://github.com/karpathy/nanoGPT) `model.py` and [minimind](https://github.com/jingyaogong/minimind) `model/model_minimind.py`: in both, the language-model loss is one line, `F.cross_entropy`.
+
+**Next chapter**: The spiral classifier has only two layers, and it trains without problems. But what if we make the network deeper, with more than ten or even tens of layers? Then the loss either does not move at all, or it suddenly explodes to NaN. The "vanishing gradient" of MSE in this chapter is only a small part of this problem. In Chapter 6, we look at initialization, normalization, residual connections, AdamW, and learning-rate schedules. These methods make deep networks trainable.

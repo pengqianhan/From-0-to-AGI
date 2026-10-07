@@ -1,10 +1,12 @@
-# 主线模型中期训练 / 退火（第 15 章）：接着预训练的 WSD 稳定段，换成高质量数据混合并把学习率衰减到 0。
-# 数据来源与比例待第 13、15 章确定；指令与工具调用格式数据的分片由 zero/post 生成（待实现）。
+# Mid-training / annealing of the main-line model (Chapter 15): continue from the WSD stable phase of pretraining,
+# change to a high-quality data mix, and decay the learning rate to 0.
+# Chapters 13 and 15 will set the data sources and the mix. zero/post will make the shards of the instruction data
+# and of the tool-calling format data (not implemented yet).
 #   uv run torchrun --standalone --nproc_per_node=8 -m zero.train.midtrain --config configs/main/midtrain.toml
 base = "pretrain.toml"
 
 [train]
-max_steps = 50000        # ≈ 26B token（每步 524,288），占预训练的约 5%，待定
+max_steps = 50000        # ≈ 26B tokens (524,288 per step), about 5% of pretraining; not final
 out_dir = "out/main/midtrain"
 init_from = "out/main/pretrain/ckpt"
 
@@ -36,5 +38,5 @@ weight = 0.10
 [schedule]
 kind = "wsd"
 warmup_steps = 0
-decay_frac = 1.0         # 整段线性衰减：峰值 → 0
+decay_frac = 1.0         # Linear decay over the full stage: peak → 0
 min_lr_ratio = 0.0

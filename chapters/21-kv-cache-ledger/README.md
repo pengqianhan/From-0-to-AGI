@@ -1,105 +1,111 @@
-# 第 21 章：KV cache 的账本 —— 长上下文贵在哪，每个 token 该存多少
+# Chapter 21: The KV cache budget — Why long context is expensive, and how much each token must store
 
-> **一句话目标**：读完这一章，你能说清楚长上下文在 prefill 和 decode 两个阶段分别贵在哪里；能按层给任意一个开源模型的 `config.json` 算出 KV cache 有多大（全注意力、滑动窗口、线性注意力混合、MLA 四种层）；还能讲清楚 MLA 是怎么把 K、V 压成一个潜向量、又怎么在推理时"吸收"掉还原步骤的。
+**English** · [中文](README.zh.md)
 
-📺 **本章视频**：待发布（本地渲染：`bash chapters/21-kv-cache-ledger/video/build.sh`）
-🧪 **本章自检**：学完后在 Claude Code 里输入 `/ch21-kv-cache`
+> **Goal**: After this chapter, you can explain why long context is expensive in each of the two phases, prefill and decode. You can calculate the KV cache size layer by layer from the `config.json` of any open model, for four kinds of layers: full attention, sliding window, hybrid linear attention, and MLA. You can also explain how MLA compresses K and V into one latent vector, and how inference "absorbs" the step that reconstructs them.
+
+📺 **Video**: Not published yet. To render it on your computer, run `bash chapters/21-kv-cache-ledger/video/build.sh`.
+🧪 **Self-check**: After the chapter, type `/ch21-kv-cache` in Claude Code.
 
 ---
 
-第四部分结束时，我们有了一个会调用工具的主线模型。第五部分换一个视角：不再训练主线模型，而是看过去两年开源模型的**架构**往哪里演进。这些演进几乎都指向同一个方向——**为了更长的上下文、更小的 KV cache**。
+At the end of Part 4, we had a main-line model that can call tools. Part 5 changes the point of view. In this part, we do not train the main-line model. Instead, we look at how the **architecture** of open models changed in the last two years. Almost all of these changes go in the same direction: **longer context and a smaller KV cache**.
 
-第 10 章我们第一次算过这笔账：主线模型每个 token 要缓存 112 KiB，一条 32K 的对话就是 3.5 GiB，比模型权重（1.28 GiB）还大。GQA 让 8 个 KV 头代替 16 个，省了一半。这一章要解决的问题是：**长上下文到底贵在哪？KV cache 还能怎么压？** 我们先把"贵"拆成两笔账（prefill 的算力、decode 的显存带宽），再把第 10 章的公式升级成按层记账的"账本"，拿它去算几个最新的开源模型，最后讲 MQA → GQA → MLA 这条压缩之路，并在 CPU 上把五种注意力放在同一个小模型里比一比。
+In Chapter 10, we did this calculation for the first time. The main-line model caches 112 KiB for each token. One conversation of 32K tokens needs 3.5 GiB, which is more than the model weights (1.28 GiB). GQA uses 8 KV heads instead of 16 and saves half.
 
-本章代码：
+This chapter answers two questions: **Why is long context expensive? How else can we make the KV cache smaller?** First, we split the cost into two accounts: prefill compute and decode memory bandwidth. Then we change the formula of Chapter 10 into a "ledger" that counts each layer separately. We use this ledger on some of the newest open models. Finally, we follow the compression path MQA → GQA → MLA, and we compare five kinds of attention in the same small model on the CPU.
+
+The code for this chapter:
 
 ```bash
-uv run python chapters/21-kv-cache-ledger/code/01_kv_ledger.py          # 账本：主线模型 + 12 个公开模型
-uv run python chapters/21-kv-cache-ledger/code/02_prefill_decode.py     # prefill 算力 / decode 带宽 / 并发条数
-uv run python chapters/21-kv-cache-ledger/code/03_mla.py                # 极简 MLA：吸收路径与显式路径对拍
-uv run python chapters/21-kv-cache-ledger/code/04_attention_variants.py # MHA/GQA/MQA/MLA 对比（首次约半小时）
+uv run python chapters/21-kv-cache-ledger/code/01_kv_ledger.py          # ledger: main-line model + 12 public models
+uv run python chapters/21-kv-cache-ledger/code/02_prefill_decode.py     # prefill compute / decode bandwidth / number of conversations
+uv run python chapters/21-kv-cache-ledger/code/03_mla.py                # minimal MLA: parity check of the absorbed and explicit paths
+uv run python chapters/21-kv-cache-ledger/code/04_attention_variants.py # MHA/GQA/MQA/MLA comparison (first run: about half an hour)
 ```
 
-## 1. 长上下文贵在哪：两个阶段，两种瓶颈
+## 1. Why long context is expensive: two phases, two bottlenecks
 
-第 10 章讲过，有了 KV cache，推理分成两段：**prefill**（整段提示词一次喂进去）和 **decode**（之后每步只喂一个新 token）。长上下文在这两段里贵的方式完全不同。
+Chapter 10 showed that with a KV cache, inference has two phases. **Prefill** gives the full prompt to the model in one pass. **Decode** then gives only one new token at each step. Long context is expensive in these two phases for completely different reasons.
 
-### 1.1 prefill：算力按 T² 涨
+### 1.1 Prefill: compute grows as T²
 
-prefill 的前向运算量分两部分（`02_prefill_decode.py` 的 `prefill_flops`）：
+The forward operations of prefill have two parts (`prefill_flops` in `02_prefill_decode.py`):
 
 ```python
-linear = 2 * n_matmul * T                  # 矩阵乘：每个参数每个 token 一次乘加 = 2 次运算
-attn = 2 * c.n_layers * c.q_dim * T * T    # QKᵀ 与 AV：每对 (i, j) 4·q_dim 次，因果掩码只有 T²/2 对
+linear = 2 * n_matmul * T                  # matmul: one multiply-add per parameter per token = 2 operations
+attn = 2 * c.n_layers * c.q_dim * T * T    # QKᵀ and AV: 4·q_dim per pair (i, j); the causal mask leaves only T²/2 pairs
 ```
 
-第一项随 T 线性增长，第二项随 T² 增长。代入主线模型（参与矩阵乘的参数 N = 689.4M，q_dim = 16 × 128 = 2048），按 H100 SXM 的稠密 BF16 峰值 989.5 TFLOPS 算理论耗时：
+The first term grows linearly with T. The second term grows as T². We use the main-line model: N = 689.4M parameters in matrix multiplications, and q_dim = 16 × 128 = 2048. We calculate the theoretical time at the dense BF16 peak of an H100 SXM, 989.5 TFLOPS:
 
-| 提示词长度 T | 矩阵乘部分（次） | 注意力部分（次） | 注意力占比 | H100 理论下限 |
+| Prompt length T | Matmul part (operations) | Attention part (operations) | Attention share | H100 lower bound |
 |---:|---:|---:|---:|---:|
 | 1,024 | 1.41 × 10¹² | 1.20 × 10¹¹ | 7.8% | 1.5 ms |
 | 4,096 | 5.65 × 10¹² | 1.92 × 10¹² | 25.4% | 7.7 ms |
 | 32,768 | 4.52 × 10¹³ | 1.23 × 10¹⁴ | **73.2%** | 170 ms |
 | 131,072 | 1.81 × 10¹⁴ | 1.97 × 10¹⁵ | **91.6%** | 2.2 s |
 
-4K 以内，注意力只是配角；到 128K，九成以上的算力花在注意力上。这是"首 token 延迟"（time to first token）随上下文变长而急剧变差的原因，也是第 22、23 章滑动窗口、线性注意力要解决的问题。**KV cache 本身不改变 prefill 的算力**，这一章主要关心下面的 decode。
+Up to 4K, attention is only a small part of the compute. At 128K, more than 90% of the compute goes to attention. This is why the time to first token becomes much worse when the context becomes longer. The sliding windows and the linear attention of Chapters 22 and 23 solve this problem. **The KV cache itself does not change the compute of prefill.** This chapter is mainly about decode, in the next section.
 
-### 1.2 decode：卡在显存带宽上
+### 1.2 Decode: limited by memory bandwidth
 
-decode 每一步只算一个 token，但为了这一个 token，GPU 要把**全部权重读一遍**，再把这条对话的**整个 KV cache 读一遍**。设 batch 里有 B 条对话、每条已有 T 个 token（`decode_step`）：
+Each decode step calculates only one token. But for this one token, the GPU must **read all the weights once**. It must also **read the full KV cache of the conversation once**. Let the batch have B conversations, each with T tokens already (`decode_step`):
 
 ```python
-flops = B * (2 * n_matmul + 4 * c.n_layers * c.q_dim * T)   # 要算的
-w_bytes = n_params * BF16                                     # 要读的：权重（B 条共享）
-kv = B * T * kv_per_token                                     # 要读的：每条各自的 KV cache
-t = max(flops / PEAK_FLOPS, (w_bytes + kv) / HBM_BW)          # 一步的理论最短时间
+flops = B * (2 * n_matmul + 4 * c.n_layers * c.q_dim * T)   # operations to do
+w_bytes = n_params * BF16                                     # bytes to read: weights (shared by all B)
+kv = B * T * kv_per_token                                     # bytes to read: the KV cache of each conversation
+t = max(flops / PEAK_FLOPS, (w_bytes + kv) / HBM_BW)          # theoretical minimum time of one step
 ```
 
-"算力 ÷ 读取字节"叫**算术强度（arithmetic intensity）**。H100 SXM 每秒能算 989.5 万亿次、能读 3.35 TB，两者之比约 295 次/字节，叫**脊点（ridge point）**：强度低于它，GPU 就在等数据，叫**带宽受限（memory-bound）**。主线模型的实际情况：
+Operations ÷ bytes read is the **arithmetic intensity**. Each second, an H100 SXM can do 989.5 trillion operations and read 3.35 TB. The ratio of the two is about 295 operations per byte. This ratio is the **ridge point**. When the intensity is below it, the GPU waits for data. This is **memory-bound**. These are the values for the main-line model:
 
-| 上下文 T | batch B | 读权重 | 读 KV cache | 算术强度 | 一步理论耗时 | 吞吐（token/s） | 80 GB 装得下？ |
+| Context T | Batch B | Weights read | KV cache read | Arithmetic intensity | Theoretical step time | Throughput (token/s) | Fits in 80 GB? |
 |---:|---:|---:|---:|---:|---:|---:|---|
-| 4,096 | 1 | 1.28 GiB | 0.44 GiB | 1.3 | 0.55 ms | 1,812 | 是 |
-| 4,096 | 16 | 1.28 GiB | 7.00 GiB | 4.2 | 2.66 ms | 6,026 | 是 |
-| 4,096 | 64 | 1.28 GiB | 28.00 GiB | 4.7 | 9.39 ms | 6,819 | 是 |
-| 32,768 | 1 | 1.28 GiB | 3.50 GiB | 1.7 | 1.53 ms | 652 | 是 |
-| 32,768 | 16 | 1.28 GiB | 56.00 GiB | 2.3 | 18.36 ms | 871 | 是 |
-| 32,768 | 64 | 1.28 GiB | 224.00 GiB | 2.4 | 72.21 ms | 886 | **否** |
+| 4,096 | 1 | 1.28 GiB | 0.44 GiB | 1.3 | 0.55 ms | 1,812 | Yes |
+| 4,096 | 16 | 1.28 GiB | 7.00 GiB | 4.2 | 2.66 ms | 6,026 | Yes |
+| 4,096 | 64 | 1.28 GiB | 28.00 GiB | 4.7 | 9.39 ms | 6,819 | Yes |
+| 32,768 | 1 | 1.28 GiB | 3.50 GiB | 1.7 | 1.53 ms | 652 | Yes |
+| 32,768 | 16 | 1.28 GiB | 56.00 GiB | 2.3 | 18.36 ms | 871 | Yes |
+| 32,768 | 64 | 1.28 GiB | 224.00 GiB | 2.4 | 72.21 ms | 886 | **No** |
 
-算术强度只有 1–5，离 295 差两个数量级：decode 完全是带宽受限的。第 10 章说"把很多请求拼成一批，读一遍权重服务几十个请求"——这招在短上下文下有效（4K 时 batch 从 1 到 16，吞吐涨了 3.3 倍），**但在长上下文下失灵了**：32K 时 KV cache（每条 3.5 GiB）远大于权重（1.28 GiB），而 KV cache 是每条对话各读各的，拼批省不掉。batch 从 1 到 16，吞吐只涨了 1.3 倍。
+The arithmetic intensity is only 1–5, two orders of magnitude below 295. Decode is fully memory-bound.
 
-所以长上下文的 decode 速度，几乎就由"每个 token 的 KV cache 有多大"决定。
+Chapter 10 said: "Put many requests into one batch, and one read of the weights serves tens of requests." This method works for short context: at 4K, when the batch grows from 1 to 16, the throughput increases 3.3 times. **But for long context, the method fails.** At 32K, the KV cache (3.5 GiB per conversation) is much larger than the weights (1.28 GiB). Each conversation reads its own KV cache, so a larger batch does not save these reads. When the batch grows from 1 to 16, the throughput increases only 1.3 times.
 
-### 1.3 显存：能同时服务几条对话
+Thus, for long context, the decode speed depends almost only on the size of the KV cache per token.
 
-还有一个更硬的约束：放不放得下。80 GB 减去权重，全部留给 KV cache（不计激活、碎片，偏乐观）：
+### 1.3 Memory: how many conversations fit at the same time
 
-| 上下文 | GQA（主线，112 KiB/token） | 若是 MHA（224 KiB） | 若换 MLA 512+64（31.5 KiB） |
+There is also a stricter limit: the data must fit in memory. Take 80 GB, subtract the weights, and give all the rest to the KV cache. This ignores activations and fragmentation, so the result is optimistic. The table gives the number of conversations:
+
+| Context | GQA (main-line, 112 KiB/token) | If MHA (224 KiB) | If MLA 512+64 (31.5 KiB) |
 |---:|---:|---:|---:|
-| 4,096 | 167 条 | 83 条 | 595 条 |
-| 32,768 | 20 条 | 10 条 | 74 条 |
-| 131,072 | 5 条 | 2 条 | 18 条 |
+| 4,096 | 167 | 83 | 595 |
+| 32,768 | 20 | 10 | 74 |
+| 131,072 | 5 | 2 | 18 |
 
-KV cache 每小一半，同一张卡能同时服务的对话就多一倍，decode 时要读的字节也少一半。这就是整个第五部分的动机。
+When the KV cache per token becomes half as large, the same GPU can serve twice as many conversations at the same time. Decode also reads half as many bytes. This is the motivation for all of Part 5.
 
-## 2. 账本：按层记
+## 2. The ledger: count layer by layer
 
-第 10 章的公式假设每层都一样：
+The formula of Chapter 10 assumes that all layers are the same:
 
 ```
-KV cache 字节数 = 2 × 层数 × KV 头数 × head_dim × 序列长 × 每个数的字节数（× batch）
+KV cache bytes = 2 × layers × KV heads × head_dim × sequence length × bytes per number (× batch)
 ```
 
-可是 2025–2026 年的开源模型，层和层已经不一样了。有的层只看最近 128 个 token（滑动窗口），有的层根本不存 K、V（线性注意力），有的层存的不是 K、V 而是一个压缩过的潜向量（MLA）。所以账要按层记：
+But in the open models of 2025–2026, the layers are not all the same. Some layers look only at the most recent 128 tokens (sliding window). Some layers store no K and V at all (linear attention). Some layers store a compressed latent vector instead of K and V (MLA). Thus the ledger must count each layer:
 
-| 层类型 | 每层每个位置存什么 | 随序列长怎么涨 | 本章之后在哪讲 |
+| Layer type | What it stores per layer per position | How it grows with sequence length | Where the course explains it |
 |---|---|---|---|
-| 全注意力（MHA / GQA / MQA） | K、V 各 `KV 头数 × head_dim` 个数 | 线性增长 | 第 8、10 章，本章第 4 节 |
-| MLA | 潜向量 `kv_lora_rank` + 共享 RoPE key `qk_rope_head_dim` | 线性增长，但每个位置小得多 | 本章第 4 节 |
-| 滑动窗口 | 同全注意力 | 最多存 `window` 个位置，之后不再增长 | 第 22 章 |
-| 线性注意力（Gated DeltaNet、KDA 等） | 不存 K/V，只有一个固定大小的状态矩阵 | 不增长 | 第 23 章 |
+| Full attention (MHA / GQA / MQA) | `KV heads × head_dim` numbers for K, and the same for V | Grows linearly | Chapters 8 and 10; Section 4 of this chapter |
+| MLA | Latent vector `kv_lora_rank` + shared RoPE key `qk_rope_head_dim` | Grows linearly, but much less per position | Section 4 of this chapter |
+| Sliding window | The same as full attention | Keeps at most `window` positions, then stops growing | Chapter 22 |
+| Linear attention (Gated DeltaNet, KDA, and others) | No K/V; only a state matrix of fixed size | Does not grow | Chapter 23 |
 
-`01_kv_ledger.py` 的核心就这几行：
+The core of `01_kv_ledger.py` is these lines:
 
 ```python
 def layer_list(m):
@@ -112,204 +118,204 @@ def layer_list(m):
 def kv_bytes(m, seq_len, batch=1, nbytes=BF16):
     total = 0
     for kind, per, window in layer_list(m):
-        kept = min(seq_len, window) if kind == "sliding" else seq_len  # 滑动窗口：最多存 window 个
-        total += per * kept                                            # 线性层 per = 0
+        kept = min(seq_len, window) if kind == "sliding" else seq_len  # sliding window: keep at most `window`
+        total += per * kept                                            # linear layer: per = 0
     return total * batch * nbytes
 ```
 
-## 3. 给主线模型和最新模型记账
+## 3. The ledger for the main-line model and the newest models
 
-运行 `01_kv_ledger.py`。先看主线模型（28 层、16 个查询头、8 个 KV 头、head_dim 128、BF16）换不同注意力时的账：
+Run `01_kv_ledger.py`. First, look at the main-line model (28 layers, 16 query heads, 8 KV heads, head_dim 128, BF16) with different kinds of attention:
 
-| 方案 | 每层每位置存 | 每 token | 32K | 128K |
+| Variant | Stored per layer per position | Per token | 32K | 128K |
 |---|---:|---:|---:|---:|
-| MHA（16 个 KV 头） | 4,096 个数 | 224 KiB | 7.00 GiB | 28.00 GiB |
-| **GQA（主线，8 个 KV 头）** | **2,048** | **112 KiB** | **3.50 GiB** | **14.00 GiB** |
-| MQA（1 个 KV 头） | 256 | 14 KiB | 0.44 GiB | 1.75 GiB |
-| 假设换成 MLA（512 + 64） | 576 | 31.5 KiB | 0.98 GiB | 3.94 GiB |
+| MHA (16 KV heads) | 4,096 numbers | 224 KiB | 7.00 GiB | 28.00 GiB |
+| **GQA (main-line, 8 KV heads)** | **2,048** | **112 KiB** | **3.50 GiB** | **14.00 GiB** |
+| MQA (1 KV head) | 256 | 14 KiB | 0.44 GiB | 1.75 GiB |
+| Assumed MLA (512 + 64) | 576 | 31.5 KiB | 0.98 GiB | 3.94 GiB |
 
-再看 12 个公开模型。字段全部读自各模型 Hugging Face 仓库的 `config.json`（2026-09 读取，链接见文末"采用方与来源"），BF16、batch 1，只算随序列增长的部分：
+Then look at 12 public models. All fields come from the `config.json` in the Hugging Face repository of each model. We read them in 2026-09; the links are in "Adopters and sources" at the end. The values use BF16 and batch 1, and they count only the part that grows with the sequence:
 
-| 模型 | 注意力 | 随长度增长的层 / 总层 | 每 token | 32K | 128K | 对照：同头数全 MHA 的 128K |
+| Model | Attention | Growing layers / all layers | Per token | 32K | 128K | Reference: 128K if all layers are MHA with the same heads |
 |---|---|---:|---:|---:|---:|---:|
-| Qwen3-0.6B | GQA 16/8，head_dim 128 | 28 / 28 | 112 KiB | 3.50 GiB | 14.00 GiB | 28.00 GiB |
+| Qwen3-0.6B | GQA 16/8, head_dim 128 | 28 / 28 | 112 KiB | 3.50 GiB | 14.00 GiB | 28.00 GiB |
 | Qwen3-8B | GQA 32/8 | 36 / 36 | 144 KiB | 4.50 GiB | 18.00 GiB | 72.00 GiB |
 | Llama-3.1-8B | GQA 32/8 | 32 / 32 | 128 KiB | 4.00 GiB | 16.00 GiB | 64.00 GiB |
-| gpt-oss-120b | GQA 64/8，head_dim 64；一半层滑动窗口 128 | 36 / 36（18 层封顶 128） | 72 KiB¹ | 1.13 GiB | 4.50 GiB | 72.00 GiB |
-| Qwen3.5-0.8B | GQA 8/2，head_dim 256；每 4 层 1 层全注意力 | 6 / 24 | 12 KiB | 0.38 GiB | 1.50 GiB | 24.00 GiB |
-| Qwen3.5-9B | GQA 16/4，head_dim 256；同上 | 8 / 32 | 32 KiB | 1.00 GiB | 4.00 GiB | 64.00 GiB |
-| Qwen3.5-397B-A17B | GQA 32/2，head_dim 256；同上 | 15 / 60 | 30 KiB | 0.94 GiB | 3.75 GiB | 240.00 GiB |
-| DeepSeek-V3 / V3.2 | MLA 512 + 64，128 头 | 61 / 61 | 68.6 KiB | 2.14 GiB | 8.58 GiB | 488.00 GiB |
-| Kimi-K2 | MLA 512 + 64，64 头 | 61 / 61 | 68.6 KiB | 2.14 GiB | 8.58 GiB | 244.00 GiB |
-| GLM-5 | MLA 512 + 64，64 头 | 78 / 78 | 87.8 KiB | 2.74 GiB | 10.97 GiB | 312.00 GiB |
-| Mistral-Large-3 | MLA 512 + 64，128 头 | 61 / 61 | 68.6 KiB | 2.14 GiB | 8.58 GiB | 488.00 GiB |
-| Kimi-K3 | 24 层 MLA 512 + 64 + 69 层 KDA 线性注意力 | 24 / 93 | 27 KiB | 0.84 GiB | 3.38 GiB | 558.00 GiB |
+| gpt-oss-120b | GQA 64/8, head_dim 64; half of the layers use a sliding window of 128 | 36 / 36 (18 layers capped at 128) | 72 KiB¹ | 1.13 GiB | 4.50 GiB | 72.00 GiB |
+| Qwen3.5-0.8B | GQA 8/2, head_dim 256; 1 full-attention layer in each 4 layers | 6 / 24 | 12 KiB | 0.38 GiB | 1.50 GiB | 24.00 GiB |
+| Qwen3.5-9B | GQA 16/4, head_dim 256; the same pattern | 8 / 32 | 32 KiB | 1.00 GiB | 4.00 GiB | 64.00 GiB |
+| Qwen3.5-397B-A17B | GQA 32/2, head_dim 256; the same pattern | 15 / 60 | 30 KiB | 0.94 GiB | 3.75 GiB | 240.00 GiB |
+| DeepSeek-V3 / V3.2 | MLA 512 + 64, 128 heads | 61 / 61 | 68.6 KiB | 2.14 GiB | 8.58 GiB | 488.00 GiB |
+| Kimi-K2 | MLA 512 + 64, 64 heads | 61 / 61 | 68.6 KiB | 2.14 GiB | 8.58 GiB | 244.00 GiB |
+| GLM-5 | MLA 512 + 64, 64 heads | 78 / 78 | 87.8 KiB | 2.74 GiB | 10.97 GiB | 312.00 GiB |
+| Mistral-Large-3 | MLA 512 + 64, 128 heads | 61 / 61 | 68.6 KiB | 2.14 GiB | 8.58 GiB | 488.00 GiB |
+| Kimi-K3 | 24 MLA layers (512 + 64) + 69 KDA linear-attention layers | 24 / 93 | 27 KiB | 0.84 GiB | 3.38 GiB | 558.00 GiB |
 
-¹ gpt-oss 的"每 token"是窗口填满之前的增量；过了 128 个 token 以后，只有 18 层全注意力层还在涨（每 token 36 KiB）。
-对照列按"每层都是 MHA、KV 头数 = 查询头数、head_dim 128（Qwen3.5 按 256）"算，是一个假想的上限，用来感受各种手段省了多少；MLA 模型真实的 K 头宽 192（128 + 64），按 MHA 算会更大，这里保守按 128。
+¹ For gpt-oss, "per token" is the increase before the window is full. After 128 tokens, only the 18 full-attention layers still grow (36 KiB per token).
+The reference column assumes MHA in every layer, with KV heads = query heads and head_dim 128 (256 for Qwen3.5). It is a hypothetical upper limit. It shows how much each method saves. In MLA models, the real K heads have a width of 192 (128 + 64), so MHA would be even larger. Here we use 128 to be conservative.
 
-几个值得注意的现象：
+Note these points:
 
-- **小模型基本都是 GQA**。主线模型的 KV 配置与 Qwen3-0.6B 完全一样，每 token 112 KiB。
-- **省缓存有三条路**：
-  1. **少存头**：GQA / MQA，所有稠密小模型都在用；
-  2. **每个位置存得更小**：MLA，DeepSeek、Kimi、GLM、Mistral 的旗舰 MoE 模型在用，61 层 × 576 个数，只有同头数 MHA 的 1/57；
-  3. **少存层或少存位置**：Qwen3.5 只有 1/4 的层是全注意力（其余是 Gated DeltaNet 线性注意力，状态大小固定），gpt-oss 一半层只看最近 128 个 token。这是第 22、23 章的主题。
-- **三条路可以叠加**：Qwen3.5 是"GQA + 混合线性"，Kimi K3 是"MLA + 混合线性"。Qwen3.5-397B 这样的四千亿参数模型，128K 上下文的 KV cache 只有 3.75 GiB，和主线这个 0.7B 模型 32K 时差不多。
-- **线性注意力层也有状态**，只是不随长度增长。生产级计算器 `zero/tools/kv_cache_calc.py` 会单独估算它：例如 Qwen3.5-9B 的 24 层 Gated DeltaNet 按 `mamba_ssm_dtype: float32` 估约 50 MiB，与上下文长短无关（状态和卷积缓存的具体存法依实现而定，属于估算）。
+- **Almost all small models use GQA.** The KV configuration of the main-line model is the same as that of Qwen3-0.6B: 112 KiB per token.
+- **There are three ways to save cache:**
+  1. **Store fewer heads**: GQA / MQA. All small dense models use this method.
+  2. **Store less at each position**: MLA. The flagship MoE models of DeepSeek, Kimi, GLM, and Mistral use it. 61 layers × 576 numbers is only 1/57 of MHA with the same number of heads.
+  3. **Store fewer layers or fewer positions**: In Qwen3.5, only 1/4 of the layers use full attention. The other layers use Gated DeltaNet linear attention, which has a state of fixed size. In gpt-oss, half of the layers look only at the most recent 128 tokens. Chapters 22 and 23 explain these methods.
+- **You can combine the three ways.** Qwen3.5 uses "GQA + hybrid linear attention", and Kimi K3 uses "MLA + hybrid linear attention". Qwen3.5-397B has about 400 billion parameters, but its KV cache at 128K context is only 3.75 GiB. This is about the same as the 0.7B main-line model at 32K.
+- **Linear-attention layers also have a state, but the state does not grow with length.** The production calculator `zero/tools/kv_cache_calc.py` estimates this state separately. For example, the 24 Gated DeltaNet layers of Qwen3.5-9B need about 50 MiB with `mamba_ssm_dtype: float32`, for any context length. How an implementation stores the state and the convolution cache can be different, so this value is an estimate.
 
 ## 4. MQA → GQA → MLA
 
-### 4.1 回顾：少存几个头
+### 4.1 Review: store fewer heads
 
-第 10 章讲过：标准多头注意力（**MHA**）每个查询头都有自己的 K、V；**MQA**（Shazeer 2019）让所有查询头共用一组 K、V；**GQA**（Ainslie 等 2023）折中，分组共用。它们省缓存的办法都是**减少 KV 头数**，代价是 K、V 的表达能力变弱：所有共用一组 K、V 的查询头，看到的是完全一样的 key 和 value。
+Chapter 10 explained these methods. In standard multi-head attention (**MHA**), each query head has its own K and V. In **MQA** (Shazeer 2019), all query heads share one set of K and V. **GQA** (Ainslie et al. 2023) is between the two: each group of query heads shares one set of K and V. All three methods save cache in the same way: they **decrease the number of KV heads**. The cost is that K and V can express less. All query heads that share one set of K and V see exactly the same keys and values.
 
-### 4.2 MLA：把 K、V 一起压成一个潜向量
+### 4.2 MLA: compress K and V together into one latent vector
 
-DeepSeek-V2（2024）提出的**多头潜在注意力（MLA，Multi-head Latent Attention）**换了一个思路：不减少头数，而是注意到"每个头的 K、V 都是从同一个输入 x 线性变换来的"，那就先把 x 压到一个很小的**潜向量（latent）** c_KV，再从它还原出每个头的 K、V：
+DeepSeek-V2 (2024) introduced **Multi-head Latent Attention (MLA)**. MLA uses a different idea: it does not decrease the number of heads. Instead, it uses one fact: the K and V of each head are linear transformations of the same input x. Thus MLA first compresses x into a small **latent vector** c_KV. Then it reconstructs the K and V of each head from c_KV:
 
 ```
-c_KV = RMSNorm(W_DKV · x)          # 下投影：7168 维 → 512 维（DeepSeek-V3）     ← 缓存
-k_i^C = W_UK,i · c_KV              # 上投影：还原第 i 个头的 key（不带位置）
-v_i   = W_UV,i · c_KV              # 上投影：还原第 i 个头的 value
+c_KV = RMSNorm(W_DKV · x)          # down-projection: 7168 dims → 512 dims (DeepSeek-V3)     ← cached
+k_i^C = W_UK,i · c_KV              # up-projection: reconstruct the key of head i (no position)
+v_i   = W_UV,i · c_KV              # up-projection: reconstruct the value of head i
 ```
 
-缓存里只存 c_KV。这叫**低秩联合压缩**（low-rank joint compression）："低秩"是因为 W_UK · W_DKV 这个乘积的秩不超过 512；"联合"是因为 K 和 V 共用同一个潜向量。
+The cache stores only c_KV. This is **low-rank joint compression**. It is "low-rank" because the rank of the product W_UK · W_DKV is at most 512. It is "joint" because K and V share the same latent vector.
 
-直觉上可以这样理解：GQA 是"128 个头只许用 8 组 K/V"，硬性规定谁和谁共享；MLA 是"128 个头的 K/V 都必须能从同一个 512 维向量算出来"，共享的方式由训练自己学。每个头仍然有自己独立的 W_UK,i、W_UV,i，所以每个头看到的 key、value 各不相同。
+Compare the two methods. GQA says: "128 heads can use only 8 groups of K/V." It sets a fixed rule for which heads share. MLA says: "The K/V of all 128 heads must come from the same 512-dim vector." Training learns how the heads share. Each head still has its own W_UK,i and W_UV,i, so each head sees different keys and values.
 
-对应 `03_mla.py`：
+The matching code in `03_mla.py`:
 
 ```python
-self.wkv_a = nn.Linear(dim, kv_lora_rank + rope_dim, bias=False)            # 下投影：x → [c_KV ; k_R]
+self.wkv_a = nn.Linear(dim, kv_lora_rank + rope_dim, bias=False)            # down-projection: x → [c_KV ; k_R]
 self.kv_norm = tiny.RMSNorm(kv_lora_rank)
-self.wkv_b = nn.Linear(kv_lora_rank, n_heads * (nope_dim + v_dim), bias=False)  # 上投影 [W_UK; W_UV]
+self.wkv_b = nn.Linear(kv_lora_rank, n_heads * (nope_dim + v_dim), bias=False)  # up-projection [W_UK; W_UV]
 ...
 c_kv, k_pe = self.wkv_a(x).split([r, dr], dim=-1)
-c_kv = self.kv_norm(c_kv)                        # 要缓存的潜向量
-k_pe = tiny.apply_rope(k_pe[:, None], cs, sn)    # 要缓存的 RoPE key
+c_kv = self.kv_norm(c_kv)                        # the latent vector to cache
+k_pe = tiny.apply_rope(k_pe[:, None], cs, sn)    # the RoPE key to cache
 ```
 
-### 4.3 为什么 RoPE 要"解耦"
+### 4.3 Why RoPE must be "decoupled"
 
-RoPE（第 9 章）要在 q、k 上乘一个和位置有关的旋转矩阵。如果直接转在 k_i^C = W_UK,i · c_KV 上，下一节的"吸收"技巧就不成立了：旋转矩阵夹在 W_UQ 和 W_UK 中间，两者没法提前乘到一起（矩阵乘法不满足交换律），推理时只好把每个位置的 K 都还原出来再转，缓存潜向量就白省了。
+RoPE (Chapter 9) multiplies q and k by a rotation matrix that depends on the position. Suppose that we rotate k_i^C = W_UK,i · c_KV directly. Then the "absorb" method of the next section does not work. The rotation matrix is between W_UQ and W_UK, so we cannot multiply the two in advance (matrix multiplication is not commutative). At inference, we must then reconstruct the K at each position and rotate it. Then the cache of latent vectors saves nothing.
 
-DeepSeek 的解法是**解耦 RoPE（decoupled RoPE）**：每个头的 query 和 key 拆成两段，
+The solution of DeepSeek is **decoupled RoPE**. The query and the key of each head have two parts:
 
 ```
-q_i = [ q_i^C ; RoPE(q_i^R) ]      # 128 维不带位置 + 64 维带位置
-k_i = [ k_i^C ; RoPE(k^R)   ]      # k^R 由 x 直接算出，所有头共享一个
+q_i = [ q_i^C ; RoPE(q_i^R) ]      # 128 dims without position + 64 dims with position
+k_i = [ k_i^C ; RoPE(k^R)   ]      # k^R comes directly from x; all heads share one k^R
 ```
 
-带位置的那一小段 k^R（`qk_rope_head_dim` = 64）所有头共享，也要缓存。所以 MLA 每层每位置缓存 **512 + 64 = 576 个数**，这就是 DeepSeek-V3、Kimi K2、GLM-5、Mistral Large 3 的 `config.json` 里 `kv_lora_rank: 512`、`qk_rope_head_dim: 64` 的含义。同样 128 个头的 MHA（K 每头 192、V 每头 128）要存 128 × 320 = 40,960 个数，MLA 只有它的 1.4%。DeepSeek-V2 论文的写法是：MLA 的缓存相当于只有 2.25 组的 GQA。
+All heads share the small position part k^R (`qk_rope_head_dim` = 64), and the cache must also store it. Thus MLA caches **512 + 64 = 576 numbers** per layer per position. This is the meaning of `kv_lora_rank: 512` and `qk_rope_head_dim: 64` in the `config.json` of DeepSeek-V3, Kimi K2, GLM-5, and Mistral Large 3. MHA with the same 128 heads (K 192 and V 128 per head) stores 128 × 320 = 40,960 numbers. MLA stores only 1.4% of that. The DeepSeek-V2 paper says it this way: the MLA cache is equal to a GQA cache with only 2.25 groups.
 
-### 4.4 吸收（absorb）：推理时不还原 K、V
+### 4.4 Absorb: do not reconstruct K and V at inference
 
-还原 K、V 意味着每一步都要把缓存里全部 T 个潜向量乘上 W_UK、W_UV，很浪费。注意力分数可以换个顺序算：
+To reconstruct K and V, each step must multiply all T latent vectors in the cache by W_UK and W_UV. This wastes work. We can calculate the attention in a different order:
 
 ```
 q_iᵀ k_j = (q_i^C)ᵀ W_UK,i c_KV,j + (q_i^R)ᵀ k^R_j
-         = (W_UK,iᵀ q_i^C)ᵀ c_KV,j + (q_i^R)ᵀ k^R_j      ← 先把 query 投进潜空间
-Σ_j p_ij v_j = W_UV,i ( Σ_j p_ij c_KV,j )                  ← 先在潜空间里加权平均，最后再投回去
+         = (W_UK,iᵀ q_i^C)ᵀ c_KV,j + (q_i^R)ᵀ k^R_j      ← first project the query into the latent space
+Σ_j p_ij v_j = W_UV,i ( Σ_j p_ij c_KV,j )                  ← first average in the latent space, then project back
 ```
 
-矩阵乘法满足结合律，所以 W_UK 可以"吸收"进 query 一侧，W_UV 可以吸收进输出一侧，缓存里的潜向量直接参与注意力，K、V 从头到尾不用还原。`03_mla.py` 两条路径都写了：
+Matrix multiplication is associative. Thus W_UK can be "absorbed" into the query side, and W_UV can be absorbed into the output side. The latent vectors in the cache go directly into attention, and K and V are never reconstructed. `03_mla.py` has both paths:
 
 ```python
-if self.absorb:  # 吸收：query 投进潜空间，直接和缓存点积
+if self.absorb:  # absorb: project the query into the latent space; dot product with the cache
     q_lat = torch.einsum("bhtd,hdr->bhtr", q_nope, w_uk)
     att = q_lat @ c_kv.transpose(-2, -1) + q_pe @ k_pe.transpose(-2, -1)
-else:            # 显式：先把每个头的 K 还原出来
+else:            # explicit: first reconstruct the K of each head
     k_nope = torch.einsum("bxsr,hdr->bhsd", c_kv, w_uk)
     ...
 ```
 
-运行结果（同一组随机权重、float64）：
+The output (the same random weights, float64):
 
 ```
-1. 吸收路径 = 显式路径（同一组权重、float64）
-   最大差异 4.4e-16
-2. 带缓存逐个喂 = 一次性整段前向
-   最大差异 2.8e-16；缓存里存的形状：潜向量 (2, 1, 20, 32)，RoPE key (2, 1, 20, 16)
+1. Absorbed path = explicit path (same weights, float64)
+   max difference 4.4e-16
+2. Token by token with a cache = one forward pass over the full sequence
+   max difference 2.8e-16; shapes in the cache: latent (2, 1, 20, 32), RoPE key (2, 1, 20, 16)
 ```
 
-两条路径数学上完全等价，差异是浮点舍入。有意思的是吸收之后的样子：每个头都拿一个 576 维的 query 去和**同一份** 576 维的缓存做点积——形式上正是 MQA（所有头共用一组 K/V），只不过这组"K/V"是 576 维的潜向量。GLM-5 的报告直接把它叫作"MLA 的 MQA 模式"。所以 MLA 可以理解为：**训练时像 MHA（每个头有自己的 K、V），推理时像 MQA（只存、只读一份）**。
+The two paths are mathematically equivalent, and the difference is floating-point rounding. The form after absorption is interesting. Each head takes a 576-dim query and calculates a dot product with **the same** 576-dim cache. This is the form of MQA (all heads share one set of K/V), but here the "K/V" is a 576-dim latent vector. The GLM-5 report calls this form "the MQA mode of MLA". Thus you can think of MLA in this way: **in training, it acts like MHA (each head has its own K and V); in inference, it acts like MQA (it stores and reads only one copy).**
 
-实际系统里，训练和 prefill（一次处理很多 token，算力是瓶颈）常用显式路径，decode（一次一个 token，带宽是瓶颈）用吸收路径。
+Real systems often use the explicit path for training and prefill. These phases process many tokens at once, and compute is the bottleneck. They use the absorbed path for decode, which processes one token at a time, and bandwidth is the bottleneck.
 
-### 4.5 MLA 的代价
+### 4.5 The costs of MLA
 
-MLA 不是免费的午餐，写作时能查到的几点：
+MLA has costs. At the time of writing, we found these:
 
-- **decode 算力更高**：吸收之后每个头在 576 维上做点积，而 GQA 通常是 128 维。GLM-5 报告因此把头维从 192 加到 256、头数减少 1/3，以降低 decode 算力；Kimi K2 也把头数从 DeepSeek-V3 的 128 减到 64，报告说 128K 上下文时 128 个头比 64 个头的推理 FLOPs 多 83%。
-- **质量结论依赖设置**：DeepSeek-V2 的消融里 MLA 比 MHA 还好（附录 D.2）；但 GLM-5 报告在 Muon 优化器下发现 576 维潜向量的 MLA 比不过 GQA-8，要改优化器的用法（"Muon Split"）才追平。
-- **和一些组件不兼容**：Kimi K2 报告指出 QK-Norm 用不到 MLA 上，因为推理时 K 从来没被还原出来。主线模型用了 QK-Norm（第 9 章），这是它继续用 GQA 的原因之一。
-- **工程更复杂**：需要专门的 kernel（如 DeepSeek 开源的 FlashMLA）和推理引擎支持。
+- **Decode needs more compute.** After absorption, each head calculates dot products over 576 dims, but GQA usually uses 128 dims. For this reason, GLM-5 increased the head dimension from 192 to 256 and used 1/3 fewer heads, to decrease the decode compute. Kimi K2 also decreased the number of heads from 128 (DeepSeek-V3) to 64. Its report says that at 128K context, 128 heads need 83% more inference FLOPs than 64 heads.
+- **The quality result depends on the setup.** In the ablation of DeepSeek-V2, MLA was better than MHA (Appendix D.2). But the GLM-5 report found that with the Muon optimizer, MLA with a 576-dim latent vector was worse than GQA-8. MLA became equal only after a change to how they used the optimizer ("Muon Split").
+- **MLA does not work with some components.** The Kimi K2 report says that QK-Norm cannot be used with MLA, because inference never reconstructs K. The main-line model uses QK-Norm (Chapter 9). This is one reason why the main-line model continues to use GQA.
+- **The engineering is more complex.** MLA needs special kernels, such as FlashMLA (open source from DeepSeek), and support in the inference engine.
 
-这些也解释了为什么目前采用 MLA 的都是几百亿到上万亿参数的旗舰 MoE 模型，而 0.6–9B 的稠密小模型几乎清一色用 GQA。
+These costs also explain the current adopters. Only flagship MoE models, with tens of billions to trillions of parameters, use MLA now. Almost all small dense models of 0.6–9B use GQA.
 
-## 5. 小实验：同一个小模型，五种注意力
+## 5. A small experiment: one small model, five kinds of attention
 
-`04_attention_variants.py` 用第 10 章的字符级莎士比亚小模型（4 层、宽 128、4 个查询头、head_dim 32），只换注意力：
+`04_attention_variants.py` uses the character-level Shakespeare model of Chapter 10 (4 layers, width 128, 4 query heads, head_dim 32). It changes only the attention:
 
-- MHA（4 个 KV 头）、GQA（2 个）、MQA（1 个）；
-- MLA-48：潜向量 48 维 + RoPE key 16 维 = 64 个数，**缓存和 MQA 一样大**；
-- MLA-16：潜向量 16 维 + 16 = 32 个数，只有 MQA 的一半。
+- MHA (4 KV heads), GQA (2), MQA (1).
+- MLA-48: a 48-dim latent vector + a 16-dim RoPE key = 64 numbers. **The cache has the same size as in MQA.**
+- MLA-16: a 16-dim latent vector + 16 = 32 numbers, only half of MQA.
 
-其余完全相同：同样的数据顺序、600 步、AdamW + warmup + cosine。每种跑 3 个随机种子。缓存大小是生成 512 个字符后**真实测得**的（FP32）：
+All other parts are the same: the same data order, 600 steps, AdamW + warmup + cosine. Each variant trains with 3 random seeds. The script **measures** the cache size after it generates 512 characters (FP32):
 
 ```bash
 uv run python chapters/21-kv-cache-ledger/code/04_attention_variants.py
 ```
 
-> 关于数字：本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同机器、不同版本的底层数学库，浮点运算的顺序略有不同，训练几百步后会把这些微小差异放大，你本机跑出的数字可能从小数点后第二三位开始就不一样；请以下文不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-21-23.md](../../runs/2026-10-01-gpu0-check/chapters-21-23.md)。
+> **Note:** The numbers of the training experiments in this chapter come from one CPU run on the course build machine. Different machines and different versions of the math libraries do floating-point operations in a slightly different order. After some hundred training steps, these small differences become larger. Your numbers can be different from the second or third decimal place. Trust the conclusions below, which do not depend on exact values. For a second run on another server in 2026-10, see [runs/2026-10-01-gpu0-check/chapters-21-23.md](../../runs/2026-10-01-gpu0-check/chapters-21-23.md).
 
-| 方案 | 每层每位置缓存 | 每 token（4 层，FP32） | 生成 512 字后实测缓存 | 注意力参数 | 验证 loss 均值 | 三个种子 | 缓存版 = 朴素版 |
+| Variant | Cache per layer per position | Per token (4 layers, FP32) | Measured cache after 512 characters | Attention parameters | Mean validation loss | Three seeds | Cached = naive |
 |---|---:|---:|---:|---:|---:|---|---|
-| MHA | 256 个数 | 4,096 B | 2,150,400 B（1×） | 262,144 | 1.858 | 1.838 / 1.869 / 1.867 | 是 |
-| GQA | 128 | 2,048 B | 1,075,200 B（1/2） | 196,608 | 1.856 | 1.867 / 1.849 / 1.852 | 是 |
-| MQA | 64 | 1,024 B | 537,600 B（1/4） | 163,840 | 1.860 | 1.860 / 1.858 / 1.862 | 是 |
-| MLA-48 | 64（48 + 16） | 1,024 B | 537,600 B（1/4） | 245,952 | 1.887 | 1.878 / 1.888 / 1.895 | 是 |
-| MLA-16 | 32（16 + 16） | 512 B | 268,800 B（1/8） | 196,672 | 1.886 | 1.889 / 1.854 / 1.916 | 是 |
+| MHA | 256 numbers | 4,096 B | 2,150,400 B (1×) | 262,144 | 1.858 | 1.838 / 1.869 / 1.867 | Yes |
+| GQA | 128 | 2,048 B | 1,075,200 B (1/2) | 196,608 | 1.856 | 1.867 / 1.849 / 1.852 | Yes |
+| MQA | 64 | 1,024 B | 537,600 B (1/4) | 163,840 | 1.860 | 1.860 / 1.858 / 1.862 | Yes |
+| MLA-48 | 64 (48 + 16) | 1,024 B | 537,600 B (1/4) | 245,952 | 1.887 | 1.878 / 1.888 / 1.895 | Yes |
+| MLA-16 | 32 (16 + 16) | 512 B | 268,800 B (1/8) | 196,672 | 1.886 | 1.889 / 1.854 / 1.916 | Yes |
 
-先看能确定的部分：
+First, the results that are certain:
 
-- **缓存大小严格符合账本**：实测字节数与"每层每位置个数 × 4 层 × 4 字节 × 525 个位置"完全一致；MLA-48 与 MQA 一样大，MLA-16 只有 MHA 的 1/8。
-- **缓存版与朴素版逐字相同**：五种结构（包括走吸收路径的 MLA）用缓存生成的前 100 个字符都和每步整段重算的结果一致。MHA 种子 0 的 loss 1.838 与第 10 章完全相同，说明训练循环对得上。
+- **The cache sizes agree exactly with the ledger.** The measured bytes are exactly "numbers per layer per position × 4 layers × 4 bytes × 525 positions". MLA-48 is as large as MQA, and MLA-16 is only 1/8 of MHA.
+- **The cached version gives the same characters as the naive version.** This is true for all five structures, also for MLA on the absorbed path. The first 100 characters generated with the cache are the same as with a full recalculation at each step. The loss of MHA with seed 0, 1.838, is exactly the same as in Chapter 10. Thus the training loop agrees with Chapter 10.
 
-再看 loss，这里要非常小心：
+Then the loss. Be very careful here:
 
-- **MHA、GQA、MQA 分不出高下**：三者均值在 1.856–1.860 之间，而 MHA 自己换种子就能差 0.031（1.838 对 1.869）。和第 10 章的结论一样，在这个规模上 KV 头数的影响被随机性淹没了。
-- **MLA 在这里反而稍差**：MLA-48 的三个种子（1.878–1.895）全部高于前三种结构的全部九个种子（最高 1.869），均值比同样缓存大小的 MQA 高约 0.03。MLA-16 的种子波动很大（1.854–1.916），说不出什么。
-- **不能据此说"MLA 不如 MQA"**。可能的原因至少有三个：学习率等超参是按第 10 章的 MHA 定的，没有为 MLA 单独调；这个模型只有 4 个头、head_dim 32，潜向量 48 维相对头宽并不"低秩"，MLA 的结构优势（每个头有独立的上投影）没有多少施展空间；训练只有 600 步。DeepSeek-V2 在 16B 和 250B 的 MoE 上做的对比是 MLA 优于 MHA，GLM-5 在他们的设置下则发现 MLA 需要调整优化器才能追平 GQA-8——**MLA 好不好，本来就依赖规模和训练设置**。这个极小实验能说明的只是：代码是对的，缓存省下来了，质量代价在这个规模上是可见但很小的量级。
+- **MHA, GQA, and MQA show no clear difference.** Their means are between 1.856 and 1.860. But MHA alone changes by 0.031 with a different seed (1.838 vs 1.869). The conclusion is the same as in Chapter 10: at this scale, the random variation hides the effect of the number of KV heads.
+- **MLA is a little worse here.** All three seeds of MLA-48 (1.878–1.895) are higher than all nine seeds of the first three structures (the highest is 1.869). Its mean is about 0.03 higher than that of MQA, which has the same cache size. The seeds of MLA-16 vary a lot (1.854–1.916), so they give no conclusion.
+- **This result does not show that "MLA is worse than MQA".** There are at least three possible reasons. First, the hyperparameters, such as the learning rate, come from MHA in Chapter 10, and we did not tune them for MLA. Second, this model has only 4 heads with head_dim 32. A 48-dim latent vector is not really "low-rank" compared with the head width. Thus the structural advantage of MLA (each head has its own up-projection) has little effect. Third, the training has only 600 steps. DeepSeek-V2 compared them on MoE models of 16B and 250B, and MLA was better than MHA. In the GLM-5 setup, MLA needed a change to the optimizer to become equal to GQA-8. **Whether MLA is better depends on the scale and the training setup.** This tiny experiment shows only three things: the code is correct, the cache is smaller, and at this scale the quality cost is visible but small.
 
-GOAL.md 第五部分的"第二步"会在约 1 亿参数的 ladder 配置上用生产级的 `zero/arch/mla.py` 重跑这组对比（多种子、各自调学习率），那时再下更可靠的结论。
+In Part 5 of GOAL.md, "step 2" runs this comparison again with the production code `zero/arch/mla.py`, on a ladder configuration of about 100 million parameters. It will use several seeds and tune the learning rate for each variant. Then we can make a more reliable conclusion.
 
-## 6. 小结
+## 6. Summary
 
-- **长上下文的两种贵**：prefill 的注意力算力按 T² 涨（主线模型 32K 时占 73%）；decode 被显存带宽卡住（算术强度只有 1–5），长上下文下 KV cache 比权重还大，拼批也省不掉。
-- **账本**：按层记——全注意力和 MLA 层随长度线性涨，滑动窗口层封顶，线性注意力层是常数。
-- **三条省缓存的路**：少存头（GQA/MQA）、每个位置存得更小（MLA）、少存层或位置（滑动窗口、混合线性），可以叠加。
-- **MLA**：K、V 联合压缩成潜向量 c_KV（512 维）+ 共享 RoPE key（64 维），每层每位置 576 个数；解耦 RoPE 是为了能"吸收"；吸收后训练像 MHA、推理像 MQA。
-- **代价**：decode 算力更高、和 QK-Norm 不兼容、需要专门 kernel；目前是大 MoE 模型的选择，小稠密模型仍用 GQA。
+- **Two costs of long context**: In prefill, the attention compute grows as T² (73% for the main-line model at 32K). Decode is limited by memory bandwidth (the arithmetic intensity is only 1–5). At long context, the KV cache is larger than the weights, and a larger batch does not save its reads.
+- **Ledger**: Count layer by layer. Full-attention and MLA layers grow linearly with length. Sliding-window layers stop at a cap. Linear-attention layers are constant.
+- **Three ways to save cache**: Store fewer heads (GQA/MQA), store less per position (MLA), or store fewer layers or positions (sliding window, hybrid linear attention). You can combine them.
+- **MLA**: MLA compresses K and V jointly into a latent vector c_KV (512 dims) + a shared RoPE key (64 dims). This is 576 numbers per layer per position. Decoupled RoPE makes absorption possible. With absorption, MLA acts like MHA in training and like MQA in inference.
+- **Costs**: More decode compute, no QK-Norm, and special kernels. Now large MoE models use MLA, and small dense models still use GQA.
 
 ---
 
-## GPU 实测（单张 RTX 3090）
+## GPU measurements (one RTX 3090)
 
-> 上面正文里的数字都来自 CPU 运行。本节换到一张 NVIDIA GeForce RTX 3090（24 GB 显存，Ampere 架构；规格表：BF16 张量核稠密峰值约 71 TFLOPS，FP32 约 35.6 TFLOPS，显存带宽约 936 GB/s）上实测，环境：PyTorch 2.11.0+cu128、CUDA 12.8，2026 年 10 月。这张卡的功耗上限被服务器设成了 240 W（出厂默认 350 W），持续满载时会降频，所以算力、带宽的绝对值比满功耗的 3090 偏低，看相对关系更可靠。没有 GPU 可以跳过本节。
+> **Note:** The numbers in the main text above all come from CPU runs. This section uses one NVIDIA GeForce RTX 3090: 24 GB of memory, Ampere architecture. Spec sheet: dense BF16 tensor-core peak about 71 TFLOPS, FP32 about 35.6 TFLOPS, memory bandwidth about 936 GB/s. Environment: PyTorch 2.11.0+cu128, CUDA 12.8, October 2026. The server sets the power limit of this card to 240 W (the factory default is 350 W). Under a continuous full load, the card decreases its clock speed. Thus the absolute compute and bandwidth are lower than on a 3090 at full power, and the relative values are more reliable. If you have no GPU, skip this section.
 
-运行：
+Run:
 
 ```bash
 uv run python chapters/21-kv-cache-ledger/code/05_gpu_decode_ledger.py
 ```
 
-脚本按主线模型的形状（28 层、宽 1280、16 个查询头、8 个 KV 头、head_dim 128、FFN 3584、词表 65,536）搭一个随机权重的 decode 步（BF16），KV cache 预先填满 T 个位置，测"再生成 1 个 token"要多久。"理论下限"直接调用 `02_prefill_decode.py` 的 `decode_step`，公式不变，只把硬件规格换成 3090 的 71 TFLOPS、936 GB/s；"等效带宽"= 实际读的字节（权重 + KV cache）÷ 实测耗时。整步用 CUDA Graph 录下来重放（不这样做的话，T = 1,024 时一步要 7.51 ms，一多半花在 Python 逐个发射 kernel 上）。作为参照，同一张卡上把 1 GiB 连续读一遍的实测带宽是 873 GB/s。
+The script builds one decode step (BF16) with random weights in the shape of the main-line model: 28 layers, width 1280, 16 query heads, 8 KV heads, head_dim 128, FFN 3584, vocabulary 65,536. It fills the KV cache with T positions first. Then it measures the time to generate 1 more token. The "lower bound" calls `decode_step` from `02_prefill_decode.py` directly. The formula is the same; only the hardware specification changes to the 71 TFLOPS and 936 GB/s of the 3090. The "effective bandwidth" is the bytes actually read (weights + KV cache) ÷ the measured time. The script records the full step with a CUDA Graph and replays it. Without the graph, one step at T = 1,024 takes 7.51 ms. More than half of that time goes to Python, which launches the kernels one by one. For reference, one contiguous read of 1 GiB on the same card has a measured bandwidth of 873 GB/s.
 
-主线模型（GQA 16/8），decode 一步（30 次取中位数）：
+Main-line model (GQA 16/8), one decode step (median of 30 runs):
 
-| 上下文 T | batch B | 读权重 | 读 KV cache | 理论下限 | 实测 | 实测 / 理论 | 等效带宽 | 吞吐（token/s） |
+| Context T | Batch B | Weights read | KV cache read | Lower bound | Measured | Measured / lower bound | Effective bandwidth | Throughput (token/s) |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 1,024 | 1 | 1.28 GiB | 0.11 GiB | 1.60 ms | 3.40 ms | 2.13× | 440 GB/s | 294 |
 | 4,096 | 1 | 1.28 GiB | 0.44 GiB | 1.98 ms | 4.09 ms | 2.07× | 452 GB/s | 244 |
@@ -318,122 +324,128 @@ uv run python chapters/21-kv-cache-ledger/code/05_gpu_decode_ledger.py
 | 32,768 | 4 | 1.28 GiB | 14.00 GiB | 17.53 ms | 27.48 ms | 1.57× | 597 GB/s | 146 |
 | 131,072 | 1 | 1.28 GiB | 14.00 GiB | 17.53 ms | 27.23 ms | 1.55× | 603 GB/s | 37 |
 
-batch 1 从 T = 1,024 到 131,072：KV cache 多读 13.89 GiB，一步多花 23.83 ms，折合 626 GB/s。
+With batch 1, from T = 1,024 to 131,072, the KV cache reads 13.89 GiB more, and one step takes 23.83 ms more. This is 626 GB/s.
 
-同一个上下文（T = 32,768、batch 1），只换注意力（MLA 取 512 + 64，走 `03_mla.py` 的吸收路径）：
+At the same context (T = 32,768, batch 1), change only the attention. MLA uses 512 + 64 and the absorbed path of `03_mla.py`:
 
-| 方案 | 每层每位置 | 账本 KV | 实际分配 | 权重 | 理论下限 | 实测 | 等效带宽 |
+| Variant | Per layer per position | Ledger KV | Actual allocation | Weights | Lower bound | Measured | Effective bandwidth |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| MHA | 4,096 个数 | 7.00 GiB | 7.00 GiB | 1.42 GiB | 9.66 ms | 15.57 ms | 581 GB/s |
-| **GQA（主线）** | 2,048 | 3.50 GiB | 3.50 GiB | 1.28 GiB | 5.49 ms | 9.33 ms | 550 GB/s |
+| MHA | 4,096 numbers | 7.00 GiB | 7.00 GiB | 1.42 GiB | 9.66 ms | 15.57 ms | 581 GB/s |
+| **GQA (main-line)** | 2,048 | 3.50 GiB | 3.50 GiB | 1.28 GiB | 5.49 ms | 9.33 ms | 550 GB/s |
 | MQA | 256 | 0.44 GiB | 0.44 GiB | 1.16 GiB | 1.84 ms | 4.36 ms | 395 GB/s |
 | MLA | 576 | 0.98 GiB | 0.98 GiB | 1.36 GiB | 3.70 ms | 7.75 ms | 447 GB/s |
 
-（权重不一样大，是因为 K/V 投影的形状跟着方案变。MLA 的理论下限按实际读的字节算：算分数读一遍 576 维潜向量，加权平均再读一遍前 512 维；FlashMLA 这类融合 kernel 只读一遍。）
+(The weights are not the same size, because the shape of the K/V projections changes with the variant. The lower bound of MLA uses the bytes actually read. The scores read the 576-dim latent vectors once, and the weighted average reads the first 512 dims again. A fused kernel such as FlashMLA reads them only once.)
 
-这两张表把第 1.2 节的公式变成了实物。batch 1 时上下文从 1K 涨到 128K，每多读 1 GiB KV cache，一步就多花约 1.7 ms；"4 条 32K 的对话"和"1 条 128K 的对话"要读的 KV cache 一样多（都是 14 GiB），一步的耗时也几乎一样（27.48 ms 对 27.23 ms）——decode 只认要读多少字节，不管这些字节属于几条对话。拼批的规律也和账本一致：4K 时 batch 从 1 到 16，吞吐涨了约 3.8 倍（244 → 936），32K 时 batch 从 1 到 4 只涨了约 1.35 倍（108 → 146），KV cache 拼批省不掉。第 3 节的账本在显存里分毫不差（实际分配 7.00 / 3.50 / 0.44 / 0.98 GiB），decode 时间也按 KV cache 的大小排队；只是 MLA 的缓存只有 GQA 的 28%，一步却只省了约 17%：没有融合 kernel 时潜向量要读两遍、注意力里的矩阵乘又小又碎，这正是第 4.5 节说"需要 FlashMLA 这类专门 kernel"的原因。出乎意料的是离理论下限的距离：同一张卡纯读能到 873 GB/s，可短上下文时等效带宽只有 440 GB/s——每层的几个权重矩阵只有 5–18 MB，batch 1 时是一串小的矩阵-向量乘，每个都来不及把带宽跑满；上下文越长，大块连续读 KV cache 的比重越高，等效带宽才往 600 GB/s 靠。
+These two tables change the formula of Section 1.2 into real measurements. With batch 1, the context grows from 1K to 128K. For each additional 1 GiB of KV cache to read, one step takes about 1.7 ms more. "4 conversations of 32K" and "1 conversation of 128K" read the same amount of KV cache (14 GiB each). Their step times are also almost the same (27.48 ms vs 27.23 ms). Decode depends only on how many bytes it reads, not on how many conversations own these bytes.
 
-## 从极简到生产级
+The batch results also agree with the ledger. At 4K, from batch 1 to 16, the throughput increases about 3.8 times (244 → 936). At 32K, from batch 1 to 4, it increases only about 1.35 times (108 → 146). A larger batch does not save the KV cache reads.
 
-| 极简版（`code/`） | 生产级 | 多做了什么、为什么 |
+The ledger of Section 3 is exact in GPU memory (actual allocation 7.00 / 3.50 / 0.44 / 0.98 GiB). The decode times also follow the order of the KV cache sizes. But the MLA cache is only 28% of the GQA cache, and one step is only about 17% faster. Without a fused kernel, the step reads the latent vectors twice, and the matrix multiplications in attention are small and fragmented. This is why Section 4.5 says that MLA needs special kernels such as FlashMLA.
+
+The distance from the lower bound was a surprise. A pure read on the same card reaches 873 GB/s, but at short context the effective bandwidth is only 440 GB/s. The weight matrices of each layer are only 5–18 MB. With batch 1, the step is a chain of small matrix-vector products, and none of them is large enough to use the full bandwidth. When the context grows, the large contiguous reads of the KV cache become a larger part of the step. Then the effective bandwidth moves toward 600 GB/s.
+
+## From minimal code to production code
+
+| Minimal code (`code/`) | Production code | What it adds, and why |
 |---|---|---|
-| `01_kv_ledger.py`：手写的模型字典 + `layer_list` / `kv_bytes` | `zero/tools/kv_cache_calc.py`：`kv_cache_bytes(cfg, seq_len, batch, dtype_bytes)`、`kv_bytes_per_token`、`fixed_state_bytes`、`breakdown`；命令行 `uv run python -m zero.tools.kv_cache_calc configs/main/pretrain.toml --seq 32768` | 直接读 zero 的 `ModelConfig` / TOML、Hugging Face 的 `config.json`（含多模态模型的 `text_config` 嵌套、`layer_types`、Kimi 的 `linear_attn_config`、Mistral 原生 `params.json` 的字段名）；自动识别 MLA、滑动窗口、线性注意力层；单独估算线性层的固定状态；`--dtype-bytes 1` 可以算 FP8 KV cache |
-| `03_mla.py` 的 `MLA`：接口对齐第 10 章小模型，借用它的 `torch.cat` 式缓存 | `zero/arch/mla.py`：`MLAConfig`（字段名与 DeepSeek-V3 的 config 一致）、`MLAAttention`（接口与 `zero.model.Attention` 相同，可直接换进 `Transformer`，见 `mla_transformer`）、`MLACache`（预分配潜向量与 RoPE key，`nbytes()`） | 支持 query 也做低秩压缩（`q_lora_rank`，DeepSeek-V3 为 1536，省训练激活、不省缓存）；有缓存时自动走吸收路径、无缓存时走显式路径 + SDPA；支持分块 prefill；softmax 至少在 float32 上算 |
-| `04_attention_variants.py`：MHA/GQA/MQA/MLA 同配置对比 | 第二步可选：用 `mla_transformer(model_cfg, mla_cfg)` 在约 1 亿参数的 ladder 配置上重跑 | 生产级模块与主线 `Transformer` 共用 RMSNorm、SwiGLU、训练循环，换注意力只改一处 |
-| 无 | 行业实现：vLLM 的 PagedAttention（第 10 章）按页管理 KV cache；DeepSeek 开源的 FlashMLA 是 MLA decode 的 GPU kernel；vLLM、SGLang 都有 MLA 后端 | 本课的 MLA 只追求可读和正确：CUDA + BF16 下的正确性已在 RTX 3090 上验证（见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 11 节），性能没有优化、尚未在 GPU 上验证（本章"GPU 实测"一节有一组 decode 耗时参考）；真正上线要用这些专门实现 |
+| `01_kv_ledger.py`: a hand-written dict of models + `layer_list` / `kv_bytes` | `zero/tools/kv_cache_calc.py`: `kv_cache_bytes(cfg, seq_len, batch, dtype_bytes)`, `kv_bytes_per_token`, `fixed_state_bytes`, `breakdown`; command line `uv run python -m zero.tools.kv_cache_calc configs/main/pretrain.toml --seq 32768` | Reads the `ModelConfig` / TOML of zero and the Hugging Face `config.json` directly. This includes the nested `text_config` of multimodal models, `layer_types`, the `linear_attn_config` of Kimi, and the field names of the native Mistral `params.json`. Detects MLA, sliding-window, and linear-attention layers automatically. Estimates the fixed state of linear layers separately. `--dtype-bytes 1` calculates an FP8 KV cache. |
+| `MLA` in `03_mla.py`: its interface matches the small model of Chapter 10, and it uses the `torch.cat`-style cache of that model | `zero/arch/mla.py`: `MLAConfig` (the field names match the DeepSeek-V3 config), `MLAAttention` (the same interface as `zero.model.Attention`; it can go directly into `Transformer`, see `mla_transformer`), `MLACache` (preallocates the latent vectors and the RoPE keys; `nbytes()`) | Also supports low-rank compression of the query (`q_lora_rank`, 1536 in DeepSeek-V3; this saves training activations, not cache). Uses the absorbed path automatically with a cache, and the explicit path + SDPA without a cache. Supports chunked prefill. Calculates softmax in float32 or higher. |
+| `04_attention_variants.py`: MHA/GQA/MQA/MLA comparison with the same configuration | Optional step 2: run it again with `mla_transformer(model_cfg, mla_cfg)` on a ladder configuration of about 100 million parameters | The production module shares RMSNorm, SwiGLU, and the training loop with the main-line `Transformer`. To change the attention, change only one place. |
+| None | Industry implementations: PagedAttention in vLLM (Chapter 10) manages the KV cache in pages; FlashMLA (open source from DeepSeek) is a GPU kernel for MLA decode; vLLM and SGLang both have MLA backends | The MLA of this course aims only to be readable and correct. Its correctness under CUDA + BF16 was verified on an RTX 3090 (see Section 11 of [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md)). Its performance is not optimized and not yet verified on a GPU (the "GPU measurements" section of this chapter gives some decode times for reference). A real deployment must use these special implementations. |
 
-**对拍**（`uv run pytest tests/test_kv_cache_calc.py tests/test_arch_mla.py`，本机 12 项全部通过，约 3 秒）：
+**Parity check** (`uv run pytest tests/test_kv_cache_calc.py tests/test_arch_mla.py`; on this machine, all 12 tests passed in about 3 seconds):
 
-- 计算器对 `configs/tiny`、`configs/main`，在 FP32 / BF16、batch 2 下，与 `KVCache.from_config(...).nbytes()` 真实分配的字节数完全相等；主线模型每 token 114,688 字节；
-- MLA 配置的结果与 `MLACache.nbytes()` 相等；DeepSeek-V3 每 token 61 × 576 × 2 字节；滑动窗口、Qwen3.5 式混合线性、Mistral `params.json` 各有一个手算用例；
-- `MLAAttention` 的吸收路径与显式路径在 float64 下差异 < 1e-10；分块 prefill（12 + 1 + 17 个 token）与一次性前向在 1e-5 内一致；带缓存与不带缓存的贪心生成 40 个 token 完全相同；换上 MLA 的 `Transformer` 能正常训练。
+- For `configs/tiny` and `configs/main`, in FP32 / BF16 with batch 2, the calculator gives exactly the bytes that `KVCache.from_config(...).nbytes()` really allocates. The main-line model uses 114,688 bytes per token.
+- For MLA configurations, the result is equal to `MLACache.nbytes()`. DeepSeek-V3 uses 61 × 576 × 2 bytes per token. The sliding window, the Qwen3.5-style hybrid linear attention, and the Mistral `params.json` each have one test case that we calculated by hand.
+- In `MLAAttention`, the absorbed path and the explicit path differ by < 1e-10 in float64. Chunked prefill (12 + 1 + 17 tokens) agrees with one full forward pass within 1e-5. Greedy generation of 40 tokens gives exactly the same tokens with and without a cache. A `Transformer` with MLA trains normally.
 
-`01_kv_ledger.py` 第 3 部分也直接调用 `zero.tools.kv_cache_calc` 核对了主线模型和 DeepSeek-V3 的数字。
-
----
-
-## 前沿观察
-
-> **稀疏注意力（DeepSeek DSA）不省 KV cache，省的是算力。** DeepSeek-V3.2 和 GLM-5 在 MLA 之上加了 DeepSeek Sparse Attention：一个轻量的"索引器"给历史 token 打分，每个 query 只和得分最高的 2048 个（`index_topk: 2048`）做注意力。这把长上下文的注意力算力从 O(T²) 降到接近 O(T·k)，但 KV cache 仍要全部保留（索引器自己还要额外缓存一份小 key）。写这一章时只核实到 DeepSeek 和 GLM 两个家族；第 22 章再核实后，"学出来的稀疏注意力"这个大方向已有 4 家（DeepSeek、GLM-5、MiniMax-M3、美团 LongCat），满足 GOAL.md 2.1，在第 22 章正文讲；但各家的具体做法（DSA、MSA、LSA 等）还没有收敛，具体变体仍算前沿观察。它省的依然是算力，不是 KV cache。
+Part 3 of `01_kv_ledger.py` also calls `zero.tools.kv_cache_calc` directly to check the numbers for the main-line model and DeepSeek-V3.
 
 ---
 
-## 采用方与来源
+## Frontier notes
 
-| 技术 | 采用方（主力版本） | 来源 |
+> **Sparse attention (DeepSeek DSA) does not save KV cache. It saves compute.** DeepSeek-V3.2 and GLM-5 add DeepSeek Sparse Attention on top of MLA. A light "indexer" gives a score to each past token. Each query attends only to the 2048 tokens with the highest scores (`index_topk: 2048`). This decreases the attention compute for long context from O(T²) to about O(T·k). But the KV cache must still keep all tokens, and the indexer caches an additional small key. When we wrote this chapter, we had verified this method only in two families, DeepSeek and GLM. Chapter 22 checked again. The general direction, "learned sparse attention", now has 4 adopters (DeepSeek, GLM-5, MiniMax-M3, Meituan LongCat). This satisfies GOAL.md 2.1, so Chapter 22 explains it in the main text. But the specific methods (DSA, MSA, LSA, and others) have not converged, so the specific variants are still frontier notes. These methods still save compute, not KV cache.
+
+---
+
+## Adopters and sources
+
+| Technique | Adopters (main versions) | Sources |
 |---|---|---|
-| GQA | Qwen3（0.6B：16 Q / 8 KV；8B：32 / 8）、Llama 3.1（32 / 8）、gpt-oss（64 / 8）、Qwen3.5 的全注意力层（0.8B：8 / 2）；更多见第 10 章 | 各模型 `config.json`（下方链接）；Qwen3、Llama 3 技术报告 |
-| MLA | **DeepSeek**（V2 提出；V3、V3.2：`kv_lora_rank` 512、`qk_rope_head_dim` 64）、**Kimi**（K2：技术报告 2.3 节"employing MLA"；K3 的全注意力层）、**GLM**（GLM-5：技术报告 2.1 节"Multi-latent Attention"）、**Mistral**（Mistral Large 3：`params.json` 中 `kv_lora_rank` 512、`qk_rope_head_dim` 64，与 DeepSeek-V3 同形；模型卡未用文字说明） | DeepSeek-V2 arXiv:2405.04434；DeepSeek-V3 arXiv:2412.19437；Kimi K2 arXiv:2507.20534；GLM-5 arXiv:2602.15763；各模型配置 |
-| 滑动窗口 / 局部-全局交替 | gpt-oss（`layer_types` 交替、`sliding_window` 128）；更多见第 22 章 | gpt-oss 的 `config.json` |
-| 混合线性注意力 | Qwen3.5（`full_attention_interval` 4，其余为 `linear_attention`）、Kimi K3（`linear_attn_config`：24 层全注意力 + 69 层 KDA）；更多见第 23 章 | 各模型 `config.json` |
-| KV cache 分页管理 / MLA kernel | vLLM（PagedAttention，行业标准）；FlashMLA（DeepSeek 开源） | Kwon 等 2023，arXiv:2309.06180；<https://github.com/deepseek-ai/FlashMLA> |
+| GQA | Qwen3 (0.6B: 16 Q / 8 KV; 8B: 32 / 8), Llama 3.1 (32 / 8), gpt-oss (64 / 8), the full-attention layers of Qwen3.5 (0.8B: 8 / 2); Chapter 10 has more | The `config.json` of each model (links below); the Qwen3 and Llama 3 technical reports |
+| MLA | **DeepSeek** (introduced in V2; V3, V3.2: `kv_lora_rank` 512, `qk_rope_head_dim` 64), **Kimi** (K2: technical report Section 2.3, "employing MLA"; the full-attention layers of K3), **GLM** (GLM-5: technical report Section 2.1, "Multi-latent Attention"), **Mistral** (Mistral Large 3: `kv_lora_rank` 512 and `qk_rope_head_dim` 64 in `params.json`, the same shape as DeepSeek-V3; the model card does not describe it in words) | DeepSeek-V2 arXiv:2405.04434; DeepSeek-V3 arXiv:2412.19437; Kimi K2 arXiv:2507.20534; GLM-5 arXiv:2602.15763; the configuration of each model |
+| Sliding window / alternating local-global layers | gpt-oss (`layer_types` alternate, `sliding_window` 128); Chapter 22 has more | The `config.json` of gpt-oss |
+| Hybrid linear attention | Qwen3.5 (`full_attention_interval` 4, the other layers are `linear_attention`), Kimi K3 (`linear_attn_config`: 24 full-attention layers + 69 KDA layers); Chapter 23 has more | The `config.json` of each model |
+| Paged KV cache management / MLA kernel | vLLM (PagedAttention, the industry standard); FlashMLA (open source from DeepSeek) | Kwon et al. 2023, arXiv:2309.06180; <https://github.com/deepseek-ai/FlashMLA> |
 
-**共识判断（GOAL.md 2.1）**：MLA 被 DeepSeek、Kimi、GLM、Mistral 四个彼此独立的头部家族在主力版本中采用，满足规则 A，进正文；但要说明它的适用范围——四家全是几百亿到上万亿参数的 MoE 旗舰，**稠密小模型没有采用**（Qwen3、Qwen3.5、Llama 3、Gemma 3、gpt-oss、SmolLM3 均为 GQA 或 MQA），所以主线模型不用它（GOAL.md 3.3）。MQA 作为 GQA 的端点讲（规则 C），头部家族里只查到 Gemma 3 1B（见第 10 章）。
+**Consensus decision (GOAL.md 2.1)**: Four independent leading families use MLA in their main versions: DeepSeek, Kimi, GLM, and Mistral. This satisfies rule A, so MLA goes into the main text. But we must state its scope. All four are MoE flagships with tens of billions to trillions of parameters. **No small dense model uses MLA** (Qwen3, Qwen3.5, Llama 3, Gemma 3, gpt-oss, and SmolLM3 all use GQA or MQA). Thus the main-line model does not use it (GOAL.md 3.3). We explain MQA as the end point of GQA (rule C). Among the leading families, we found only one model that uses MQA: Gemma 3 1B (see Chapter 10).
 
-**模型配置**（2026-09 通过 Hugging Face 读取）：
-[Qwen3-0.6B](https://huggingface.co/Qwen/Qwen3-0.6B/blob/main/config.json)、
-[Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B/blob/main/config.json)、
-[Llama-3.1-8B（unsloth 镜像）](https://huggingface.co/unsloth/Meta-Llama-3.1-8B/blob/main/config.json)、
-[gpt-oss-120b](https://huggingface.co/openai/gpt-oss-120b/blob/main/config.json)、
-[Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/config.json)、
-[Qwen3.5-9B](https://huggingface.co/Qwen/Qwen3.5-9B/blob/main/config.json)、
-[Qwen3.5-397B-A17B（读自 FP8 版）](https://huggingface.co/Qwen/Qwen3.5-397B-A17B-FP8/blob/main/config.json)、
-[DeepSeek-V3](https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/config.json)、
-[DeepSeek-V3.2](https://huggingface.co/deepseek-ai/DeepSeek-V3.2/blob/main/config.json)、
-[Kimi-K2-Instruct](https://huggingface.co/moonshotai/Kimi-K2-Instruct/blob/main/config.json)、
-[GLM-5](https://huggingface.co/zai-org/GLM-5/blob/main/config.json)、
-[Mistral-Large-3-675B-Instruct-2512 的 params.json](https://huggingface.co/mistralai/Mistral-Large-3-675B-Instruct-2512/blob/main/params.json)、
-[Kimi-K3](https://huggingface.co/moonshotai/Kimi-K3/blob/main/config.json)。
+**Model configurations** (read through Hugging Face in 2026-09):
+[Qwen3-0.6B](https://huggingface.co/Qwen/Qwen3-0.6B/blob/main/config.json),
+[Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B/blob/main/config.json),
+[Llama-3.1-8B (unsloth mirror)](https://huggingface.co/unsloth/Meta-Llama-3.1-8B/blob/main/config.json),
+[gpt-oss-120b](https://huggingface.co/openai/gpt-oss-120b/blob/main/config.json),
+[Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/config.json),
+[Qwen3.5-9B](https://huggingface.co/Qwen/Qwen3.5-9B/blob/main/config.json),
+[Qwen3.5-397B-A17B (read from the FP8 version)](https://huggingface.co/Qwen/Qwen3.5-397B-A17B-FP8/blob/main/config.json),
+[DeepSeek-V3](https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/config.json),
+[DeepSeek-V3.2](https://huggingface.co/deepseek-ai/DeepSeek-V3.2/blob/main/config.json),
+[Kimi-K2-Instruct](https://huggingface.co/moonshotai/Kimi-K2-Instruct/blob/main/config.json),
+[GLM-5](https://huggingface.co/zai-org/GLM-5/blob/main/config.json),
+[params.json of Mistral-Large-3-675B-Instruct-2512](https://huggingface.co/mistralai/Mistral-Large-3-675B-Instruct-2512/blob/main/params.json),
+[Kimi-K3](https://huggingface.co/moonshotai/Kimi-K3/blob/main/config.json).
 
-说明：Meta 官方的 `meta-llama/Llama-3.1-8B` 需要申请权限，本章读取不到，数字取自 unsloth 镜像（其 `_name_or_path` 指向官方仓库），与第 10 章一致。Kimi K3 的 `full_attn_layers` 层号从 1 开始编号（1–93），本章按此解读为 24 层 MLA、69 层 KDA。H100 SXM 的 989.5 TFLOPS 与 `zero/tools/estimate_cost.py` 同一口径；3.35 TB/s、80 GB 取自 NVIDIA H100 产品页 <https://www.nvidia.com/en-us/data-center/h100/>。
-
----
-
-## 引导问题
-
-带着这些问题去问 Claude Code，直到你能用自己的话讲清楚：
-
-1. 第 1.2 节说"长上下文下拼批省不掉 KV cache 的读取"。那为什么拼批还能省下权重的读取？试着估算：主线模型在 32K 上下文下，batch 多大时"读 KV cache"的时间是"读权重"的 10 倍？
-2. MLA 的潜向量是 512 维，而 DeepSeek-V3 的隐藏层是 7168 维。如果把潜向量加大到 7168 维，还省缓存吗？还有意义吗？"低秩"这个限制在这里起了什么作用？
-3. 为什么 k^R（带 RoPE 的那段 key）要所有头共享一个，而不是每个头一个？如果每个头一个，缓存会变成多少？
-4. 吸收之后，MLA 在 decode 时"形式上就是 MQA"。那它和真正的 MQA（第 10 章，1 个 KV 头、head_dim 32）区别在哪里？为什么 MLA 的质量可以比 MQA 好得多？
-5. Qwen3.5 和 Kimi K3 都是"少量全注意力 + 大量线性注意力"。如果全注意力层也换成 MLA（像 Kimi K3 那样），账本会怎样变？Qwen3.5-9B 如果这样改，128K 的 KV cache 大概是多少？
-6. 本章小实验里各方案的 loss 差距和种子之间的差距是什么关系？如果想认真比较 MLA 和 GQA，你会怎么设计实验？参考 GLM-5 报告表 1 的做法。
-
-## 动手任务
-
-每个任务都要真的运行代码、看到结果。
-
-**任务 1（基础）**：在 Hugging Face 上挑一个本章没算过的模型（例如 SmolLM3-3B、Gemma 3 系列、MiniMax 或 GLM 的其他版本），读它的 `config.json`，把字段加进 `01_kv_ledger.py` 的 `MODELS`，算出 32K 和 128K 的 KV cache；再用 `uv run python -m zero.tools.kv_cache_calc 你保存的config.json --seq 131072` 对拍。注意它有没有滑动窗口、`layer_types`。
-
-**任务 2（核心）**：在 `03_mla.py` 里给 `MLA` 加一个计时实验：随机初始化一个 `n_heads=16, kv_lora_rank=64, rope_dim=16` 的 MLA，先 prefill 1024 个位置，再分别用吸收路径和显式路径 decode 64 步，比较每步耗时；再把缓存长度换成 256、4096 看趋势。解释为什么缓存越长，吸收路径的优势越大。
-
-**任务 3（挑战）**：在 `04_attention_variants.py` 里加一个 "GQA-1 × head_dim 48" 之类的变体，让它的每层每位置缓存也是 64 个数（和 MQA、MLA-48 一样大），然后跑 3 个种子。同样大小的缓存下，哪种结构的 loss 更低？差距是否超出了种子之间的波动？再试着把训练步数加倍，看结论变不变。
+Notes: The official `meta-llama/Llama-3.1-8B` of Meta needs an access request, and this chapter could not read it. The numbers come from the unsloth mirror (its `_name_or_path` points to the official repository), the same as in Chapter 10. The layer numbers in `full_attn_layers` of Kimi K3 start from 1 (1–93). This chapter reads them as 24 MLA layers and 69 KDA layers. The 989.5 TFLOPS of the H100 SXM uses the same basis as `zero/tools/estimate_cost.py`. The 3.35 TB/s and the 80 GB come from the NVIDIA H100 product page <https://www.nvidia.com/en-us/data-center/h100/>.
 
 ---
 
-## 想深入：CS336
+## Guided questions
 
-本章对应斯坦福 CS336（Spring 2026）<https://cs336.stanford.edu/>：
+Ask Claude Code these questions. Continue until you can explain the answers in your own words:
 
-- **第 10 讲：推理**。从资源核算的角度讲推理的开销：prefill 与 decode、KV cache 的显存与内存带宽，以及让推理更快更省的各类办法（讲义与录像见课程页；本构建环境访问不了课程页，具体覆盖哪些架构手段以讲义为准）。本章的 `02_prefill_decode.py` 可以看作这种资源核算思路在主线模型上的一次具体演算。
+1. Section 1.2 says: "For long context, a larger batch does not save the KV cache reads." Then why does a larger batch still save the weight reads? Try to estimate: for the main-line model at 32K context, at which batch size is the time to read the KV cache 10 times the time to read the weights?
+2. The MLA latent vector has 512 dims, and the hidden size of DeepSeek-V3 is 7168. If the latent vector grows to 7168 dims, does it still save cache? Is it still useful? What does the "low-rank" limit do here?
+3. Why do all heads share one k^R (the part of the key with RoPE), instead of one k^R for each head? If each head had its own k^R, how large would the cache be?
+4. After absorption, MLA at decode "has the form of MQA". How is it different from a real MQA (Chapter 10, 1 KV head, head_dim 32)? Why can the quality of MLA be much better than the quality of MQA?
+5. Qwen3.5 and Kimi K3 both use "a few full-attention layers + many linear-attention layers". If the full-attention layers also change to MLA (as in Kimi K3), how does the ledger change? If Qwen3.5-9B made this change, about how large would its KV cache be at 128K?
+6. In the small experiment of this chapter, how do the loss differences between variants compare with the differences between seeds? To compare MLA and GQA seriously, how would you design the experiment? Use the method of Table 1 in the GLM-5 report as a reference.
+
+## Hands-on tasks
+
+For each task, run the code and look at the result.
+
+**Task 1 (basic)**: On Hugging Face, select a model that this chapter did not calculate. Examples are SmolLM3-3B, the Gemma 3 series, or other versions of MiniMax or GLM. Read its `config.json`. Add its fields to `MODELS` in `01_kv_ledger.py`, and calculate the KV cache at 32K and 128K. Then do a parity check with `uv run python -m zero.tools.kv_cache_calc your_saved_config.json --seq 131072`. Check if the model has a sliding window or `layer_types`.
+
+**Task 2 (core)**: In `03_mla.py`, add a timing experiment for `MLA`. Initialize an MLA randomly with `n_heads=16, kv_lora_rank=64, rope_dim=16`. First, prefill 1024 positions. Then decode 64 steps with the absorbed path, and 64 steps with the explicit path. Compare the time per step. Then change the cache length to 256 and 4096, and look at the trend. Explain why the advantage of the absorbed path grows with the cache length.
+
+**Task 3 (challenge)**: In `04_attention_variants.py`, add a variant such as "GQA-2 × head_dim 16". Its cache per layer per position must also be 64 numbers (2 × 2 × 16, the same as MQA and MLA-48). Then run 3 seeds. With the same cache size, which structure has the lowest loss? Is the difference larger than the variation between seeds? Then double the number of training steps, and check if the conclusion changes.
 
 ---
 
-## 本章参考文献
+## Go deeper: CS336
 
-- DeepSeek-AI. *DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language Model*（MLA 的提出：低秩联合压缩、解耦 RoPE、吸收、附录 D 的消融），2024：<https://arxiv.org/abs/2405.04434>
-- DeepSeek-AI. *DeepSeek-V3 Technical Report*，2024：<https://arxiv.org/abs/2412.19437>
-- Kimi Team. *Kimi K2: Open Agentic Intelligence*（2.3 节：沿用 MLA、头数从 128 减到 64 的理由；QK-Norm 不适用于 MLA），2025：<https://arxiv.org/abs/2507.20534>
-- GLM-5 Team. *GLM-5: from Vibe Coding to Agentic Engineering*（2.1 节：MLA 与 GQA-8 的对比、Muon Split、MLA-256；DSA），2026：<https://arxiv.org/abs/2602.15763>
-- Mistral AI. *Mistral 3*（Mistral Large 3 发布博客）：<https://mistral.ai/news/mistral-3>
-- Shazeer. *Fast Transformer Decoding: One Write-Head is All You Need*（MQA），2019：<https://arxiv.org/abs/1911.02150>
-- Ainslie et al. *GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints*，2023：<https://arxiv.org/abs/2305.13245>
-- Kwon et al. *Efficient Memory Management for Large Language Model Serving with PagedAttention*（vLLM），2023：<https://arxiv.org/abs/2309.06180>
-- DeepSeek. FlashMLA（MLA decode kernel）：<https://github.com/deepseek-ai/FlashMLA>
-- [CS336](https://cs336.stanford.edu/) 第 10 讲（推理）
-- [1.5 万字速通 LLM 主流模型结构（Llama、Qwen、GLM、DeepSeek…）](https://zhuanlan.zhihu.com/p/2060741715095560795)：各家注意力结构的横向对比（`references.md` 已收录）
-- [Pretraining a Mini Kimi K3](https://books.vizuara.ai/book/pretraining-a-mini-k3)：Kimi K3 的"MLA + KDA 混合"架构的动手预训练（`references.md` 已收录）
-- 模型配置链接见上方"采用方与来源"。
+This chapter matches Stanford CS336 (Spring 2026) <https://cs336.stanford.edu/>:
 
-**下一章**：账本里还有两条路没走完——让一些层只看最近的一段（滑动窗口），或者干脆不存 K、V（线性注意力）。第 22 章先讲局部与稀疏注意力：gpt-oss 为什么一半层只看 128 个 token，Gemma 为什么大部分层是局部的，模型又是怎么在"只看附近"的同时不丢掉远处的信息。
+- **Lecture 10: Inference.** It discusses the cost of inference from the point of view of resource accounting: prefill and decode, the memory and memory bandwidth of the KV cache, and many methods that make inference faster and cheaper. The slides and videos are on the course page. This build environment cannot open the course page, so check the slides for the exact list of architecture methods. You can think of `02_prefill_decode.py` in this chapter as one concrete calculation of this resource accounting for the main-line model.
+
+---
+
+## References
+
+- DeepSeek-AI. *DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language Model* (introduces MLA: low-rank joint compression, decoupled RoPE, absorption, and the ablations in Appendix D), 2024: <https://arxiv.org/abs/2405.04434>
+- DeepSeek-AI. *DeepSeek-V3 Technical Report*, 2024: <https://arxiv.org/abs/2412.19437>
+- Kimi Team. *Kimi K2: Open Agentic Intelligence* (Section 2.3: why they keep MLA and decrease the heads from 128 to 64; QK-Norm does not apply to MLA), 2025: <https://arxiv.org/abs/2507.20534>
+- GLM-5 Team. *GLM-5: from Vibe Coding to Agentic Engineering* (Section 2.1: MLA compared with GQA-8, Muon Split, MLA-256; DSA), 2026: <https://arxiv.org/abs/2602.15763>
+- Mistral AI. *Mistral 3* (the release blog of Mistral Large 3): <https://mistral.ai/news/mistral-3>
+- Shazeer. *Fast Transformer Decoding: One Write-Head is All You Need* (MQA), 2019: <https://arxiv.org/abs/1911.02150>
+- Ainslie et al. *GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints*, 2023: <https://arxiv.org/abs/2305.13245>
+- Kwon et al. *Efficient Memory Management for Large Language Model Serving with PagedAttention* (vLLM), 2023: <https://arxiv.org/abs/2309.06180>
+- DeepSeek. FlashMLA (MLA decode kernel): <https://github.com/deepseek-ai/FlashMLA>
+- [CS336](https://cs336.stanford.edu/) Lecture 10 (Inference)
+- [The main LLM architectures in 15,000 characters (Llama, Qwen, GLM, DeepSeek…)](https://zhuanlan.zhihu.com/p/2060741715095560795) (in Chinese): a side-by-side comparison of the attention structures of each family (already in `references.md`)
+- [Pretraining a Mini Kimi K3](https://books.vizuara.ai/book/pretraining-a-mini-k3): hands-on pretraining of the "MLA + KDA hybrid" architecture of Kimi K3 (already in `references.md`)
+- The links to the model configurations are in "Adopters and sources" above.
+
+**Next chapter**: The ledger has two paths that we did not finish. Some layers can look only at a recent part of the sequence (sliding window). Other layers can store no K and V at all (linear attention). Chapter 22 first explains local and sparse attention. Why do half of the layers of gpt-oss look at only 128 tokens? Why are most layers of Gemma local? How can a model "look only nearby" and still keep the information that is far away?

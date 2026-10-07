@@ -1,12 +1,14 @@
-"""第 16 章 · 极简代码 4：打包（packing）与"串门"问题
+"""Chapter 16 · Minimal code 4: packing and the "cross-contamination" problem.
 
-1. 打包：把多条长短不一的对话首次适配（first-fit）装进定长窗口，与"一条一行、补齐到窗口长度"比，
-   真实 token 占比高多少；
-2. 串门：同一个窗口里，后一条对话的 token 在普通因果注意力下能看到前一条对话。用第 3 个脚本 SFT 过的
-   小模型，比较对话 B 的 logits：单独算 / 打包在 A 后面（普通因果 mask）/ 打包在 A 后面但加文档 mask
-   （document masking：每条对话只看自己）。
+1. Packing: put conversations of different lengths into fixed-length windows with first-fit.
+   Compare the fraction of real tokens with "one conversation per row, padded to the window length".
+2. Cross-contamination: in one window, with a normal causal attention mask, the tokens of the second
+   conversation can see the first conversation. Use the small model from script 3 (after SFT) and
+   compare the logits of conversation B in three cases: alone / packed after A (normal causal mask) /
+   packed after A with a document mask (document masking: each conversation sees only itself).
 
-运行：uv run python chapters/16-sft/code/04_packing.py   （需要第 3 个脚本训练出的模型，没有会先训练）
+Run: uv run python chapters/16-sft/code/04_packing.py
+(It needs the model that script 3 trains. If the model does not exist, the script trains it first.)
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-torch.set_num_threads(1)  # 构建环境多任务共享 CPU；读者本机可以删掉这行
+torch.set_num_threads(1)  # the build machine shares its CPU between many jobs; on your computer, you can remove this line
 HERE = Path(__file__).resolve().parent
 
 
@@ -36,9 +38,12 @@ sft = load("ch16_sft_tiny", HERE / "03_sft_tiny.py")
 lm, ch10 = sft.lm, sft.ch10
 
 
-# ── 1. 首次适配打包 ──────────────────────────────────────────────────────────
+# ── 1. First-fit packing ───────────────────────────────────────────────────────
 def pack_first_fit(lengths: list[int], window: int) -> list[list[int]]:
-    """返回每个窗口里装了哪几条（下标）。一条对话不切开；放不下就开新窗口。"""
+    """Return the indices of the conversations in each window.
+
+    Never split a conversation. If it does not fit into an open window, open a new window.
+    """
     bins: list[list[int]] = []
     used: list[int] = []
     for i, n in enumerate(lengths):
@@ -53,9 +58,10 @@ def pack_first_fit(lengths: list[int], window: int) -> list[list[int]]:
     return bins
 
 
-# ── 2. 带任意注意力 mask 的前向（照抄第 10 章 TinyLM.forward，只把因果 mask 换成传进来的）──
+# ── 2. Forward pass with any attention mask. It is a copy of TinyLM.forward of Chapter 10;
+# only the causal mask changes: the caller gives the mask. ──
 def forward_with_mask(model, ids: torch.Tensor, allow: torch.Tensor) -> torch.Tensor:
-    """ids (1, T)；allow (T, T) 布尔矩阵，allow[i, j] = 第 i 个位置能不能看第 j 个位置。"""
+    """ids (1, T); allow (T, T) is a boolean matrix: allow[i, j] = position i can see position j."""
     c, T = model.c, ids.shape[1]
     cos, sin = model.cos[:T], model.sin[:T]
     x = model.emb(ids)
@@ -77,15 +83,15 @@ def causal(T: int) -> torch.Tensor:
 
 
 def document_mask(doc_ids: torch.Tensor) -> torch.Tensor:
-    """因果 + 只能看同一条对话：块对角的下三角。"""
+    """Causal + only the same conversation: a block-diagonal lower triangle."""
     return causal(len(doc_ids)) & (doc_ids[:, None] == doc_ids[None, :])
 
 
 def run() -> dict:
-    """做两个实验，返回正文和视频要用的数字。"""
+    """Do the two experiments. Return the numbers for the text and the video."""
     tok = lm.ChatTok(ch10.CharData().chars)
     rng = random.Random(3)
-    # 长短不一：一部分样本前面多一轮闲聊（模拟真实数据里的多轮对话）
+    # Different lengths: some samples get extra turns at the start (like multi-turn conversations in real data)
     convs = []
     for _ in range(200):
         ex = lm.make_example(rng)
@@ -95,7 +101,7 @@ def run() -> dict:
             msgs = msgs[:1] + e2["messages"][1:] + msgs[1:]
         convs.append(lm.encode_with_mask(tok, msgs)[0])
     lengths = [len(c) for c in convs]
-    window = 513  # seq_len 512 + 1（与 zero 一样，窗口多存一个 token 用来错位出目标）
+    window = 513  # seq_len 512 + 1 (as in zero: the window keeps one more token to shift the targets by one)
     bins = pack_first_fit(lengths, window)
     r = {"n": len(convs), "min": min(lengths), "max": max(lengths), "real": sum(lengths),
          "window": window, "n_bins": len(bins),
@@ -103,7 +109,7 @@ def run() -> dict:
          "pad_pct": 100 * sum(lengths) / (len(convs) * window),
          "pack_pct": 100 * sum(lengths) / (len(bins) * window)}
 
-    # ── 串门 ───────────────────────────────────────────────────────────────
+    # ── Cross-contamination ───────────────────────────────────────────────────
     model, _ = sft.get_or_train("masked", tok, sft.dataset(sft.N_TRAIN, 0, "train"),
                                 sft.dataset(64, 1, "train"), True)
 
@@ -138,16 +144,16 @@ def run() -> dict:
 
 if __name__ == "__main__":
     r = run()
-    print(f"{r['n']} 条对话，长度 {r['min']}–{r['max']} 个 token，合计 {r['real']}")
-    print(f"不打包（一条一行，补齐到 {r['window']}）：{r['n']} 行，真实 token 占 {r['pad_pct']:.0f}%")
-    print(f"首次适配打包：{r['n_bins']} 个窗口，真实 token 占 {r['pack_pct']:.0f}%，"
-          f"每个窗口平均装 {r['n'] / r['n_bins']:.1f} 条")
-    print(f"\n自己写的带 mask 前向与第 10 章 TinyLM.forward 一致：{r['same_as_ch10']}")
-    print("对话 B（Kyoto）的助手 token loss：")
-    print(f"  单独一条                              {r['loss_alone']:.4f}")
-    print(f"  打包在 A（Paris）后面，普通因果 mask     {r['loss_mixed']:.4f}"
-          f"   logits 最大差 {r['diff_mixed']:.2e}")
-    print(f"  打包在 A 后面，文档 mask                {r['loss_isolated']:.4f}"
-          f"   logits 最大差 {r['diff_isolated']:.2e}")
-    print(f"（RoPE 只看相对位置，所以 B 在窗口里从第 {r['len_a']} 个位置开始也不影响结果——"
-          "只要注意力被隔开）")
+    print(f"{r['n']} conversations, length {r['min']}–{r['max']} tokens, total {r['real']}")
+    print(f"No packing (one per row, padded to {r['window']}): {r['n']} rows, real tokens {r['pad_pct']:.0f}%")
+    print(f"First-fit packing: {r['n_bins']} windows, real tokens {r['pack_pct']:.0f}%, "
+          f"mean {r['n'] / r['n_bins']:.1f} conversations per window")
+    print(f"\nOur forward pass with a mask gives the same result as TinyLM.forward of Chapter 10: {r['same_as_ch10']}")
+    print("Loss on the assistant tokens of conversation B (Kyoto):")
+    print(f"  alone                                {r['loss_alone']:.4f}")
+    print(f"  packed after A (Paris), causal mask  {r['loss_mixed']:.4f}"
+          f"   max logits difference {r['diff_mixed']:.2e}")
+    print(f"  packed after A, document mask        {r['loss_isolated']:.4f}"
+          f"   max logits difference {r['diff_isolated']:.2e}")
+    print(f"(RoPE uses only relative positions. B starts at position {r['len_a']} in the window, but this "
+          "does not change the result, if the attention is isolated.)")

@@ -1,15 +1,19 @@
-"""第 17 章 · 极简代码 3：前向 KL 与反向 KL——"覆盖所有可能" vs "挑一个模式"
+"""Chapter 17 · Minimal code 3: forward KL and reverse KL. "Cover all modes" vs "pick one mode"
 
-教师分布 p 是双峰的（两个高斯的混合，左峰稍高）；学生 q 只能是**一个**高斯（参数 μ、σ），装不下两个峰。
-在同一个一维网格上，分别用梯度下降最小化：
+The teacher distribution p has two peaks (a mix of two Gaussians; the left peak is a little higher).
+The student q can only be **one** Gaussian (parameters μ, σ), so it cannot fit both peaks.
+On the same 1D grid, we use gradient descent to minimize each of these:
 
-  前向 KL(p ‖ q) = Σ p·(log p − log q)   —— logits 蒸馏 / 序列级蒸馏（在教师的样本上做最大似然）优化的方向
-  反向 KL(q ‖ p) = Σ q·(log q − log p)   —— 在线策略蒸馏（学生自己采样、教师打分）优化的方向
+  forward KL(p ‖ q) = Σ p·(log p − log q)   -- the direction that logits KD and sequence-level KD
+                                               (maximum likelihood on teacher samples) optimize
+  reverse KL(q ‖ p) = Σ q·(log q − log p)   -- the direction that on-policy distillation
+                                               (the student samples, the teacher scores) optimizes
 
-看两者停在哪：前向 KL 把 q 摊开盖住两个峰（mode covering），连两峰之间教师几乎不给概率的"山谷"也分到不少；
-反向 KL 让 q 缩到其中一个峰上（mode seeking），另一个峰被整个放弃。
+See where each one stops. Forward KL spreads q over both peaks (mode covering). Then the "valley"
+between the peaks, where the teacher gives almost no probability, also gets a large share.
+Reverse KL shrinks q onto one of the peaks (mode seeking). It gives up the other peak completely.
 
-运行：uv run python chapters/17-distillation/code/03_forward_reverse_kl.py      （约 3 秒）
+Run: uv run python chapters/17-distillation/code/03_forward_reverse_kl.py      (about 3 s)
 """
 
 import math
@@ -20,9 +24,9 @@ torch.set_num_threads(1)
 
 GRID = torch.linspace(-6, 6, 1201)
 DX = float(GRID[1] - GRID[0])
-# 教师：0.6·N(−2, 0.6²) + 0.4·N(2.5, 0.8²)
+# teacher: 0.6·N(−2, 0.6²) + 0.4·N(2.5, 0.8²)
 MODES = [(0.6, -2.0, 0.6), (0.4, 2.5, 0.8)]
-VALLEY = (-0.5, 1.0)  # 两峰之间的山谷
+VALLEY = (-0.5, 1.0)  # the valley between the two peaks
 
 
 def normal_pdf(x: torch.Tensor, mu, sigma) -> torch.Tensor:
@@ -40,7 +44,7 @@ def student_q(mu: torch.Tensor, log_sigma: torch.Tensor) -> torch.Tensor:
 
 
 def kl(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """KL(a ‖ b) 在网格上的数值积分；加 1e-30 防止 log 0。"""
+    """Numerical integral of KL(a ‖ b) on the grid. The 1e-30 prevents log 0."""
     return (a * ((a + 1e-30).log() - (b + 1e-30).log())).sum() * DX
 
 
@@ -65,7 +69,7 @@ def mass(q: torch.Tensor, lo: float, hi: float) -> float:
 
 
 def run_all() -> dict:
-    """返回画图用的数据（视频 scenes.py 也调用它）。"""
+    """Return the data for the plots (the video scenes.py also calls this function)."""
     p = teacher_p()
     out = {"grid": GRID.tolist(), "p": p.tolist(), "fits": []}
     for direction, mu0 in [("forward", 0.0), ("reverse", -1.0), ("reverse", 1.5)]:
@@ -84,15 +88,17 @@ def run_all() -> dict:
 
 def main() -> None:
     r = run_all()
-    print("教师 p = 0.6·N(−2, 0.6²) + 0.4·N(2.5, 0.8²)；学生 q = N(μ, σ²)")
-    print(f"教师的概率质量：左峰区 {r['left_p']:.3f}，山谷 [{VALLEY[0]}, {VALLEY[1]}] {r['valley_p']:.3f}，右峰区 {r['right_p']:.3f}")
-    print(f"\n{'最小化':<16}{'起点 μ0':>8}{'→ μ':>8}{'σ':>7}{'左峰区':>8}{'山谷':>8}{'右峰区':>8}{'KL(p‖q)':>10}{'KL(q‖p)':>10}")
+    print("Teacher p = 0.6·N(−2, 0.6²) + 0.4·N(2.5, 0.8²); student q = N(μ, σ²)")
+    print(f"Probability mass of the teacher: left-peak region {r['left_p']:.3f}, valley [{VALLEY[0]}, {VALLEY[1]}] {r['valley_p']:.3f}, right-peak region {r['right_p']:.3f}")
+    print(f"\n{'minimize':<16}{'start μ0':>8}{'→ μ':>8}{'σ':>7}{'left':>8}{'valley':>8}{'right':>8}{'KL(p‖q)':>10}{'KL(q‖p)':>10}")
     for f in r["fits"]:
-        name = "前向 KL(p‖q)" if f["direction"] == "forward" else "反向 KL(q‖p)"
+        name = "forward KL(p‖q) " if f["direction"] == "forward" else "reverse KL(q‖p) "
         print(f"{name:<14}{f['mu0']:>8.1f}{f['mu']:>8.2f}{f['sigma']:>7.2f}{f['left_q']:>8.3f}{f['valley_q']:>8.3f}"
               f"{f['right_q']:>8.3f}{f['forward_kl']:>10.3f}{f['reverse_kl']:>10.3f}")
-    print("\n前向 KL：q 必须在 p > 0 的每个地方都给概率（否则 log q → −∞），于是摊开盖住两峰，山谷也分到很多。")
-    print("反向 KL：q 在 p ≈ 0 的地方给概率会被重罚，于是缩进一个峰里；落到哪个峰取决于起点。")
+    print("\nForward KL: q must give probability at each point where p > 0 (else log q → −∞). "
+          "So q spreads over both peaks, and the valley also gets a lot.")
+    print("Reverse KL: q gets a large penalty for probability where p ≈ 0. So q shrinks into one peak; "
+          "the start point decides which peak.")
 
 
 if __name__ == "__main__":

@@ -1,13 +1,17 @@
-"""第 22 章 · 极简代码 5：稀疏注意力的核心想法 —— 按内容挑 k 个键，而不是按位置
+"""Chapter 22 · Minimal code 5: the core idea of sparse attention. Select k keys by content, not by position.
 
-拿 02 里训练好的**全注意力**模型，推理时让每个 query 只看 k 个键，两种挑法预算相同：
-  - 最近 k 个（按位置）：就是把每层临时改成窗口为 k 的滑动窗口；
-  - 分数最高的 k 个（按内容）：先算出全部 q·k 分数，只留前 k 个再做 softmax。
-不重新训练，看大海捞针准确率和语言建模 loss 各掉了多少。
+Take the **full-attention** models that 02 trained. At inference, each query sees only k keys.
+Two selection methods with the same budget:
+  - The k most recent keys (by position): change each layer for a short time into a sliding window of size k.
+  - The k keys with the highest scores (by content): calculate all q·k scores first, keep only the top k,
+    then apply softmax.
+There is no retraining. We measure how much the needle-in-a-haystack accuracy and the language-modeling
+loss become worse.
 
-注意：这里为了挑 top-k 先把全部分数算了一遍，所以一点也不省算力；真实的稀疏注意力
-（DeepSeek 的 DSA、MiniMax 的 MSA 等）用一个便宜得多的"索引器"来打分，再对选中的键做精确注意力。
-运行：uv run python chapters/22-local-sparse-attention/code/05_topk_sparse.py
+Note: to select the top k, this script first calculates all the scores. Thus it saves no compute.
+Real sparse attention (DSA of DeepSeek, MSA of MiniMax, and others) uses a much cheaper "indexer" to give
+the scores. Then it calculates exact attention on the selected keys.
+Run: uv run python chapters/22-local-sparse-attention/code/05_topk_sparse.py
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ _spec = importlib.util.spec_from_file_location(
     "swa_model", Path(__file__).resolve().parent / "02_swa_model.py"
 )
 m = importlib.util.module_from_spec(_spec)
-sys.modules["swa_model"] = m  # dataclass 需要能在 sys.modules 里找到所在模块
+sys.modules["swa_model"] = m  # dataclass must find its module in sys.modules
 _spec.loader.exec_module(m)
 
 
@@ -36,20 +40,20 @@ def main() -> None:
     needle = m.load_or_train("needle", "full")
     lm = m.load_or_train("lm", "full")
     rf = 4 * (m.W - 1)
-    print("全注意力模型，推理时每个 query 只留 k 个键（不重新训练）")
+    print("Full-attention models; at inference, each query keeps only k keys (no retraining)")
     print(
-        f"{'挑法':<16}{'k':>4}{f'捞针 d<{m.W}':>11}{f'捞针 d>{rf}':>11}{'全部距离':>10}{'LM loss':>9}"
+        f"{'Selection':<16}{'k':>4}{f'needle<{m.W}':>11}{f'needle>{rf}':>11}{'all d':>10}{'LM loss':>9}"
     )
     base_acc = m.needle_accuracy(needle)
     base_loss = m.lm_val_loss(lm)
     print(
-        f"{'不限制（全注意力）':<16}{'-':>4}{base_acc[: m.W - 1].mean():>11.1%}"
+        f"{'No limit (full)':<16}{'-':>4}{base_acc[: m.W - 1].mean():>11.1%}"
         f"{base_acc[rf:].mean():>11.1%}{base_acc.mean():>10.1%}{base_loss:>9.3f}"
     )
     for k in (4, 8, 16):
-        for name in ("最近 k 个", "分数最高的 k 个"):
+        for name in ("k most recent", "k highest scores"):
             for model in (needle, lm):
-                if name == "最近 k 个":
+                if name == "k most recent":
                     set_recent(model, k)
                 else:
                     model.set_topk(k)

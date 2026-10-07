@@ -1,6 +1,8 @@
-# 3×RTX 3090 阶梯实验（runs/ladder-3090/README.md）的公共配置。结构与主线相同（configs/main/pretrain.toml），
-# 只缩小 dim / 层数（见同目录 e*.toml）。被搜索的超参数（学习率、β、weight decay、warmup、RoPE θ、batch）
-# 和步数由 runs/ladder-3090/sweep.py 用 --set 覆盖，这里的值只是占位。
+# Shared config for the 3×RTX 3090 ladder experiment (runs/ladder-3090/README.md).
+# The architecture is the same as the main-line model (configs/main/pretrain.toml).
+# Only dim and the number of layers are smaller (see e*.toml in this folder).
+# runs/ladder-3090/sweep.py overrides the searched hyperparameters (learning rate, β, weight decay,
+# warmup, RoPE θ, batch) and the number of steps with --set. The values here are only placeholders.
 [model]
 vocab_size = 65536
 head_dim = 64
@@ -17,17 +19,17 @@ max_steps = 1000
 micro_batch_size = 8
 grad_accum_steps = 1
 device = "auto"
-dtype = "auto"            # CUDA 上 BF16 autocast
+dtype = "auto"            # BF16 autocast on CUDA
 compile = true
-eval_every = 0            # sweep.py 设成稳定段的 1/8
-eval_batches = 1000000    # 每次评估完整跑一遍固定验证集（1024 个片段，能被任何 2 的幂次 micro batch 整除）
+eval_every = 0            # sweep.py sets this to 1/8 of the stable phase
+eval_batches = 1000000    # Each evaluation uses the full fixed validation set (1024 segments; any power-of-2 micro batch divides it)
 
 [data]
 tokenizer = "data/ladder3090/tokenizer.json"
 seq_len = 2048
-val = "data/ladder3090/ladder_val.bin"   # runs/ladder-3090/build_val.py：按训练配比从各来源验证分片拼出的固定验证集
+val = "data/ladder3090/ladder_val.bin"   # Fixed validation set from runs/ladder-3090/build_val.py: validation shards of each source, in the training mix
 
-# 训练配比同 configs/main/data.toml（第 13 章）；代码用 UltraData-Code-L2 代替 Stack-Edu
+# The training mix is the same as configs/main/data.toml (Chapter 13). Code uses UltraData-Code-L2 instead of Stack-Edu.
 [[data.sources]]
 name = "fineweb-edu"
 path = "data/ladder3090/fineweb-edu_train_*.bin"
@@ -61,14 +63,14 @@ beta2 = 0.95
 grad_clip = 1.0
 
 [schedule]
-kind = "wsd"              # 稳定段结束后线性衰减到 0；decay_frac 由 sweep.py 按"从第 k/8 个 checkpoint 开始衰减"算出
+kind = "wsd"              # After the stable phase, linear decay to 0. sweep.py sets decay_frac so that the decay starts at checkpoint k/8.
 warmup_steps = 10
 decay_frac = 0.2
 min_lr_ratio = 0.0
 
 [checkpoint]
 every = 1000
-keep_last = 0             # 全部保留：衰减分叉要从稳定段的每个 1/8 处接出去
+keep_last = 0             # Keep all checkpoints: the decay branches start at each 1/8 point of the stable phase
 
 [logging]
 every = 10

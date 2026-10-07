@@ -1,18 +1,22 @@
-"""第 23 章 · 极简代码 5：联想回忆（associative recall）——纯线性掉队，混合找回来
+"""Chapter 23 · Minimal code 5: associative recall — pure linear falls behind, the hybrid recovers
 
-任务（Zoology 的 MQAR 的缩小版）：序列前半段是 N 个随机的"键 值"对，后半段反复给出其中某个键，
-模型要在下一个位置答出它对应的值：
+Task (a small version of MQAR from Zoology): the first half of the sequence has N random "key value" pairs.
+The second half gives some of these keys again and again.
+At the next position, the model must give the value of that key:
 
     k₇ v₃₁  k₂ v₉  k₄₀ v₁₂ … │ k₂ v₉  k₇ v₃₁  k₂ v₉ …
-    └──────── N 个键值对 ────────┘ └─ 查询：只在"键"后面的位置计分 ─┘
+    └── N key-value pairs ──┘ └─ queries: score only the positions after a "key" ─┘
 
-答对需要把 N 个键值对**原样**记住——这正是固定大小状态的软肋（第 5 节的容量表）。
-比较 4 种 2 层小模型（字母含义同 04_hybrid_lm.py）：AA（纯注意力）、LL（纯朴素线性）、
-GG（纯 Gated DeltaNet）、GA（1 层 Gated DeltaNet + 1 层全注意力）。
-线性层的 head_dim 故意取得很小（16），让状态容量明显不够用，差别才看得清。
+A correct answer needs an **exact** memory of the N key-value pairs.
+This is the weak point of a fixed-size state (the capacity table in Section 5).
+We compare 4 small 2-layer models (the letters are as in 04_hybrid_lm.py): AA (pure attention),
+LL (pure naive linear), GG (pure Gated DeltaNet), GA (1 Gated DeltaNet layer + 1 full-attention layer).
+The head_dim of the linear layers is small on purpose (16), so the state capacity is clearly too small.
+Then we can see the differences.
 
-训练：每种 600 步，每步随机取 N ∈ [4, 24]，同样的数据顺序（CPU 单线程每种约几分钟到十几分钟）；权重缓存在 code/out/*.pt。
-运行：uv run python chapters/23-linear-attention-hybrid/code/05_associative_recall.py
+Training: 600 steps for each model; each step takes a random N ∈ [4, 24]; the same data order
+(on one CPU thread, a few minutes to about 15 min for each model). The weights are cached in code/out/*.pt.
+Run: uv run python chapters/23-linear-attention-hybrid/code/05_associative_recall.py
 """
 
 from __future__ import annotations
@@ -32,10 +36,10 @@ _spec = importlib.util.spec_from_file_location("hybrid_lm", HERE / "04_hybrid_lm
 lm = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(lm)
 
-N_KEYS, N_VALS = 64, 64  # 键：0..63，值：64..127
+N_KEYS, N_VALS = 64, 64  # keys: 0..63, values: 64..127
 PAD = N_KEYS + N_VALS  # 128
 VOCAB = PAD + 1
-L = 64  # 模型输入长度
+L = 64  # model input length
 TRAIN_N = (4, 24)
 EVAL_N = [4, 8, 12, 16, 20, 24]
 PATTERNS = ["AA", "LL", "GG", "GA"]
@@ -43,8 +47,9 @@ DIM, HEADS = 64, 4  # head_dim = 16
 
 
 def make_batch(bsz: int, N: int, g: torch.Generator):
-    """返回 (x, y, mask)：x、y 形状 (bsz, L)，mask 标出要计分的位置（输入是查询键、目标是它的值）。"""
-    keys = torch.argsort(torch.rand(bsz, N_KEYS, generator=g), dim=1)[:, :N]  # 每条序列 N 个不同的键
+    """Return (x, y, mask): x and y have the shape (bsz, L).
+    mask marks the scored positions (the input is a query key, the target is its value)."""
+    keys = torch.argsort(torch.rand(bsz, N_KEYS, generator=g), dim=1)[:, :N]  # N different keys in each sequence
     vals = torch.randint(N_VALS, (bsz, N), generator=g) + N_KEYS
     Q = (L - 2 * N) // 2
     qi = torch.randint(N, (bsz, Q), generator=g)
@@ -94,11 +99,12 @@ def accuracy(model, N: int, n: int = 256) -> float:
 
 
 def state_numbers(pattern: str) -> str:
-    """每种结构推理时要存的东西（L=64 的输入）：A 层存 2·L·DIM 个 K/V 数，线性层存 H·dh·dh。"""
+    """What each layout stores at inference (input length L=64):
+    an A layer stores 2·L·DIM K/V numbers; a linear layer stores H·dh·dh."""
     dh = DIM // HEADS
     parts = []
     for c in pattern:
-        parts.append(f"KV {2 * L * DIM}" if c == "A" else f"状态 {HEADS * dh * dh}")
+        parts.append(f"KV {2 * L * DIM}" if c == "A" else f"state {HEADS * dh * dh}")
     return " + ".join(parts)
 
 
@@ -112,8 +118,8 @@ def results(verbose: bool = False) -> dict:
 
 def main() -> None:
     r = results(verbose=True)
-    print(f"\n== 联想回忆准确率（2 层、宽 64、线性层 head_dim 16；每个 N 测 256 条序列；随机猜 = 1/{N_VALS}）==")
-    print(f"{'结构':>4} | " + " | ".join(f"N={n:>2}" for n in EVAL_N) + " | 推理时每层要存的数")
+    print(f"\n== Associative recall accuracy (2 layers, width 64, linear head_dim 16; 256 sequences for each N; random guess = 1/{N_VALS}) ==")
+    print(f"{'Arch':>4} | " + " | ".join(f"N={n:>2}" for n in EVAL_N) + " | numbers stored per layer at inference")
     for p in PATTERNS:
         print(f"{p:>4} | " + " | ".join(f"{a:>4.0%}" for a in r["acc"][p]) + f" | {state_numbers(p)}")
 

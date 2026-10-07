@@ -1,26 +1,34 @@
-"""导出 GGUF：用 llama.cpp 官方脚本把 HF 目录转成 GGUF，再量化、试跑（对应第 20 章）。
+"""Export to GGUF: convert an HF directory to GGUF with the official llama.cpp script, then
+quantize it and do a test run (Chapter 20).
 
     uv run python -m zero.export.gguf --hf-dir out/tiny/hf_chat --out out/tiny/model-f16.gguf \\
         --quantize Q8_0 --run "<|im_start|>user\\n你好<|im_end|>\\n<|im_start|>assistant\\n"
 
-步骤：
+Steps:
 
-1. `ensure_llama_cpp()`：把 https://github.com/ggml-org/llama.cpp 浅克隆到缓存目录
-   （默认 `~/.cache/zero/llama.cpp`，可用环境变量 `ZERO_LLAMA_CPP` 指定已有的仓库）；
-2. `convert_hf_to_gguf()`：调用仓库里的官方 `convert_hf_to_gguf.py`。它依赖 numpy / torch /
-   transformers，以及仓库自带的 `gguf-py`（脚本会自动把它加进 sys.path，不需要另装 `gguf` 包）。
-   **唯一的改动**：官方脚本用"分词器对一段测试文本的编码结果的哈希"识别预切分规则，我们自训的分词器
-   哈希不在它的表里，会报 "BPE pre-tokenizer was not recognized"。我们的预切分正则与 Qwen2 完全相同
-   （见 zero/tokenizer.py 的 PRETOKENIZE_REGEX），所以在不认识时回退为 `"qwen2"`——这是在调用脚本前
-   打的一个运行时补丁，不修改 llama.cpp 的文件。`tests/test_gguf.py` 用 `llama-tokenize` 逐 token 对拍，
-   确认 llama.cpp 的分词与我们的分词器一致；
-3. `build_llama_cpp()`：cmake 编译 CPU 版的 `llama-quantize`、`llama-simple`、`llama-completion`、
-   `llama-tokenize`（没有 cmake 时 `apt-get install -y cmake`）；
-4. `quantize()`：`llama-quantize in.gguf out.gguf Q4_K_M`（或 Q8_0 等）；
-5. `run_llama()`：`llama-simple` 或 `llama-completion` 生成几个 token，证明"笔记本上能跑"。
+1. `ensure_llama_cpp()`: make a shallow clone of https://github.com/ggml-org/llama.cpp in a cache
+   directory (default `~/.cache/zero/llama.cpp`; the environment variable `ZERO_LLAMA_CPP` can
+   point to an existing repository).
+2. `convert_hf_to_gguf()`: call the official `convert_hf_to_gguf.py` in the repository. It needs
+   numpy / torch / transformers and the `gguf-py` folder of the repository (the script adds it to
+   sys.path automatically; you do not need to install the `gguf` package).
+   **The only change**: the official script identifies the pre-tokenizer from "a hash of the
+   tokenizer output for a test text". The hash of our own tokenizer is not in its table, so the
+   script reports "BPE pre-tokenizer was not recognized". Our pre-tokenization regex is exactly
+   the same as Qwen2 (see PRETOKENIZE_REGEX in zero/tokenizer.py). Thus, when the script does not
+   know the hash, we fall back to `"qwen2"`. This is a runtime patch before the script runs; it
+   does not change the llama.cpp files. `tests/test_gguf.py` does a token-by-token parity check
+   with `llama-tokenize`. It makes sure that llama.cpp tokenizes the same way as our tokenizer.
+3. `build_llama_cpp()`: build the CPU versions of `llama-quantize`, `llama-simple`,
+   `llama-completion`, and `llama-tokenize` with cmake (if cmake is missing:
+   `apt-get install -y cmake`).
+4. `quantize()`: `llama-quantize in.gguf out.gguf Q4_K_M` (or Q8_0 and others).
+5. `run_llama()`: `llama-simple` or `llama-completion` generates some tokens. This shows that the
+   model "runs on a laptop".
 
-注意：Q4_K_M 等 k-quant 要求张量的行长是 256 的倍数，tiny 模型（dim=128）的大部分矩阵不满足，
-llama-quantize 会对这些张量自动回退到别的量化类型；主线模型（dim=1280）没有这个问题。
+Note: k-quants such as Q4_K_M need tensor rows whose length is a multiple of 256. Most matrices of
+the tiny model (dim=128) do not meet this condition, so llama-quantize automatically uses a
+different quantization type for them. The main-line model (dim=1280) does not have this problem.
 """
 
 from __future__ import annotations
@@ -44,7 +52,7 @@ def default_llama_cpp_dir() -> Path:
 
 
 def ensure_llama_cpp(path: str | os.PathLike | None = None, ref: str | None = None) -> Path:
-    """确保本地有 llama.cpp 仓库（没有就浅克隆），返回路径。"""
+    """Make sure that a local llama.cpp repository exists (else make a shallow clone), and return its path."""
     d = Path(path) if path else default_llama_cpp_dir()
     if (d / "convert_hf_to_gguf.py").exists():
         return d
@@ -65,7 +73,8 @@ def llama_cpp_commit(d: Path) -> str:
         return "unknown"
 
 
-# 在官方脚本之前执行的补丁：预切分规则不认识时回退为 qwen2（我们的正则与 Qwen2 相同）
+# A patch that runs before the official script: if the pre-tokenizer is unknown, fall back to qwen2
+# (our regex is the same as Qwen2)
 _SHIM = r"""
 import runpy, sys
 llama_dir, pre = sys.argv[1], sys.argv[2]
@@ -77,7 +86,7 @@ def _patched(self, tokenizer):
     try:
         return _orig(self, tokenizer)
     except NotImplementedError:
-        print(f"[zero] 预切分规则未登记，按 {pre!r} 处理（zero 的正则与 Qwen2 相同）", file=sys.stderr)
+        print(f"[zero] pre-tokenizer not registered; use {pre!r} (the zero regex is the same as Qwen2)", file=sys.stderr)
         return pre
 base.TextModel.get_vocab_base_pre = _patched
 sys.argv = [llama_dir + "/convert_hf_to_gguf.py"] + sys.argv[3:]
@@ -93,7 +102,7 @@ def convert_hf_to_gguf(
     pre_tokenizer: str = "qwen2",
     python: str | None = None,
 ) -> Path:
-    """HF 目录 → GGUF 文件（outtype：f32 / f16 / bf16 / q8_0）。"""
+    """HF directory → GGUF file (outtype: f32 / f16 / bf16 / q8_0)."""
     d = ensure_llama_cpp(llama_cpp_dir)
     out = Path(out_file)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -112,7 +121,7 @@ def convert_hf_to_gguf(
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0 or not out.exists():
         raise RuntimeError(
-            f"convert_hf_to_gguf.py 失败：\n{res.stdout[-2000:]}\n{res.stderr[-4000:]}"
+            f"convert_hf_to_gguf.py failed:\n{res.stdout[-2000:]}\n{res.stderr[-4000:]}"
         )
     return out
 
@@ -122,13 +131,13 @@ def build_llama_cpp(
     targets: tuple[str, ...] = DEFAULT_TARGETS,
     jobs: int = 2,
 ) -> Path:
-    """cmake 编译 CPU 版的若干个程序，返回 bin 目录。已经编译过的直接返回。"""
+    """Build some CPU programs with cmake and return the bin directory. If they are already built, return immediately."""
     d = ensure_llama_cpp(llama_cpp_dir)
     bin_dir = d / "build" / "bin"
     if all((bin_dir / t).exists() for t in targets):
         return bin_dir
     if shutil.which("cmake") is None:
-        raise RuntimeError("没有 cmake：apt-get install -y cmake（或 pip install cmake）")
+        raise RuntimeError("cmake is missing: apt-get install -y cmake (or pip install cmake)")
     subprocess.run(
         [
             "cmake",
@@ -170,12 +179,12 @@ def quantize(
 ) -> Path:
     exe = find_binary("llama-quantize", llama_cpp_dir)
     if exe is None:
-        raise FileNotFoundError("找不到 llama-quantize，先 build_llama_cpp()")
+        raise FileNotFoundError("llama-quantize not found; run build_llama_cpp() first")
     res = subprocess.run(
         [str(exe), str(gguf_in), str(gguf_out), qtype], capture_output=True, text=True
     )
     if res.returncode != 0:
-        raise RuntimeError(f"llama-quantize 失败：{res.stderr[-3000:]}")
+        raise RuntimeError(f"llama-quantize failed: {res.stderr[-3000:]}")
     return Path(gguf_out)
 
 
@@ -186,29 +195,30 @@ def run_llama(
     llama_cpp_dir: str | os.PathLike | None = None,
     threads: int = 1,
 ) -> str:
-    """用 llama-simple 生成 n_tokens 个 token（贪心），返回 stdout（含提示词和生成的文本）。"""
+    """Generate n_tokens tokens with llama-simple (greedy) and return stdout (the prompt and the generated text)."""
     exe = find_binary("llama-simple", llama_cpp_dir)
     if exe is None:
-        raise FileNotFoundError("找不到 llama-simple，先 build_llama_cpp()")
+        raise FileNotFoundError("llama-simple not found; run build_llama_cpp() first")
     res = subprocess.run(
         [str(exe), "-m", str(gguf), "-n", str(n_tokens), prompt],
         capture_output=True,
         timeout=300,
         env={**os.environ, "OMP_NUM_THREADS": str(threads)},
     )
-    # llama-simple 逐 token 打印，字节级 token 可能是半个汉字；整段字节拼起来再解码
+    # llama-simple prints token by token, and a byte-level token can be half of a Chinese character.
+    # Thus join all bytes first, then decode.
     if res.returncode != 0:
-        raise RuntimeError(f"llama-simple 失败：{res.stderr.decode('utf-8', 'replace')[-3000:]}")
+        raise RuntimeError(f"llama-simple failed: {res.stderr.decode('utf-8', 'replace')[-3000:]}")
     return res.stdout.decode("utf-8", errors="replace")
 
 
 def llama_tokenize(
     gguf: str | os.PathLike, text: str, llama_cpp_dir: str | os.PathLike | None = None
 ) -> list[int]:
-    """用 llama.cpp 的分词器编码（不加 BOS），返回 token id 列表（与我们的分词器对拍用）。"""
+    """Encode with the llama.cpp tokenizer (no BOS) and return the token ids (for a parity check with our tokenizer)."""
     exe = find_binary("llama-tokenize", llama_cpp_dir)
     if exe is None:
-        raise FileNotFoundError("找不到 llama-tokenize")
+        raise FileNotFoundError("llama-tokenize not found")
     res = subprocess.run(
         [str(exe), "-m", str(gguf), "-p", text, "--ids", "--no-bos", "--log-disable"],
         capture_output=True,
@@ -216,22 +226,22 @@ def llama_tokenize(
         timeout=120,
     )
     if res.returncode != 0:
-        raise RuntimeError(f"llama-tokenize 失败：{res.stderr[-2000:]}")
+        raise RuntimeError(f"llama-tokenize failed: {res.stderr[-2000:]}")
     line = [ln for ln in res.stdout.strip().splitlines() if ln.startswith("[")][-1]
     return [int(x) for x in line.strip("[]").split(",") if x.strip()]
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description="HF 目录 → GGUF（第 20 章）")
+    ap = argparse.ArgumentParser(description="HF directory → GGUF (Chapter 20)")
     ap.add_argument("--hf-dir", required=True)
-    ap.add_argument("--out", required=True, help="输出的 GGUF 文件")
+    ap.add_argument("--out", required=True, help="output GGUF file")
     ap.add_argument("--outtype", default="f16", choices=["f32", "f16", "bf16", "q8_0"])
-    ap.add_argument("--quantize", default="", help="再量化成这个类型，如 Q4_K_M、Q8_0")
-    ap.add_argument("--run", default="", help="量化后用 llama-simple 跑这个提示词")
-    ap.add_argument("--llama-cpp", default=None, help="llama.cpp 仓库路径（默认缓存目录）")
+    ap.add_argument("--quantize", default="", help="then quantize to this type, for example Q4_K_M or Q8_0")
+    ap.add_argument("--run", default="", help="after quantization, run this prompt with llama-simple")
+    ap.add_argument("--llama-cpp", default=None, help="path of the llama.cpp repository (default: the cache directory)")
     args = ap.parse_args(argv)
     out = convert_hf_to_gguf(args.hf_dir, args.out, args.outtype, args.llama_cpp)
-    print(f"GGUF: {out}（{out.stat().st_size / 1e6:.1f} MB）")
+    print(f"GGUF: {out} ({out.stat().st_size / 1e6:.1f} MB)")
     final = out
     if args.quantize or args.run:
         build_llama_cpp(args.llama_cpp)
@@ -239,7 +249,7 @@ def main(argv: list[str] | None = None) -> None:
         final = quantize(
             out, out.with_name(out.stem + f"-{args.quantize}.gguf"), args.quantize, args.llama_cpp
         )
-        print(f"量化: {final}（{final.stat().st_size / 1e6:.1f} MB）")
+        print(f"Quantized: {final} ({final.stat().st_size / 1e6:.1f} MB)")
     if args.run:
         print(run_llama(final, args.run, llama_cpp_dir=args.llama_cpp))
 

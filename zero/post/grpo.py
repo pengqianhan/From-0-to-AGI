@@ -1,34 +1,43 @@
-"""GRPO：组内相对策略优化 + 可验证奖励（对应第 19 章）。
+"""GRPO: group relative policy optimization + verifiable rewards (Chapter 19).
 
     uv run python -m zero.post.grpo --config configs/tiny/grpo.toml
 
-每一步：
+Each step:
 
-1. 取 P 个任务（`zero/post/envs/tool_env.py`），每个任务用当前策略采样 G 个回复
-   （同一提示词复制 G 份组成一个 batch，`zero.generate` 带 KV cache 生成，遇到 `<|im_end|>` 停）；
-2. 用可验证奖励 `score_tool_calls` 给每个回复打分 r_1..r_G；
-3. **组内归一化的优势**：A_i = (r_i − mean(r)) / (std(r) + ε)（std 取无偏估计，与 TRL / verl 一致；
-   `scale_rewards = false` 时只减均值，即 Dr. GRPO 的做法）。一组里全对或全错时 A 全为 0，这组不提供梯度；
-4. **裁剪的重要性比**（PPO-clip）：对回复里的每个 token t，
+1. Take P tasks (`zero/post/envs/tool_env.py`). For each task, sample G responses from the current
+   policy. The same prompt is copied G times to make one batch. `zero.generate` generates with the
+   KV cache and stops at `<|im_end|>`.
+2. The verifiable reward `score_tool_calls` gives each response a score r_1..r_G.
+3. **Group-normalized advantage**: A_i = (r_i − mean(r)) / (std(r) + ε). std is the unbiased
+   estimate, the same as TRL / verl. With `scale_rewards = false`, only the mean is subtracted (the
+   Dr. GRPO method). When all responses in a group are correct, or all are wrong, all A are 0, and the
+   group gives no gradient.
+4. **Clipped importance ratio** (PPO-clip): for each token t in the response,
        ρ_t = π_θ(y_t | ·) / π_old(y_t | ·)
        ℓ_t = −min(ρ_t · A, clip(ρ_t, 1−ε_low, 1+ε_high) · A)
-   π_old 是采样时的策略（在更新前用同一份权重算一遍 log 概率）；`ppo_epochs = 1` 时 ρ ≡ 1，
-   但梯度 ∇ρ = ∇log π 不为零；`ppo_epochs > 1` 时同一批数据更新多次，裁剪才真正起作用；
-5. **可选 KL**：kl_coef > 0 时加 β · KL(π_θ ‖ π_ref)，逐 token 用 k3 估计
-   exp(ref − logp) − (ref − logp) − 1（DeepSeekMath 的写法，非负、无偏）；
-6. **token 级聚合**：`loss_agg = "token_mean"`（默认）——一个 batch 里所有回复 token 的 ℓ 直接平均，
-   长回复里的每个 token 和短回复里的权重一样（DAPO 的做法，避免"长回复的 token 被稀释"）；
-   `"seq_mean_token_mean"` 是原始 GRPO 论文的写法：先在每条回复内平均，再在回复之间平均。
+   π_old is the policy at sampling time (the same weights calculate the log probabilities once before
+   the update). With `ppo_epochs = 1`, ρ ≡ 1, but the gradient ∇ρ = ∇log π is not zero. With
+   `ppo_epochs > 1`, the same batch gives several updates, and only then does the clipping have an effect.
+5. **Optional KL**: with kl_coef > 0, add β · KL(π_θ ‖ π_ref). The k3 estimate for each token is
+   exp(ref − logp) − (ref − logp) − 1 (the DeepSeekMath form; it is non-negative and unbiased).
+6. **Token-level aggregation**: `loss_agg = "token_mean"` (default) takes the mean of ℓ over all
+   response tokens in a batch. Each token of a long response has the same weight as a token of a short
+   response (the DAPO method; it prevents "the tokens of long responses get diluted").
+   `"seq_mean_token_mean"` is the form of the original GRPO paper: first the mean in each response,
+   then the mean over the responses.
 
-日志：平均奖励、格式正确率（没有格式错误的回复比例；不调用工具的纯文本也算格式正确）、
-调用率（含至少一个格式正确的工具调用的比例）、回复长度、KL、裁剪比例、"零方差组"比例。
+Log: mean reward, format rate (fraction of responses without format errors; plain text without a tool
+call also has a correct format), call rate (fraction with at least one tool call in the correct
+format), response length, KL, clip fraction, and the fraction of "zero-variance groups".
 
-**与 verl 对拍（第二步，尚未进行）**：吞吐不够时可换用 verl（见 references.md：XiaomiMiMo/verl）。
-对拍方法：同一个导出的 HF 模型、同一批 tool_env 任务（固定种子导出 JSONL）、同样的 G / ε / β /
-学习率 / 聚合方式（verl 里 `algorithm.adv_estimator=grpo`、`actor_rollout_ref.actor.loss_agg_mode=token-mean`、
-`use_kl_loss` 与 `kl_loss_type=low_var_kl` 对应这里的 k3），奖励函数用 verl 的自定义 reward 接口
-包一层 `score_tool_calls`；先比第一步的优势与损失（同一批样本应逐位一致），再比前 50 步的平均奖励曲线。
-（verl 的配置项名称按其 0.9 版文档整理，待核实。）
+**Parity check with verl (Step 2, not done yet)**: if the throughput is not sufficient, use verl
+(see references.md: XiaomiMiMo/verl). Parity-check method: the same exported HF model, the same batch of
+tool_env tasks (exported to JSONL with a fixed seed), and the same G / ε / β / learning rate /
+aggregation. In verl, `algorithm.adv_estimator=grpo`, `actor_rollout_ref.actor.loss_agg_mode=token-mean`,
+and `use_kl_loss` with `kl_loss_type=low_var_kl` match the k3 here. The reward function wraps
+`score_tool_calls` in the custom reward interface of verl. First compare the advantages and the loss of
+the first step (the same batch of samples must give bit-identical values). Then compare the mean reward
+curve of the first 50 steps. (The verl config names come from its 0.9 documentation; to be verified.)
 """
 
 from __future__ import annotations
@@ -58,29 +67,32 @@ from zero.tokenizer import Tokenizer
 
 @dataclass
 class GRPOConfig:
-    group_size: int = 8  # G：每个提示词采样几个回复
-    prompts_per_step: int = 4  # P：每步几个提示词
+    group_size: int = 8  # G: number of responses sampled for each prompt
+    prompts_per_step: int = 4  # P: number of prompts in each step
     max_new_tokens: int = 64
     temperature: float = 1.0
     top_p: float = 1.0
     clip_eps: float = 0.2  # ε_low
-    clip_eps_high: float = 0.0  # ε_high；0 表示与 clip_eps 相同（>ε_low 即 DAPO 的 clip-higher）
-    kl_coef: float = 0.0  # β；0 表示不加 KL，也不需要参考模型
-    ppo_epochs: int = 1  # 同一批样本更新几次
+    clip_eps_high: float = 0.0  # ε_high; 0 means the same as clip_eps (>ε_low is the clip-higher of DAPO)
+    kl_coef: float = 0.0  # β; 0 means no KL term and no reference model
+    ppo_epochs: int = 1  # number of updates on the same batch of samples
     loss_agg: str = "token_mean"  # "token_mean" | "seq_mean_token_mean"
-    scale_rewards: bool = True  # 优势是否除以组内标准差
+    scale_rewards: bool = True  # divide the advantage by the standard deviation of the group
     n_train_tasks: int = 2000
     env_seed: int = 0
-    forward_batch: int = 16  # 算 log 概率时每次前向多少条序列（省内存）
+    forward_batch: int = 16  # sequences in each forward pass for the log probabilities (saves memory)
 
 
 # ---------------------------------------------------------------------------
-# 优势与损失
+# Advantage and loss
 # ---------------------------------------------------------------------------
 
 
 def group_advantages(rewards: torch.Tensor, scale: bool = True, eps: float = 1e-6) -> torch.Tensor:
-    """rewards: (P, G) → 优势 (P, G)。A = (r − 组均值) / (组标准差 + eps)，标准差用无偏估计。"""
+    """rewards: (P, G) → advantages (P, G).
+
+    A = (r − group mean) / (group standard deviation + eps). The standard deviation is the unbiased estimate.
+    """
     mean = rewards.mean(dim=1, keepdim=True)
     adv = rewards - mean
     if scale:
@@ -102,11 +114,13 @@ def grpo_loss(
     num_tokens: float | None = None,
     num_seqs: float | None = None,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """GRPO 损失。
+    """GRPO loss.
 
-    logp / old_logp / ref_logp / mask：(B, T)，只在 mask 为真的回复 token 上计算；advantages：(B,)。
-    num_tokens / num_seqs：整个 batch 的回复 token 总数 / 序列数（分块前向时传入，保证分块求和
-    等于整批一次算）；不传则用本块自己的。
+    logp / old_logp / ref_logp / mask: (B, T). Only the response tokens where mask is true count.
+    advantages: (B,).
+    num_tokens / num_seqs: the total number of response tokens / sequences in the full batch. Give them
+    for a chunked forward pass, so that the sum over the chunks is equal to one pass on the full batch.
+    If they are not given, the function uses the values of this chunk.
     """
     hi = clip_eps if not clip_eps_high else clip_eps_high
     m = mask.float()
@@ -128,7 +142,7 @@ def grpo_loss(
         denom = num_seqs if num_seqs is not None else per_tok.shape[0]
         loss = per_seq.sum() / denom
     else:
-        raise ValueError(f"未知的 loss_agg：{loss_agg}")
+        raise ValueError(f"Unknown loss_agg: {loss_agg}")
     with torch.no_grad():
         n = m.sum().clamp(min=1.0)
         clipped = ((ratio < 1.0 - clip_eps) | (ratio > 1.0 + hi)).float()
@@ -141,7 +155,7 @@ def grpo_loss(
 
 
 # ---------------------------------------------------------------------------
-# 采样
+# Sampling
 # ---------------------------------------------------------------------------
 
 
@@ -149,7 +163,7 @@ def grpo_loss(
 class Rollout:
     task_idx: int
     prompt_ids: list[int]
-    response_ids: list[int]  # 含结尾的 <|im_end|>（若生成到了）
+    response_ids: list[int]  # includes the final <|im_end|> (if the model generated it)
     text: str
     reward: float
     format_ok: bool
@@ -167,7 +181,10 @@ def sample_group(
     top_p: float,
     seed: int,
 ) -> tuple[list[int], list[list[int]]]:
-    """同一提示词复制 G 份，带 KV cache 生成。返回 (提示词 ids, G 个回复 ids)，回复以 <|im_end|> 结尾（若停下了）。"""
+    """Copy the same prompt G times and generate with the KV cache.
+
+    Return (prompt ids, G response ids). A response ends with <|im_end|> if the generation stopped there.
+    """
     from zero.generate import generate
 
     ids, _ = render(task.messages, task.tools, add_generation_prompt=True, tokenizer=tok)
@@ -176,14 +193,15 @@ def sample_group(
     prompt = torch.tensor([ids] * G, dtype=torch.long, device=device)
     outs = generate(model, prompt, budget, temperature, top_p, eos_id=tok.im_end_id, seed=seed)
     resp = []
-    for o in outs:  # generate 去掉了 eos；没用满预算说明是遇到 eos 停下的，把它补回来参与训练
+    for o in outs:  # generate removes the eos. If the response is shorter than the budget, it stopped at the eos:
+        # add the eos back, so that training uses it
         o = list(o)  # type: ignore[arg-type]
         resp.append(o + [tok.im_end_id] if len(o) < budget else o)
     return list(ids), resp
 
 
 # ---------------------------------------------------------------------------
-# 训练
+# Training
 # ---------------------------------------------------------------------------
 
 
@@ -207,7 +225,10 @@ def run_grpo(
     overrides: Sequence[str] | None = None,
     log: Callable[[str], None] = print,
 ) -> list[dict[str, Any]]:
-    """单进程实现（CPU / 单卡）。单卡已在 RTX 3090 上验证（2026-10）；多卡与 vLLM 采样尚未在 GPU 上验证。"""
+    """Single-process implementation (CPU / 1 GPU).
+
+    1 GPU was verified on an RTX 3090 (2026-10). Multi-GPU and vLLM sampling are not verified on GPUs yet.
+    """
     from zero.post.envs.tool_env import generate_tasks, score_tool_calls
 
     cfg, sec = load_post_config(src, {"grpo": GRPOConfig}, overrides)
@@ -215,7 +236,8 @@ def run_grpo(
     tc = cfg.train
     set_threads(tc.cpu_threads)
     torch.manual_seed(tc.seed)
-    # CUDA 上用 BF16 autocast（与 Trainer 相同的规则；采样 sample_group 不在 autocast 里，是 FP32）：已在单张 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）
+    # On CUDA, use BF16 autocast (the same rule as Trainer; sample_group is not in autocast, it is FP32).
+    # Verified on one RTX 3090 (2026-10, see runs/2026-10-01-gpu0-check/).
     device = torch.device(
         "cuda" if tc.device in ("auto", "cuda") and torch.cuda.is_available() else "cpu"
     )
@@ -235,7 +257,7 @@ def run_grpo(
     loop = LoopState(cfg, model, log)
     G, P = gc.group_size, gc.prompts_per_step
     log(
-        f"[grpo] {len(tasks)} 个训练任务，每步 {P} 个提示词 × G={G}，ε={gc.clip_eps}，β={gc.kl_coef}，聚合 {gc.loss_agg}"
+        f"[grpo] {len(tasks)} training tasks, {P} prompts × G={G} per step, ε={gc.clip_eps}, β={gc.kl_coef}, aggregation {gc.loss_agg}"
     )
 
     while loop.step < tc.max_steps:
@@ -243,10 +265,10 @@ def run_grpo(
         lr = loop.begin_step()
         rng = random.Random(
             tc.seed * 7919 + loop.step
-        )  # 任务选择只由 (seed, step) 决定，续训可复现
+        )  # only (seed, step) selects the tasks, so a resumed run is reproducible
         chosen = rng.sample(range(len(tasks)), P)
 
-        # 1-2. 采样 + 打分
+        # 1-2. Sample + score
         rollouts: list[Rollout] = []
         for j, ti in enumerate(chosen):
             task = tasks[ti]
@@ -266,7 +288,7 @@ def run_grpo(
                 rollouts.append(Rollout(ti, p_ids, r, text, rw.total, rw.format_ok, rw.n_calls))
         t_gen = time.perf_counter() - t0
 
-        # 3. 组内优势
+        # 3. Group advantages
         rewards = torch.tensor([r.reward for r in rollouts], dtype=torch.float32).view(P, G)
         adv = group_advantages(rewards, gc.scale_rewards).view(-1).to(device)
 
@@ -275,7 +297,7 @@ def run_grpo(
         n_tok = float(sum(len(r.response_ids) for r in rollouts))
         keep = [i for i in range(len(rollouts)) if len(rollouts[i].response_ids) > 0]
 
-        # π_old 与 π_ref 的 log 概率（不求梯度）
+        # Log probabilities of π_old and π_ref (no gradient)
         model.eval()
         with torch.no_grad(), ac():
             old = _logps_chunked(model, seqs, masks, tok.eot_id, device, gc.forward_batch)
@@ -286,12 +308,13 @@ def run_grpo(
             )
         model.train()
 
-        # 4-6. 更新（ppo_epochs 次；每次对整批做分块前向 + 反向，最后一起 step）
+        # 4-6. Update (ppo_epochs times; each time a chunked forward + backward pass on the full batch,
+        # then one step at the end)
         metrics: dict[str, float] = {}
         loss_total = 0.0
         for epoch in range(gc.ppo_epochs):
             if epoch > 0:
-                loop.optimizer_step()  # 前一次的梯度先更新掉，再用新参数重算 ρ
+                loop.optimizer_step()  # apply the previous gradient first, then calculate ρ again with the new parameters
                 metrics = {}
             loss_total = 0.0
             for ci, i in enumerate(range(0, len(seqs), gc.forward_batch)):
@@ -324,7 +347,7 @@ def run_grpo(
 
         fmt_rate = sum(r.format_ok for r in rollouts) / len(
             rollouts
-        )  # 纯文本（没调用）也算格式正确
+        )  # plain text (no call) also has a correct format
         call_rate = sum(r.n_calls > 0 and r.format_ok for r in rollouts) / len(rollouts)
         zero_std = float((rewards.std(dim=1) == 0).float().mean())
         loop.record(
@@ -349,7 +372,7 @@ def run_grpo(
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description="GRPO（第 19 章）")
+    ap = argparse.ArgumentParser(description="GRPO (Chapter 19)")
     ap.add_argument("--config", required=True)
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
     args = ap.parse_args(argv)

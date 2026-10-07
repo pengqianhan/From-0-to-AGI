@@ -1,57 +1,59 @@
 ---
-description: 第 22 章自我检验：局部与稀疏注意力（滑动窗口、感受野、局部-全局交替、有界 KV cache、按内容挑 top-k 的稀疏注意力）
+description: "Chapter 22 self-check: local and sparse attention — sliding window, receptive field, local-global interleaving, bounded KV cache, sparse attention that selects the top-k keys by content (第 22 章自检：局部与稀疏注意力——滑动窗口、感受野、局部-全局交替、有界 KV cache、按内容挑 top-k 的稀疏注意力)"
 ---
 
-# 第 22 章自我检验：局部与稀疏注意力
+# Chapter 22 self-check: local and sparse attention
 
-用户调用了 `/ch22-local-attention`，说明他们刚学完第 22 章（`chapters/22-local-sparse-attention/`）。你的任务是帮他们检验自己是否真正理解了，而不是告诉他们答案。
+The learner typed `/ch22-local-attention`. They finished Chapter 22 (`chapters/22-local-sparse-attention/`). Help them check if they understand it. Do not give them the answers.
 
-**检验方式**：逐一提问下面的问题，等用户用自己的话回答后，再给出反馈——哪里说对了，哪里还有偏差，以及如何深化理解。不要一次性把所有问题都抛出去。
+**Language**: Use the language of the learner. If the learner writes in Chinese, ask the questions and give feedback in Chinese. The Chinese text of the chapter is in `README.zh.md`. Write short, clear sentences (see `docs/STYLE_GUIDE.md`).
 
----
-
-## 检验问题（按难度递进）
-
-**第一关：概念——滑动窗口到底省了什么**
-
-问用户：
-> 一个 36 层的模型，一半层是窗口 128 的滑动窗口，另一半是全注意力（gpt-oss-120b 就是这样）。上下文从 8K 涨到 128K 时，滑动窗口层和全注意力层的 KV cache 各自怎么变？每个新 token 的注意力计算量呢？
-
-期望回答：滑动窗口层每层只存最近 128 个位置，KV cache 不随上下文增长（封顶在 W）；全注意力层随长度线性增长。每个新 token 在滑动窗口层只和 128 个键算注意力（O(W)），在全注意力层和全部历史算（O(T)）。所以整体上 KV cache 大约省一半（`01_masks_and_ledger.py` 算出 128K 时 9.00 → 4.50 GiB），省的比例由局部层占比决定。能说出"窗口含自己，最多看 W 个位置"是加分项。
+**Method**: Ask the questions below one at a time. Wait for the learner to answer in their own words. Then give feedback: tell them what is correct, what is not correct, and how to make their understanding deeper. Do not ask all the questions at the same time.
 
 ---
 
-**第二关：直觉——感受野**
+## Questions (from easy to difficult)
 
-问用户：
-> 窗口 W = 4、6 层、全部是滑动窗口。最后一个 token 最远能"间接看到"多少个位置之前的信息？如果把第 3 层和第 6 层换成全注意力呢？
+**Level 1: concept — what does a sliding window save?**
 
-期望回答：每过一层，信息最多再往前传 W − 1 = 3 个位置，6 层是 6 × 3 = 18（`01_masks_and_ledger.py` 的感受野表）；第 3 层换成全局后，第 3 层之后就能一步看到开头（表里第 3 层起变成 63，即整个序列）。追问："间接看到"意味着什么？——信息要靠中间 token 一层层接力，而且要在有限的隐藏维度里挤着传，理论上够得着不等于实际学得会。
+Ask the learner:
+> A model has 36 layers. Half of the layers use a sliding window of 128. The other half use full attention (gpt-oss-120b has this design). The context grows from 8K to 128K. How does the KV cache of the sliding-window layers change? How does the KV cache of the full-attention layers change? And what happens to the attention compute for each new token?
 
----
-
-**第三关：发现问题——为什么只看 loss 不够**
-
-问用户：
-> 本章的实验里，全部滑动窗口的模型在语言建模上 loss 和全注意力几乎一样，但大海捞针在远距离上掉到瞎猜水平。为什么 loss 看不出这个问题？这对评测长上下文模型有什么启示？
-
-期望回答：字符级（以及大部分自然文本的）下一个词预测主要依赖附近的上下文，远距离依赖在平均 loss 里占比很小，所以局部模型的 loss 差不多；但一旦任务明确需要远处的一个具体信息（检索、引用、工具调用里前面定义的参数），够不着就是够不着。启示：长上下文能力要用专门的检索类评测（大海捞针、RULER 一类）测，不能只看困惑度；Gemma 3 报告也显示局部层比例对困惑度影响很小，这正是为什么还要保留全局层。
+Expected answer: each sliding-window layer stores only the last 128 positions. Its KV cache does not grow with the context (the maximum is W). The KV cache of a full-attention layer grows linearly with the length. For each new token, a sliding-window layer calculates attention with only 128 keys (O(W)). A full-attention layer calculates attention with all of the history (O(T)). Thus, in total, the KV cache is about half (`01_masks_and_ledger.py` calculates 9.00 → 4.50 GiB at 128K). The fraction of local layers sets the size of the saving. Extra credit: "the window includes the token itself, so a token sees at most W positions".
 
 ---
 
-**第四关：迁移——稀疏注意力和滑动窗口的区别**
+**Level 2: intuition — the receptive field**
 
-问用户：
-> 滑动窗口和 DeepSeek 的 DSA、MiniMax 的 MSA 都是"每个 query 只看一部分键"。它们挑键的方式有什么根本不同？DSA 能像滑动窗口那样把 KV cache 封顶吗？为什么真实系统要单独训练一个"索引器"，而不是像 `05_topk_sparse.py` 那样直接用 q·k 挑？
+Ask the learner:
+> The window is W = 4. The model has 6 layers, and all of them use a sliding window. From how many positions back can information "indirectly" reach the last token? What changes if layers 3 and 6 use full attention?
 
-期望回答：滑动窗口按**位置**挑（最近 W 个），固定、不用计算；稀疏注意力按**内容**挑（分数最高的 k 个或 k 个块），能跳到很远处。本章 `05_topk_sparse.py` 在同样 k 个键的预算下，按内容挑能保住远距离捞针，按位置挑不行。DSA 不能封顶 KV cache：将来哪个历史 token 会被选中事先不知道，所以全部 K/V（再加索引器自己的小 key）都要留着，省的是算力和读取量。用 q·k 挑要先算全部分数，等于没省；索引器维度小、头少（甚至低精度），算得便宜，再对选中的少量键做精确注意力。
+Expected answer: each layer moves information back by at most W − 1 = 3 more positions. After 6 layers, this is 6 × 3 = 18 (the receptive-field table of `01_masks_and_ledger.py`). If layer 3 is global, the token sees the start in one step after layer 3 (in the table, the value becomes 63 from layer 3, which is the full sequence). Follow-up question: what does "indirectly" mean? Answer: intermediate tokens must relay the information from layer to layer. The information must also fit into a hidden dimension of limited size. A distance that is reachable in theory is not always a distance that the model can learn.
 
 ---
 
-## 反馈原则
+**Level 3: find the problem — why the loss is not sufficient**
 
-- 答对了：认可，然后追问一个更深的"为什么"（例如：滑动窗口层要不要用和全局层一样的 RoPE 基频？看看 Gemma 3 / gpt-oss 的配置）。
-- 答错了：不要直接给答案，给一个提示（比如让他们改 `02_swa_model.py` 里的 `W` 或 `VARIANTS` 重新跑 `03_compare.py`），让他们重新思考。
-- 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
+Ask the learner:
+> In the experiment of this chapter, the all-sliding-window model has almost the same language-modeling loss as the full-attention model. But on the needle in a haystack, its accuracy at long distances falls to the level of a random guess. Why does the loss not show this problem? What does this mean for the evaluation of long-context models?
 
-四关都通过后，告诉用户可以进入第 23 章（`chapters/23-linear-attention-hybrid/`，学完后用 `/ch23-linear-attention` 自检）：另一条路是干脆不存 K、V，把历史压进一个固定大小的状态——线性注意力与混合架构。
+Expected answer: next-token prediction at the character level (and for most natural text) depends mainly on the nearby context. Long-distance dependencies are only a small part of the mean loss, so the loss of a local model is about the same. But some tasks need one specific piece of information from far away (retrieval, a citation, or a parameter that the text defined earlier in a tool call). If the model cannot reach that position, it cannot use the information. Conclusion: measure long-context ability with dedicated retrieval evaluations (needle in a haystack, RULER, and similar), not only with perplexity. The Gemma 3 report also shows that the fraction of local layers has only a small effect on perplexity. This is why models still keep some global layers.
+
+---
+
+**Level 4: transfer — sparse attention vs sliding window**
+
+Ask the learner:
+> A sliding window, DSA of DeepSeek, and MSA of MiniMax all let each query see only a part of the keys. What is the basic difference in how they select keys? Can DSA put a maximum on the KV cache, as a sliding window does? Why do real systems train a separate "indexer", instead of selecting keys directly with q·k as `05_topk_sparse.py` does?
+
+Expected answer: a sliding window selects keys by **position** (the last W). The selection is fixed and needs no calculation. Sparse attention selects keys by **content** (the k keys or k blocks with the highest scores), so it can jump to positions that are far away. In `05_topk_sparse.py`, with the same budget of k keys, selection by content keeps the long-distance needle accuracy, and selection by position does not. DSA cannot put a maximum on the KV cache. Nobody knows in advance which history token a later query will select. Thus the model must keep all K/V (and also the small keys of the indexer). DSA saves compute and memory reads. Selection with q·k must first calculate all the scores, so it saves nothing. An indexer has a small dimension and few heads (and can even use low precision), so its scores are cheap. Then the model calculates exact attention only on the few selected keys.
+
+---
+
+## Rules for feedback
+
+- If the answer is correct: say so. Then ask a deeper "why" question. For example: must a sliding-window layer use the same RoPE base frequency as a global layer? Look at the configurations of Gemma 3 and gpt-oss.
+- If the answer is not correct: do not give the answer. Give a hint. For example, ask the learner to change `W` or `VARIANTS` in `02_swa_model.py` and run `03_compare.py` again. Then let them think again.
+- If the learner says "I do not know": ask them to guess first. A wrong guess is better than no guess.
+
+When the learner passes all four levels, tell them to continue to Chapter 23 (`chapters/23-linear-attention-hybrid/`). After Chapter 23, they can check themselves with `/ch23-linear-attention`. Chapter 23 takes another path: it stores no K and V at all, and it compresses the history into a state of fixed size. This is linear attention and the hybrid architecture.

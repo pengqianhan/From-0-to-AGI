@@ -1,15 +1,17 @@
-"""预训练入口（对应第 14 章）。
+"""Entry point for pretraining (Chapter 14).
 
-单进程（CPU 冒烟）：
+One process (CPU smoke test):
 
     uv run python -m zero.train.pretrain --config configs/tiny/pretrain.toml
 
-单机多卡（第二步）：
+One machine with many GPUs (step 2):
 
     uv run torchrun --standalone --nproc_per_node=8 -m zero.train.pretrain --config configs/main/pretrain.toml
 
-`--set section.key=value` 可以临时覆盖配置，例如 `--set train.max_steps=20 --set data.seq_len=64`。
-中断后用同一条命令重跑，会自动从 `<out_dir>/ckpt` 里最新的 checkpoint 续训。
+`--set section.key=value` overrides a config value for one run.
+For example: `--set train.max_steps=20 --set data.seq_len=64`.
+After an interruption, run the same command again. The run resumes automatically from the latest
+checkpoint in `<out_dir>/ckpt`.
 """
 
 from __future__ import annotations
@@ -21,13 +23,13 @@ from zero.config import load_config
 from zero.train.trainer import run_training
 
 
-def parse_args(argv: list[str] | None = None, description: str = "预训练") -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None, description: str = "Pretraining") -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=description)
-    ap.add_argument("--config", required=True, help="TOML 配置文件")
+    ap.add_argument("--config", required=True, help="TOML config file")
     ap.add_argument(
-        "--set", action="append", default=[], metavar="KEY=VALUE", help="覆盖配置项，可重复"
+        "--set", action="append", default=[], metavar="KEY=VALUE", help="override a config value (you can use it more than once)"
     )
-    ap.add_argument("--print-config", action="store_true", help="只打印合并后的配置，不训练")
+    ap.add_argument("--print-config", action="store_true", help="print the merged config only, do not train")
     return ap.parse_args(argv)
 
 

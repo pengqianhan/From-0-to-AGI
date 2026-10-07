@@ -1,27 +1,33 @@
-"""DPO：直接偏好优化（对应第 18 章）。
+"""DPO: direct preference optimization (Chapter 18).
 
     uv run python -m zero.post.dpo --config configs/tiny/dpo.toml
 
-**损失**（Rafailov et al. 2023, arXiv:2305.18290）：对同一个提示词 x 的一对回复 (y_w 更好, y_l 更差)，
+**Loss** (Rafailov et al. 2023, arXiv:2305.18290): for a pair of responses to the same prompt x
+(y_w is better, y_l is worse),
 
     L = -log σ( β · [ (log π(y_w|x) - log π_ref(y_w|x)) - (log π(y_l|x) - log π_ref(y_l|x)) ] )
 
-- log π(y|x) 是回复里**每个 token 的 log 概率之和**（提示词部分不算，见 `encode_prompt_response`）；
-- π_ref 是训练开始时的模型（SFT 之后），冻结不动。`ref_mode = "precompute"` 在训练前把参考模型
-  对全部数据的 log 概率算好存起来（省一份模型的显存）；`"online"` 每步用一份冻结的拷贝现算；
-- β 控制"离参考模型能走多远"：β 越大越保守；
-- 隐式奖励 r(y) = β·(log π(y|x) − log π_ref(y|x))；日志里的 `acc` 是 r(y_w) > r(y_l) 的比例、
-  `margin` 是 r(y_w) − r(y_l) 的平均值。
+- log π(y|x) is the **sum of the log probabilities of each token** in the response. The prompt does
+  not count (see `encode_prompt_response`).
+- π_ref is the model at the start of training (after SFT), and it is frozen. `ref_mode = "precompute"`
+  calculates the log probabilities of the reference model on all data before training and stores
+  them (this saves the memory of one model). `"online"` calculates them at each step with a frozen copy.
+- β controls "how far the model can move from the reference model": a larger β is more conservative.
+- Implicit reward r(y) = β·(log π(y|x) − log π_ref(y|x)). In the log, `acc` is the fraction with
+  r(y_w) > r(y_l), and `margin` is the mean of r(y_w) − r(y_l).
 
-**偏好数据格式**（JSONL，每行一对）：
+**Preference data format** (JSONL, one pair on each line):
 
-    {"messages": [...提示词...], "tools": [...],
+    {"messages": [...prompt...], "tools": [...],
      "chosen":   {"role": "assistant", "content": ..., "tool_calls": [...]},
      "rejected": {"role": "assistant", "content": ...}}
 
-chosen / rejected 也可以是消息列表（多轮的后续）。`[dpo] generate_pairs = N` 且文件不存在时，
-`make_env_preferences` 用工具环境现场造偏好对：对每个任务从当前策略采样若干回复、用可验证奖励打分，
-得分最高的（不够好就用标准解答）当 chosen，得分最低的当 rejected——"on-policy 偏好数据"。
+chosen / rejected can also be a list of messages (the next turns of a multi-turn conversation).
+If the config sets `[dpo] generate_pairs = N` and the file does not exist, `make_env_preferences` makes
+preference pairs with the tool environment. For each task, it samples some responses from the current
+policy and scores them with the verifiable reward. The response with the highest score is chosen (if it
+is not good enough, the gold solution is chosen). The response with the lowest score is rejected. This
+is "on-policy preference data".
 """
 
 from __future__ import annotations
@@ -57,7 +63,7 @@ class DPOConfig:
     train_jsonl: str = ""
     beta: float = 0.1
     ref_mode: str = "precompute"  # "precompute" | "online"
-    # 文件不存在时用工具环境造偏好对
+    # if the file does not exist, make preference pairs with the tool environment
     generate_pairs: int = 0
     samples_per_prompt: int = 4
     gen_temperature: float = 1.0
@@ -66,7 +72,7 @@ class DPOConfig:
 
 
 # ---------------------------------------------------------------------------
-# 损失
+# Loss
 # ---------------------------------------------------------------------------
 
 
@@ -77,7 +83,7 @@ def dpo_loss(
     ref_rejected_logps: torch.Tensor,
     beta: float = 0.1,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """输入都是 (B,) 的序列 log 概率之和。返回 (标量损失, 指标)。"""
+    """Each input is (B,): the sum of the log probabilities of a sequence. Return (scalar loss, metrics)."""
     chosen_rewards = beta * (policy_chosen_logps - ref_chosen_logps)
     rejected_rewards = beta * (policy_rejected_logps - ref_rejected_logps)
     logits = chosen_rewards - rejected_rewards
@@ -93,7 +99,7 @@ def dpo_loss(
 
 
 # ---------------------------------------------------------------------------
-# 数据
+# Data
 # ---------------------------------------------------------------------------
 
 
@@ -117,7 +123,10 @@ def encode_pair(row: dict[str, Any], tok: Tokenizer, max_len: int) -> Preference
 def batch_logps(
     model: torch.nn.Module, pairs: Sequence[PreferencePair], pad_id: int, device: torch.device
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """chosen 和 rejected 拼成一个 batch 前向一次，返回两者的序列 log 概率之和 (B,), (B,)。"""
+    """Put chosen and rejected into one batch and do one forward pass.
+
+    Return the sums of the sequence log probabilities of both: (B,), (B,).
+    """
     seqs = [p.chosen_ids for p in pairs] + [p.rejected_ids for p in pairs]
     masks = [p.chosen_mask for p in pairs] + [p.rejected_mask for p in pairs]
     ids, mask = pad_batch(seqs, masks, pad_id, device)
@@ -127,14 +136,14 @@ def batch_logps(
 
 
 def corrupt_call(call: dict[str, Any], rng: random.Random) -> str:
-    """把标准调用改坏（错参数 / JSON 破损），作为兜底的 rejected。"""
+    """Break the gold call (wrong argument / broken JSON) to use as a fallback rejected response."""
     c = copy.deepcopy(call)
     if rng.random() < 0.5 and c["arguments"]:
         k = rng.choice(list(c["arguments"]))
         v = c["arguments"][k]
         c["arguments"][k] = (v + 1) if isinstance(v, int | float) else (str(v) + "0")
         return format_tool_call(c)
-    return format_tool_call(c)[:-14]  # 截掉 "}\n</tool_call>"：格式错误
+    return format_tool_call(c)[:-14]  # cut off "}\n</tool_call>": a format error
 
 
 def make_env_preferences(
@@ -147,7 +156,10 @@ def make_env_preferences(
     seed: int = 0,
     log: Callable[[str], None] = print,
 ) -> list[dict[str, Any]]:
-    """用工具环境 + 当前策略造偏好对（只针对"第一轮：该调用什么工具"）。"""
+    """Make preference pairs with the tool environment + the current policy.
+
+    The pairs cover only the first turn: "which tool to call".
+    """
     from zero.post.chat import parse_assistant
     from zero.post.envs.tool_env import generate_tasks, score_tool_calls
 
@@ -179,7 +191,7 @@ def make_env_preferences(
             n_policy_chosen += 1
         else:
             chosen_text, src = gold, "gold"
-        if worst_r >= 0.999:  # 全都对：用改坏的标准答案当 rejected
+        if worst_r >= 0.999:  # all are correct: use a broken gold answer as rejected
             worst = (
                 corrupt_call(task.gold_calls[0], rng)
                 if task.gold_calls
@@ -196,13 +208,16 @@ def make_env_preferences(
             }
         )
     log(
-        f"[dpo] 造了 {len(rows)} 对偏好数据，其中 chosen 来自策略自身采样的 {n_policy_chosen} 对，其余用标准解答"
+        f"[dpo] made {len(rows)} preference pairs: chosen is a policy sample in {n_policy_chosen} pairs, the gold solution in the others"
     )
     return rows
 
 
 def _as_message(text: str, parse: Callable[[str], Any]) -> dict[str, Any]:
-    """助手文本 → 消息。格式坏掉的文本原样放进 content（渲染出来还是同一段文本）。"""
+    """Assistant text → message.
+
+    Text with a broken format goes into content as it is, so the rendered text stays the same.
+    """
     p = parse(text)
     if p.errors:
         return {"role": "assistant", "content": text}
@@ -210,7 +225,7 @@ def _as_message(text: str, parse: Callable[[str], Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 训练
+# Training
 # ---------------------------------------------------------------------------
 
 
@@ -219,13 +234,18 @@ def run_dpo(
     overrides: Sequence[str] | None = None,
     log: Callable[[str], None] = print,
 ) -> list[dict[str, Any]]:
-    """单进程实现（CPU / 单卡）。单卡已在 RTX 3090 上验证（2026-10）；多卡 DDP 尚未在 GPU 上验证，第二步按 RUNBOOK 的说明改用 torchrun。"""
+    """Single-process implementation (CPU / 1 GPU).
+
+    1 GPU was verified on an RTX 3090 (2026-10). Multi-GPU DDP is not verified on GPUs yet. In Step 2,
+    change to torchrun as RUNBOOK describes.
+    """
     cfg, sec = load_post_config(src, {"dpo": DPOConfig}, overrides)
     dc: DPOConfig = sec["dpo"]
     tc = cfg.train
     set_threads(tc.cpu_threads)
     torch.manual_seed(tc.seed)
-    # CUDA 上用 BF16 autocast（与 Trainer 相同的规则）：已在单张 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）
+    # On CUDA, use BF16 autocast (the same rule as Trainer). Verified on one RTX 3090
+    # (2026-10, see runs/2026-10-01-gpu0-check/).
     device = torch.device(
         "cuda" if tc.device in ("auto", "cuda") and torch.cuda.is_available() else "cpu"
     )
@@ -239,7 +259,7 @@ def run_dpo(
 
     if not os.path.exists(dc.train_jsonl):
         if dc.generate_pairs <= 0:
-            raise FileNotFoundError(f"[dpo] 找不到 {dc.train_jsonl}，也没有设置 generate_pairs")
+            raise FileNotFoundError(f"[dpo] {dc.train_jsonl} not found, and generate_pairs is not set")
         rows = make_env_preferences(
             model,
             tok,
@@ -254,12 +274,12 @@ def run_dpo(
     rows = read_jsonl(dc.train_jsonl)
     pairs = [p for p in (encode_pair(r, tok, tc.data.seq_len) for r in rows) if p is not None]
     if not pairs:
-        raise ValueError("[dpo] 没有可用的偏好对（都超长？）")
+        raise ValueError("[dpo] no usable preference pairs (are all of them too long?)")
     log(
-        f"[dpo] {len(pairs)} 对偏好数据（丢弃 {len(rows) - len(pairs)} 对），β = {dc.beta}，参考模型：{dc.ref_mode}"
+        f"[dpo] {len(pairs)} preference pairs ({len(rows) - len(pairs)} dropped), β = {dc.beta}, reference model: {dc.ref_mode}"
     )
 
-    # 参考模型：训练开始时的策略
+    # reference model: the policy at the start of training
     ref_model = None
     ref_c = ref_r = None
     bsz = tc.micro_batch_size
@@ -278,7 +298,7 @@ def run_dpo(
         for p in ref_model.parameters():
             p.requires_grad_(False)
     else:
-        raise ValueError(f"[dpo] ref_mode 只能是 precompute / online，当前 {dc.ref_mode!r}")
+        raise ValueError(f"[dpo] ref_mode must be precompute / online, not {dc.ref_mode!r}")
 
     loop = LoopState(cfg, model, log)
     model.train()
@@ -288,7 +308,7 @@ def run_dpo(
         lr = loop.begin_step()
         agg: dict[str, float] = {}
         for _ in range(tc.grad_accum_steps):
-            # 样本顺序由 (seed, epoch) 决定，续训后接得上
+            # (seed, epoch) sets the sample order, so a resumed run continues at the same place
             start = (loop.step * per_step) % len(pairs)
             epoch = (loop.step * per_step) // len(pairs)
             order = list(range(len(pairs)))
@@ -317,7 +337,7 @@ def run_dpo(
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description="DPO（第 18 章）")
+    ap = argparse.ArgumentParser(description="DPO (Chapter 18)")
     ap.add_argument("--config", required=True)
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
     args = ap.parse_args(argv)

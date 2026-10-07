@@ -1,32 +1,45 @@
-"""混合专家（MoE）前馈层（第 24 章）：路由、top-k、共享专家、辅助损失、无辅助损失的偏置均衡、负载统计。
+"""Mixture-of-experts (MoE) feed-forward layer (Chapter 24): routing, top-k, shared experts,
+auxiliary loss, auxiliary-loss-free bias balancing, load statistics.
 
-第五部分的实验模块，**不用于主线模型**（主线是稠密模型，见 GOAL.md 3.3）。
+Experiment module for Part 5. **The main-line model does not use it** (the main line is a dense
+model, see GOAL.md 3.3).
 
-结构（与 DeepSeek-V3 / Qwen3-MoE / Mixtral 的 HF 实现对得上的写法）：
+Structure (written to match the HF implementations of DeepSeek-V3 / Qwen3-MoE / Mixtral):
 
-    y = Σ_{共享专家 s} FFN_s(x) + Σ_{i ∈ TopK} g_i · FFN_i(x)
+    y = Σ_{shared expert s} FFN_s(x) + Σ_{i ∈ TopK} g_i · FFN_i(x)
 
-- 路由器：一个 `dim → n_experts` 的线性层，打分函数可选 softmax（Mixtral、Qwen3-MoE、gpt-oss）
-  或 sigmoid（DeepSeek-V3、GLM-4.5、Kimi K2）；
-- 选专家：按 `分数 + 偏置 b` 取 top-k（偏置只影响"选谁"，不影响门控权重 g，DeepSeek-V3 式 16）；
-- 门控权重：被选中专家的原始分数，可选归一化（`norm_topk_prob`），再乘 `routed_scaling_factor`；
-- 专家：每个专家是一个 SwiGLU。权重按专家堆叠成 (E, …) 的三维张量，前向时把 token 按专家排序、
-  分段做矩阵乘（CPU 上用循环；GPU 上应换成 grouped GEMM，见下方"生产实践"）；
-- 负载均衡两种做法，可以同时开：
-  1. 辅助损失（Switch / GShard 式）：L_aux = α · Σ_i f_i · P_i，
-     f_i = N/(K·T) · (分到专家 i 的 token 数)，P_i = 路由概率在 T 个 token 上的平均；完全均衡时 L_aux = α；
-  2. 无辅助损失（DeepSeek-V3）：每步结束后按整批的负载更新偏置
-     b_i ← b_i + γ · sign(平均负载 − 负载_i)，过载的专家偏置变小、欠载的变大；
-- 容量因子（capacity factor）：可选。每个专家最多处理 ⌈cf · T · K / E⌉ 个 token，多出的被丢弃
-  （这个 token 在该专家上的输出记为 0，残差照常传下去）。默认 None = 不丢 token（dropless）。
+- Router: one linear layer `dim → n_experts`. The score function is softmax (Mixtral, Qwen3-MoE,
+  gpt-oss) or sigmoid (DeepSeek-V3, GLM-4.5, Kimi K2).
+- Expert selection: top-k of `score + bias b`. The bias changes only "which experts are selected".
+  It does not change the gate weights g (DeepSeek-V3, Eq. 16).
+- Gate weights: the original scores of the selected experts, optionally normalized
+  (`norm_topk_prob`), then multiplied by `routed_scaling_factor`.
+- Experts: each expert is one SwiGLU. The weights of all experts are stacked into 3D tensors (E, …).
+  In the forward pass, the code sorts the tokens by expert and does one matrix multiplication for
+  each segment (a loop on CPU; on GPU, replace it with grouped GEMM, see "Production practice" below).
+- Two methods of load balancing. You can use both at the same time:
+  1. Auxiliary loss (Switch / GShard style): L_aux = α · Σ_i f_i · P_i,
+     f_i = N/(K·T) · (number of tokens sent to expert i), P_i = mean routing probability over
+     the T tokens. With perfect balance, L_aux = α.
+  2. Auxiliary-loss-free (DeepSeek-V3): after each step, update the bias from the load of the
+     full batch: b_i ← b_i + γ · sign(mean load − load_i). The bias of an overloaded expert
+     decreases, and the bias of an underloaded expert increases.
+- Capacity factor: optional. Each expert processes a maximum of ⌈cf · T · K / E⌉ tokens.
+  The layer drops the extra tokens: the output of that expert for the token is 0, and the residual
+  passes through as usual. The default None = no dropped tokens (dropless).
 
-生产实践（本文件只追求可读和正确，以下路径**尚未在 GPU 上验证**）：
-- 专家计算：GPU 上用 grouped GEMM / MegaBlocks 式块稀疏矩阵乘，一次 kernel 算完所有专家；
-- 专家并行（expert parallelism, EP）：专家分布在多张卡上，token 经 all-to-all 发过去再收回来；
-  `update_bias` 在分布式下要先 all_reduce 负载（这里已写，但未在多卡上验证）。
+Production practice (this file has only two goals: easy to read and correct;
+the paths below are **not verified on GPU yet**):
+- Expert computation: on GPU, use grouped GEMM / MegaBlocks-style block-sparse matrix
+  multiplication to compute all experts in one kernel.
+- Expert parallelism (EP): the experts are on many GPUs, and an all-to-all sends the tokens to
+  them and gets the results back. With distributed training, `update_bias` must all_reduce the
+  load first (the code does this, but it is not verified on many GPUs).
 
-`tests/test_arch_moe.py` 保证：1 个专家 + top-1 时与 `zero.model.SwiGLU` 完全一致；排序分段的实现与逐 token
-的朴素循环一致；辅助损失与手算一致；偏置朝正确方向更新并能把一个偏斜的路由拉平。
+`tests/test_arch_moe.py` checks these points: with 1 expert + top-1, the layer is identical to
+`zero.model.SwiGLU`; the sorted-segment implementation agrees with a naive per-token loop;
+the auxiliary loss agrees with a hand computation; the bias moves in the correct direction and
+can make a skewed routing flat.
 """
 
 from __future__ import annotations
@@ -44,33 +57,35 @@ from zero.config import ModelConfig
 from zero.model import SwiGLU, Transformer, cross_entropy_loss
 
 # ---------------------------------------------------------------------------
-# 配置
+# Config
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class MoEConfig:
-    """字段名尽量与 HF 配置对应：n_experts ↔ n_routed_experts / num_experts / num_local_experts，
-    top_k ↔ num_experts_per_tok，expert_dim ↔ moe_intermediate_size，
-    score_func ↔ scoring_func，aux_loss_coef ↔ router_aux_loss_coef / aux_loss_alpha。"""
+    """The field names match the HF configs where possible:
+    n_experts ↔ n_routed_experts / num_experts / num_local_experts,
+    top_k ↔ num_experts_per_tok, expert_dim ↔ moe_intermediate_size,
+    score_func ↔ scoring_func, aux_loss_coef ↔ router_aux_loss_coef / aux_loss_alpha.
+    """
 
     dim: int
     n_experts: int = 8
     top_k: int = 2
     expert_dim: int = 256
     n_shared_experts: int = 0
-    shared_expert_dim: int | None = None  # 默认 n_shared_experts × expert_dim（DeepSeek 的写法）
+    shared_expert_dim: int | None = None  # default n_shared_experts × expert_dim (as in DeepSeek)
     score_func: Literal["softmax", "sigmoid"] = "softmax"
-    norm_topk_prob: bool = True  # 被选中专家的权重再归一化到和为 1
-    routed_scaling_factor: float = 1.0  # DeepSeek-V3 为 2.5
-    aux_loss_coef: float = 0.0  # α；0 表示不加辅助损失
-    bias_update_speed: float = 0.0  # γ；0 表示不做无辅助损失的偏置均衡
+    norm_topk_prob: bool = True  # normalize the weights of the selected experts again to sum to 1
+    routed_scaling_factor: float = 1.0  # 2.5 in DeepSeek-V3
+    aux_loss_coef: float = 0.0  # α; 0 = no auxiliary loss
+    bias_update_speed: float = 0.0  # γ; 0 = no auxiliary-loss-free bias balancing
     capacity_factor: float | None = None  # None = dropless
     init_std: float = 0.02
 
     def __post_init__(self) -> None:
         if not 1 <= self.top_k <= self.n_experts:
-            raise ValueError(f"top_k={self.top_k} 必须在 1..n_experts={self.n_experts} 之间")
+            raise ValueError(f"top_k={self.top_k} must be in 1..n_experts={self.n_experts}")
         if self.shared_expert_dim is None:
             self.shared_expert_dim = self.n_shared_experts * self.expert_dim
 
@@ -80,7 +95,7 @@ class MoEConfig:
         return cls(dim=mc.dim, **kw)
 
     def params(self) -> dict[str, int]:
-        """一层 MoE 的参数量：total（全部专家）与 active（每个 token 实际用到的）。"""
+        """Parameter count of one MoE layer: total (all experts) and active (used for each token)."""
         per_expert = 3 * self.dim * self.expert_dim
         shared = 3 * self.dim * self.shared_expert_dim if self.shared_expert_dim else 0
         router = self.dim * self.n_experts
@@ -91,18 +106,18 @@ class MoEConfig:
 
 
 # ---------------------------------------------------------------------------
-# 路由与损失（纯函数，方便单测和讲解）
+# Routing and loss (pure functions, easy to test and to explain)
 # ---------------------------------------------------------------------------
 
 
 def router_scores(logits: torch.Tensor, score_func: str) -> torch.Tensor:
-    """logits: (T, E) → 分数 (T, E)，在 float32 上算。"""
+    """logits: (T, E) → scores (T, E), computed in float32."""
     logits = logits.float()
     if score_func == "softmax":
         return logits.softmax(dim=-1)
     if score_func == "sigmoid":
         return logits.sigmoid()
-    raise ValueError(f"未知的 score_func: {score_func}")
+    raise ValueError(f"Unknown score_func: {score_func}")
 
 
 def select_experts(
@@ -112,9 +127,10 @@ def select_experts(
     norm_topk_prob: bool = True,
     scaling: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """按 (分数 + 偏置) 取 top-k；门控权重取原始分数（偏置只管"选谁"）。
+    """Take the top-k of (score + bias). The gate weights are the original scores
+    (the bias only controls "which experts are selected").
 
-    返回 idx (T, K) int64、weight (T, K) float32。
+    Return idx (T, K) int64 and weight (T, K) float32.
     """
     choose = scores if bias is None else scores + bias
     idx = choose.topk(top_k, dim=-1).indices
@@ -127,14 +143,17 @@ def select_experts(
 def aux_balance_loss(
     scores: torch.Tensor, idx: torch.Tensor, n_experts: int, coef: float
 ) -> torch.Tensor:
-    """Switch / GShard 式负载均衡损失（写法同 DeepSeek-V3 式 17–20，作用在这一批 T 个 token 上）：
+    """Switch / GShard-style load-balancing loss (same form as DeepSeek-V3 Eq. 17–20,
+    over the T tokens of this batch):
 
-        f_i = N / (K·T) · #{t : i ∈ TopK_t}      （不可导，只是"权重"）
-        P_i = 1/T · Σ_t s'_{i,t}，s' = 每行归一化后的分数（softmax 本来就归一化）
-        L   = α · Σ_i f_i · P_i                   （完全均衡时 f_i = 1、P_i = 1/N，L = α）
+        f_i = N / (K·T) · #{t : i ∈ TopK_t}      (not differentiable, only a "weight")
+        P_i = 1/T · Σ_t s'_{i,t}, s' = scores normalized per row (softmax is already normalized)
+        L   = α · Σ_i f_i · P_i                   (with perfect balance f_i = 1, P_i = 1/N, L = α)
 
-    梯度只经过 P：哪个专家分到的 token 多（f_i 大），就更用力地压低它的路由概率。
-    注意：HF 的 Mixtral / Qwen3-MoE 实现里 f 没有除以 K，数值是这里的 K 倍，系数不能直接照搬。
+    The gradient goes only through P: if an expert gets more tokens (large f_i), the loss pushes
+    its routing probability down more strongly.
+    Note: in the HF Mixtral / Qwen3-MoE implementations, f is not divided by K. Their value is
+    K times the value here, so you cannot copy the coefficient directly.
     """
     T, K = idx.shape
     probs = scores / scores.sum(dim=-1, keepdim=True)
@@ -145,17 +164,20 @@ def aux_balance_loss(
 
 
 # ---------------------------------------------------------------------------
-# MoE 前馈层
+# MoE feed-forward layer
 # ---------------------------------------------------------------------------
 
 
 class MoEFFN(nn.Module):
-    """可直接替换 `zero.model.SwiGLU` 的 MoE 前馈层：forward(x: (..., dim)) -> (..., dim)。
+    """An MoE feed-forward layer that can replace `zero.model.SwiGLU` directly:
+    forward(x: (..., dim)) -> (..., dim).
 
-    前向之后可以读：
-    - `last_aux_loss`：本次前向的辅助损失（训练且 aux_loss_coef > 0 时是带梯度的张量，否则 0）；
-    - `last_load`：本次前向每个专家分到的 token 数 (E,)（丢弃前）；`last_dropped`：被容量丢掉的分配数；
-    - `load_accum`：自上次 `update_bias()` 以来累计的负载（训练时累加）。
+    After the forward pass, you can read:
+    - `last_aux_loss`: the auxiliary loss of this forward pass (a tensor with gradient in training
+      when aux_loss_coef > 0, otherwise 0).
+    - `last_load`: the number of tokens for each expert in this forward pass (E,) (before drops);
+      `last_dropped`: the number of assignments that the capacity limit dropped.
+    - `load_accum`: the load accumulated since the last `update_bias()` (it accumulates in training).
     """
 
     def __init__(self, cfg: MoEConfig) -> None:
@@ -163,12 +185,13 @@ class MoEFFN(nn.Module):
         self.cfg = cfg
         E, d, h = cfg.n_experts, cfg.dim, cfg.expert_dim
         self.router = nn.Linear(d, E, bias=False)
-        # 按专家堆叠的 SwiGLU 权重：x (n, d) @ w_gate[e] (d, h) → (n, h)
+        # SwiGLU weights stacked by expert: x (n, d) @ w_gate[e] (d, h) → (n, h)
         self.w_gate = nn.Parameter(torch.empty(E, d, h))
         self.w_up = nn.Parameter(torch.empty(E, d, h))
         self.w_down = nn.Parameter(torch.empty(E, h, d))
         self.shared = SwiGLU(d, cfg.shared_expert_dim) if cfg.shared_expert_dim else None
-        # 无辅助损失均衡的偏置：不是参数（不吃梯度），但要进 state_dict（续训要接着用）
+        # Bias for auxiliary-loss-free balancing: not a parameter (no gradient), but it must be in
+        # the state_dict (a resume continues to use it).
         self.register_buffer("expert_bias", torch.zeros(E))
         self.register_buffer("load_accum", torch.zeros(E), persistent=False)
         self.last_aux_loss: torch.Tensor = torch.zeros(())
@@ -196,11 +219,11 @@ class MoEFFN(nn.Module):
         return max(1, math.ceil(cf * n_tokens * self.cfg.top_k / self.cfg.n_experts))
 
     def route(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """x: (T, d) → (scores (T,E), idx (T,K), weight (T,K))。"""
+        """x: (T, d) → (scores (T,E), idx (T,K), weight (T,K))."""
         c = self.cfg
         scores = router_scores(self.router(x), c.score_func)
-        # 偏置总是参与选择（不更新时它保持为 0）：DeepSeek-V3 最后 500B token 把 γ 设成 0，
-        # 但已经学到的偏置照样使用
+        # The bias always takes part in the selection (it stays 0 if it is not updated).
+        # DeepSeek-V3 set γ to 0 for the last 500B tokens, but continued to use the learned bias.
         idx, weight = select_experts(
             scores, c.top_k, self.expert_bias, c.norm_topk_prob, c.routed_scaling_factor
         )
@@ -213,7 +236,7 @@ class MoEFFN(nn.Module):
         T = x.shape[0]
         scores, idx, weight = self.route(x)
 
-        # ---- 负载统计与损失 ----
+        # ---- Load statistics and loss ----
         counts = torch.bincount(idx.reshape(-1), minlength=c.n_experts)
         self.last_load = counts.detach().float()
         if self.training:
@@ -223,15 +246,15 @@ class MoEFFN(nn.Module):
         else:
             self.last_aux_loss = torch.zeros((), device=x.device)
 
-        # ---- 分发：把 T·K 个 (token, 专家) 分配按专家排序，每个专家拿到连续的一段 ----
+        # ---- Dispatch: sort the T·K (token, expert) assignments by expert; each expert gets one contiguous segment ----
         flat_e = idx.reshape(-1)
         flat_t = torch.arange(T, device=x.device).repeat_interleave(c.top_k)
         flat_w = weight.reshape(-1)
-        order = torch.argsort(flat_e, stable=True)  # 稳定排序：同一专家内保持 token 原顺序
+        order = torch.argsort(flat_e, stable=True)  # stable sort: keep the token order inside each expert
         flat_e, flat_t, flat_w = flat_e[order], flat_t[order], flat_w[order]
         cap = self.capacity(T)
         if cap is not None:
-            # 每个分配在自己专家里的名次（0 起）；名次 ≥ 容量的被丢弃
+            # Rank of each assignment inside its expert (from 0). Drop the ranks ≥ capacity.
             starts = torch.cumsum(counts, 0) - counts
             rank = torch.arange(flat_e.numel(), device=x.device) - starts[flat_e]
             keep = rank < cap
@@ -241,9 +264,9 @@ class MoEFFN(nn.Module):
         else:
             self.last_dropped = 0
 
-        # ---- 专家计算 + 合并（combine）----
-        # 逐专家循环。CUDA + BF16 下能跑（RTX 3090，2026-10，见 runs/2026-10-01-gpu0-check/），但慢；
-        # GPU 上应换成 grouped GEMM（尚未实现，尚未在 GPU 上验证）。
+        # ---- Expert computation + combine ----
+        # Loop over the experts. It runs with CUDA + BF16 (RTX 3090, 2026-10, see runs/2026-10-01-gpu0-check/),
+        # but it is slow. On GPU, replace it with grouped GEMM (not implemented, not verified on GPU yet).
         out = torch.zeros_like(x)
         xs = x[flat_t]
         for e, seg in enumerate(
@@ -253,8 +276,9 @@ class MoEFFN(nn.Module):
                 continue
             h = xs[seg]
             y = (F.silu(h @ self.w_gate[e]) * (h @ self.w_up[e])) @ self.w_down[e]
-            # BF16 autocast 下 y 是 BF16、out 是 FP32（与 x 同精度），index_add_ 要求两者同类型：
-            # 先转成 out 的精度再累加（FP32 训练时是空操作）。2026-10 在 RTX 3090 上发现，见 runs/2026-10-01-gpu0-check/
+            # With BF16 autocast, y is BF16 and out is FP32 (same precision as x). index_add_ needs the
+            # same type for both: first convert to the precision of out, then add (no-op in FP32 training).
+            # Found on RTX 3090 in 2026-10, see runs/2026-10-01-gpu0-check/.
             out.index_add_(0, flat_t[seg], (y * flat_w[seg, None].to(y.dtype)).to(out.dtype))
         if self.shared is not None:
             out = out + self.shared(x)
@@ -262,34 +286,39 @@ class MoEFFN(nn.Module):
 
     @torch.no_grad()
     def update_bias(self) -> None:
-        """无辅助损失均衡（DeepSeek-V3 2.1.2 节）：每个训练步结束后调用一次。
+        """Auxiliary-loss-free balancing (DeepSeek-V3, Section 2.1.2). Call it once after each training step.
 
-        b_i ← b_i + γ · sign(平均负载 − 负载_i)：过载（负载 > 平均）的专家偏置减 γ，欠载的加 γ。
-        负载取自上次调用以来累计的 `load_accum`（梯度累积时覆盖整个全局 batch）。
+        b_i ← b_i + γ · sign(mean load − load_i): the bias of an overloaded expert (load > mean)
+        decreases by γ, and the bias of an underloaded expert increases by γ.
+        The load comes from `load_accum`, accumulated since the last call (with gradient
+        accumulation, it covers the full global batch).
         """
         g = self.cfg.bias_update_speed
         if g <= 0:
             self.load_accum.zero_()
             return
         load = self.load_accum.clone()
-        if dist.is_available() and dist.is_initialized():  # 尚未在多卡上验证
+        if dist.is_available() and dist.is_initialized():  # not verified on many GPUs yet
             dist.all_reduce(load)
         self.expert_bias += g * torch.sign(load.mean() - load)
         self.load_accum.zero_()
 
 
 # ---------------------------------------------------------------------------
-# 装进 Transformer
+# Put it into the Transformer
 # ---------------------------------------------------------------------------
 
 
 class MoETransformer(Transformer):
-    """主线 `Transformer` 的 MoE 版本：前 `first_dense` 层保留稠密 SwiGLU，其余层的 FFN 换成 MoEFFN
-    （DeepSeek-V3 的 first_k_dense_replace = 3、Kimi K2 = 1、GLM-4.5 = 3）。
+    """The MoE version of the main-line `Transformer`. The first `first_dense` layers keep the
+    dense SwiGLU. The FFN of all other layers becomes MoEFFN
+    (first_k_dense_replace = 3 in DeepSeek-V3, 1 in Kimi K2, 3 in GLM-4.5).
 
-    与主线相比多两件事：`loss()` 自动加上各层的辅助损失；每个优化器 step 之后调用 `after_step()`
-    更新无辅助损失的偏置。（主线 `zero.train.trainer.Trainer` 尚未接入 `after_step`，第二步如需用它训练
-    MoE 再接；本章小实验用自己的训练循环。）
+    Two differences from the main line: `loss()` automatically adds the auxiliary losses of all
+    layers, and you call `after_step()` after each optimizer step to update the auxiliary-loss-free
+    bias. (The main-line `zero.train.trainer.Trainer` does not call `after_step` yet. Connect it in
+    step 2 if you need it to train an MoE. The small experiments of this chapter use their own
+    training loop.)
     """
 
     def __init__(self, config: ModelConfig, moe_cfg: MoEConfig, first_dense: int = 0) -> None:
@@ -321,13 +350,18 @@ class MoETransformer(Transformer):
             m.update_bias()
 
     def load_stats(self) -> torch.Tensor:
-        """最近一次前向每层每个专家分到的 token 占比，形状 (MoE 层数, E)，每行和为 1。"""
+        """Fraction of tokens for each expert in each layer in the last forward pass.
+
+        Shape (number of MoE layers, E). Each row sums to 1.
+        """
         loads = torch.stack([m.last_load for m in self.moe_layers()])
         return loads / loads.sum(dim=-1, keepdim=True).clamp_min(1)
 
     def param_counts(self) -> dict[str, int]:
-        """total：全部参数（共享 embedding 只算一次）；active：每个 token 实际参与计算的参数
-        （未被选中的专家不算；embedding 查表算在内，与多数模型卡口径一致）。"""
+        """total: all parameters (a shared embedding counts once).
+        active: the parameters that each token actually uses (experts that are not selected do not
+        count; the embedding lookup counts, as in most model cards).
+        """
         total = self.num_params()
         inactive = sum(
             (m.cfg.n_experts - m.cfg.top_k) * 3 * m.cfg.dim * m.cfg.expert_dim

@@ -1,17 +1,22 @@
-# 第 13 章第 10 节"词表选多大"的测量语料：从主线预训练来源里各抽一小份样本（只用于本地测量分词器压缩率，
-# 不用于训练，也不进仓库）。配比和主线一致（configs/main/data.toml）：英文 0.55 = FineWeb-Edu 0.35 + DCLM 0.10
-# + FineMath 0.10，中文 0.30 = FineWeb-2 0.20 + Ultra-FineWeb 0.10，代码 0.15。代码用 UltraData-Code-L2 代替
-# Stack-Edu（后者只有文件 id，正文要用 AWS 凭证从 Software Heritage 取）。
+# Measurement corpus for Chapter 13, Section 10 ("how large is the vocabulary?"): a small sample from each
+# main-line pretraining source. We use it only to measure the tokenizer compression on this machine.
+# We do not train on it, and it is not in the repository. The mix is the same as the main line (configs/main/data.toml):
+# English 0.55 = FineWeb-Edu 0.35 + DCLM 0.10 + FineMath 0.10, Chinese 0.30 = FineWeb-2 0.20 + Ultra-FineWeb 0.10,
+# code 0.15. Code uses UltraData-Code-L2 instead of Stack-Edu. Stack-Edu has only the file ids;
+# to get the text, you need AWS credentials for Software Heritage.
 #
 #   uv run python -m zero.data.download --config configs/vocab/download.toml --out /mnt/DataSets/phan635/From-0-to-AGI/raw_vocab
 #   uv run python chapters/13-data/code/09_build_vocab_corpus.py --raw /mnt/DataSets/phan635/From-0-to-AGI/raw_vocab \
 #       --out /mnt/DataSets/phan635/From-0-to-AGI/vocab_corpus
 #
-# 下载量：08_vocab_size.py 训练分词器用 30MB（英 16.5 / 中 9 / 代码 4.5），验证集英 1.75 / 中 0.8 / 代码 1.6MB；
-# 按语言留约 40% 余量：英 24MB、中 13MB、代码 9MB，各来源按配比分。target_bytes 按 UTF-8 正文字节计。
-# revision 固定到 2026-10-01 下载当天的 commit，保证可复现。流式读取从各数据集的第一个文件开始，
-# 样本偏向前几个 dump / 分片（FineWeb-Edu 用随机抽样的 sample-10BT 子集减轻这一点）。
-# 实际下载结果记在 runs/2026-10-01-vocab-corpus/README.md。
+# Download size: 08_vocab_size.py trains the tokenizers on 30MB (English 16.5 / Chinese 9 / code 4.5).
+# The validation set is English 1.75 / Chinese 0.8 / code 1.6MB.
+# Each language has a margin of about 40%: English 24MB, Chinese 13MB, code 9MB, split across the sources by the mix.
+# target_bytes counts the UTF-8 bytes of the text.
+# Each revision is the commit on the download day (2026-10-01), so the download is reproducible.
+# Streaming starts from the first file of each dataset, so the samples come mostly from the first dumps / shards.
+# (For FineWeb-Edu, the randomly sampled sample-10BT subset makes this problem smaller.)
+# runs/2026-10-01-vocab-corpus/README.md records the actual download results.
 
 [[sources]]
 name = "fineweb-edu"
@@ -63,8 +68,9 @@ registry = "ultra-fineweb"
   keep_fields = ["score", "source"]
   target_bytes = 4_300_000
 
-# 代码 9MB：Python 30%，JavaScript / Java / C++ 各 15%，Go / Rust / Shell / C# / PHP 各 5%
-# （UltraData-Code-L2 的 11 种语言里去掉了 R 和 Ruby；L3 是合成的编程练习，测分词器用自然代码 L2）
+# Code 9MB: Python 30%, JavaScript / Java / C++ 15% each, Go / Rust / Shell / C# / PHP 5% each.
+# (Of the 11 languages in UltraData-Code-L2, we removed R and Ruby. L3 is synthetic programming exercises,
+# so the tokenizer measurement uses L2, which is natural code.)
 [[sources]]
 name = "ultradata-code-py"
 registry = "ultradata-code"

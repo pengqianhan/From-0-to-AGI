@@ -1,4 +1,4 @@
-"""分词器：编码再解码还原原文；特殊 token；压缩率统计（GOAL.md 9.1）。"""
+"""Tokenizer: encode then decode gives the original text; special tokens; compression statistics (GOAL.md 9.1)."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ def test_roundtrip(tok: Tokenizer, text: str) -> None:
 
 def test_special_tokens(tok: Tokenizer) -> None:
     assert tok.vocab_size == 1024
-    # 特殊 token 在词表最前面，id 固定
+    # The special tokens are at the start of the vocabulary, with fixed ids
     for i, t in enumerate(DEFAULT_SPECIAL_TOKENS):
         assert tok.special_id(t) == i
     assert tok.eot_id == 0 and tok.im_start_id == tok.special_id(IM_START)
@@ -58,7 +58,8 @@ def test_digits_split_individually(tok: Tokenizer) -> None:
 
 def test_bytes_per_token(tok: Tokenizer, tiny_texts: dict[str, str]) -> None:
     stats = {k: tok.bytes_per_token([v[:5000]]) for k, v in tiny_texts.items()}
-    # 学到了合并：每个 token 平均覆盖超过 1 个字节；中文每个字 3 字节，压缩率应该更高
+    # The merges are learned: each token covers more than 1 byte on average.
+    # A Chinese character has 3 bytes, so the compression must be higher
     for v in stats.values():
         assert v > 1.5
     assert stats["zh"] > 2.0

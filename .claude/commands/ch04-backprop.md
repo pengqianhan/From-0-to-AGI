@@ -1,57 +1,59 @@
 ---
-description: 第 4 章自我检验：反向传播与自动微分
+description: "Chapter 4 self-check: backpropagation and automatic differentiation (第 4 章自检：反向传播与自动微分)"
 ---
 
-# 第 4 章自我检验：反向传播与自动微分
+# Chapter 4 self-check: backpropagation and automatic differentiation
 
-用户调用了 `/ch04-backprop`，说明他们刚学完第 4 章（`chapters/04-backprop-autograd/`）。你的任务是帮他们检验自己是否真正理解了，而不是告诉他们答案。
+The learner typed `/ch04-backprop`. They finished Chapter 4 (`chapters/04-backprop-autograd/`). Help them check if they understand it. Do not give them the answers.
 
-**检验方式**：逐一提问下面的问题，等用户用自己的话回答后，再给出反馈——哪里说对了，哪里还有偏差，以及如何深化理解。不要一次性把所有问题都抛出去。
+**Language**: Use the language of the learner. If the learner writes in Chinese, ask the questions and give feedback in Chinese. The Chinese text of the chapter is in `README.zh.md`. Write short, clear sentences (see `docs/STYLE_GUIDE.md`).
 
----
-
-## 检验问题（按难度递进）
-
-**第一关：概念——前向和反向各做什么**
-
-问用户：
-> 不看资料，说出自动微分引擎在"前向"和"反向"两个阶段分别做了什么。`Value` 节点里的 `_prev` 和 `_backward` 各是干什么用的？
-
-期望回答：前向时每做一次运算就新建一个节点，算出数值，并记下它由哪些节点（`_prev`）、用什么运算算出，整张计算图就记录下来了；反向时从损失出发（梯度设为 1），按拓扑序的逆序调用每个节点的 `_backward`，把"上游梯度 × 局部导数"加到输入节点的 `grad` 上。缺"拓扑序"或"局部导数"就追问。
+**Method**: Ask the questions below one at a time. Wait for the learner to answer in their own words. Then give feedback: tell them what is correct, what is not correct, and how to make their understanding deeper. Do not ask all the questions at the same time.
 
 ---
 
-**第二关：直觉——在图上手算**
+## Questions (from easy to difficult)
 
-问用户：
-> 对 `L = (a·b + c)²`，a = 1、b = 2、c = −1，先算前向的中间值，再从右往左算出 ∂L/∂a、∂L/∂b、∂L/∂c。每一步乘的是什么局部导数？
+**Level 1: concepts — what the forward pass and the backward pass do**
 
-期望回答：d = a·b = 2，e = d + c = 1，L = 1；∂L/∂e = 2e = 2；加法把梯度原样传下去，∂L/∂d = ∂L/∂c = 2；乘法交换相乘，∂L/∂a = 2 × b = 4，∂L/∂b = 2 × a = 2。让用户用 `01_engine.py` 验证。
+Ask the learner:
+> Without your notes, tell what the automatic differentiation engine does in the "forward" phase and in the "backward" phase. What is the purpose of `_prev` and of `_backward` in a `Value` node?
 
----
-
-**第三关：发现问题——`+=` 与 `zero_grad`**
-
-问用户：
-> 有人把 `Value` 里所有 `self.grad += ...` 改成了 `self.grad = ...`，代码照样能跑，MLP 也照样能"训练"。对 `y = x·x + x`（x = 3），他会得到多少梯度？为什么错？怎么用最快的办法发现这个 bug？另外，既然 `+=` 是对的，为什么训练循环每一步又要 `zero_grad()`？
-
-期望回答：x 被用了三次，正确梯度是三条路之和 3 + 3 + 1 = 7；改成 `=` 后后到的梯度覆盖先到的，只剩一条路的贡献（本章引擎实测得到 3）。用梯度检验（中心差分数值梯度）对拍，本章实测有 bug 的引擎相对误差约 0.97 / 0.93。`+=` 是为了同一次反向里多条路的累加；但不同训练步之间的梯度不该累加，框架区分不了两者，所以每步反向前要手动清零（PyTorch 同理）。
+Expected answer: in the forward pass, each operation makes a new node. The node calculates its value and records the nodes that it comes from (`_prev`) and its operation. In this way, the engine records the full computational graph. In the backward pass, the engine starts from the loss (gradient set to 1). It calls the `_backward` of each node in reverse topological order. Each `_backward` adds "upstream gradient × local derivative" to the `grad` of the input nodes. If "topological order" or "local derivative" is missing, ask about it.
 
 ---
 
-**第四关：迁移——从标量到张量**
+**Level 2: intuition — calculate on the graph by hand**
 
-问用户：
-> 我们的标量引擎训练一个 97 参数的网络，每步要建 3720 个节点。PyTorch 怎么把同样的事做快？对 `Y = X·W`（X 形状 (N, d_in)，W 形状 (d_in, d_out)），已知上游梯度 G = ∂L/∂Y，写出 ∂L/∂X 和 ∂L/∂W，并检查形状。为什么深度学习用反向模式而不是前向模式？
+Ask the learner:
+> For `L = (a·b + c)²` with a = 1, b = 2, and c = −1, first calculate the intermediate values of the forward pass. Then go from right to left and calculate ∂L/∂a, ∂L/∂b, and ∂L/∂c. Which local derivative do you multiply by at each step?
 
-期望回答：张量框架里一次矩阵乘法是一个节点，反向也是矩阵乘法（向量-雅可比积），不用构造完整雅可比矩阵，交给 BLAS/GPU。∂L/∂X = G·Wᵀ（(N, d_out)·(d_out, d_in) = (N, d_in)），∂L/∂W = Xᵀ·G（(d_in, N)·(N, d_out) = (d_in, d_out)）。训练只有一个标量损失却有海量参数，反向模式一遍就得到对所有参数的梯度；前向模式每遍只能得到对一个输入的导数。
+Expected answer: d = a·b = 2, e = d + c = 1, L = 1. ∂L/∂e = 2e = 2. The addition sends the gradient without change, so ∂L/∂d = ∂L/∂c = 2. The multiplication multiplies by the other input, so ∂L/∂a = 2 × b = 4 and ∂L/∂b = 2 × a = 2. Ask the learner to verify the result with `01_engine.py`.
 
 ---
 
-## 反馈原则
+**Level 3: find the problem — `+=` and `zero_grad`**
 
-- 答对了：认可，然后追问一个更深的"为什么"（比如"为什么必须按逆拓扑序，随便一个顺序行不行？"）。
-- 答错了：不要直接给答案，给一个提示（比如让他们在 `01_engine.py` 里打印中间节点的 `grad`，或跑一下 `02_grad_check.py`），让他们重新思考。
-- 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
+Ask the learner:
+> Someone changed each `self.grad += ...` in `Value` to `self.grad = ...`. The code still runs, and the MLP still "trains". For `y = x·x + x` (x = 3), what gradient does this person get? Why is it wrong? What is the fastest way to find this bug? Also: `+=` is correct, so why must the training loop call `zero_grad()` at each step?
 
-四关都通过后，告诉用户可以进入第 5 章（`chapters/05-*/`，分类与概率：softmax 与交叉熵）。
+Expected answer: the graph uses x three times. The correct gradient is the sum of the three paths: 3 + 3 + 1 = 7. With `=`, the gradient that arrives later replaces the gradient that arrived first. Only the contribution of one path stays (the engine of this chapter gives 3). A gradient check (a parity check against central-difference numerical gradients) finds the bug. In the chapter, the engine with the bug has relative errors of about 0.97 / 0.93. `+=` is necessary to add the gradients of several paths in the same backward pass. But the gradients of different training steps must not add up. The framework cannot tell the two cases apart, so each step must set the gradients to zero before the backward pass. The same is true for PyTorch.
+
+---
+
+**Level 4: transfer — from scalars to tensors**
+
+Ask the learner:
+> Our scalar engine trains a network with 97 parameters, and each step builds 3720 nodes. How does PyTorch do the same work faster? For `Y = X·W` (X has the shape (N, d_in), W has the shape (d_in, d_out)), the upstream gradient G = ∂L/∂Y is known. Write ∂L/∂X and ∂L/∂W, and check the shapes. Why does deep learning use reverse mode and not forward mode?
+
+Expected answer: in a tensor framework, one matrix multiplication is one node, and its backward pass is also a matrix multiplication (the vector-Jacobian product). The framework never builds the full Jacobian, and BLAS or the GPU does the work. ∂L/∂X = G·Wᵀ ((N, d_out)·(d_out, d_in) = (N, d_in)). ∂L/∂W = Xᵀ·G ((d_in, N)·(N, d_out) = (d_in, d_out)). Training has only one scalar loss but a very large number of parameters. One pass of reverse mode gives the gradients for all parameters. One pass of forward mode gives the derivative for only one input.
+
+---
+
+## Rules for feedback
+
+- If the answer is correct: say so. Then ask a deeper "why" question. For example: "Why must the order be reverse topological order? Can any order work?"
+- If the answer is not correct: do not give the answer. Give a hint. For example, ask the learner to print the `grad` of the intermediate nodes in `01_engine.py`, or to run `02_grad_check.py`. Then let them think again.
+- If the learner says "I do not know": ask them to guess first. A wrong guess is better than no guess.
+
+When the learner passes all four levels, tell them to continue to Chapter 5 (`chapters/05-*/`, classification and probability: softmax and cross-entropy).

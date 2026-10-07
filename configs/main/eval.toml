@@ -1,7 +1,8 @@
-# 主线模型的内部评测（第 11、20 章）：后训练各阶段在 tool_env dev 集和玩具集上的对比，配对 bootstrap。
+# Internal evaluation of the main-line model (Chapters 11 and 20): compare the post-training stages
+# on the tool_env dev set and the toy sets, with a paired bootstrap.
 #   uv run python -m zero.eval.harness --config configs/main/eval.toml
-# 正式基准（BFCL、MMLU-Redux、C-Eval、GSM8K……）不在这里：按 eval/PREREGISTRATION.md 用官方框架跑，
-# BFCL 见 zero/eval/bfcl.py（尚未验证）。
+# The official benchmarks (BFCL, MMLU-Redux, C-Eval, GSM8K, ...) are not here. Run them with the official frameworks,
+# as eval/PREREGISTRATION.md specifies. For BFCL, see zero/eval/bfcl.py (not verified yet).
 
 [eval]
 mc_tasks = ["toy_mc.jsonl"]

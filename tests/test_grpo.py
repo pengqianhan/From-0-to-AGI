@@ -1,4 +1,8 @@
-"""GRPO：组内优势、裁剪损失、KL、两种聚合方式与手算一致；采样与端到端几步（第 19 章）。"""
+"""GRPO (Chapter 19).
+
+Group advantages, clipped loss, KL, and the two aggregation methods are equal to hand calculations.
+Sampling, and a few steps end to end.
+"""
 
 from __future__ import annotations
 
@@ -15,9 +19,9 @@ from zero.post.grpo import group_advantages, grpo_loss, run_grpo
 def test_group_advantages_hand_computed() -> None:
     r = torch.tensor([[1.0, 0.0, 0.0, 1.0], [0.5, 0.5, 0.5, 0.5], [2.0, 0.0, 1.0, 1.0]])
     a = group_advantages(r, eps=0.0 + 1e-12)
-    s1 = math.sqrt(4 * 0.25 / 3)  # 无偏标准差
+    s1 = math.sqrt(4 * 0.25 / 3)  # unbiased standard deviation
     assert a[0].tolist() == pytest.approx([0.5 / s1, -0.5 / s1, -0.5 / s1, 0.5 / s1], abs=1e-5)
-    assert a[1].tolist() == [0.0, 0.0, 0.0, 0.0]  # 零方差组没有梯度信号
+    assert a[1].tolist() == [0.0, 0.0, 0.0, 0.0]  # a zero-variance group gives no gradient signal
     s3 = math.sqrt((1 + 1 + 0 + 0) / 3)
     assert a[2].tolist() == pytest.approx([1 / s3, -1 / s3, 0, 0], abs=1e-5)
     assert group_advantages(r, scale=False)[2].tolist() == [1.0, -1.0, 0.0, 0.0]
@@ -33,15 +37,15 @@ def _example():  # noqa: ANN202
 
 def test_grpo_loss_clip_hand_computed() -> None:
     logp, old, adv, mask = _example()
-    # 序列 1（A=+1）：ρ=1.5 → max(−1.5, −1.2) = −1.2；ρ=0.9 → −0.9；第 3 个 token 不算
-    # 序列 2（A=−1）：ρ=0.5 → max(0.5, 0.8) = 0.8；ρ=1.1 → 1.1；ρ=1.0 → 1.0
+    # sequence 1 (A=+1): ρ=1.5 → max(−1.5, −1.2) = −1.2; ρ=0.9 → −0.9; token 3 does not count
+    # sequence 2 (A=−1): ρ=0.5 → max(0.5, 0.8) = 0.8; ρ=1.1 → 1.1; ρ=1.0 → 1.0
     per = [[-1.2, -0.9], [0.8, 1.1, 1.0]]
     loss, m = grpo_loss(logp, old, adv, mask, clip_eps=0.2)
     assert loss.item() == pytest.approx(sum(sum(p) for p in per) / 5, abs=1e-6)
     loss, _ = grpo_loss(logp, old, adv, mask, clip_eps=0.2, loss_agg="seq_mean_token_mean")
     assert loss.item() == pytest.approx((sum(per[0]) / 2 + sum(per[1]) / 3) / 2, abs=1e-6)
-    assert m["clip_frac"] == pytest.approx(2 / 5)  # 1.5 和 0.5 被裁剪
-    # clip-higher：ε_high=0.6 时 1.5 不再被裁剪
+    assert m["clip_frac"] == pytest.approx(2 / 5)  # 1.5 and 0.5 are clipped
+    # clip-higher: with ε_high=0.6, 1.5 is not clipped
     loss, _ = grpo_loss(logp, old, adv, mask, clip_eps=0.2, clip_eps_high=0.6)
     assert loss.item() == pytest.approx((-1.5 - 0.9 + 0.8 + 1.1 + 1.0) / 5, abs=1e-6)
 
@@ -51,14 +55,17 @@ def test_grpo_loss_kl_hand_computed() -> None:
     ref = torch.zeros(2, 3)
     loss, m = grpo_loss(logp, old, adv, mask, clip_eps=0.2, ref_logp=ref, kl_coef=0.1)
     rs = [[1.5, 0.9], [0.5, 1.1, 1.0]]
-    kl = [1 / r + math.log(r) - 1 for row in rs for r in row]  # k3：exp(ref−logp) − (ref−logp) − 1
+    kl = [1 / r + math.log(r) - 1 for row in rs for r in row]  # k3: exp(ref−logp) − (ref−logp) − 1
     base = (-1.2 - 0.9 + 0.8 + 1.1 + 1.0) / 5
     assert loss.item() == pytest.approx(base + 0.1 * sum(kl) / 5, abs=1e-6)
     assert m["kl"] == pytest.approx(sum(kl) / 5, abs=1e-6)
 
 
 def test_grpo_gradient_on_policy_and_chunking() -> None:
-    """ρ ≡ 1（刚采样完）时，token_mean 下每个回复 token 的梯度是 −A / 总 token 数；分块求和等于整批。"""
+    """With ρ ≡ 1 (right after sampling) and token_mean, the gradient of each response token is −A / total tokens.
+
+    The sum over the chunks is equal to the full batch.
+    """
     logp = torch.randn(4, 5).clamp(-3, 0).requires_grad_(True)
     old = logp.detach().clone()
     adv = torch.tensor([1.0, -0.5, 0.0, 2.0])
@@ -91,7 +98,7 @@ def test_sample_group_appends_im_end(monkeypatch, chat_tok, tiny_ckpt) -> None: 
     model, tok = load_policy(tiny_ckpt)
     monkeypatch.setattr(zero.generate, "generate", lambda *a, **k: [[5, 6], [7] * 8])
     _, resps = sample_group(model, tok, generate_tasks(1)[0], 2, 8, 1.0, 1.0, 0)
-    assert resps == [[5, 6, tok.im_end_id], [7] * 8]  # 提前停下的补回 <|im_end|>，截断的不补
+    assert resps == [[5, 6, tok.im_end_id], [7] * 8]  # a response that stopped early gets <|im_end|> back; a truncated one does not
 
 
 def test_run_grpo_end_to_end(tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt) -> None:  # noqa: ANN001

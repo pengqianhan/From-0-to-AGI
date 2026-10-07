@@ -1,8 +1,9 @@
-# tiny DPO 配置（第 18 章"极小配置演示"）：在 tiny 蒸馏之后的权重上做 DPO。
+# Tiny DPO config (Chapter 18, "Tiny-configuration demo"): DPO on the weights after tiny distillation.
 #   uv run python -m zero.post.dpo --config configs/tiny/dpo.toml
-# 偏好数据不存在时，用工具环境 + 当前策略现场造（见 zero/post/dpo.py 的 make_env_preferences）。
+# If there is no preference data, make it on the spot with the tool environment + the current policy
+# (see make_env_preferences in zero/post/dpo.py).
 
-[model]                  # 与 SFT 的 checkpoint 形状一致
+[model]                  # Same shape as the SFT checkpoint
 vocab_size = 2048
 dim = 128
 n_layers = 4
@@ -18,31 +19,31 @@ rope_scaling = { type = "yarn", factor = 8.0, original_max_position_embeddings =
 [train]
 seed = 1337
 max_steps = 40
-micro_batch_size = 4     # 每步 4 对（chosen + rejected 共 8 条序列）
+micro_batch_size = 4     # 4 pairs per step (chosen + rejected: 8 sequences in total)
 grad_accum_steps = 1
 device = "cpu"
 dtype = "fp32"
 cpu_threads = 1
 out_dir = "out/tiny/dpo"
-init_from = "out/tiny/distill/ckpt"   # 流水线顺序：SFT → 蒸馏 → DPO
+init_from = "out/tiny/distill/ckpt"   # Pipeline order: SFT → distillation → DPO
 
 [data]
-format = "none"          # 数据由 [dpo] 管
+format = "none"          # [dpo] controls the data
 tokenizer = "out/tiny/tokenizer.json"
-seq_len = 1024           # 超过这个长度的偏好对丢弃
+seq_len = 1024           # Drop the preference pairs that are longer than this
 
 [dpo]
 train_jsonl = "out/tiny/dpo/prefs.jsonl"
 beta = 0.1
-ref_mode = "precompute"  # 训练前把参考模型的 log 概率算好；"online" 则每步现算
-generate_pairs = 64      # 文件不存在时造 64 对
+ref_mode = "precompute"  # Compute the log-probabilities of the reference model before training; "online" computes them at each step
+generate_pairs = 64      # If the file does not exist, make 64 pairs
 samples_per_prompt = 4
 gen_temperature = 1.0
 max_new_tokens = 64
 env_seed = 1
 
 [optim]
-lr = 5e-5                # 实测：5e-4 时 24 步 margin 冲到 4.8，接下来 GRPO 的格式正确率从 0.16 掉到 0；5e-5 较稳
+lr = 5e-5                # Measured: with 5e-4, the margin went up to 4.8 in 24 steps, and then the GRPO format accuracy fell from 0.16 to 0. 5e-5 is more stable
 weight_decay = 0.0
 grad_clip = 1.0
 
@@ -52,7 +53,7 @@ warmup_steps = 4
 min_lr_ratio = 0.1
 
 [checkpoint]
-every = 0                # 只在结束时存
+every = 0                # Save only at the end
 keep_last = 1
 
 [logging]

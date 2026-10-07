@@ -1,16 +1,20 @@
-"""第 18 章 · 极简代码 2：RLHF 的目标、KL 缰绳，以及 PPO 怎么解它
+"""Chapter 18 · Minimal code 2: the RLHF objective, the KL leash, and how PPO solves it.
 
-RLHF 的目标（对一个提示词）：
+The RLHF objective (for one prompt):
     max_π  E_{y~π}[ r(y) ] − β · KL(π || π_ref)
-r 是奖励模型打的分，π_ref 是 SFT 模型。这个目标有闭式最优解：
+r is the score from the reward model. π_ref is the SFT model. This objective has a closed-form
+optimal solution:
     π*(y) = π_ref(y) · exp(r(y)/β) / Z
-为了看清楚，把"回答"缩成 8 个候选（一个多臂老虎机）：每个候选有真实质量 q 和长度 ℓ，
-奖励模型用 01 学到的系数打分，它会给长回答加分——包括一个 900 token 的"注水"回答。
+To make it easy to see, we reduce the "answers" to 8 candidates (a multi-armed bandit). Each
+candidate has a true quality q and a length ℓ. The reward model scores them with the coefficients
+that it learned in 01. It gives extra score to long answers, also to a 900-token "padded" answer.
 
-① 扫 β：看代理奖励（奖励模型的分）、真实质量、KL 怎么变——这就是 reward hacking 与 KL 缰绳。
-② 用 PPO（采样 + 裁剪比例 + 基线）从 π_ref 出发去解同一个目标，看它是否走到闭式解。
+① Sweep β: see how the proxy reward (the reward-model score), the true quality, and the KL change.
+   This shows reward hacking and the KL leash.
+② Start from π_ref and solve the same objective with PPO (sampling + clipped ratio + baseline).
+   Check if PPO gets to the closed-form solution.
 
-运行：uv run python chapters/18-preference-alignment/code/02_rlhf_kl.py
+Run: uv run python chapters/18-preference-alignment/code/02_rlhf_kl.py
 """
 
 from __future__ import annotations
@@ -20,23 +24,24 @@ from pathlib import Path
 
 import torch
 
-torch.set_num_threads(1)  # 构建机多任务共享 CPU（本机可删）
+torch.set_num_threads(1)  # The build machine shares its CPU between jobs (you can remove this line).
 
 HERE = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("bt01", HERE / "01_bradley_terry.py")
 bt01 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bt01)
 
-# 8 个候选回答：(名字, 真实质量 q, 长度 ℓ/百 token, SFT 模型给它的 logit)
+# 8 candidate answers: (name, true quality q, length ℓ in 100 tokens, logit of the SFT model).
+# "concise" and "detailed" are the two correct answers. "padded 900" has 900 tokens of filler.
 CANDIDATES = [
-    ("简洁正确", 1.4, 1.2, 1.0),
-    ("详细正确", 1.2, 2.5, 0.8),
-    ("还行", 0.6, 1.0, 1.5),
-    ("一般", 0.2, 1.5, 1.5),
-    ("跑题", -0.8, 1.0, 0.5),
-    ("错误", -1.5, 0.8, 0.5),
-    ("啰嗦", 0.0, 4.0, 0.0),
-    ("注水 900 字", -0.5, 9.0, -2.5),
+    ("concise", 1.4, 1.2, 1.0),
+    ("detailed", 1.2, 2.5, 0.8),
+    ("okay", 0.6, 1.0, 1.5),
+    ("mediocre", 0.2, 1.5, 1.5),
+    ("off-topic", -0.8, 1.0, 0.5),
+    ("wrong", -1.5, 0.8, 0.5),
+    ("verbose", 0.0, 4.0, 0.0),
+    ("padded 900", -0.5, 9.0, -2.5),
 ]
 NAMES = [c[0] for c in CANDIDATES]
 Q = torch.tensor([c[1] for c in CANDIDATES])
@@ -45,14 +50,14 @@ LOGP_REF = torch.log_softmax(torch.tensor([c[3] for c in CANDIDATES]), 0)
 
 
 def proxy_reward() -> torch.Tensor:
-    """用 01 训练出来的奖励模型给 8 个候选打分（它学到了'长 = 好'）。"""
+    """Score the 8 candidates with the reward model from 01 (it learned 'long = good')."""
     rm, _ = bt01.train_rm()
     with torch.no_grad():
         return rm(FEATS)
 
 
 def optimal_policy(r: torch.Tensor, beta: float) -> torch.Tensor:
-    """闭式最优解：log π* = log π_ref + r/β − log Z。"""
+    """Closed-form optimal solution: log π* = log π_ref + r/β − log Z."""
     return torch.log_softmax(LOGP_REF + r / beta, 0)
 
 
@@ -67,13 +72,15 @@ def objective(logp: torch.Tensor, r: torch.Tensor, beta: float) -> float:
 def ppo(r: torch.Tensor, beta: float, iters: int = 400, batch: int = 64, epochs: int = 4,
         clip: float = 0.2, lr: float = 0.05, seed: int = 0,
         trace_at: tuple[int, ...] | None = None) -> tuple[torch.Tensor, list[tuple]]:
-    """InstructGPT 式的 PPO（缩到老虎机上）：
-    - 每轮用当前策略采样 batch 个回答，奖励 = r(y) − β·(log π_old(y) − log π_ref(y))（逐样本的 KL 惩罚）；
-    - 优势 A = 奖励 − V，V 是一个标量"价值"基线（这里只有一个提示词，V 就是一个数），用 MSE 学；
-    - 同一批样本更新 epochs 次，比例 ρ = π_θ/π_old 被裁剪到 [1−ε, 1+ε]。"""
+    """PPO in the InstructGPT style (reduced to a bandit):
+    - Each iteration samples `batch` answers from the current policy.
+      Reward = r(y) − β·(log π_old(y) − log π_ref(y)) (a KL penalty for each sample).
+    - Advantage A = reward − V. V is a scalar "value" baseline, learned with MSE.
+      Here there is only one prompt, so V is one number.
+    - Each batch gives `epochs` updates. The ratio ρ = π_θ/π_old is clipped to [1−ε, 1+ε]."""
     g = torch.Generator().manual_seed(seed)
-    theta = LOGP_REF.clone().requires_grad_(True)  # 策略的 logits，从 SFT 出发
-    v = torch.zeros(1, requires_grad=True)          # 价值基线
+    theta = LOGP_REF.clone().requires_grad_(True)  # logits of the policy; start from SFT
+    v = torch.zeros(1, requires_grad=True)          # value baseline
     opt = torch.optim.Adam([theta, v], lr=lr)
     trace = []
     trace_at = trace_at or (0, 25, 100, iters)
@@ -98,35 +105,38 @@ def ppo(r: torch.Tensor, beta: float, iters: int = 400, batch: int = 64, epochs:
 
 def main() -> None:
     r = proxy_reward()
-    print("8 个候选回答（奖励模型 = 01 学到的 r = w_q·q + w_len·ℓ）：")
-    print(f"   {'回答':<10} {'真实质量 q':>9} {'长度ℓ':>6} {'奖励模型分':>9} {'π_ref':>7}")
+    print("8 candidate answers (reward model = r = w_q·q + w_len·ℓ, learned in 01):")
+    print(f"   {'answer':<10} {'true q':>9} {'len ℓ':>6} {'RM score':>9} {'π_ref':>7}")
     for i, n in enumerate(NAMES):
         print(f"   {n:<10} {Q[i]:>9.1f} {FEATS[i, 1]:>6.1f} {r[i]:>9.2f} {LOGP_REF[i].exp():>7.3f}")
-    print("   奖励模型最爱：", NAMES[int(r.argmax())], "；真实质量最高：", NAMES[int(Q.argmax())])
+    print("   Favorite of the reward model:", NAMES[int(r.argmax())], "; highest true quality:", NAMES[int(Q.argmax())])
 
-    print("\n① 闭式最优解 π* ∝ π_ref·exp(r/β)，扫 β：")
-    print(f"   {'β':>6} | {'E[奖励模型分]':>11} | {'E[真实质量]':>10} | {'KL(π||π_ref)':>12} | 概率最大的回答")
+    print("\n① Closed-form optimal solution π* ∝ π_ref·exp(r/β), sweep β:")
+    print(f"   {'β':>6} | {'E[RM score]':>11} | {'E[true q]':>10} | {'KL(π||π_ref)':>12} | most likely answer")
     for beta in (100.0, 2.0, 1.0, 0.5, 0.25, 0.1, 0.03):
         lp = optimal_policy(r, beta)
         p = lp.exp()
         top = int(p.argmax())
         print(f"   {beta:>6} | {float((p * r).sum()):>11.3f} | {float((p * Q).sum()):>10.3f} | "
-              f"{kl(lp, LOGP_REF):>12.3f} | {NAMES[top]}（{p[top]:.2f}）")
-    print("   β 大：几乎不动（还是 SFT）；β 适中：真实质量最高；β 太小：全押'注水'——代理分最高，真实质量反而下降。")
+              f"{kl(lp, LOGP_REF):>12.3f} | {NAMES[top]} ({p[top]:.2f})")
+    print("   Large β: almost no change (still SFT). Medium β: highest true quality. "
+          "β too small: all on 'padded'. The proxy score is highest, but the true quality goes down.")
 
     beta = 0.5
     lp_star = optimal_policy(r, beta)
     lp_ppo, trace = ppo(r, beta)
-    print(f"\n② PPO 从 π_ref 出发解同一个目标（β = {beta}，每轮 64 个样本，4 个 epoch，ε = 0.2）：")
-    print(f"   {'轮':>4} | {'目标 E[r]−β·KL':>13} | {'KL(π||π_ref)':>12}")
+    print(f"\n② PPO starts from π_ref and solves the same objective (β = {beta}, 64 samples per iteration, "
+          f"4 epochs, ε = 0.2):")
+    print(f"   {'iter':>4} | {'obj E[r]−β·KL':>13} | {'KL(π||π_ref)':>12}")
     for it, obj, k in trace:
         print(f"   {it:>4} | {obj:>13.4f} | {k:>12.4f}")
-    print(f"   闭式最优解的目标值 = {objective(lp_star, r, beta):.4f}，KL = {kl(lp_star, LOGP_REF):.4f}")
-    print(f"   PPO 结果与闭式解的距离 KL(π_PPO || π*) = {kl(lp_ppo, lp_star):.5f}")
-    print("   概率对比（π_ref → π_PPO / π*）：")
+    print(f"   Objective of the closed-form solution = {objective(lp_star, r, beta):.4f}, KL = {kl(lp_star, LOGP_REF):.4f}")
+    print(f"   Distance from the PPO result to the closed-form solution: KL(π_PPO || π*) = {kl(lp_ppo, lp_star):.5f}")
+    print("   Probabilities (π_ref → π_PPO / π*):")
     for i, n in enumerate(NAMES):
         print(f"     {n:<10} {LOGP_REF[i].exp():.3f} → {lp_ppo[i].exp():.3f} / {lp_star[i].exp():.3f}")
-    print("\n小结：PPO 要靠采样、价值基线、裁剪一步步摸到 π*；而 π* 其实有闭式解——这就是 DPO 的出发点（03）。")
+    print("\nSummary: PPO needs sampling, a value baseline, and clipping to find π* step by step. "
+          "But π* has a closed-form solution. This is the starting point of DPO (03).")
 
 
 if __name__ == "__main__":

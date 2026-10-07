@@ -1,14 +1,18 @@
-"""第 10 章 · 极简代码 3：KV cache——同样的输出，少算很多
+"""Chapter 10 · Minimal code 3: KV cache (the same output with much less calculation)
 
-朴素生成：每生成一个字，都把"提示词 + 已生成的全部内容"重新过一遍模型。第 t 步要处理 t 个位置，
-生成 n 个字总共处理约 n²/2 个位置，其中绝大部分是重复劳动（过去位置的 K、V 不会变）。
-KV cache：把每层算过的 K、V 存起来，之后每步只喂 1 个新字，只算它自己的 q、k、v。
+Naive generation: for each new character, the model processes "the prompt + all generated text"
+again. Step t processes t positions. To generate n characters, the model processes about n²/2
+positions in total. Most of this work is repeated (the K and V of past positions do not change).
+KV cache: keep the K and V that each layer calculated. After that, give the model only 1 new
+character at each step, and calculate only its own q, k, v.
 
-这个脚本做三件事：
-  1. 对拍：贪心和采样两种模式下，缓存版和朴素版生成的字符完全一致；
-  2. 测速：生成 64 / 128 / 256 / 512 个字，两种写法各要多久；
-  3. 两个阶段：prefill（一次喂进整段提示词）和 decode（一次一个字）的吞吐差别。
-运行：uv run python chapters/10-inference/code/03_kv_cache.py
+This script does three things:
+  1. Parity check: in greedy mode and in sampling mode, the cached version and the naive version
+     generate exactly the same characters.
+  2. Speed: the time that each version needs to generate 64 / 128 / 256 / 512 characters.
+  3. Two phases: the throughput difference between prefill (give the full prompt at once)
+     and decode (one character at a time).
+Run: uv run python chapters/10-inference/code/03_kv_cache.py
 """
 
 from __future__ import annotations
@@ -38,7 +42,7 @@ def generate_naive(model, prompt: list[int], n: int, seed: int = 0, **kw):
     g = torch.Generator().manual_seed(seed)
     ids, processed = list(prompt), 0
     for _ in range(n):
-        logits = model(torch.tensor([ids]))[0, -1]  # 整段重算
+        logits = model(torch.tensor([ids]))[0, -1]  # calculate the full sequence again
         processed += len(ids)
         ids.append(samp.sample_next(logits, g=g, **kw))
     return ids[len(prompt):], processed
@@ -48,13 +52,13 @@ def generate_naive(model, prompt: list[int], n: int, seed: int = 0, **kw):
 def generate_cached(model, prompt: list[int], n: int, seed: int = 0, **kw):
     g = torch.Generator().manual_seed(seed)
     cache = tiny.KVCache(model.c.n_layers)
-    logits = model(torch.tensor([prompt]), cache)[0, -1]  # prefill：整段提示词一次喂进去
+    logits = model(torch.tensor([prompt]), cache)[0, -1]  # prefill: give the full prompt at once
     processed, out = len(prompt), []
     for i in range(n):
         nxt = samp.sample_next(logits, g=g, **kw)
         out.append(nxt)
         if i < n - 1:
-            logits = model(torch.tensor([[nxt]]), cache)[0, -1]  # decode：只喂 1 个新字
+            logits = model(torch.tensor([[nxt]]), cache)[0, -1]  # decode: give only 1 new character
             processed += 1
     return out, processed, cache
 
@@ -87,7 +91,7 @@ def speed_table(model, data):
 
 @torch.no_grad()
 def prefill_vs_decode(model, data, n: int = 256):
-    """同样处理 n 个位置：一次性喂进去（prefill） vs 一个一个喂（decode）。"""
+    """Process the same n positions: all at once (prefill) vs one at a time (decode)."""
     ids = torch.tensor([(data.encode(PROMPT) * 100)[:n]])
 
     def prefill():
@@ -106,29 +110,30 @@ if __name__ == "__main__":
     model, data = tiny.load_or_train(4), tiny.CharData()
     prompt = data.encode(PROMPT)
 
-    print("1. 对拍：缓存版和朴素版生成的 200 个字符是否完全一致")
-    for name, kw in [("贪心", dict(temperature=0)), ("采样 T=1.0 top-p=0.9", dict(temperature=1.0, top_p=0.9))]:
+    print("1. Parity check: do the cached and the naive versions generate the same 200 characters?")
+    for name, kw in [("greedy", dict(temperature=0)), ("sample T=1.0 top-p=0.9", dict(temperature=1.0, top_p=0.9))]:
         a, _ = generate_naive(model, prompt, 200, seed=0, **kw)
         b, _, cache = generate_cached(model, prompt, 200, seed=0, **kw)
-        print(f"  {name:22} 一致：{a == b}   开头：{data.decode(b[:40])!r}")
-    with torch.no_grad():  # 最后一个位置的 logits，两种算法差多少
+        print(f"  {name:22} same: {a == b}   start: {data.decode(b[:40])!r}")
+    with torch.no_grad():  # how much the logits at the last position differ between the two methods
         full = model(torch.tensor([prompt + b]))[0, -1]
         c2 = tiny.KVCache(model.c.n_layers)
         model(torch.tensor([prompt + b[:-1]]), c2)
         inc = model(torch.tensor([[b[-1]]]), c2)[0, -1]
-    print(f"  同一位置的 logits 最大差异 {float((full - inc).abs().max()):.1e}（浮点舍入量级）")
+    print(f"  max logits difference at the same position: {float((full - inc).abs().max()):.1e} "
+          f"(the size of floating-point rounding)")
     L, H, D, T = model.c.n_layers, model.c.n_kv_heads, model.c.head_dim, len(prompt) + 199
-    print(f"  缓存大小 {cache.nbytes()} 字节 = 2 × {L} 层 × {H} 个 KV 头 × {D} × {T} 个位置 × 4 字节"
-          f" = {2 * L * H * D * T * 4}")
+    print(f"  cache size {cache.nbytes()} bytes = 2 × {L} layers × {H} KV heads × {D} × {T} positions"
+          f" × 4 bytes = {2 * L * H * D * T * 4}")
 
-    print("\n2. 测速（贪心，单线程 CPU，取两次中较快的一次）")
-    print("  新生成   朴素(秒)  KV cache(秒)  加速    朴素共处理位置  缓存共处理位置")
+    print("\n2. Speed (greedy, 1 CPU thread, the faster of 2 runs; pos. = positions processed)")
+    print("     new naive (s)   cache (s)  speedup     naive pos.    cached pos.")
     for r in speed_table(model, data):
         print(f"  {r['n']:6d}   {r['naive']:7.2f}   {r['cached']:9.2f}    {r['speedup']:4.1f}×   "
               f"{r['proc_naive']:12,d}   {r['proc_cache']:12,d}")
 
-    print("\n3. prefill vs decode：同样处理 256 个位置")
+    print("\n3. prefill vs decode: process the same 256 positions")
     r = prefill_vs_decode(model, data)
-    print(f"  prefill 一次喂 256 个：{r['prefill'] * 1000:6.1f} ms  → {r['prefill_tps']:8.0f} 位置/秒")
-    print(f"  decode  一次喂 1 个： {r['decode'] * 1000:6.1f} ms  → {r['decode_tps']:8.0f} 位置/秒")
-    print(f"  prefill 的吞吐是 decode 的 {r['prefill_tps'] / r['decode_tps']:.0f} 倍")
+    print(f"  prefill, 256 at a time: {r['prefill'] * 1000:6.1f} ms  → {r['prefill_tps']:8.0f} positions/s")
+    print(f"  decode,  1 at a time:   {r['decode'] * 1000:6.1f} ms  → {r['decode_tps']:8.0f} positions/s")
+    print(f"  prefill throughput is {r['prefill_tps'] / r['decode_tps']:.0f}× the decode throughput")

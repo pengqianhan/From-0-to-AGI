@@ -1,14 +1,18 @@
-"""第 25 章 · 极简代码 2：贪心推测解码——输出和目标模型逐字相同，但更快
+"""Chapter 25 · Minimal code 2: greedy speculative decoding. The output is token-for-token
+identical to the target model, but faster.
 
-每一轮：
-  1. 草稿模型自回归地猜 k 个 token（便宜：它很小）；
-  2. 目标模型把"最后一个已确定的 token + k 个草稿"一次喂进去（一次前向，k+1 个位置并行打分）；
-  3. 从左往右比：草稿 d_i 等于目标在这个位置的 argmax 就接受，遇到第一个不等的就停下，
-     改用目标自己的 argmax（纠正）；k 个全对时，目标在最后一个位置还白送一个 token（奖励）。
-  4. 被拒绝的草稿 token 已经写进了两个模型的 KV cache，要回滚（truncate）。
-每一轮至少产出 1 个 token（纠正或奖励），最多 k+1 个；目标模型每一轮只跑一次。
+Each round:
+  1. The draft model guesses k tokens autoregressively (cheap: the draft is small).
+  2. The target model feeds "the last confirmed token + k drafts" in one forward pass
+     (k+1 positions get scores in parallel).
+  3. Compare from left to right. If draft d_i equals the argmax of the target at that position,
+     accept it. At the first difference, stop and use the argmax of the target (correction).
+     If all k drafts are correct, the target gives one more token free at the last position (bonus).
+  4. The rejected draft tokens are already in the KV caches of both models. Roll them back (truncate).
+Each round produces at least 1 token (correction or bonus) and at most k+1 tokens.
+The target model runs only once per round.
 
-运行：uv run python chapters/25-mtp-speculative-decoding/code/02_greedy_speculative.py
+Run: uv run python chapters/25-mtp-speculative-decoding/code/02_greedy_speculative.py
 """
 
 from __future__ import annotations
@@ -39,7 +43,7 @@ KVCache, truncate = m1.KVCache, m1.truncate
 
 @torch.no_grad()
 def greedy_generate(model, prompt: list[int], n_new: int) -> list[int]:
-    """基线：目标模型带 KV cache 的普通贪心解码，每步一次前向、一个 token。"""
+    """Baseline: normal greedy decoding of the target model with a KV cache. One forward pass, one token per step."""
     cache = KVCache(model.c.n_layers)
     logits = model(torch.tensor([prompt]), cache)[0, -1]
     out = []
@@ -52,41 +56,43 @@ def greedy_generate(model, prompt: list[int], n_new: int) -> list[int]:
 
 @torch.no_grad()
 def speculative_greedy(target, draft, prompt: list[int], n_new: int, k: int, trace=None):
-    """贪心推测解码。返回 (新 token, 统计)。trace 是列表时，逐轮记下 (草稿, 目标的答案, 接受数)。"""
+    """Greedy speculative decoding. Returns (new tokens, statistics).
+
+    If trace is a list, the function records (drafts, answers of the target, number accepted) for each round."""
     seq = list(prompt)
     tc, dc = KVCache(target.c.n_layers), KVCache(draft.c.n_layers)
     stats = dict(rounds=0, proposed=0, accepted=0, examined=0)
     while len(seq) - len(prompt) < n_new:
-        # ── 1. 草稿：先把缓存里还没有的 token 补进去，再一个一个猜 k 个 ──
+        # ── 1. Draft: first feed the tokens that are not in its cache yet, then guess k tokens one by one ──
         logits = draft(torch.tensor([seq[len(dc) :]]), dc)[0, -1]
         drafts = []
         for i in range(k):
             drafts.append(int(logits.argmax()))
             if i < k - 1:
                 logits = draft(torch.tensor([[drafts[-1]]]), dc)[0, -1]
-        # ── 2. 目标：一次前向验证全部 k 个草稿（外加缓存里还没有的已确定 token）──
+        # ── 2. Target: verify all k drafts in one forward pass (plus the confirmed tokens not in its cache) ──
         feed = seq[len(tc) :] + drafts
-        p_logits = target(torch.tensor([feed]), tc)[0, -(k + 1) :]  # 最后 k+1 个位置
-        choice = p_logits.argmax(-1).tolist()  # choice[i] = 目标在"第 i 个草稿"位置的答案
-        # ── 3. 从左往右接受，遇到第一个不一致就停 ──
+        p_logits = target(torch.tensor([feed]), tc)[0, -(k + 1) :]  # The last k+1 positions
+        choice = p_logits.argmax(-1).tolist()  # choice[i] = the answer of the target at the position of draft i
+        # ── 3. Accept from left to right; stop at the first difference ──
         m = 0
         while m < k and drafts[m] == choice[m]:
             m += 1
-        seq += drafts[:m] + [choice[m]]  # m 个草稿 + 1 个纠正（m == k 时是奖励 token）
+        seq += drafts[:m] + [choice[m]]  # m drafts + 1 correction (the bonus token when m == k)
         if trace is not None:
             trace.append((drafts, choice, m))
         stats["rounds"] += 1
         stats["proposed"] += k
         stats["accepted"] += m
-        stats["examined"] += m + (1 if m < k else 0)  # 被比较过的草稿个数
-        # ── 4. 回滚：缓存里只留下"已确定且不是最后一个"的位置 ──
+        stats["examined"] += m + (1 if m < k else 0)  # Number of drafts that were compared
+        # ── 4. Roll back: keep in the cache only the positions that are confirmed and are not the last one ──
         truncate(tc, len(seq) - 1)
         truncate(dc, min(len(dc), len(seq) - 1))
     return seq[len(prompt) :][:n_new], stats
 
 
 def prompts(n: int = 4, length: int = 40) -> list[list[int]]:
-    """从验证集里截几段做提示词。"""
+    """Cut a few pieces from the validation set to use as prompts."""
     data = m1.ch10.CharData()
     val = data.val.tolist()
     step = len(val) // (n + 1)
@@ -94,14 +100,16 @@ def prompts(n: int = 4, length: int = 40) -> list[list[int]]:
 
 
 def timed(fn, *args) -> tuple[float, object]:
-    """返回 (本进程 CPU 时间, 结果)。共享机器上墙钟时间主要反映排队，见 01 的说明。"""
+    """Returns (CPU time of this process, result).
+
+    On a shared machine, the wall-clock time shows mostly the wait in the queue. See the note in 01."""
     t0 = time.process_time()
     out = fn(*args)
     return time.process_time() - t0, out
 
 
 def expected_tokens(alpha: float, k: int) -> float:
-    """Leviathan 等人的公式 (1)：每轮期望产出 (1 − α^{k+1}) / (1 − α) 个 token。"""
+    """Formula (1) of Leviathan et al.: each round gives (1 − α^{k+1}) / (1 − α) tokens on average."""
     return (1 - alpha ** (k + 1)) / (1 - alpha)
 
 
@@ -111,14 +119,14 @@ if __name__ == "__main__":
     P = prompts()
     N = 200
 
-    # ── 正确性：贪心推测解码的输出必须和目标模型自己贪心解码逐字相同 ──
+    # ── Correctness: greedy speculative decoding must give the same tokens as greedy decoding of the target ──
     base_out = [greedy_generate(target, p, N) for p in P]
     for k in (1, 3, 5, 8):
         same = all(speculative_greedy(target, draft, p, N, k)[0] == b for p, b in zip(P, base_out))
-        print(f"k={k}：{len(P)} 段提示词 × {N} 个 token，与目标模型贪心解码逐字相同：{same}")
-    print("\n示例（提示词 + 生成）：\n" + data.decode(P[0]) + "|" + data.decode(base_out[0][:120]))
+        print(f"k={k}: {len(P)} prompts × {N} tokens, identical to greedy decoding of the target model: {same}")
+    print("\nExample (prompt + generated text):\n" + data.decode(P[0]) + "|" + data.decode(base_out[0][:120]))
 
-    # ── 接受率与速度：交替重复测 3 轮，取中位数，减轻 CPU 负载波动 ──
+    # ── Acceptance rate and speed: measure 3 times in turns and take the median. This reduces the effect of CPU load changes. ──
     ks = (1, 2, 3, 4, 5, 6, 8)
     t_base, t_spec, st = [], {k: [] for k in ks}, {}
     for _ in range(3):
@@ -135,16 +143,16 @@ if __name__ == "__main__":
     tb = statistics.median(t_base)
     c = m1.forward_time(draft, 200, 1) / m1.forward_time(target, 200, 1)
     print(
-        f"\n目标模型普通贪心解码：{len(P) * N} 个 token 用时 {tb:.2f} s（中位数）；成本系数 c ≈ {c:.2f}"
+        f"\nNormal greedy decoding of the target model: {len(P) * N} tokens in {tb:.2f} s (median); cost coefficient c ≈ {c:.2f}"
     )
     print(
-        f"{'k':>2} {'逐token接受率α':>13} {'每轮产出(实测)':>13} {'公式(1)':>8} "
-        f"{'目标前向次数':>11} {'CPU 时间 s':>7} {'加速比':>7} {'公式预测':>8}"
+        f"{'k':>2} {'accept α':>13} {'tok/round':>13} {'eq. (1)':>8} "
+        f"{'target fwd':>11} {'CPU s':>7} {'speedup':>7} {'theory':>8}"
     )
     for k in ks:
         s = st[k]
         alpha = s["accepted"] / s["examined"]
-        per_round = (s["accepted"] + s["rounds"]) / s["rounds"]  # 每轮 = 接受数 + 1
+        per_round = (s["accepted"] + s["rounds"]) / s["rounds"]  # Per round = number accepted + 1
         ts = statistics.median(t_spec[k])
         pred = expected_tokens(alpha, k) / (k * c + 1)
         print(
@@ -152,6 +160,7 @@ if __name__ == "__main__":
             f"{s['rounds']:11d} {ts:7.2f} {tb / ts:6.2f}× {pred:7.2f}×"
         )
     print(
-        "（'目标前向次数'是 4 段 × 200 个 token 一轮测量的次数；普通解码需要 800 次。"
-        "\n  计时是进程 CPU 时间，仍有波动，加速比只看趋势。公式预测假设验证 k+1 个 token 和生成 1 个一样贵。）"
+        "('target fwd' is the count for one measurement of 4 prompts × 200 tokens; normal decoding needs 800."
+        "\n  The times are process CPU times and still change. Look only at the trend of the speedup."
+        "\n  The prediction assumes that verifying k+1 tokens costs the same as generating 1.)"
     )

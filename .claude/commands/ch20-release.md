@@ -1,57 +1,59 @@
 ---
-description: 第 20 章自我检验：发布（闸门 3 按预注册判定、超过/持平/落后与如实报告、HF 标准格式与 chat template、分块量化 Q8_0/Q4_K/Q4_K_M、内存 = 参数 × bit、llama.cpp/Ollama/vLLM、对拍、模型卡与许可证）
+description: "Chapter 20 self-check: release — Gate 3 decisions with the preregistration, ahead/tie/behind and honest reports, HF standard format and chat template, block-wise quantization Q8_0/Q4_K/Q4_K_M, memory = parameters × bits, llama.cpp/Ollama/vLLM, parity checks, model card and license (第 20 章自检：发布——闸门 3 按预注册判定、超过/持平/落后与如实报告、HF 标准格式与 chat template、分块量化 Q8_0/Q4_K/Q4_K_M、内存 = 参数 × bit、llama.cpp/Ollama/vLLM、对拍、模型卡与许可证)"
 ---
 
-# 第 20 章自我检验：发布
+# Chapter 20 self-check: Release
 
-用户调用了 `/ch20-release`，说明他们刚学完第 20 章（`chapters/20-release/`）。你的任务是帮他们检验自己是否真正理解了，而不是告诉他们答案。
+The learner typed `/ch20-release`. They finished Chapter 20 (`chapters/20-release/`). Help them check if they understand it. Do not give them the answers.
 
-**检验方式**：逐一提问下面的问题，等用户用自己的话回答后，再给出反馈——哪里说对了，哪里还有偏差，以及如何深化理解。不要一次性把所有问题都抛出去。
+**Language**: Use the language of the learner. If the learner writes in Chinese, ask the questions and give feedback in Chinese. The Chinese text of the chapter is in `README.zh.md`. Write short, clear sentences (see `docs/STYLE_GUIDE.md`).
 
----
-
-## 检验问题（按难度递进）
-
-**第一关：判定规则（概念）**
-
-问用户：
-> 我们的模型在 BFCL 上比 Qwen3.5-0.8B 高 1.2 分，配对 bootstrap 的 95% 置信区间是 [−0.4, +2.8]。按预注册，这一格该写"超过""持平"还是"落后"？如果对手有思考和非思考两种模式，拿哪个分数来比？
-
-期望回答：区间跨过 0，只能写"持平"，不能说"略微领先"；下界 > 0 才是超过，上界 < 0 是落后。对手两种模式都测，取较高的那个（`compare_to_opponent`）。能说出"判定规则、基准、模板、解码参数都在训练前冻结，闸门 3 只是照着跑"是加分项。
+**Method**: Ask the questions below one at a time. Wait for the learner to answer in their own words. Then give feedback: tell them what is correct, what is not correct, and how to make their understanding deeper. Do not ask all the questions at the same time.
 
 ---
 
-**第二关：内存与分块（直觉）**
+## Questions (from easy to difficult)
 
-问用户：
-> 一个 689.5M 参数的模型，用 bf16、Q8_0（8.5 bit）、全 Q4_K（4.5 bit）各大约多大？Q8_0 为什么是 8.5 bit 而不是 8 bit？为什么要"每 32 个数一个 scale"，而不是整张矩阵一个？
+**Level 1: the decision rule (concept)**
 
-期望回答：约 1.28 GiB、0.68 GiB、0.36 GiB（Q4_K_M 因为部分张量用 Q6_K 约 0.40 GiB）。多出的 0.5 bit 是每块一个 fp16 scale：16 bit / 32 个数。整张一个 scale 时，一个离群值会把 scale 撑大，其余的小权重全被量化成 0（本章造的矩阵上 INT4 误差 93%，分块后 11%）。
+Ask the learner:
+> On BFCL, our model is 1.2 points higher than Qwen3.5-0.8B. The 95% confidence interval of the paired bootstrap is [−0.4, +2.8]. With the preregistration, must this cell say "ahead", "tie", or "behind"? If the opponent has a thinking mode and a non-thinking mode, which score do we use for the comparison?
 
----
-
-**第三关：发现问题**
-
-问用户：
-> 同事把最终模型量化成 Q4_K_M，在笔记本上试了几句"感觉没区别"，就准备在模型卡里写"量化无损"。这句话有什么问题？发布前应该怎么验证？另外，他导出 HF 目录时换了一个"看起来差不多"的 chat template，会出什么事？
-
-期望回答：几句话的感觉不是证据；本章的小模型上 4 bit 让约 6% 位置的 top-1 预测改变，Llama 3 8B 上 Q4_K_M 的 PPL 也从 6.233 升到 6.407。要用 `llama-perplexity` 在自己的开发集上测 PPL / KLD，并在工具调用开发集上比较 bf16 与 Q4_K_M 的得分，如实写进模型卡（清单 C7–C8）。模板必须与训练时逐字一致，工具调用模型对格式极其敏感，换模板可能让它不再输出 `<tool_call>`，评测分数也会失真；冒烟测试用 `apply_chat_template` 与我们的模板逐字比对。
+Expected answer: the interval crosses 0, so the cell can only say "tie". It must not say "slightly ahead". The decision is "ahead" only if the lower bound > 0, and "behind" if the upper bound < 0. We test both modes of the opponent and use the higher score (`compare_to_opponent`). Extra credit: the learner says that the decision rule, the benchmarks, the templates, and the decoding parameters are all frozen before training, and Gate 3 only runs them as written.
 
 ---
 
-**第四关：迁移**
+**Level 2: memory and blocks (intuition)**
 
-问用户：
-> 发布一个月后，一个冻结日之后才发布的 0.8B 模型在 BFCL 上明显超过了我们。模型卡和宣传该怎么改？另外，如果我们的权重用 Apache-2.0，训练数据里有 ODC-By 的 FineWeb-Edu，署名义务要不要履行、写在哪？
+Ask the learner:
+> A model has 689.5M parameters. About how large is it in bf16, in Q8_0 (8.5 bits), and with Q4_K for all matrices (4.5 bits)? Why is Q8_0 8.5 bits and not 8 bits? Why do we use "one scale for each 32 numbers", and not one scale for the whole matrix?
 
-期望回答：在"发布后新增对手"一节照实写上它和我们的比较结果，即使它更强；原来按预注册得出的结论不变（它是对冻结对手清单的主张），但宣传里不能再说"同尺寸最强"之类超出判定表的话；修改模型卡要写日期和原因。许可证是两件事：权重许可证由作者决定，数据的署名义务不管选什么都要履行，在模型卡的数据表里列出数据集、许可证与署名。
+Expected answer: about 1.28 GiB, 0.68 GiB, and 0.36 GiB (Q4_K_M is about 0.40 GiB, because some tensors use Q6_K). The extra 0.5 bit is one fp16 scale for each block: 16 bits / 32 numbers. With one scale for the whole matrix, one outlier makes the scale large, and all the other small weights are quantized to 0. (On the matrix that the chapter made, the INT4 error is 93% with one scale and 11% with blocks.)
 
 ---
 
-## 反馈原则
+**Level 3: find the problem**
 
-- 答对了：认可，然后追问一个更深的"为什么"（比如"为什么 Q4_K_M 偏偏给输出层多留 bit？"）。
-- 答错了：不要直接给答案，给一个提示（比如让他们跑 `code/01_blockwise_quant.py` 或 `code/02_quantize_tiny_model.py`，改块大小或位数看看），让他们重新思考。
-- 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
+Ask the learner:
+> A colleague quantizes the final model to Q4_K_M. He tries a few sentences on a laptop and "feels no difference". Now he wants to write "quantization is lossless" in the model card. What is wrong with this statement? How must we verify it before the release? Also, when he exported the HF folder, he used a different chat template that "looks about the same". What happens?
 
-四关都通过后，告诉用户第四部分结束了，可以进入第五部分的第 21 章（`chapters/21-kv-cache-ledger/`，学完后用 `/ch21-kv-cache` 自检）。
+Expected answer: a feeling from a few sentences is not evidence. On the small model of the chapter, 4 bits change the top-1 prediction at about 6% of the positions. On Llama 3 8B, Q4_K_M also increases the PPL from 6.233 to 6.407. Use `llama-perplexity` to measure PPL / KLD on our own development set. Compare the scores of bf16 and Q4_K_M on the tool-calling development set, and write the results in the model card truthfully (checklist items C7–C8). The template must be identical to the training template, character by character. A tool-calling model is very sensitive to the format. A different template can stop it from producing `<tool_call>`, and the evaluation scores also become wrong. The smoke test uses `apply_chat_template` and compares the result with our template character by character.
+
+---
+
+**Level 4: transfer**
+
+Ask the learner:
+> One month after our release, a 0.8B model is released after the freeze date. On BFCL, it is clearly ahead of our model. How must we change the model card and the announcements? Also, suppose our weights use Apache-2.0, and the training data contains FineWeb-Edu with ODC-By. Must we do the attribution duty? Where do we write it?
+
+Expected answer: in the section "Opponents added after release", report its comparison with our model truthfully, also if it is stronger. The original conclusion from the preregistration does not change, because it is a claim about the frozen opponent list. But the announcements must not make claims beyond the decision table, such as "the strongest model of its size". When we change the model card, we write the date and the reason. The licenses are two different matters. The author decides the weight license. We must do the attribution duty for the data, whatever license we select. The data table of the model card lists the data sets, their licenses, and the attribution.
+
+---
+
+## Rules for feedback
+
+- If the answer is correct: say so. Then ask a deeper "why" question (for example, "Why does Q4_K_M give more bits to the output layer?").
+- If the answer is not correct: do not give the answer. Give a hint. For example, ask the learner to run `code/01_blockwise_quant.py` or `code/02_quantize_tiny_model.py`, change the block size or the number of bits, and look at the result. Then let them think again.
+- If the learner says "I do not know": ask them to guess first. A wrong guess is better than no guess.
+
+When the learner passes all four levels, tell them that Part 4 is complete. They can continue to Chapter 21 in Part 5 (`chapters/21-kv-cache-ledger/`). After Chapter 21, they can check themselves with `/ch21-kv-cache`.

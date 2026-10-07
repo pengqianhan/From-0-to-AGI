@@ -1,10 +1,14 @@
-"""第 16 章 · 极小配置演示：看看冒烟测试里 SFT 过的 tiny 模型（约 1.3M 参数）到底写出了什么
+"""Chapter 16 · Tiny-configuration demo: what does the tiny model (about 1.3M parameters) write
+after SFT in the smoke test?
 
-读取 `uv run python -m zero.smoke` 留下的 out/smoke/sft/ckpt，在固定 dev 集的前 6 道题上贪心生成，
-和标准答案并排打印；再打印冒烟测试记录的 SFT 指标。没有 out/smoke 就提示先跑冒烟测试（约 15 分钟以上）。
+The script reads out/smoke/sft/ckpt, which `uv run python -m zero.smoke` writes. It generates
+greedily on the first 6 questions of the fixed dev set and prints each output next to the reference
+answer. Then it prints the SFT metrics that the smoke test recorded. If out/smoke does not exist,
+the script tells you to run the smoke test first (15 minutes or more).
 
-这是**极小配置演示**：只说明生产级代码通路是通的，不代表主线模型的任何结果。
-运行：uv run python chapters/16-sft/code/05_smoke_samples.py
+This is a **tiny-configuration demo**: it only shows that the production code path works.
+It does not show any result of the main-line model.
+Run: uv run python chapters/16-sft/code/05_smoke_samples.py
 """
 
 from __future__ import annotations
@@ -15,7 +19,7 @@ from pathlib import Path
 
 import torch
 
-torch.set_num_threads(1)  # 构建环境多任务共享 CPU；读者本机可以删掉这行
+torch.set_num_threads(1)  # the build machine shares its CPU between many jobs; on your computer, you can remove this line
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 SMOKE = ROOT / "out" / "smoke"
@@ -55,13 +59,13 @@ def samples(n: int = 6) -> list[dict]:
 if __name__ == "__main__":
     nums = smoke_numbers()
     if nums is None or not (SMOKE / "sft" / "ckpt").exists():
-        print("没有找到 out/smoke/：先运行 `uv run python -m zero.smoke`（CPU 上约 15 分钟以上）")
+        print("out/smoke/ not found. First run `uv run python -m zero.smoke` (15 minutes or more on a CPU).")
         raise SystemExit(0)
-    print("【极小配置演示】冒烟测试的 SFT 阶段：", nums["sft"])
-    print("打包统计：", nums["data"])
-    print("dev 集工具调用（30 题）：", nums["eval"])
+    print("[Tiny-configuration demo] SFT stage of the smoke test:", nums["sft"])
+    print("Packing statistics:", nums["data"])
+    print("Tool calls on the dev set (30 questions):", nums["eval"])
     print()
     for r in samples():
-        print("问：", r["q"])
-        print("  标准：", json.dumps(r["gold"], ensure_ascii=False))
-        print("  模型：", repr(r["out"]))
+        print("Q:", r["q"])
+        print("  reference:", json.dumps(r["gold"], ensure_ascii=False))
+        print("  model:", repr(r["out"]))

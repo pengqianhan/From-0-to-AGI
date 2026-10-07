@@ -1,9 +1,10 @@
-"""第 9 章 · 极简代码 3：一次前向的完整张量形状 + 参数都花在哪
+"""Chapter 9 · Minimal code 3: all tensor shapes in one forward pass + where the parameters go
 
-1. 在极简模型上挂钩子（forward hook），把一次前向里每一步的真实形状打印出来；
-2. 同一张数据流换成主线模型的尺寸（configs/main/pretrain.toml），逐步写出形状；
-3. 参数账本：SwiGLU 为什么取 8/3·d；共享 embedding 在不同规模上省了多少。
-运行：uv run python chapters/09-modern-transformer/code/03_shapes.py
+1. Put hooks (forward hooks) on the minimal model. Print the real shape at each step of one forward pass;
+2. Show the same data flow with the sizes of the main-line model (configs/main/pretrain.toml),
+   step by step;
+3. Parameter ledger: why SwiGLU uses 8/3·d; how many parameters tied embeddings save at different sizes.
+Run: uv run python chapters/09-modern-transformer/code/03_shapes.py
 """
 
 import importlib.util
@@ -12,7 +13,7 @@ from pathlib import Path
 
 import torch
 
-torch.set_num_threads(1)  # 构建环境多任务共享 CPU；本机可以删掉这行
+torch.set_num_threads(1)  # many jobs share the CPU of the build machine; on your computer you can remove this line
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from zero.config import ModelConfig, load_model_config  # noqa: E402
@@ -28,7 +29,7 @@ def shape(t):
     return "(" + ", ".join(str(s) for s in t.shape) + ")"
 
 
-# ── 1. 极简模型上的真实形状 ──────────────────────────────────────────────────
+# ── 1. Real shapes in the minimal model ──────────────────────────────────────
 torch.manual_seed(0)
 model = tiny.TinyTransformer(tiny.Config()).eval()
 B, T = 2, 16
@@ -43,51 +44,51 @@ for name in watch:
         lambda m, i, o, name=name: rows.append((name, shape(i[0]), shape(o))))
 with torch.no_grad():
     model(torch.randint(0, 256, (B, T)))
-print(f"1) 极简模型一次前向（B={B}, T={T}, D=128, H=4, head_dim=32, FFN=352, V=256）：")
-print(f"   {'模块':<22}{'输入形状':<18}输出形状")
+print(f"1) One forward pass of the minimal model (B={B}, T={T}, D=128, H=4, head_dim=32, FFN=352, V=256):")
+print(f"   {'module':<22}{'input shape':<18}output shape")
 for name, i, o in rows:
     print(f"   {name:<22}{i:<18}{o}")
 
-# ── 2. 主线模型的尺寸 ────────────────────────────────────────────────────────
+# ── 2. Sizes of the main-line model ──────────────────────────────────────────
 m = load_model_config(str(ROOT / "configs/main/pretrain.toml"))
 Bm, Tm = 8, 4096
 D, H, KV, hd, F, V = m.dim, m.n_heads, m.n_kv_heads, m.head_dim, m.ffn_dim, m.vocab_size
-print(f"\n2) 主线模型（configs/main/pretrain.toml，micro batch B={Bm}, T={Tm}）：")
+print(f"\n2) Main-line model (configs/main/pretrain.toml, micro batch B={Bm}, T={Tm}):")
 flow = [
     ("token id", f"({Bm}, {Tm})"),
-    ("embedding 查表", f"({Bm}, {Tm}, {D})"),
-    (f"× {m.n_layers} 层  RMSNorm", f"({Bm}, {Tm}, {D})"),
-    ("  q = x·Wq → 拆头", f"({Bm}, {H}, {Tm}, {hd})"),
-    ("  k, v = x·Wk, x·Wv", f"({Bm}, {KV}, {Tm}, {hd})  ← GQA：{KV} 个 K/V 头（第 10 章）"),
-    ("  QK-Norm + RoPE", "形状不变"),
-    ("  注意力分数 QKᵀ", f"({Bm}, {H}, {Tm}, {Tm})"),
-    ("  加权求和 → 合并头 → Wo", f"({Bm}, {Tm}, {H * hd}) → ({Bm}, {Tm}, {D})"),
-    ("  残差相加", f"({Bm}, {Tm}, {D})"),
-    ("  SwiGLU: gate、up", f"({Bm}, {Tm}, {F})"),
-    ("  down → 残差相加", f"({Bm}, {Tm}, {D})"),
-    ("最后 RMSNorm", f"({Bm}, {Tm}, {D})"),
+    ("embedding lookup", f"({Bm}, {Tm}, {D})"),
+    (f"× {m.n_layers} layers  RMSNorm", f"({Bm}, {Tm}, {D})"),
+    ("  q = x·Wq → split heads", f"({Bm}, {H}, {Tm}, {hd})"),
+    ("  k, v = x·Wk, x·Wv", f"({Bm}, {KV}, {Tm}, {hd})  ← GQA: {KV} K/V heads (Chapter 10)"),
+    ("  QK-Norm + RoPE", "shape does not change"),
+    ("  attention scores QKᵀ", f"({Bm}, {H}, {Tm}, {Tm})"),
+    ("  weights·V → merge → Wo", f"({Bm}, {Tm}, {H * hd}) → ({Bm}, {Tm}, {D})"),
+    ("  add to residual", f"({Bm}, {Tm}, {D})"),
+    ("  SwiGLU: gate, up", f"({Bm}, {Tm}, {F})"),
+    ("  down → add to residual", f"({Bm}, {Tm}, {D})"),
+    ("final RMSNorm", f"({Bm}, {Tm}, {D})"),
     ("lm_head → logits", f"({Bm}, {Tm}, {V})"),
 ]
 for step, s in flow:
     print(f"   {step:<26}{s}")
 gb = Bm * Tm * V * 4 / 2**30
-print(f"   注意：logits 有 {Bm * Tm * V / 1e9:.2f}G 个数，按 float32 存要 {gb:.1f} GiB —— 词表越大，最后一步越贵")
+print(f"   Note: the logits have {Bm * Tm * V / 1e9:.2f}G numbers. In float32, they need {gb:.1f} GiB. A larger vocabulary makes the last step more expensive.")
 
-# ── 3. 参数账本 ──────────────────────────────────────────────────────────────
+# ── 3. Parameter ledger ──────────────────────────────────────────────────────
 d = 1280
-print(f"\n3) FFN 参数（d={d}）：经典 MLP 4d 两个矩阵 = {2 * d * 4 * d / 1e6:.2f}M；"
-      f"SwiGLU 8/3·d 三个矩阵 = {3 * d * (8 * d // 3) / 1e6:.2f}M（几乎相等，这就是 8/3 的来历）")
-print(f"   主线模型实际取 ffn_dim={F}（= {F / D:.2f}·d）")
+print(f"\n3) FFN parameters (d={d}): classic MLP, 4d, two matrices = {2 * d * 4 * d / 1e6:.2f}M; "
+      f"SwiGLU, 8/3·d, three matrices = {3 * d * (8 * d // 3) / 1e6:.2f}M (almost equal: this is where 8/3 comes from)")
+print(f"   The main-line model uses ffn_dim={F} (= {F / D:.2f}·d)")
 
 qwen3_06b = ModelConfig(vocab_size=151936, dim=1024, n_layers=28, n_heads=16, n_kv_heads=8,
-                        head_dim=128, ffn_dim=3072, tie_embeddings=True)  # 来自官方 config.json
-cases = [("本章极简模型", tiny_cfg := ModelConfig(vocab_size=256, dim=128, n_layers=4, n_heads=4,
+                        head_dim=128, ffn_dim=3072, tie_embeddings=True)  # from the official config.json
+cases = [("Ch. 9 minimal model", tiny_cfg := ModelConfig(vocab_size=256, dim=128, n_layers=4, n_heads=4,
                                                   n_kv_heads=4, ffn_dim=352, tie_embeddings=True)),
          ("configs/tiny", load_model_config(str(ROOT / "configs/tiny/pretrain.toml"))),
-         ("Qwen3-0.6B（官方配置）", qwen3_06b), ("configs/main（主线）", m)]
-print(f"\n   {'模型':<20}{'词表矩阵 V×d':>13}{'共享时总参数':>13}{'占比':>7}{'不共享时':>10}   实际")
+         ("Qwen3-0.6B official", qwen3_06b), ("main (configs/main)", m)]
+print(f"\n   {'model':<20}{'vocab V×d':>13}{'tied total':>13}{'share':>7}{'if untied':>10}   actual")
 for name, cfg in cases:
-    actual = "共享" if cfg.tie_embeddings else "不共享"
+    actual = "tied" if cfg.tie_embeddings else "untied"
     cfg.tie_embeddings = True
     c = count_params(cfg)
     tot, emb = c["total"], c["embedding"]

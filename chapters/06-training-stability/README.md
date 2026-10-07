@@ -1,101 +1,109 @@
-# 第 6 章：让训练稳定 —— 初始化、归一化、残差、AdamW 与学习率调度
+# Chapter 6: Stable training — Initialization, normalization, residual connections, AdamW, and learning-rate schedules
 
-> **一句话目标**：读完这一章，你能说清楚一个几十层的网络为什么会"训不动"，能亲手用初始化、RMSNorm、残差连接、AdamW、warmup + 衰减、梯度裁剪把它救回来，并能用对比实验指出每一招各自救了什么。
+**English** · [中文](README.zh.md)
 
-📺 **本章视频**：待发布（本地渲染：`bash chapters/06-training-stability/video/build.sh`）
-🧪 **本章自检**：学完后在 Claude Code 里输入 `/ch06-training-stability`
+> **Goal**: After this chapter, you can explain why a network with tens of layers "does not train". You can fix it yourself with initialization, RMSNorm, residual connections, AdamW, warmup + decay, and gradient clipping. You can also use comparison experiments to show what each method fixes.
+
+📺 **Video**: Not published yet. To render it on your computer, run `bash chapters/06-training-stability/video/build.sh`.
+🧪 **Self-check**: After the chapter, type `/ch06-training-stability` in Claude Code.
 
 ---
 
-上一章我们用 softmax 和交叉熵训练了一个分类器。到这里，"训练一个模型"的四步（模型、损失、梯度、更新）已经全部就位，网络也能自动求梯度了。但我们用过的网络都只有两三层。大语言模型动辄几十层：Qwen3-0.6B 有 28 层，Llama 3 405B 有 126 层。
+In the previous chapter, we trained a classifier with softmax and cross-entropy. Now all four steps of training a model (model, loss, gradient, update) are in place, and the network calculates its gradients automatically. But all our networks had only two or three layers. Large language models often have tens of layers: Qwen3-0.6B has 28 layers, and Llama 3 405B has 126 layers.
 
-这一章要解决的问题是：**网络一加深，训练就会失败，怎么办？** 我们会先看它怎么失败，再用六个现在所有大模型都在用的技巧逐个修好。第 1 章留下的那个问题也在这里收尾：学习率太大会发散，那训练大模型时学习率该怎么安排？
+This chapter solves one problem: **when the network becomes deeper, training fails. What can we do?** First, we see how training fails. Then we fix it with six methods that all large models use today, one method at a time.
 
-## 1. 问题：30 层之后，信号去哪了
+This chapter also closes the question from Chapter 1. A learning rate that is too large causes divergence. So how do we set the learning rate when we train a large model?
 
-先做一个最简单的实验。搭一个 30 层的 MLP，每层宽 256，每层都是"乘矩阵 + ReLU"：
+## 1. The problem: where does the signal go after 30 layers?
+
+Start with the simplest experiment. Build a 30-layer MLP with a width of 256 in each layer. Each layer does "multiply by a matrix, then ReLU":
 
 ```
 h_l = ReLU(h_{l-1} · W_l)
 ```
 
-不训练，只把一批随机输入（标准差 1）送进去，逐层看两件事：前向时每层输出的标准差，反向时误差信号 `∂L/∂h_l` 的标准差。运行：
+Do not train the network. Send a batch of random inputs (standard deviation 1) through it, and look at two values in each layer. In the forward pass, look at the standard deviation of the output of each layer. In the backward pass, look at the standard deviation of the error signal `∂L/∂h_l`. Run:
 
 ```bash
 uv run python chapters/06-training-stability/code/01_signal_propagation.py
 ```
 
-权重按 `N(0, 1)` 初始化时（输出节选，完整见脚本）：
+The weights come from `N(0, 1)`. The output is (a part of it; the script prints the full output):
 
-| 层号 | 1 | 10 | 20 | 30 |
+| Layer | 1 | 10 | 20 | 30 |
 |---|---:|---:|---:|---:|
-| 激活 std | 9.35 | 2.59 × 10¹⁰ | 7.66 × 10²⁰ | 2.27 × 10³¹ |
-| 误差信号 std | 1.79 × 10²⁹ | 6.48 × 10¹⁹ | 2.33 × 10⁹ | 0.0622 |
+| Activation std | 9.35 | 2.59 × 10¹⁰ | 7.66 × 10²⁰ | 2.27 × 10³¹ |
+| Error signal std | 1.79 × 10²⁹ | 6.48 × 10¹⁹ | 2.33 × 10⁹ | 0.0622 |
 
-每过一层，数值放大约 11 倍，30 层之后变成 10³¹。反向传播时，误差信号从第 30 层往回走，同样一路放大，到第 1 层已经是 10²⁹。用这样的梯度更新参数，第一步就会溢出成 NaN。
+Each layer multiplies the values by about 11. After 30 layers, the values are 10³¹. In the backward pass, the error signal goes back from layer 30, and it also becomes larger at each layer. At layer 1, it is 10²⁹. If we update the parameters with these gradients, the first step overflows to NaN.
 
-把权重改小，`N(0, 0.01²)`：激活从 0.0935 一路缩到第 30 层的 2.27 × 10⁻²⁹，误差信号在第 1 层只剩 1.79 × 10⁻²⁹。这叫**梯度消失（vanishing gradient）**：前面的层根本收不到学习信号。上面放大的情况则叫**梯度爆炸（exploding gradient）**。
+Now make the weights smaller, `N(0, 0.01²)`. The activations decrease from 0.0935 to 2.27 × 10⁻²⁹ at layer 30. The error signal at layer 1 is only 1.79 × 10⁻²⁹. This is the **vanishing gradient** problem: the first layers receive almost no learning signal. The first case, with the very large values, is the **exploding gradient** problem.
 
-原因很朴素。一层就是一次乘法，30 层就是连乘 30 次。每层的放大倍数只要稍微偏离 1，比如 1.1 或 0.9，连乘 30 次就是 17 倍或 0.04 倍；偏离得多，就是天文数字。**深度把任何一点尺度偏差都放大成指数级的偏差。**
+The cause is basic arithmetic. One layer is one multiplication, so 30 layers are 30 multiplications in a sequence. Let the gain of each layer be a little different from 1, for example 1.1 or 0.9. Then 30 multiplications give 17× or 0.04×. If the gain is far from 1, the result is extremely large or extremely small. **Depth changes any small error in scale into an exponential error.**
 
-这一章的六个技巧，都在回答同一个问题：怎么让信号在几十层里既不爆炸也不消失，并且让参数更新的步子始终可控。
+The six methods in this chapter all answer one question: how do we keep the signal from exploding or vanishing over tens of layers? And how do we keep the size of each parameter update under control?
 
-## 2. 初始化：让每一层"不放大也不缩小"
+## 2. Initialization: keep the scale the same in each layer
 
-### 2.1 直觉与公式
+### 2.1 Intuition and formula
 
-输入 `h` 的每个分量方差是 `v`，乘上一个 `fan_in × fan_out` 的随机矩阵（元素方差 `σ²`）后，每个输出分量是 `fan_in` 项之和，方差变成 `fan_in · σ² · v`。想让方差不变，就要 `fan_in · σ² = 1`，这就是 **Xavier 初始化**（Glorot & Bengio, 2010）的思路。
+Let each component of the input `h` have the variance `v`. Multiply `h` by a random `fan_in × fan_out` matrix whose elements have the variance `σ²`. Each output component is a sum of `fan_in` terms, so its variance is `fan_in · σ² · v`. To keep the variance the same, we need `fan_in · σ² = 1`. This is the idea of **Xavier initialization** (Glorot & Bengio, 2010).
 
-ReLU 会把一半的值砍成 0，方差再减半。补回这个 1/2，就得到 **Kaiming 初始化**（He et al., 2015）：
+ReLU sets half of the values to 0, so the variance becomes half again. Add back this factor of 1/2, and you get **Kaiming initialization** (He et al., 2015):
 
 ```
-Var(W) = 2 / fan_in，也就是 std = sqrt(2 / fan_in)
+Var(W) = 2 / fan_in, that is, std = sqrt(2 / fan_in)
 ```
 
-对应代码只有一行：
+The code is one line:
 
 ```python
 def kaiming_std(fan_in: int = WIDTH) -> float:
     return math.sqrt(2 / fan_in)      # Var(W) = 2 / fan_in
 ```
 
-### 2.2 实验
+### 2.2 Experiment
 
-同一个 30 层网络，换五种初始化（`01_signal_propagation.py` 的输出）：
+We use the same 30-layer network with five initializations (the output of `01_signal_propagation.py`):
 
-| 初始化 | 权重 std | 每层放大倍数 | 第 30 层激活 std | 误差信号 第 1 层 / 第 30 层 |
+| Initialization | Weight std | Gain per layer | Activation std at layer 30 | Error signal, layer 1 / layer 30 |
 |---|---:|---:|---:|---:|
 | std = 1.0 | 1 | 11.3 | 2.27 × 10³¹ | 2.87 × 10³⁰ |
 | std = 0.01 | 0.01 | 0.113 | 2.27 × 10⁻²⁹ | 2.87 × 10⁻²⁸ |
 | std = 0.02 | 0.02 | 0.226 | 2.44 × 10⁻²⁰ | 1.54 × 10⁻¹⁹ |
-| Xavier，sqrt(1/fan_in) | 0.0625 | 0.707 | 1.71 × 10⁻⁵ | 3.46 × 10⁻⁵ |
-| **Kaiming，sqrt(2/fan_in)** | **0.0884** | **1.000** | **0.56** | **0.801** |
+| Xavier, sqrt(1/fan_in) | 0.0625 | 0.707 | 1.71 × 10⁻⁵ | 3.46 × 10⁻⁵ |
+| **Kaiming, sqrt(2/fan_in)** | **0.0884** | **1.000** | **0.56** | **0.801** |
 
-"每层放大倍数"是 `std · sqrt(fan_in / 2)` 的理论值，30 次方就能解释表里的数量级。Kaiming 让放大倍数恰好是 1：30 层之后激活还在 0.56，误差信号从第 30 层传回第 1 层还剩 80%。Xavier 只差一个因子 2，每层 0.707，30 层后就只剩十万分之几。**初始化的尺度必须跟着 fan_in 和激活函数一起算，不能随手写一个数。**
+The "gain per layer" is the value from theory, `std · sqrt(fan_in / 2)`. Its 30th power explains the orders of magnitude in the table. With Kaiming, the gain is exactly 1. After 30 layers, the activation std is still 0.56, and 80% of the error signal from layer 30 arrives back at layer 1. Xavier is different only by a factor of 2, which gives a gain of 0.707 per layer. After 30 layers, only about 10⁻⁵ of the signal is left.
 
-### 2.3 那大模型为什么都用 0.02？
+**Calculate the scale of the initialization from fan_in and the activation function. Do not choose a number without a reason.**
 
-打开开源模型的配置文件，常见 `"initializer_range": 0.02`：Qwen3-0.6B、Gemma 3 1B、OLMo 2、SmolLM3 的 `config.json` 里都是 0.02，OLMo 2 的技术报告也明确写了"所有参数用均值 0、标准差 0.02 的正态分布初始化"。
+### 2.3 Then why do large models all use 0.02?
 
-但上表里 std = 0.02 的普通网络，30 层后信号只剩 10⁻²⁰。这不矛盾：大模型不是普通堆叠的网络，它有**归一化**和**残差连接**（下面两节）。有了这两样，信号的尺度不再靠每层权重恰好等于 `sqrt(2/fan_in)` 来维持，一个固定的小 std 就够用。另外，宽度 1024 时 `sqrt(1/1024) ≈ 0.031`，0.02 和 Xavier 的量级本来也差不多。
+Open the configuration file of an open model. You often see `"initializer_range": 0.02`. The `config.json` files of Qwen3-0.6B, Gemma 3 1B, OLMo 2, and SmolLM3 all use 0.02. The OLMo 2 technical report also states that it initializes all parameters from a normal distribution with mean 0 and standard deviation 0.02.
 
-大模型初始化里还有一个常见细节：**写回残差流的那个输出投影，再按层数缩小**。GPT-2 的做法被 nanoGPT 沿用：这些矩阵用 `0.02 / sqrt(2 · 层数)`。原因在第 4 节的实验里能看到。要说明的是，这一条并非人人都用：OLMo 2 报告说他们从"按层缩放"的初始化换回了统一的 0.02，因为实验里后者更稳。DeepSeek-V3 的技术报告则写的是所有参数用标准差 0.006 初始化。
+But in the table above, a plain network with std = 0.02 keeps only 10⁻²⁰ of the signal after 30 layers. This is not a contradiction, because a large model is not a plain stack of layers. It has **normalization** and **residual connections** (the next two sections). With these two parts, the scale of the signal no longer depends on weights that are exactly `sqrt(2/fan_in)`. A fixed small std is sufficient. Also, at a width of 1024, `sqrt(1/1024) ≈ 0.031`, so 0.02 and Xavier have almost the same magnitude.
 
-## 3. 归一化：LayerNorm → RMSNorm
+Large models often add one more detail to the initialization. They make **the output projections that write back to the residual stream smaller again, by a factor that depends on the number of layers**. (The residual stream is the main path of `h` through the blocks; see Section 4.) GPT-2 does this, and nanoGPT uses the same method: these matrices use `0.02 / sqrt(2 · number of layers)`. The experiment in Section 4 shows why.
 
-### 3.1 直觉
+Note that not all models do this. The OLMo 2 report says that they changed from initialization "scaled by layer" back to a uniform 0.02. In their experiments, the uniform value was more stable. The DeepSeek-V3 technical report says that it initializes all parameters with a standard deviation of 0.006.
 
-初始化只管"开局"。训练开始后权重在变，每层的尺度会慢慢漂走。更彻底的办法是：**每一层都把输入强行拉回标准尺度**，不管前面发生了什么。这就是**归一化（normalization）**。
+## 3. Normalization: LayerNorm → RMSNorm
 
-### 3.2 公式与代码
+### 3.1 Intuition
 
-**LayerNorm**（Ba et al., 2016）对每个样本的向量 `x`（长度 d）减均值、除标准差，再乘一个可学习的缩放 `γ`、加一个偏移 `β`：
+Initialization controls only the start. When training starts, the weights change, and the scale of each layer slowly drifts. A more complete solution: **each layer forces its input back to a standard scale**, independent of what occurred before. This is **normalization**.
+
+### 3.2 Formula and code
+
+**LayerNorm** (Ba et al., 2016) operates on the vector `x` (length d) of each sample. It subtracts the mean and divides by the standard deviation. Then it multiplies by a learnable scale `γ` and adds a shift `β`:
 
 ```
-LayerNorm(x) = (x − μ) / sqrt(σ² + ε) · γ + β，   μ = mean(x)，σ² = mean((x − μ)²)
+LayerNorm(x) = (x − μ) / sqrt(σ² + ε) · γ + β,   μ = mean(x), σ² = mean((x − μ)²)
 ```
 
-**RMSNorm**（Zhang & Sennrich, 2019）去掉"减均值"和 `β`，只除以均方根：
+**RMSNorm** (Zhang & Sennrich, 2019) removes the "subtract the mean" step and `β`. It only divides by the root mean square:
 
 ```
 RMSNorm(x) = x / sqrt(mean(x²) + ε) · γ
@@ -112,227 +120,233 @@ def rms_norm(x, gamma, eps=1e-6):
     return x / rms * gamma
 ```
 
-运行 `02_normalization.py`，用一个 4 维向量看两者的差别：
+Run `02_normalization.py`. It uses a 4-dimensional vector to show the difference between the two:
 
-| | 输出 | 均值 | RMS |
+| | Output | Mean | RMS |
 |---|---|---:|---:|
-| 输入 x | [2, 4, 6, 8] | | |
+| Input x | [2, 4, 6, 8] | | |
 | LayerNorm(x) | [−1.342, −0.447, 0.447, 1.342] | 0.000 | 1.000 |
 | RMSNorm(x) | [0.365, 0.73, 1.095, 1.461] | 0.913 | 1.000 |
 
-两者都把尺度拉到 1，区别只在 LayerNorm 还把均值挪到 0。脚本还验证了两件事：输入先减掉均值后，两者的输出完全一样（最大差 0）；把 x 放大 100 倍，RMSNorm 的输出几乎不变（最大变化 1.19 × 10⁻⁷），这叫**尺度不变性**。
+Both set the scale to 1. The only difference is that LayerNorm also moves the mean to 0. The script also shows two more facts. First, if we subtract the mean from the input, the two outputs are identical (maximum difference 0). Second, if we multiply x by 100, the RMSNorm output almost does not change (maximum change 1.19 × 10⁻⁷). This property is **scale invariance**.
 
-### 3.3 RMSNorm 丢掉了什么，为什么够用
+### 3.3 What RMSNorm removes, and why it is sufficient
 
-RMSNorm 丢掉了"平移不变性"：输入整体加一个常数，LayerNorm 的输出不变，RMSNorm 会变。RMSNorm 论文的假设是，真正让训练稳定的是**缩放不变性**（把尺度拉回来），减均值的作用不大。实验里 RMSNorm 的效果和 LayerNorm 相当，但少算一个均值、少存一组 `β`（参数从 2d 个降到 d 个），论文报告在不同模型和框架上快 7%–64%。今天的主流开源大模型基本都用 RMSNorm，采用方见文末。
+RMSNorm removes "shift invariance". If we add a constant to all elements of the input, the LayerNorm output does not change, but the RMSNorm output changes. The RMSNorm paper assumes that **scale invariance** (bringing the scale back) makes training stable, and that subtracting the mean has little effect.
 
-### 3.4 效果
+In experiments, RMSNorm works as well as LayerNorm. But it calculates one less mean and stores one less set of `β` (the parameters decrease from 2d to d). The paper reports that RMSNorm is 7%–64% faster on different models and frameworks. Today, almost all main open large models use RMSNorm. The list of adopters is at the end of this chapter.
 
-把 RMSNorm 插进第 1 节的 30 层网络，每层先归一化再乘矩阵：`h_l = ReLU(RMSNorm(h_{l-1}) · W_l)`。
+### 3.4 Effect
 
-| 初始化 | 第 1 层激活 | 第 10 层 | 第 20 层 | 第 30 层 | 误差信号 第 1 层 / 第 30 层 |
+Put RMSNorm into the 30-layer network of Section 1. Each layer normalizes first, then multiplies by the matrix: `h_l = ReLU(RMSNorm(h_{l-1}) · W_l)`.
+
+| Initialization | Activation at layer 1 | Layer 10 | Layer 20 | Layer 30 | Error signal, layer 1 / layer 30 |
 |---|---:|---:|---:|---:|---:|
 | std = 1.0 | 9.33 | 10.1 | 9.7 | 9.92 | 1.33 |
 | std = 0.01 | 0.0933 | 0.101 | 0.097 | 0.0992 | 1.33 |
 | std = 0.02 | 0.187 | 0.201 | 0.194 | 0.198 | 1.33 |
 | Kaiming | 0.825 | 0.89 | 0.858 | 0.877 | 1.33 |
 
-不管初始化是 1.0 还是 0.01，信号在 30 层里都保持同一个量级，误差信号也不再指数级变化。归一化把"每层尺度必须恰好对"这个脆弱的要求，变成了"每层自动对齐"。
+With an initialization of 1.0 or of 0.01, the signal keeps the same magnitude over 30 layers. The error signal also no longer changes exponentially. Normalization replaces a fragile requirement, "the scale of each layer must be exactly correct", with "each layer corrects its scale automatically".
 
-### 3.5 放在哪里：Pre-Norm
+### 3.5 Where to put it: Pre-Norm
 
-归一化放在哪儿也有讲究。原始 Transformer 把 LayerNorm 放在残差相加**之后**（Post-Norm）；现在的主流是放在每个子层的**输入**上（**Pre-Norm**），最后输出前再加一个 norm：
-
-```
-Post-Norm：h ← Norm(h + f(h))
-Pre-Norm： h ← h + f(Norm(h))，   输出前：Norm(h)
-```
-
-Xiong et al.（2020）分析过：Post-Norm 在初始化时靠近输出层的梯度很大，必须用 warmup 才能训；Pre-Norm 的梯度在各层比较均匀。第 9 章的 Transformer 块就是 Pre-Norm 结构，本章的实验网络也用它。也有例外：OLMo 2 把 RMSNorm 放在注意力和 MLP 的**输出**上再加回残差，报告说这样配合 QK-Norm 更稳。
-
-## 4. 残差连接：给信号修一条高速路
-
-### 4.1 直觉与公式
-
-归一化管住了尺度，但深层网络还有另一个问题。**残差连接（residual connection）**（He et al., 2016）的改动只有一个加号：
+The position of the normalization is also important. The original Transformer puts LayerNorm **after** the residual addition (Post-Norm). Today, most models put it on the **input** of each sublayer (**Pre-Norm**), and add one more norm before the output:
 
 ```
-普通堆叠：h ← f(h)
-残差连接：h ← h + f(h)
+Post-Norm: h ← Norm(h + f(h))
+Pre-Norm:  h ← h + f(Norm(h)),   before the output: Norm(h)
 ```
 
-每一块只需要学"在原来基础上改一点"。反向传播时，链式法则告诉我们：
+Xiong et al. (2020) analyzed this. At initialization, Post-Norm has large gradients near the output layer, so it needs warmup to train. Pre-Norm has gradients of similar size in all layers. The Transformer block in Chapter 9 uses the Pre-Norm structure, and so does the experiment network in this chapter. There is an exception: OLMo 2 puts RMSNorm on the **output** of attention and of the MLP, and then adds the result back to the residual stream. The OLMo 2 report says that this is more stable together with QK-Norm.
+
+## 4. Residual connections: a direct path for the signal
+
+### 4.1 Intuition and formula
+
+Normalization controls the scale, but deep networks have one more problem. A **residual connection** (He et al., 2016) adds only one plus sign:
+
+```
+Plain stack:         h ← f(h)
+Residual connection: h ← h + f(h)
+```
+
+Each block only has to learn "a small change to the current value". In the backward pass, the chain rule gives:
 
 ```
 ∂h_{l+1}/∂h_l = I + ∂f/∂h_l
 ```
 
-那个 `I`（单位矩阵）意味着：无论 `f` 学成什么样，梯度总有一条原样直通的路。30 块叠起来，梯度从输出到第 1 块，至少有一条"全走 I"的路径，不经过任何矩阵乘法。
+The `I` (the identity matrix) has this meaning: whatever `f` learns, the gradient always has a path on which it does not change. With 30 blocks, the gradient has at least one path from the output to block 1 that "always goes through I". This path has no matrix multiplication.
 
-### 4.2 实验
+### 4.2 Experiment
 
-`03_residual.py` 搭 30 个块，每块 `f(h) = ReLU(RMSNorm(h) · W1) · W2`，比较三种写法。除了尺度，我们还看两个指标：
+`03_residual.py` builds 30 blocks. Each block is `f(h) = ReLU(RMSNorm(h) · W1) · W2`. The script compares three versions. In addition to the scale, we look at two metrics:
 
-- **余弦相似度**：一批随机输入两两之间有多像。输入本身是 0.000（互相垂直），越接近 1 说明网络把不同输入"看成同一个东西"。
-- **误差信号方向相似度**：同一个样本，第 1 块收到的误差信号和第 30 块收到的方向有多像。
+- **Cosine similarity**: how similar the random inputs in a batch are to each other, pair by pair. For the inputs, the value is 0.000 (they are orthogonal). A value near 1 means that the network "sees all inputs as the same thing".
+- **Direction similarity of the error signal**: for the same sample, how similar the direction of the error signal at block 1 is to its direction at block 30.
 
-| 写法 | 第 30 块余弦相似度 | 第 30 块残差流 std | 误差信号 第 1 / 第 30 块（大小） | 方向相似度 |
+| Version | Cosine similarity at block 30 | Residual-stream std at block 30 | Error signal, block 1 / block 30 (size) | Direction similarity |
 |---|---:|---:|---:|---:|
-| 普通堆叠 | 0.953 | 0.987 | 1.250 | −0.002 |
-| 残差（W2 不缩放） | 0.549 | 5.545 | 3.795 | 0.256 |
-| **残差（W2 × 1/√(2L)）** | **0.110** | **1.223** | **1.170** | **0.824** |
+| Plain stack | 0.953 | 0.987 | 1.250 | −0.002 |
+| Residual (W2 not scaled) | 0.549 | 5.545 | 3.795 | 0.256 |
+| **Residual (W2 × 1/√(2L))** | **0.110** | **1.223** | **1.170** | **0.824** |
 
-这张表有三个发现：
+The table shows three findings:
 
-1. **普通堆叠即使加了 RMSNorm，尺度也正常，信息却丢了。** 30 块之后，所有输入的表示两两相似度高达 0.953，网络几乎分不清谁是谁。误差信号传回第 1 块时大小没问题（1.25），但方向和第 30 块完全无关（−0.002），像被 30 个随机矩阵搅乱了。
-2. **加了残差，信息保住了，误差信号也直通了。** 按层数缩小 W2 之后，相似度只有 0.110，第 1 块收到的误差信号和第 30 块的方向相似度是 0.824。这就是"高速路"。
-3. **残差流会越加越大，所以输出投影要缩小。** 每块往残差流里加一份 `f(h)`，30 块之后 std 涨到 5.5，大约是 `sqrt(1 + 30)`。把 W2 乘以 `1/sqrt(2L)` 后，std 只到 1.22。这就是第 2.3 节提到的"残差投影按层数缩小"的由来。
+1. **A plain stack with RMSNorm has a normal scale, but it loses the information.** After 30 blocks, the pairwise similarity of the representations of all inputs is 0.953. The network almost cannot tell the inputs apart. The error signal that arrives back at block 1 has a correct size (1.25). But its direction has no relation to its direction at block 30 (−0.002), as if 30 random matrices mixed it.
+2. **With residual connections, the information stays, and the error signal goes straight through.** With W2 made smaller by the number of layers, the similarity is only 0.110. The direction similarity between the error signals at block 1 and block 30 is 0.824. This is the "direct path".
+3. **The residual stream becomes larger and larger, so the output projection must be smaller.** Each block adds one `f(h)` to the residual stream. After 30 blocks, the std increases to 5.5, which is about `sqrt(1 + 30)`. With W2 multiplied by `1/sqrt(2L)`, the std increases only to 1.22. This is the origin of the rule "make the residual projection smaller by the number of layers" in Section 2.3.
 
-## 5. 优化器：SGD → 动量 → Adam → AdamW
+## 5. Optimizers: SGD → momentum → Adam → AdamW
 
-信号能流通了，下一个问题是参数怎么走。第 1 章的 SGD 对所有参数用同一个学习率。麻烦在于，不同参数的"坡度"可能差几个数量级。
+The signal can now flow. The next question is how the parameters move. The SGD of Chapter 1 uses one learning rate for all parameters. The problem is that the "slope" of different parameters can differ by several orders of magnitude.
 
-### 5.1 一个陡峭程度差 1000 倍的碗
+### 5.1 A bowl whose steepness differs by 1000×
 
-`04_optimizers.py` 用一个四维的碗 `L(θ) = ½ Σ hᵢ θᵢ²`，四个方向的曲率 `h = [100, 10, 1, 0.1]`，起点 `θ = [1, 1, 1, 1]`。第 1 章讲过，SGD 的学习率必须小于 `2 / 最大曲率 = 0.02`，否则最陡的方向发散。
+`04_optimizers.py` uses a 4-dimensional bowl `L(θ) = ½ Σ hᵢ θᵢ²`. The curvatures in the four directions are `h = [100, 10, 1, 0.1]`, and the start point is `θ = [1, 1, 1, 1]`. Chapter 1 showed that the learning rate of SGD must be less than `2 / largest curvature = 0.02`. If it is not, the steepest direction diverges.
 
-**SGD**：`θ ← θ − η · g`
+**SGD**: `θ ← θ − η · g`
 
-**动量（momentum）**：把梯度累积成"速度"，平的方向上一步步加速，来回震荡的方向上正负抵消。
+**Momentum**: add up the gradients into a "velocity". In flat directions, the steps become faster and faster. In directions that oscillate, the positive and negative gradients cancel.
 
 ```
-v ← β · v + g，   θ ← θ − η · v
+v ← β · v + g,   θ ← θ − η · v
 ```
 
-**Adam**（Kingma & Ba, 2014）：同时记梯度的滑动平均 `m`（方向）和梯度平方的滑动平均 `v`（尺度），**每个参数除以自己的梯度尺度**：
+**Adam** (Kingma & Ba, 2014) keeps two moving averages: `m` of the gradient (the direction) and `v` of the squared gradient (the scale). **Adam divides the step of each parameter by the gradient scale of that parameter**:
 
 ```
 m ← β₁ m + (1 − β₁) g
 v ← β₂ v + (1 − β₂) g²
-m̂ = m / (1 − β₁ᵗ)，  v̂ = v / (1 − β₂ᵗ)          （偏差修正：开头几步 m、v 从 0 起步，偏小）
+m̂ = m / (1 − β₁ᵗ),  v̂ = v / (1 − β₂ᵗ)          (bias correction: m and v start from 0, so they are too small in the first steps)
 θ ← θ − η · m̂ / (√v̂ + ε)
 ```
 
 ```python
-m = b1 * m + (1 - b1) * g                   # 一阶矩：方向
-v = b2 * v + (1 - b2) * g * g               # 二阶矩：尺度
+m = b1 * m + (1 - b1) * g                   # first moment: direction
+v = b2 * v + (1 - b2) * g * g               # second moment: scale
 m_hat, v_hat = m / (1 - b1**t), v / (1 - b2**t)
-step = -lr * m_hat / (np.sqrt(v_hat) + eps) # 每个参数除以自己的梯度尺度
+step = -lr * m_hat / (np.sqrt(v_hat) + eps) # each parameter: divide by its own gradient scale
 ```
 
-输出：
+The output is:
 
-| | 第 1 步 \|Δθ₁\| | \|Δθ₂\| | \|Δθ₃\| | \|Δθ₄\| | 200 步后损失 | 损失 < 0.001 用了 |
+| | Step 1 \|Δθ₁\| | \|Δθ₂\| | \|Δθ₃\| | \|Δθ₄\| | Loss after 200 steps | Steps until loss < 0.001 |
 |---|---:|---:|---:|---:|---:|---:|
-| SGD（η = 0.019） | 1.9000 | 0.1900 | 0.0190 | 0.0019 | 2.36 × 10⁻² | 超过 200 步 |
-| 动量（η = 0.019，β = 0.9） | 1.9000 | 0.1900 | 0.0190 | 0.0019 | 4.91 × 10⁻⁶ | 109 步 |
-| Adam（η = 0.05） | 0.0500 | 0.0500 | 0.0500 | 0.0500 | 2.94 × 10⁻⁷ | 48 步 |
+| SGD (η = 0.019) | 1.9000 | 0.1900 | 0.0190 | 0.0019 | 2.36 × 10⁻² | More than 200 |
+| Momentum (η = 0.019, β = 0.9) | 1.9000 | 0.1900 | 0.0190 | 0.0019 | 4.91 × 10⁻⁶ | 109 |
+| Adam (η = 0.05) | 0.0500 | 0.0500 | 0.0500 | 0.0500 | 2.94 × 10⁻⁷ | 48 |
 
-SGD 第一步在最陡方向走了 1.9，在最平方向只走 0.0019，差 1000 倍。学习率被最陡的方向卡住，最平的方向 200 步后还停在 0.68。动量让平的方向越走越快，109 步收敛。Adam 的第一步每个参数都恰好走 η = 0.05：`m̂ / √v̂` 在第一步等于 `g / |g| = ±1`，梯度的大小被除掉了，只剩方向。48 步就收敛。
+In its first step, SGD moves 1.9 in the steepest direction, but only 0.0019 in the flattest direction. The difference is 1000×. The steepest direction limits the learning rate, so after 200 steps the flattest direction is still at 0.68. Momentum makes the steps in the flat direction faster and faster, and it converges in 109 steps.
 
-这个"每个参数自己定步长"的性质，正是 Transformer 需要的。Zhang et al.（2024）发现，Transformer 里嵌入层、注意力的 Q/K/V、MLP 这些参数块的曲率差别很大，SGD 用同一个学习率应付不了，Adam 能。反过来，在各层结构差不多的网络上，SGD 可以和 Adam 打平。我们第 8 节的小 MLP 就是这种情况。
+In its first step, Adam moves each parameter by exactly η = 0.05. The reason: in the first step, `m̂ / √v̂` equals `g / |g| = ±1`. The division removes the size of the gradient, and only the direction stays. Adam converges in 48 steps.
 
-### 5.2 AdamW：把权重衰减"解耦"出来
+The Transformer needs exactly this property: "each parameter sets its own step size". Zhang et al. (2024) found that the parameter blocks of a Transformer (the embedding layer, the Q/K/V of attention, the MLP) have very different curvatures. SGD with one learning rate cannot handle this, but Adam can. Conversely, SGD can be as good as Adam on a network whose layers all have a similar structure. The small MLP in Section 8 is such a case.
 
-**权重衰减（weight decay）**让参数每步往 0 缩一点，防止权重无限长大。传统写法是在损失里加 `½ λ ‖θ‖²`，也就是梯度里加 `λθ`，这叫 L2 正则。在 SGD 里，这两种说法等价。
+### 5.2 AdamW: "decouple" the weight decay
 
-在 Adam 里就不一样了：加进梯度的 `λθ` 会和真实梯度一起被除以 `√v`。**梯度大的参数，衰减被除以一个大数，几乎不衰减；梯度小的参数，衰减被放大。** AdamW（Loshchilov & Hutter, 2017）的做法是把衰减从梯度里拿出来，单独做：
+**Weight decay** moves the parameters a little toward 0 at each step, so that the weights cannot grow without limit. The traditional method adds `½ λ ‖θ‖²` to the loss, which adds `λθ` to the gradient. This is L2 regularization. For SGD, the two descriptions are equivalent.
+
+For Adam, they are not equivalent. Adam divides the `λθ` in the gradient by `√v`, together with the true gradient. **A parameter with a large gradient has its decay divided by a large number, so it gets almost no decay. A parameter with a small gradient gets a larger decay.** AdamW (Loshchilov & Hutter, 2017) takes the decay out of the gradient and applies it separately:
 
 ```
-θ ← θ − η · λ · θ               （解耦的权重衰减：不经过 √v）
-θ ← θ − η · m̂ / (√v̂ + ε)        （正常的 Adam 更新）
+θ ← θ − η · λ · θ               (decoupled weight decay: does not go through √v)
+θ ← θ − η · m̂ / (√v̂ + ε)        (the normal Adam update)
 ```
 
-`04_optimizers.py` 的第二个实验：两组参数，初值都是 1，损失不提供任何信号，梯度只是噪声，A 组噪声标准差 0.01，B 组 10。λ = 0.1、η = 0.01，跑 3000 步。理想情况下，权重衰减应该把两组一样地拉到 `(1 − ηλ)^3000 = 0.050`：
+The second experiment in `04_optimizers.py` uses two groups of parameters. All parameters start at 1. The loss gives no signal, and the gradient is only noise. Group A has a noise std of 0.01, and group B has a noise std of 10. With λ = 0.1 and η = 0.01, the script runs 3000 steps. Ideally, weight decay pulls both groups equally to `(1 − ηλ)^3000 = 0.050`:
 
-| | A 组（梯度小） | B 组（梯度大） |
+| | Group A (small gradients) | Group B (large gradients) |
 |---|---:|---:|
-| Adam + L2 正则 | 0.000 | 0.753 |
-| AdamW（解耦） | 0.047 | 0.056 |
+| Adam + L2 regularization | 0.000 | 0.753 |
+| AdamW (decoupled) | 0.047 | 0.056 |
 
-Adam + L2 下，同一个 λ，A 组被压到 0，B 组几乎没动。AdamW 下两组都在理论值 0.050 附近。**AdamW 让"衰减多少"只由 λ 决定，和梯度大小无关。** 这就是今天几乎所有开源大模型预训练都用 AdamW 的原因，常见超参是 β₁ = 0.9、β₂ = 0.95、λ = 0.1（Llama 2、DeepSeek-V3、SmolLM3 的报告都是这组数）。
+With Adam + L2 and the same λ, group A goes to 0, and group B almost does not move. With AdamW, both groups are near the theoretical value 0.050. **With AdamW, only λ sets the amount of decay, and the size of the gradient has no effect.** This is why almost all open large models use AdamW for pretraining today. The common hyperparameters are β₁ = 0.9, β₂ = 0.95, and λ = 0.1 (the reports of Llama 2, DeepSeek-V3, and SmolLM3 all use these values).
 
-### 5.3 哪些参数不做权重衰减
+### 5.3 Which parameters do not get weight decay
 
-实践中通常把参数分两组：**矩阵做权重衰减，一维参数（RMSNorm 的 γ、偏置）不做。** γ 的作用是给归一化后的信号定尺度，默认值是 1，把它往 0 拉没有道理。nanoGPT 的 `configure_optimizers` 就是按 `p.dim() >= 2` 分组。OLMo 2 更进一步，把**词嵌入**也排除在衰减之外：他们发现衰减会让嵌入的范数越来越小，早期层的梯度反而变大、尖峰变多。SmolLM3 报告说沿用了这个做法。本章代码只衰减矩阵：
+In practice, we usually put the parameters into two groups: **matrices get weight decay, and 1-dimensional parameters (the γ of RMSNorm, biases) do not.** The γ sets the scale of the normalized signal, and its default value is 1. There is no reason to pull it toward 0. The `configure_optimizers` function of nanoGPT makes the groups with `p.dim() >= 2`.
+
+OLMo 2 goes one step further and also excludes the **token embeddings** from weight decay. They found that weight decay makes the norm of the embeddings smaller and smaller. Then the gradients of the early layers become larger, and more spikes occur. The SmolLM3 report says that SmolLM3 uses the same method. The code in this chapter applies weight decay only to the matrices:
 
 ```python
-if p.dim() >= 2:                   # 只衰减矩阵，不衰减 γ
-    p.mul_(1 - lr * cfg["wd"])     # 解耦权重衰减
+if p.dim() >= 2:                   # decay only the matrices, not γ
+    p.mul_(1 - lr * cfg["wd"])     # decoupled weight decay
 p -= lr * m_hat / (v_hat.sqrt() + 1e-8)
 ```
 
-## 6. 学习率调度：warmup + 余弦，以及 WSD
+## 6. Learning-rate schedules: warmup + cosine, and WSD
 
-第 1 章说过，学习率超过临界值就会发散。训练大模型时，学习率不是一个固定的数，而是一条随步数变化的曲线。
+Chapter 1 showed that training diverges when the learning rate is above the critical value. When we train a large model, the learning rate is not one fixed number. It is a curve that changes with the step.
 
-### 6.1 为什么开头要 warmup
+### 6.1 Why warmup at the start
 
-训练刚开始时，参数是随机的，Adam 的 `v` 也只见过几个梯度，估计很不准。这时候直接用峰值学习率，每个参数第一步都会走满 η（上一节刚看到），整个网络被猛推一把，很容易出现损失尖峰。**warmup** 让学习率在前几百到几千步里从接近 0 线性升到峰值。
+At the start of training, the parameters are random. Adam's `v` has seen only a few gradients, so its estimate is not accurate. If we use the peak learning rate at this time, each parameter moves a full η in the first step (as in the previous section). The whole network gets a strong push, and a loss spike (a sudden increase of the loss) often occurs. **Warmup** increases the learning rate linearly from almost 0 to the peak during the first several hundred to several thousand steps.
 
-### 6.2 为什么结尾要衰减
+### 6.2 Why decay at the end
 
-学习率大时，参数在谷底附近来回跳，损失降不下去。把学习率慢慢降下来，参数才能落进谷底。最常用的是**余弦衰减**（Loshchilov & Hutter 的 SGDR）：warmup 之后按余弦曲线从峰值降到峰值的 10%。Llama 2、Llama 3、OLMo 2 都是"线性 warmup + 余弦衰减"。
+When the learning rate is large, the parameters jump from side to side near the bottom of the valley, and the loss does not decrease. If we decrease the learning rate slowly, the parameters can settle at the bottom. The most common method is **cosine decay** (SGDR, by Loshchilov & Hutter). After warmup, the learning rate follows a cosine curve from the peak down to 10% of the peak. Llama 2, Llama 3, and OLMo 2 all use "linear warmup + cosine decay".
 
 ```python
 def warmup_cosine(step, total, peak, warmup, min_ratio=0.1):
     if step < warmup:
-        return peak * (step + 1) / warmup                  # warmup：0 → peak
-    p = (step - warmup) / max(1, total - warmup)           # 衰减进度 0 → 1
+        return peak * (step + 1) / warmup                  # warmup: 0 → peak
+    p = (step - warmup) / max(1, total - warmup)           # decay progress 0 → 1
     return peak * (min_ratio + (1 - min_ratio) * 0.5 * (1 + math.cos(math.pi * p)))
 ```
 
-### 6.3 WSD：先平着走，最后再降
+### 6.3 WSD: stay constant, then decay at the end
 
-余弦有个麻烦：曲线形状取决于总步数，**必须事先定好训练多长**。训到一半想多训一些，就得重新来过。
+Cosine decay has one problem: the shape of the curve depends on the total number of steps. Thus **you must decide the length of training before you start**. If you want to train longer in the middle of the run, you must start again.
 
-**WSD（Warmup-Stable-Decay）**由 MiniCPM（Hu et al., 2024）明确提出：warmup 之后学习率**保持不变**（stable），只在最后一小段（常见 10%–20%）快速降下来（decay）。stable 段的任何一个检查点都可以接一段衰减，得到一个"训练完成"的模型；想多训，就从 stable 段接着训。
+MiniCPM (Hu et al., 2024) explicitly proposed **WSD (Warmup-Stable-Decay)**. After warmup, the learning rate **stays constant** (stable). Only in a short final part (often 10%–20%) does it decrease fast (decay). You can add a decay to any checkpoint of the stable part and get a "finished" model. If you want to train more, continue from the stable part.
 
 ```python
 def wsd(step, total, peak, warmup, decay_frac=0.2, min_ratio=0.0):
     decay_start = int(total * (1 - decay_frac))
     if step < warmup:
-        return peak * (step + 1) / warmup                  # W：warmup
+        return peak * (step + 1) / warmup                  # W: warmup
     if step < decay_start:
-        return peak                                        # S：stable，恒定
+        return peak                                        # S: stable, constant
     p = (step - decay_start) / max(1, total - decay_start)
-    return peak * (1 - (1 - min_ratio) * p)                # D：decay，线性降
+    return peak * (1 - (1 - min_ratio) * p)                # D: decay, linear
 ```
 
-`05_lr_schedule.py` 打印两条曲线（总步数 1000，峰值 3 × 10⁻³，warmup 100 步）：
+`05_lr_schedule.py` prints the two curves (1000 total steps, peak 3 × 10⁻³, warmup 100 steps):
 
-| 步数 | 0 | 50 | 100 | 300 | 500 | 700 | 800 | 900 | 999 |
+| Step | 0 | 50 | 100 | 300 | 500 | 700 | 800 | 900 | 999 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| warmup + 余弦 | 3.0e−5 | 1.5e−3 | 3.0e−3 | 2.7e−3 | 1.9e−3 | 9.8e−4 | 6.2e−4 | 3.8e−4 | 3.0e−4 |
+| warmup + cosine | 3.0e−5 | 1.5e−3 | 3.0e−3 | 2.7e−3 | 1.9e−3 | 9.8e−4 | 6.2e−4 | 3.8e−4 | 3.0e−4 |
 | WSD | 3.0e−5 | 1.5e−3 | 3.0e−3 | 3.0e−3 | 3.0e−3 | 3.0e−3 | 3.0e−3 | 1.5e−3 | 1.5e−5 |
 
-这种"长时间恒定 + 最后衰减"的形状，现在很多开源模型都在用：SmolLM3 明确写的是 WSD（2000 步 warmup，最后 10% 线性降到 0）；Kimi K2 报告写明用 WSD（前 10T token 恒定 2e−4，之后 5.5T token 余弦降到 2e−5）；DeepSeek-V3 没有用 WSD 这个名字，但调度是同一个形状（2K 步 warmup，恒定到 10T token，再用 4.3T token 余弦降到 2.2e−5）。
+Many open models now use this shape: "constant for a long time, then decay at the end". SmolLM3 explicitly says WSD (2000 warmup steps, then a linear decay to 0 in the last 10%). The Kimi K2 report explicitly says WSD (a constant 2e−4 for the first 10T tokens, then a cosine decay to 2e−5 over 5.5T tokens). DeepSeek-V3 does not use the name WSD, but its schedule has the same shape (2K warmup steps, constant until 10T tokens, then a cosine decay to 2.2e−5 over 4.3T tokens).
 
-> 关于数字：本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同机器、不同版本的底层数学库，浮点运算的顺序略有不同，训练几百步后会把这些微小差异放大，你本机跑出的数字可能从小数点后第二三位开始就不一样；请以下文不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-01-06.md](../../runs/2026-10-01-gpu0-check/chapters-01-06.md)。
+> **Note:** The numbers of the training experiments in this chapter come from one CPU run on the course build machine. Different machines and different versions of the low-level math libraries do the floating-point operations in a slightly different order. After a few hundred training steps, training makes these small differences larger. Your numbers can be different from the second or third decimal place. Trust the conclusions below that do not depend on exact values. For a second run on another server in 2026-10, see [runs/2026-10-01-gpu0-check/chapters-01-06.md](../../runs/2026-10-01-gpu0-check/chapters-01-06.md).
 
-`07_schedule_experiments.py` 用第 8 节的网络比较三种调度（800 步，验证损失越低越好）：
+`07_schedule_experiments.py` compares three schedules on the network of Section 8 (800 steps; a lower validation loss is better):
 
-| 调度 | 验证损失 |
+| Schedule | Validation loss |
 |---|---:|
-| warmup + 余弦 | 0.775 |
-| WSD（最后 20% 线性降到 0） | 0.769 |
-| 恒定学习率（只有 warmup） | 0.806 |
+| warmup + cosine | 0.775 |
+| WSD (linear decay to 0 in the last 20%) | 0.769 |
+| Constant learning rate (warmup only) | 0.806 |
 
-最后都降下来的两种差不多，不衰减的明显差一截。再看 WSD 的"随时收尾"：跑一条恒定学习率的主干，在第 400 步和第 800 步各分出一个 100 步的衰减，和"事先定好总长"的余弦对比：
+The two schedules that decay at the end give almost the same result. The schedule without decay is noticeably worse. Now look at how WSD can "finish at any time". Run one trunk with a constant learning rate. At step 400 and at step 800, branch off a 100-step decay. Compare the result with cosine runs whose total length is set before the start:
 
-| 总长 | stable 末尾 | 衰减 100 步后 | 专门跑一次余弦 |
+| Total length | End of stable | After 100 decay steps | A separate cosine run |
 |---:|---:|---:|---:|
-| 500 步 | 0.887 | 0.801 | 0.796 |
-| 900 步 | 0.806 | 0.755 | 0.760 |
+| 500 steps | 0.887 | 0.801 | 0.796 |
+| 900 steps | 0.806 | 0.755 | 0.760 |
 
-衰减那 100 步，验证损失掉了 0.05–0.09，追平了专门跑的余弦。而 WSD 一共只训了 400 + 100 + 400 + 100 = 1000 步，两次余弦要 500 + 900 = 1400 步。Hägele et al.（2024）在 1B、8B 模型上做了同样的比较，结论一致：恒定学习率 + 短衰减能追平调好的余弦，并且能省下大量做 scaling 实验的算力。第 12 章的阶梯实验和第 15 章的"退火"都会用到这一点。
+In the 100 decay steps, the validation loss decreases by 0.05–0.09, to the level of the separate cosine run. WSD trains only 400 + 100 + 400 + 100 = 1000 steps in total, but the two cosine runs need 500 + 900 = 1400 steps. Hägele et al. (2024) did the same comparison on 1B and 8B models and got the same result. A constant learning rate plus a short decay is as good as a tuned cosine schedule, and it saves much compute in scaling experiments. The ladder experiment in Chapter 12 and the "annealing" in Chapter 15 both use this property.
 
-## 7. 梯度裁剪：给步长加一个上限
+## 7. Gradient clipping: a maximum for the step size
 
-即使一切都设好了，训练中偶尔也会遇到一批"坏数据"，比如 OLMo 2 报告里的长串重复字符，梯度突然变得巨大。**梯度裁剪（gradient clipping）**（Pascanu et al., 2013）的做法是：把所有参数的梯度拼成一个大向量，范数超过上限（大模型几乎都用 1.0）就整体等比例缩小，方向不变。
+Even when all settings are correct, training sometimes gets a batch of "bad data". An example is the long sequences of repeated characters in the OLMo 2 report. Then the gradient suddenly becomes very large. **Gradient clipping** (Pascanu et al., 2013) puts the gradients of all parameters into one long vector. If the norm of this vector is more than a maximum (almost all large models use 1.0), clipping scales the whole vector down by the same factor. The direction does not change.
 
 ```
-‖g‖ = sqrt(Σ 所有梯度分量²)，   g ← g · min(1, max_norm / ‖g‖)
+‖g‖ = sqrt(Σ all gradient components²),   g ← g · min(1, max_norm / ‖g‖)
 ```
 
 ```python
@@ -344,83 +358,89 @@ def clip_by_global_norm(grads, max_norm=1.0):
     return total
 ```
 
-`07_schedule_experiments.py` 在第 300–304 步混进 5 批坏数据（输入放大 30 倍）：
+`07_schedule_experiments.py` adds 5 batches of bad data (inputs multiplied by 30) at steps 300–304:
 
-| | 坏数据时梯度范数最大 | 之后 40 步内最大训练损失 | 最终验证损失 |
+| | Max gradient norm at the bad data | Max training loss in the next 40 steps | Final validation loss |
 |---|---:|---:|---:|
-| RMSNorm 开，裁剪开 | 1.1 | 1.096 | 0.776 |
-| RMSNorm 开，裁剪关 | 1.1 | 1.096 | 0.776 |
-| RMSNorm 关，裁剪开 | 95.9 | 1.118 | 0.747 |
-| RMSNorm 关，裁剪关 | 105.9 | 1.977 | 0.773 |
+| RMSNorm on, clipping on | 1.1 | 1.096 | 0.776 |
+| RMSNorm on, clipping off | 1.1 | 1.096 | 0.776 |
+| RMSNorm off, clipping on | 95.9 | 1.118 | 0.747 |
+| RMSNorm off, clipping off | 105.9 | 1.977 | 0.773 |
 
-有 RMSNorm 时，输入放大 30 倍被第一个 norm 直接抵消，梯度范数只有 1.1，裁不裁都一样。没有 RMSNorm 时，梯度范数冲到 100 左右。不裁剪，之后的训练损失跳到 1.977；裁剪后只到 1.118。**裁剪是最后一道保险**：平时基本不起作用，出事时把一步的步长限制住。它几乎没有代价，所以大模型训练里是标配。
+With RMSNorm, the first norm cancels the 30× input, so the gradient norm is only 1.1. Clipping makes no difference. Without RMSNorm, the gradient norm increases to about 100. Without clipping, the training loss after the bad data jumps to 1.977; with clipping, it goes only to 1.118.
 
-## 8. 对比实验：同一个网络，把技巧一个个打开
+**Clipping is the last safety device.** In normal training, it has almost no effect. When a problem occurs, it limits the size of that step. It has almost no cost, so it is standard in the training of large models.
 
-现在把所有零件装到一起。`06_ablation.py` 的任务：输入是 16 维随机向量，标签由一个固定的"老师网络"给出（10 类）。每一步都采 128 个新样本，像预训练一样数据取之不尽；另留 2048 个样本算验证损失。随机猜的交叉熵约 ln 10 = 2.30。学生网络 12 块、24 个线性层、宽 32，训练 800 步。所有技巧都是手写的，每个都能单独开关。
+## 8. Comparison experiment: one network, turn on the methods one at a time
+
+Now put all the parts together. The task of `06_ablation.py` is as follows. The input is a random 16-dimensional vector, and a fixed "teacher network" gives the label (10 classes). Each step samples 128 new samples, so the data never runs out, as in pretraining. We keep 2048 more samples to calculate the validation loss. The cross-entropy of a random guess is about ln 10 = 2.30.
+
+The student network has 12 blocks (24 linear layers) with a width of 32, and it trains for 800 steps. All methods are written by hand, and you can turn each one on or off.
 
 ```bash
-uv run python chapters/06-training-stability/code/06_ablation.py      # 约 1.5 分钟
+uv run python chapters/06-training-stability/code/06_ablation.py      # about 1.5 min
 ```
 
-**逐个加上技巧**（SGD 那几行在学习率 0.01 / 0.03 / 0.1 里各跑一次，取最好的）：
+**Add the methods one at a time** (each SGD row runs once with each learning rate, 0.01 / 0.03 / 0.1, and uses the best one):
 
-| 配置 | 学习率 | 验证损失 | 准确率 | 结论 | 三个学习率的验证损失 |
+| Configuration | Learning rate | Validation loss | Accuracy | Result | Validation loss for the 3 learning rates |
 |---|---:|---:|---:|---|---|
-| A 普通深网络（std = 1 初始化 + SGD） | — | nan | — | 发散 | 全部 nan |
-| B + Kaiming 初始化 | 0.1 | 1.931 | 0.279 | 学得很慢 | 2.301 / 2.095 / 1.931 |
-| C + 残差连接 | 0.03 | 0.821 | 0.705 | 成功 | 0.823 / 0.821 / nan |
-| D + RMSNorm（Pre-Norm） | 0.1 | 0.811 | 0.700 | 成功 | 0.838 / 0.814 / 0.811 |
-| E SGD → AdamW（恒定学习率） | 0.003 | 0.807 | 0.697 | 成功 | |
-| F + warmup + 余弦衰减 | 0.003 | 0.775 | 0.711 | 成功 | |
-| G + 梯度裁剪（= 全套） | 0.003 | 0.775 | 0.708 | 成功 | |
+| A Plain deep network (std = 1 initialization + SGD) | — | nan | — | Diverges | All nan |
+| B + Kaiming initialization | 0.1 | 1.931 | 0.279 | Learns slowly | 2.301 / 2.095 / 1.931 |
+| C + residual connections | 0.03 | 0.821 | 0.705 | Success | 0.823 / 0.821 / nan |
+| D + RMSNorm (Pre-Norm) | 0.1 | 0.811 | 0.700 | Success | 0.838 / 0.814 / 0.811 |
+| E SGD → AdamW (constant learning rate) | 0.003 | 0.807 | 0.697 | Success | |
+| F + warmup + cosine decay | 0.003 | 0.775 | 0.711 | Success | |
+| G + gradient clipping (= full set) | 0.003 | 0.775 | 0.708 | Success | |
 
-**从全套里每次只拿掉一个**：
+**Remove one method at a time from the full set**:
 
-| 配置 | 验证损失 | 准确率 | 结论 |
+| Configuration | Validation loss | Accuracy | Result |
 |---|---:|---:|---|
-| 全套，但去掉残差 | 1.462 | 0.515 | 学得很慢 |
-| 全套，但去掉 RMSNorm | 0.747 | 0.726 | 成功 |
-| 全套，但初始化用 std = 1 | 0.825 | 0.697 | 成功 |
-| 全套，但学习率恒定（无 warmup / 衰减） | 0.803 | 0.704 | 成功 |
+| Full set, but no residual connections | 1.462 | 0.515 | Learns slowly |
+| Full set, but no RMSNorm | 0.747 | 0.726 | Success |
+| Full set, but std = 1 initialization | 0.825 | 0.697 | Success |
+| Full set, but constant learning rate (no warmup / decay) | 0.803 | 0.704 | Success |
 
-（"结论"是按验证损失粗分的：nan 为发散，大于 2.0 为没学会，1.0–2.0 为学得很慢，小于 1.0 为成功。B 行的 1.931 离 2.0 的分界很近：2026-10 在另一台服务器上复跑同一份代码得到 2.035（准确率 0.168），按同一规则就成了"没学会"。两次说的是同一件事：只换初始化，24 层普通堆叠几乎学不动。）
+(The "Result" column is a rough grouping by validation loss: nan means "diverges", more than 2.0 means "did not learn", 1.0–2.0 means "learns slowly", and less than 1.0 means "success". Row B, with 1.931, is near the boundary at 2.0. A second run of the same code on another server in 2026-10 gave 2.035 (accuracy 0.168). With the same rule, that result is "did not learn". The two runs show the same thing: with only a better initialization, a plain stack of 24 layers almost cannot learn.)
 
-把这两张表和前面几节对照着读：
+Read these two tables together with the sections above:
 
-- **初始化决定能不能起步**：A 的初始损失就高达 6 × 10¹⁵，三个学习率下都是第 2 步就变成 NaN。换成 Kaiming（B）不再发散，但 24 层普通堆叠几乎学不动，最好的也只在 2.0 上下，离随机猜的 2.30 不远。
-- **残差决定深网络能不能学**：加上残差（C），验证损失直接从 2.0 上下降到 0.82。反过来，全套里只拿掉残差，就退回 1.462（复跑是 1.310），仍在"学得很慢"一档。这是本实验里影响最大的一个开关，和第 4 节"普通堆叠分不清输入"的发现一致。
-- **归一化带来的是稳健，不一定是更低的损失**：C 在学习率 0.1 时发散，D 加了 RMSNorm 后在 0.1 下照样能训；全套用 std = 1 的"坏"初始化也能训到 0.825。但在这个小网络上，初始化和学习率都调好时，去掉 RMSNorm 的损失反而略低（0.747）。它的价值要在压力测试里看（见下）。
-- **AdamW 在这里和调好的 SGD 打平**：E 的 0.807 和 D 的 0.811 差不多。这个 MLP 每层结构相同，正是第 5.1 节说的"SGD 能打平"的情况。Adam 的优势在于不用逐个调学习率，以及在 Transformer 这类参数块差异大的结构上。
-- **学习率衰减稳定地带来提升**：F 比 E 好 0.03；全套换成恒定学习率也回到 0.803。
-- **梯度裁剪在正常训练里不起作用**（F 和 G 一样），它是给第 7 节那种意外准备的。
+- **Initialization decides if training can start.** In A, the initial loss is already 6 × 10¹⁵. With all three learning rates, the loss becomes NaN at step 2. With Kaiming (B), training no longer diverges. But a plain stack of 24 layers almost cannot learn: the best result is only near 2.0, not far from the 2.30 of a random guess.
+- **Residual connections decide if a deep network can learn.** With residual connections (C), the validation loss decreases from about 2.0 to 0.82. Conversely, if we remove only the residual connections from the full set, the loss goes back to 1.462 (the second run gave 1.310). This is still in the "learns slowly" group. Residual connections are the switch with the largest effect in this experiment. This agrees with the finding of Section 4: "a plain stack cannot tell the inputs apart".
+- **Normalization gives robustness, but not always a lower loss.** C diverges at a learning rate of 0.1, but D (with RMSNorm) trains well at 0.1. The full set with the "bad" std = 1 initialization also trains to 0.825. But on this small network, when the initialization and the learning rate are both tuned, the loss without RMSNorm is a little lower (0.747). The stress test below shows the value of RMSNorm.
+- **AdamW is as good as the tuned SGD here.** E (0.807) and D (0.811) are almost the same. All layers of this MLP have the same structure, which is the case of Section 5.1: "SGD can be as good as Adam". Adam has two advantages. You do not need to tune the learning rate for each case. Also, Adam works on structures like the Transformer, whose parameter blocks are very different.
+- **Learning-rate decay gives a consistent improvement.** F is 0.03 better than E. The full set with a constant learning rate also goes back to 0.803.
+- **Gradient clipping has no effect in normal training** (F and G are the same). It is for unexpected events, like the one in Section 7.
 
-**高学习率压力测试**：学习率从 0.003 放大 100 倍到 0.3（`07_schedule_experiments.py`）：
+**High-learning-rate stress test**: multiply the learning rate by 100, from 0.003 to 0.3 (`07_schedule_experiments.py`):
 
-| 配置 | 前 150 步最大训练损失 | 800 步后验证损失 |
+| Configuration | Max training loss in the first 150 steps | Validation loss after 800 steps |
 |---|---:|---:|
-| 全套 | 2.723 | 0.892 |
-| 去掉 warmup | 6.178 | 0.890 |
-| 去掉 RMSNorm | 1.1 × 10¹⁰ | 0.991 |
+| Full set | 2.723 | 0.892 |
+| No warmup | 6.178 | 0.890 |
+| No RMSNorm | 1.1 × 10¹⁰ | 0.991 |
 
-这里才看出 warmup 和 RMSNorm 的作用：去掉 warmup，开头的损失冲到 6.2；去掉 RMSNorm，损失尖峰冲到 10¹⁰ 以上（复跑是 2.4 × 10¹²：尖峰这么高时，具体量级对舍入非常敏感），虽然最后缓过来了，验证损失也差了一截。在我们这个几万参数的玩具上，这些尖峰还能自己恢复。在几十亿参数、训练几个月的大模型上，一次尖峰可能意味着回滚到几天前的检查点重来。所以大模型把这些保险全部带上。
+Here we see the effect of warmup and RMSNorm. Without warmup, the loss at the start increases to 6.2. Without RMSNorm, the loss spike goes above 10¹⁰. (The second run gave 2.4 × 10¹². When a spike is this high, its exact magnitude is very sensitive to rounding.) The training recovers at the end, but the validation loss is worse.
 
-## 9. 小结
+Our toy model has only tens of thousands of parameters, and it can recover from these spikes by itself. A large model has billions of parameters and trains for months. For such a model, one spike can mean a rollback to a checkpoint from several days before. Thus large models use all of these safety devices.
 
-| 技巧 | 解决什么问题 | 本章的证据 |
+## 9. Summary
+
+| Method | Problem that it solves | Evidence in this chapter |
 |---|---|---|
-| 按 fan_in 缩放的初始化 | 连乘导致信号指数级爆炸或消失 | 30 层后激活从 10³¹ / 10⁻²⁹ 变成 0.56 |
-| RMSNorm（Pre-Norm） | 训练中尺度漂移；对初始化和学习率敏感 | 任何初始化下 30 层信号都稳定；η = 0.3 时尖峰从 10¹⁰ 以上降到 2.7 |
-| 残差连接 | 深层"分不清输入"，梯度被搅乱 | 相似度 0.953 → 0.110；验证损失约 2.0 → 0.82 |
-| AdamW | 参数间尺度差异大；衰减力度被梯度大小扭曲 | 48 步 vs SGD 超过 200 步；两组衰减 0.047 / 0.056 |
-| warmup + 余弦 / WSD | 开头猛冲出尖峰；结尾落不进谷底 | 去掉 warmup 尖峰 6.2；衰减带来 0.03–0.09 的提升 |
-| 梯度裁剪 | 偶发的坏数据产生巨大梯度 | 坏数据后损失尖峰 1.977 → 1.118 |
+| Initialization scaled by fan_in | Repeated multiplication makes the signal explode or vanish exponentially | After 30 layers, the activations change from 10³¹ / 10⁻²⁹ to 0.56 |
+| RMSNorm (Pre-Norm) | The scale drifts during training; training is sensitive to the initialization and the learning rate | The signal is stable over 30 layers with any initialization; at η = 0.3, the spike decreases from more than 10¹⁰ to 2.7 |
+| Residual connections | Deep layers "cannot tell the inputs apart", and the gradient is mixed | Similarity 0.953 → 0.110; validation loss about 2.0 → 0.82 |
+| AdamW | Parameters have very different scales; the size of the gradient distorts the amount of decay | 48 steps vs more than 200 steps for SGD; decay of the two groups 0.047 / 0.056 |
+| warmup + cosine / WSD | A strong push at the start causes spikes; at the end, the parameters do not settle at the bottom of the valley | Without warmup, the spike is 6.2; the decay gives an improvement of 0.03–0.09 |
+| Gradient clipping | Rare bad data gives very large gradients | Loss spike after the bad data 1.977 → 1.118 |
 
 ---
 
-## 从极简到生产级
+## From minimal code to production code
 
-第 1–6 章的生产级写法就是 PyTorch 的标准写法。同一套"全套"配置在 [`code/08_pytorch_version.py`](code/08_pytorch_version.py) 里：
+For Chapters 1–6, the production code is the standard PyTorch code. The same "full set" configuration is in [`code/08_pytorch_version.py`](code/08_pytorch_version.py):
 
 ```python
 class Block(nn.Module):
@@ -428,7 +448,7 @@ class Block(nn.Module):
         super().__init__()
         self.norm = nn.RMSNorm(width, eps=1e-6)
         self.fc1 = nn.Linear(width, hidden, bias=False)
-        self.fc2 = nn.Linear(hidden, width, bias=False)    # 残差分支的输出投影
+        self.fc2 = nn.Linear(hidden, width, bias=False)    # output projection of the residual branch
 
     def forward(self, x):
         return x + self.fc2(F.relu(self.fc1(self.norm(x))))
@@ -439,7 +459,7 @@ opt = torch.optim.AdamW([{"params": decay, "weight_decay": 0.1},
                          {"params": no_decay, "weight_decay": 0.0}],
                         lr=3e-3, betas=(0.9, 0.95), eps=1e-8)
 scheduler = torch.optim.lr_scheduler.LambdaLR(
-    opt, lambda s: warmup_cosine(s, total, 1.0, warmup))   # 倍率函数，峰值传 1
+    opt, lambda s: warmup_cosine(s, total, 1.0, warmup))   # multiplier function, peak = 1
 
 for step in range(total):
     loss = F.cross_entropy(model(x), y)
@@ -450,104 +470,112 @@ for step in range(total):
     scheduler.step()
 ```
 
-| 极简版（手写） | PyTorch 标准写法 | 说明 |
+| Minimal code (hand-written) | Standard PyTorch code | Notes |
 |---|---|---|
-| `rms_norm(x, gamma)` | `nn.RMSNorm(width, eps=1e-6)` | 公式相同；PyTorch 2.4 起自带。也有 `nn.LayerNorm` |
-| `torch.randn(...) * std` | `nn.init.normal_(p, std=0.02)`，输出投影用 `0.02/√(2L)` | 脚本里的 `init_llm_style` 是大模型常见写法 |
-| 手写 m、v、偏差修正、解耦衰减 | `torch.optim.AdamW` | 更新公式完全一样；GPU 上还有融合内核 |
-| `if p.dim() >= 2` 才衰减 | 两个参数组，`weight_decay` 分别设 0.1 和 0 | 优化器按组管理超参 |
-| `warmup_cosine` / `wsd` 函数 | `LambdaLR(opt, 倍率函数)`，每步 `scheduler.step()` | 调度器的状态要跟着检查点一起保存（第 14 章） |
-| `clip_by_global_norm` | `torch.nn.utils.clip_grad_norm_` | 返回裁剪前的范数，训练日志里常记它 |
+| `rms_norm(x, gamma)` | `nn.RMSNorm(width, eps=1e-6)` | The same formula; part of PyTorch since 2.4. `nn.LayerNorm` also exists |
+| `torch.randn(...) * std` | `nn.init.normal_(p, std=0.02)`, and `0.02/√(2L)` for the output projections | `init_llm_style` in the script is the usual method in large models |
+| Hand-written m, v, bias correction, decoupled decay | `torch.optim.AdamW` | The update formula is the same; on GPUs, there are also fused kernels |
+| Decay only `if p.dim() >= 2` | Two parameter groups, with `weight_decay` 0.1 and 0 | The optimizer manages the hyperparameters by group |
+| `warmup_cosine` / `wsd` functions | `LambdaLR(opt, multiplier function)`, and `scheduler.step()` at each step | Save the scheduler state together with the checkpoint (Chapter 14) |
+| `clip_by_global_norm` | `torch.nn.utils.clip_grad_norm_` | Returns the norm before clipping; training logs often record it |
 
-**对拍**：脚本把 06 手写版的初始权重搬进 PyTorch 版，用同一条数据流跑 200 步，逐步比较损失：
+**Parity check**: the script copies the initial weights of the hand-written version (06) into the PyTorch version. It runs 200 steps on the same data stream and compares the loss at each step:
 
-| 精度 | 逐步损失的最大差 | 第 200 步损失（PyTorch / 手写） |
+| Precision | Max loss difference per step | Loss at step 200 (PyTorch / hand-written) |
 |---|---:|---|
 | float64 | 8.9 × 10⁻¹⁶ | 0.9041 / 0.9041 |
 | float32 | 1.3 × 10⁻² | 0.8676 / 0.8659 |
 
-双精度下两者逐位一致，说明公式完全相同。单精度下，两边的运算顺序略有不同，每步产生 10⁻⁷ 量级的舍入差异，训练过程会把它逐步放大，200 步后差到 10⁻²（复跑是 3 × 10⁻⁴，放大到多少取决于机器和 PyTorch 选用的内核）。这本身也是一堂"训练稳定性"课：训练是一个会放大微小扰动的动力系统，所以对拍要用高精度，而"固定随机种子可复现"只在同一台机器、同一套代码上成立。（两种精度下的随机数据不同，所以两行的损失值本身不同。）脚本最后用大模型风格的 std = 0.02 初始化把全套完整训练 800 步：余弦和 WSD 的验证损失都在 0.80 左右（构建机上是 0.80028 和 0.80029，复跑是 0.80101 和 0.79763），差别在机器间的随机波动之内，分不出谁更好。
+In double precision, the two versions agree digit for digit, so the formulas are identical. In single precision, the two sides do the operations in a slightly different order. Each step adds a rounding difference of about 10⁻⁷, and training makes the difference larger step by step. After 200 steps, the difference is 10⁻². (The second run gave 3 × 10⁻⁴. The final size depends on the machine and on the kernels that PyTorch selects.)
 
-**在主线代码里**：从第 7 章起，生产级代码进入 `zero/`。本章这些技巧在主线里的位置如下，第 14 章会详细讲：
+This is also a lesson in training stability. Training is a dynamical system that makes small disturbances larger. Thus, do parity checks in high precision. Also, "a fixed random seed makes the results reproducible" is true only on the same machine with the same code. (The two precisions use different random data, so the loss values in the two rows are different.)
 
-- `zero/model.py`：`RMSNorm`（与 Hugging Face 的 Qwen3 实现一致，先转 float32 再归一化）；`Transformer.init_weights()` 用 `N(0, init_std)` 初始化，两个写回残差流的投影再除以 `sqrt(2 · n_layers)`。
-- `zero/train/schedule.py`：`cosine_with_warmup`、`wsd`（衰减形状支持线性、余弦和 1−sqrt）、`LRScheduler`（把倍率写进优化器，状态存进检查点）。
-- `zero/train/trainer.py`：`build_optimizer` 按"矩阵 / 一维参数"分两组，并可配置是否衰减嵌入（对应 OLMo 2 的做法）；`Trainer.train` 里每步 `clip_grad_norm_`，同时把梯度范数写进日志。
+At the end, the script trains the full set for 800 steps with the large-model-style initialization, std = 0.02. The validation losses of cosine and WSD are both about 0.80 (0.80028 and 0.80029 on the build machine; 0.80101 and 0.79763 in the second run). The difference is within the random variation between machines, so we cannot say which schedule is better.
 
----
+**In the main-line code**: from Chapter 7, the production code is in `zero/`. The methods of this chapter are at these locations in the main line. Chapter 14 explains them in detail:
 
-## 前沿观察
-
-**Muon 优化器**：Muon 对每个矩阵的更新做正交化（让更新矩阵的奇异值都相等）。Kimi K2 报告引用其前作 Moonlight 的实验称，同样的算力和模型大小下 Muon 明显优于 AdamW，并用改进版 MuonClip 预训练了 15.5T token。GOAL.md 把它列为"待核实（可能已达共识）"。截至本章写作时，本章核实过的主力开源模型（Llama、Qwen3、DeepSeek-V3、OLMo 2、SmolLM3）的公开报告仍然用 AdamW，所以本章正文只讲 AdamW。Muon 是否满足"3 个独立家族采用"留待第 12 章核实。
+- `zero/model.py`: `RMSNorm` (the same as the Hugging Face Qwen3 implementation: it converts to float32 before it normalizes). `Transformer.init_weights()` initializes with `N(0, init_std)`, and it divides the two projections that write back to the residual stream by `sqrt(2 · n_layers)`.
+- `zero/train/schedule.py`: `cosine_with_warmup`, `wsd` (the decay shape can be linear, cosine, or 1−sqrt), and `LRScheduler` (it writes the multiplier into the optimizer and saves its state in the checkpoint).
+- `zero/train/trainer.py`: `build_optimizer` makes two groups, "matrices / 1-dimensional parameters". A setting controls if the embeddings get weight decay (the OLMo 2 method). In `Trainer.train`, each step calls `clip_grad_norm_` and writes the gradient norm to the log.
 
 ---
 
-## 采用方与来源
+## Frontier notes
 
-以下均为技术报告、模型卡或官方 `config.json` 里的明确表述。
+**The Muon optimizer**: Muon orthogonalizes the update of each matrix (it makes all singular values of the update matrix equal). The Kimi K2 report cites experiments from its earlier work, Moonlight: with the same compute and model size, Muon is much better than AdamW. Kimi K2 used an improved version, MuonClip, to pretrain on 15.5T tokens. GOAL.md lists Muon as "to be verified (possibly already a consensus)".
 
-| 技术 | 采用方（至少 3 个家族） | 来源 |
+This chapter verified the main open models: Llama, Qwen3, DeepSeek-V3, OLMo 2, and SmolLM3. When this chapter was written, their public reports still used AdamW. Thus the main text of this chapter covers only AdamW. Chapter 12 will verify if Muon meets the rule "adopted by 3 independent families".
+
+---
+
+## Adopters and sources
+
+All entries below are explicit statements in technical reports, model cards, or official `config.json` files.
+
+| Technique | Adopters (at least 3 families) | Sources |
 |---|---|---|
-| RMSNorm | Llama 2（"pre-normalization using RMSNorm"）；Qwen3（"RMSNorm with pre-normalization"）；gpt-oss（"root mean square normalization"）；OLMo 2（从非参数 LayerNorm 换成 RMSNorm）；DeepSeek-V3、Gemma 3 的 config 里有 `rms_norm_eps` | [Llama 2 §2.2](https://arxiv.org/abs/2307.09288)、[Qwen3 §2](https://arxiv.org/abs/2505.09388)、[gpt-oss 模型卡 §2.2](https://arxiv.org/abs/2508.10925)、[OLMo 2 §2.1](https://arxiv.org/abs/2501.00656)、[DeepSeek-V3 config](https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/config.json)、[Gemma 3 1B config](https://huggingface.co/google/gemma-3-1b-it/blob/main/config.json) |
-| Pre-Norm | Llama 2；Qwen3；gpt-oss（"Pre-LN placement"）。反例：OLMo 2 把 norm 放在子层输出上 | 同上；[Xiong et al. 2020](https://arxiv.org/abs/2002.04745) |
-| AdamW | Llama 2（β = 0.9/0.95，λ = 0.1）；Llama 3；DeepSeek-V3（β = 0.9/0.95，λ = 0.1）；OLMo 2；SmolLM3（β = 0.9/0.95，λ = 0.1）。反例：Kimi K2 用 MuonClip | [Llama 2](https://arxiv.org/abs/2307.09288)、[Llama 3 §3.4.1](https://arxiv.org/abs/2407.21783)、[DeepSeek-V3 §4.2](https://arxiv.org/abs/2412.19437)、[OLMo 2 §3.4](https://arxiv.org/abs/2501.00656)、[SmolLM3 博客](https://github.com/huggingface/blog/blob/main/smollm3.md)、[Kimi K2 §2.1](https://arxiv.org/abs/2507.20534) |
-| 嵌入 / 一维参数不做权重衰减 | OLMo 2（嵌入不衰减）；SmolLM3（沿用 OLMo 2）；nanoGPT（一维参数不衰减） | [OLMo 2 §3.4.2](https://arxiv.org/abs/2501.00656)、[SmolLM3 博客](https://github.com/huggingface/blog/blob/main/smollm3.md)、[nanoGPT model.py](https://github.com/karpathy/nanoGPT/blob/master/model.py) |
-| warmup + 余弦衰减 | Llama 2（2000 步 warmup，降到峰值 10%）；Llama 3（8000 步 warmup，降到 8e−7）；OLMo 2（2000 步 warmup，降到 10%） | [Llama 2 §2.2](https://arxiv.org/abs/2307.09288)、[Llama 3 §3.4.1](https://arxiv.org/abs/2407.21783)、[OLMo 2 §2.3](https://arxiv.org/abs/2501.00656) |
-| WSD（warmup-恒定-衰减） | MiniCPM（提出者）；SmolLM3（最后 10% 线性降到 0）；Kimi K2（报告明确写 WSD）；DeepSeek-V3（同形状：恒定到 10T token 后余弦衰减，未用 WSD 这个名字） | [MiniCPM §4](https://arxiv.org/abs/2404.06395)、[SmolLM3 博客](https://github.com/huggingface/blog/blob/main/smollm3.md)、[Kimi K2 §2.5](https://arxiv.org/abs/2507.20534)、[DeepSeek-V3 §4.2](https://arxiv.org/abs/2412.19437) |
-| 梯度裁剪（范数 1.0） | Llama 2；DeepSeek-V3；OLMo 2；SmolLM3 | [Llama 2](https://arxiv.org/abs/2307.09288)、[DeepSeek-V3 §4.2](https://arxiv.org/abs/2412.19437)、[OLMo 2 表 3](https://arxiv.org/abs/2501.00656)、[SmolLM3 博客](https://github.com/huggingface/blog/blob/main/smollm3.md) |
-| 初始化 std 0.02 | Qwen3、Gemma 3、SmolLM3 的 config `initializer_range: 0.02`；OLMo 2 报告明确写 0.02。注意 DeepSeek-V3 的 config 写 0.02，报告正文写的是 0.006 | [Qwen3-0.6B config](https://huggingface.co/Qwen/Qwen3-0.6B/blob/main/config.json)、[Gemma 3 1B config](https://huggingface.co/google/gemma-3-1b-it/blob/main/config.json)、[SmolLM3-3B config](https://huggingface.co/HuggingFaceTB/SmolLM3-3B/blob/main/config.json)、[OLMo 2 §3.2](https://arxiv.org/abs/2501.00656) |
+| RMSNorm | Llama 2 ("pre-normalization using RMSNorm"); Qwen3 ("RMSNorm with pre-normalization"); gpt-oss ("root mean square normalization"); OLMo 2 (changed from non-parametric LayerNorm to RMSNorm); the configs of DeepSeek-V3 and Gemma 3 have `rms_norm_eps` | [Llama 2 §2.2](https://arxiv.org/abs/2307.09288), [Qwen3 §2](https://arxiv.org/abs/2505.09388), [gpt-oss model card §2.2](https://arxiv.org/abs/2508.10925), [OLMo 2 §2.1](https://arxiv.org/abs/2501.00656), [DeepSeek-V3 config](https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/config.json), [Gemma 3 1B config](https://huggingface.co/google/gemma-3-1b-it/blob/main/config.json) |
+| Pre-Norm | Llama 2; Qwen3; gpt-oss ("Pre-LN placement"). Counterexample: OLMo 2 puts the norm on the sublayer output | Same as above; [Xiong et al. 2020](https://arxiv.org/abs/2002.04745) |
+| AdamW | Llama 2 (β = 0.9/0.95, λ = 0.1); Llama 3; DeepSeek-V3 (β = 0.9/0.95, λ = 0.1); OLMo 2; SmolLM3 (β = 0.9/0.95, λ = 0.1). Counterexample: Kimi K2 uses MuonClip | [Llama 2](https://arxiv.org/abs/2307.09288), [Llama 3 §3.4.1](https://arxiv.org/abs/2407.21783), [DeepSeek-V3 §4.2](https://arxiv.org/abs/2412.19437), [OLMo 2 §3.4](https://arxiv.org/abs/2501.00656), [SmolLM3 blog](https://github.com/huggingface/blog/blob/main/smollm3.md), [Kimi K2 §2.1](https://arxiv.org/abs/2507.20534) |
+| No weight decay for embeddings / 1-dimensional parameters | OLMo 2 (no decay for embeddings); SmolLM3 (uses the OLMo 2 method); nanoGPT (no decay for 1-dimensional parameters) | [OLMo 2 §3.4.2](https://arxiv.org/abs/2501.00656), [SmolLM3 blog](https://github.com/huggingface/blog/blob/main/smollm3.md), [nanoGPT model.py](https://github.com/karpathy/nanoGPT/blob/master/model.py) |
+| warmup + cosine decay | Llama 2 (2000 warmup steps, decay to 10% of the peak); Llama 3 (8000 warmup steps, decay to 8e−7); OLMo 2 (2000 warmup steps, decay to 10%) | [Llama 2 §2.2](https://arxiv.org/abs/2307.09288), [Llama 3 §3.4.1](https://arxiv.org/abs/2407.21783), [OLMo 2 §2.3](https://arxiv.org/abs/2501.00656) |
+| WSD (warmup-stable-decay) | MiniCPM (proposed it); SmolLM3 (linear decay to 0 in the last 10%); Kimi K2 (the report explicitly says WSD); DeepSeek-V3 (the same shape: constant until 10T tokens, then cosine decay; it does not use the name WSD) | [MiniCPM §4](https://arxiv.org/abs/2404.06395), [SmolLM3 blog](https://github.com/huggingface/blog/blob/main/smollm3.md), [Kimi K2 §2.5](https://arxiv.org/abs/2507.20534), [DeepSeek-V3 §4.2](https://arxiv.org/abs/2412.19437) |
+| Gradient clipping (norm 1.0) | Llama 2; DeepSeek-V3; OLMo 2; SmolLM3 | [Llama 2](https://arxiv.org/abs/2307.09288), [DeepSeek-V3 §4.2](https://arxiv.org/abs/2412.19437), [OLMo 2 Table 3](https://arxiv.org/abs/2501.00656), [SmolLM3 blog](https://github.com/huggingface/blog/blob/main/smollm3.md) |
+| Initialization std 0.02 | The configs of Qwen3, Gemma 3, and SmolLM3 have `initializer_range: 0.02`; the OLMo 2 report explicitly says 0.02. Note: the DeepSeek-V3 config says 0.02, but the main text of its report says 0.006 | [Qwen3-0.6B config](https://huggingface.co/Qwen/Qwen3-0.6B/blob/main/config.json), [Gemma 3 1B config](https://huggingface.co/google/gemma-3-1b-it/blob/main/config.json), [SmolLM3-3B config](https://huggingface.co/HuggingFaceTB/SmolLM3-3B/blob/main/config.json), [OLMo 2 §3.2](https://arxiv.org/abs/2501.00656) |
 
-待核实：Qwen3 技术报告只写了"第二阶段加快学习率衰减"，没有公布具体调度形状，所以没有列进 warmup + 余弦或 WSD 的采用方。Gemma 3 的 norm 位置本章没有核实。
-
----
-
-## 引导问题
-
-带着这些问题去问 Claude Code，直到你能用自己的话讲清楚：
-
-1. 01 的表里，std = 1.0 和 std = 0.01 两种初始化的"第 1 层 / 第 30 层误差信号比"恰好互为倒数的量级。ReLU 网络有什么性质导致只要改权重尺度，整张表就等比例缩放？
-2. Kaiming 初始化里的"2"来自 ReLU。如果激活函数换成 tanh，这个系数应该是多少？为什么？（提示：tanh 在 0 附近斜率是 1。）
-3. RMSNorm 不减均值。在什么样的输入上 RMSNorm 和 LayerNorm 的输出差别最大？试着构造一个例子，让 `02_normalization.py` 打印出来。
-4. 03 的实验里，普通堆叠的网络尺度正常、误差信号大小也正常，却仍然"学不动"。"梯度大小正常"和"梯度有用"是一回事吗？
-5. Adam 的第一步为什么每个参数都恰好走 η？这和 warmup 有什么关系？
-6. WSD 的衰减阶段只占 10%–20% 的步数，却能把损失降下一大截。结合第 1 章"学习率太大时参数在谷底附近来回跳"的画面，解释为什么。
-
-## 动手任务
-
-每个任务都要真的运行代码、看到结果。
-
-**任务 1（基础）**：在 `01_signal_propagation.py` 里把激活函数从 ReLU 换成 tanh，重跑五种初始化。哪一种现在最接近"每层不放大也不缩小"？和引导问题 2 的答案对得上吗？
-
-**任务 2（核心）**：在 `06_ablation.py` 里把 `BLOCKS` 从 12 改成 24（48 个线性层），重跑两张表。哪些配置的结论变了？残差和 RMSNorm 的重要性是变大还是变小？（运行时间会翻倍，约 3 分钟。）
-
-**任务 3（挑战）**：`05_lr_schedule.py` 里的 WSD 用线性衰减。Hägele et al.（2024）发现 `1 − sqrt(进度)` 形状的衰减更好。在 `wsd` 函数里加一个 `shape` 参数实现它，再用 `07_schedule_experiments.py` 的实验比较"线性"和"1 − sqrt"两种衰减的验证损失。差别有论文里说的那么明显吗？如果没有，可能是什么原因？
+To be verified: the Qwen3 technical report says only that "the second stage accelerates the learning-rate decay". It does not give the exact shape of the schedule. Thus Qwen3 is not in the adopter lists for warmup + cosine or WSD. This chapter did not verify the norm position of Gemma 3.
 
 ---
 
-## 读完第一部分，就可以开始 CS336
+## Guided questions
 
-到这里，第一部分"从一条直线开始"就结束了。我们从 `y = ax + b` 出发，走过了矩阵、神经网络、反向传播、softmax 与交叉熵，最后在这一章把深网络训稳。这正是斯坦福 [CS336: Language Modeling from Scratch](https://cs336.stanford.edu/)（Spring 2026）默认你已经掌握的前置知识。CS336 第一讲就从分词开始，作业 1 要求你从零写出 BPE、Transformer、AdamW 和训练循环。本章手写的 RMSNorm、AdamW、余弦调度和梯度裁剪，会在那里原样再出现一次。从第 7 章起，本课每章末尾都会有"想深入：CS336"一节，指向对应的讲座和作业。你可以跟着本课往下读，也可以现在就打开 CS336 的课程页，两边对照着学。
+Ask Claude Code these questions. Continue until you can explain the answers in your own words:
+
+1. In the table of 01, look at the ratio "error signal at layer 1 / at layer 30" for std = 1.0 and for std = 0.01. The orders of magnitude of the two ratios are exactly reciprocal. Which property of a ReLU network makes the whole table scale proportionally when you change only the weight scale?
+2. The "2" in Kaiming initialization comes from ReLU. If the activation function is tanh, what must this factor be? Why? (Hint: near 0, the slope of tanh is 1.)
+3. RMSNorm does not subtract the mean. For which inputs are the outputs of RMSNorm and LayerNorm most different? Make an example and let `02_normalization.py` print it.
+4. In the experiment of 03, the plain stack has a normal scale and an error signal of normal size, but it still "cannot learn". Is "a gradient of normal size" the same as "a useful gradient"?
+5. Why does Adam move each parameter by exactly η in the first step? How is this related to warmup?
+6. The decay phase of WSD is only 10%–20% of the steps, but it decreases the loss by a large amount. Explain why. Use the picture from Chapter 1: "when the learning rate is too large, the parameters jump from side to side near the bottom of the valley".
+
+## Hands-on tasks
+
+For each task, run the code and look at the result.
+
+**Task 1 (basic)**: In `01_signal_propagation.py`, change the activation function from ReLU to tanh. Run the five initializations again. Which one now comes nearest to "each layer does not make the signal larger or smaller"? Does the result agree with your answer to guided question 2?
+
+**Task 2 (core)**: In `06_ablation.py`, change `BLOCKS` from 12 to 24 (48 linear layers). Run the two tables again. For which configurations does the result change? Do residual connections and RMSNorm become more important or less important? (The run time doubles, to about 3 min.)
+
+**Task 3 (challenge)**: The WSD in `05_lr_schedule.py` uses a linear decay. Hägele et al. (2024) found that a decay with the shape `1 − sqrt(progress)` is better. Add a `shape` parameter to the `wsd` function to implement it. Then use the experiment of `07_schedule_experiments.py` to compare the validation loss of the "linear" and "1 − sqrt" decays. Is the difference as large as the paper says? If not, what can be the reason?
 
 ---
 
-## 本章参考文献
+## After Part 1, you can start CS336
 
-- Glorot & Bengio. *Understanding the difficulty of training deep feedforward neural networks*（Xavier 初始化），AISTATS 2010：<https://proceedings.mlr.press/v9/glorot10a.html>
-- He et al. *Delving Deep into Rectifiers*（Kaiming 初始化），2015：<https://arxiv.org/abs/1502.01852>
-- He et al. *Deep Residual Learning for Image Recognition*（残差连接），2015：<https://arxiv.org/abs/1512.03385>
-- Ba, Kiros, Hinton. *Layer Normalization*，2016：<https://arxiv.org/abs/1607.06450>
-- Zhang & Sennrich. *Root Mean Square Layer Normalization*，NeurIPS 2019：<https://arxiv.org/abs/1910.07467>
-- Xiong et al. *On Layer Normalization in the Transformer Architecture*（Pre-LN 与 warmup），ICML 2020：<https://arxiv.org/abs/2002.04745>
-- Kingma & Ba. *Adam: A Method for Stochastic Optimization*，2014：<https://arxiv.org/abs/1412.6980>
-- Loshchilov & Hutter. *Decoupled Weight Decay Regularization*（AdamW），2017：<https://arxiv.org/abs/1711.05101>
-- Loshchilov & Hutter. *SGDR: Stochastic Gradient Descent with Warm Restarts*（余弦调度），2016：<https://arxiv.org/abs/1608.03983>
-- Pascanu, Mikolov, Bengio. *On the difficulty of training recurrent neural networks*（梯度裁剪），2012：<https://arxiv.org/abs/1211.5063>
-- Zhang et al. *Why Transformers Need Adam: A Hessian Perspective*，NeurIPS 2024：<https://arxiv.org/abs/2402.16788>
-- Hu et al. *MiniCPM: Unveiling the Potential of Small Language Models with Scalable Training Strategies*（WSD），2024：<https://arxiv.org/abs/2404.06395>
-- Hägele et al. *Scaling Laws and Compute-Optimal Training Beyond Fixed Training Durations*（恒定学习率 + 冷却），NeurIPS 2024：<https://arxiv.org/abs/2405.18392>
-- OLMo Team. *2 OLMo 2 Furious*（初始化、norm 位置、嵌入不衰减等稳定性细节），2024：<https://arxiv.org/abs/2501.00656>
-- Karpathy. nanoGPT（`configure_optimizers` 的参数分组、残差投影的缩放初始化、`get_lr` 余弦调度）：<https://github.com/karpathy/nanoGPT>
-- 各模型技术报告与配置：见上方"采用方与来源"表
-- CS336（Spring 2026）：<https://cs336.stanford.edu/>
+This is the end of Part 1, "Start from a straight line". We started from `y = ax + b` and went through matrices, neural networks, backpropagation, softmax, and cross-entropy. In this chapter, we made a deep network train in a stable way. Stanford [CS336: Language Modeling from Scratch](https://cs336.stanford.edu/) (Spring 2026) expects exactly this knowledge before you start. The first lecture of CS336 starts with tokenization. Assignment 1 asks you to write BPE, a Transformer, AdamW, and a training loop from zero.
 
-**下一章**：第一部分到此结束，我们手里已经有了一套能把深网络训稳的工具。第二部分开始构建真正的语言模型。第一个问题是：模型只认识数字，文字要怎么变成数字？是按字、按词，还是按字节？第 7 章，我们从语言建模和分词讲起，亲手写一个 BPE 分词器。
+The RMSNorm, AdamW, cosine schedule, and gradient clipping that you wrote by hand in this chapter occur there again in the same form. From Chapter 7, each chapter of this course ends with a section "Go deeper: CS336", which points to the related lectures and assignments. You can continue with this course. You can also open the CS336 course page now and study the two together.
+
+---
+
+## References
+
+- Glorot & Bengio. *Understanding the difficulty of training deep feedforward neural networks* (Xavier initialization), AISTATS 2010: <https://proceedings.mlr.press/v9/glorot10a.html>
+- He et al. *Delving Deep into Rectifiers* (Kaiming initialization), 2015: <https://arxiv.org/abs/1502.01852>
+- He et al. *Deep Residual Learning for Image Recognition* (residual connections), 2015: <https://arxiv.org/abs/1512.03385>
+- Ba, Kiros, Hinton. *Layer Normalization*, 2016: <https://arxiv.org/abs/1607.06450>
+- Zhang & Sennrich. *Root Mean Square Layer Normalization*, NeurIPS 2019: <https://arxiv.org/abs/1910.07467>
+- Xiong et al. *On Layer Normalization in the Transformer Architecture* (Pre-LN and warmup), ICML 2020: <https://arxiv.org/abs/2002.04745>
+- Kingma & Ba. *Adam: A Method for Stochastic Optimization*, 2014: <https://arxiv.org/abs/1412.6980>
+- Loshchilov & Hutter. *Decoupled Weight Decay Regularization* (AdamW), 2017: <https://arxiv.org/abs/1711.05101>
+- Loshchilov & Hutter. *SGDR: Stochastic Gradient Descent with Warm Restarts* (cosine schedule), 2016: <https://arxiv.org/abs/1608.03983>
+- Pascanu, Mikolov, Bengio. *On the difficulty of training recurrent neural networks* (gradient clipping), 2012: <https://arxiv.org/abs/1211.5063>
+- Zhang et al. *Why Transformers Need Adam: A Hessian Perspective*, NeurIPS 2024: <https://arxiv.org/abs/2402.16788>
+- Hu et al. *MiniCPM: Unveiling the Potential of Small Language Models with Scalable Training Strategies* (WSD), 2024: <https://arxiv.org/abs/2404.06395>
+- Hägele et al. *Scaling Laws and Compute-Optimal Training Beyond Fixed Training Durations* (constant learning rate + cooldown), NeurIPS 2024: <https://arxiv.org/abs/2405.18392>
+- OLMo Team. *2 OLMo 2 Furious* (stability details: initialization, norm position, no weight decay for embeddings, and more), 2024: <https://arxiv.org/abs/2501.00656>
+- Karpathy. nanoGPT (parameter groups in `configure_optimizers`, scaled initialization of the residual projections, cosine schedule in `get_lr`): <https://github.com/karpathy/nanoGPT>
+- Technical reports and configs of each model: see the "Adopters and sources" table above
+- CS336 (Spring 2026): <https://cs336.stanford.edu/>
+
+**Next chapter**: Part 1 ends here. We now have a set of tools that make a deep network train in a stable way. Part 2 starts to build a real language model. The first question is: a model knows only numbers, so how do we change text into numbers? By character, by word, or by byte? In Chapter 7, we start with language modeling and tokenization, and we write a BPE tokenizer by hand.

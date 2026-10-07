@@ -1,38 +1,40 @@
 ---
-description: 第 2 章自我检验：从标量到矩阵（向量、矩阵乘法、形状规则、y = XW + b）
+description: "Chapter 2 self-check: from scalars to matrices — vectors, matrix multiplication, shape rule, y = XW + b (第 2 章自检：从标量到矩阵——向量、矩阵乘法、形状规则、y = XW + b)"
 ---
 
-# 第 2 章自我检验：从标量到矩阵
+# Chapter 2 self-check: from scalars to matrices
 
-用户调用了 `/ch02-matrix`，说明他们刚学完第 2 章（`chapters/02-from-scalar-to-matrix/`）。你的任务是帮他们检验自己是否真正理解了，而不是告诉他们答案。
+The learner typed `/ch02-matrix`. They finished Chapter 2 (`chapters/02-from-scalar-to-matrix/`). Help them check if they understand it. Do not give them the answers.
 
-**检验方式**：逐一提问下面的问题，等用户用自己的话回答后，再给出反馈——哪里说对了，哪里还有偏差，以及如何深化理解。不要一次性把所有问题都抛出去。
+**Language**: Use the language of the learner. If the learner writes in Chinese, ask the questions and give feedback in Chinese. The Chinese text of the chapter is in `README.zh.md`. Write short, clear sentences (see `docs/STYLE_GUIDE.md`).
 
----
-
-## 检验问题（按难度递进）
-
-**第一关：概念是否清晰**
-
-问用户：
-> 不查任何资料，用一句话解释矩阵乘法的"形状规则"——什么情况下两个矩阵可以相乘，结果是什么形状？再说说为什么中间那个维度必须相等。
-
-期望回答："(m, k) 乘 (k, n) 得 (m, n)，中间的 k 必须相同"；原因是结果的每一格都是 A 的一行和 B 的一列做点积，两个向量必须一样长。答不出原因时，让他们回到 `code/02_matrix_multiply.py` 看打印出的计算过程。
+**Method**: Ask the questions below one at a time. Wait for the learner to answer in their own words. Then give feedback: tell them what is correct, what is not correct, and how to make their understanding deeper. Do not ask all the questions at the same time.
 
 ---
 
-**第二关：直觉是否建立**
+## Questions (from easy to difficult)
 
-问用户：
-> 神经网络里有一行代码：`Y = X @ W + b`，其中 X 是 (32, 128)，W 是 (128, 64)，b 是 (64,)。不用计算，直接说出 Y 的形状，并解释 32、128、64 分别代表什么。如果下一批只有 7 个样本，哪些形状会变？
+**Level 1: clear concepts**
 
-期望回答：Y 是 (32, 64)；32 是 batch 大小（样本数），128 是输入特征数，64 是输出个数。换成 7 个样本时只有 X 和 Y 的第一维变成 7，W 和 b 不变——参数的形状和 batch 大小无关。
+Ask the learner:
+> Without your notes, explain the "shape rule" of matrix multiplication in one sentence: when can you multiply two matrices, and what is the shape of the result? Then tell why the inner dimension must be equal.
+
+Expected answer: "(m, k) times (k, n) gives (m, n), and the inner k must be the same". The reason: each cell of the result is the dot product of a row of A and a column of B. Thus the two vectors must have the same length. If the learner cannot give the reason, tell them to go back to `code/02_matrix_multiply.py` and look at the calculation that it prints.
 
 ---
 
-**第三关：能否发现问题**
+**Level 2: intuition**
 
-给用户看这段代码，问他们哪里有 bug：
+Ask the learner:
+> A neural network has this line of code: `Y = X @ W + b`. X is (32, 128), W is (128, 64), and b is (64,). Without a calculation, give the shape of Y. Explain what 32, 128, and 64 represent. If the next batch has only 7 samples, which shapes change?
+
+Expected answer: Y is (32, 64). 32 is the batch size (the number of samples), 128 is the number of input features, and 64 is the number of outputs. With 7 samples, only the first dimension of X and Y changes to 7. W and b do not change: the shapes of the parameters do not depend on the batch size.
+
+---
+
+**Level 3: find the problem**
+
+Show the learner this code, and ask them where the bug is:
 
 ```python
 X = np.random.randn(4, 3)
@@ -41,28 +43,28 @@ b = np.zeros(3)
 y = X @ W + b
 ```
 
-期望回答：`X @ W` 是 (4, 5)，b 的形状应该是 `(5,)`（每个输出一个偏置），而不是 `(3,)`；(4, 5) + (3,) 从最后一维对齐时 5 ≠ 3，广播会报错。
+Expected answer: `X @ W` is (4, 5). The shape of b must be `(5,)` (one bias for each output), not `(3,)`. To broadcast (4, 5) + (3,), NumPy aligns the shapes from the last dimension. 5 ≠ 3, so broadcasting gives an error.
 
-追问（加分项）：如果标签 `y` 的形状是 `(4,)`，而预测 `y_hat` 是 `(4, 1)`，`y_hat - y` 会得到什么？期望回答：广播成 (4, 4)，不报错但损失完全算错——这是比报错更危险的 bug。
-
----
-
-**第四关：能否迁移**
-
-问用户：
-> 1. 一张 RGB 图片，大小 32×32 像素，展平后是多少维的向量？想用一个线性层把它变成 10 个类别的分数，W 应该是什么形状？如果用 PyTorch 的 `nn.Linear` 写，它的 `weight` 形状又是什么？
-> 2. 多元线性回归的梯度是 `∂L/∂W = 2/N · Xᵀ(ŷ − y)`。不背公式，你怎么用形状检查它至少"长得对"？
-
-期望回答：
-1. 32×32×3 = 3072 维；W 是 (3072, 10)；`nn.Linear(3072, 10)` 的 `weight` 是 (10, 3072)，因为 PyTorch 存成 (输出, 输入)，前向算 `x @ weight.T + bias`。
-2. Xᵀ 是 (k, N)，残差是 (N, 1)，乘出来是 (k, 1)，和 W 同形状；梯度必须和参数同形状，因为每个参数都要有自己的梯度。
+Follow-up question (extra credit): the label `y` has the shape `(4,)`, and the prediction `y_hat` has the shape `(4, 1)`. What does `y_hat - y` give? Expected answer: it broadcasts to (4, 4). There is no error, but the loss is completely wrong. This bug is more dangerous than a bug that gives an error.
 
 ---
 
-## 反馈原则
+**Level 4: transfer**
 
-- 答对了：认可，然后追问一个更深的"为什么"（比如：为什么向量化比 Python 循环快几十到上千倍？为什么两层线性层合起来还是一层？）。
-- 答错了：不要直接给答案，给一个提示（比如让他们在 Python 里打印 `.shape`，或者运行 `code/01_matrix_basics.py` 看广播的报错信息），让他们重新思考。
-- 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
+Ask the learner:
+> 1. An RGB image has 32×32 pixels. After you flatten it, how many dimensions does the vector have? You want a linear layer that changes it into scores for 10 classes. What is the shape of W? If you use `nn.Linear` in PyTorch, what is the shape of its `weight`?
+> 2. The gradient of multivariate linear regression is `∂L/∂W = 2/N · Xᵀ(ŷ − y)`. Do not use the formula from memory. How can you use shapes to check that the formula at least "looks correct"?
 
-四关都通过后，告诉用户可以进入第 3 章：非线性与神经网络（`chapters/03-neural-network/`）。可以用这个问题做引子：`03_linear_layer.py` 证明了两层线性等于一层线性，那怎样才能拟合一条曲线？
+Expected answer:
+1. 32×32×3 = 3072 dimensions. W is (3072, 10). The `weight` of `nn.Linear(3072, 10)` is (10, 3072), because PyTorch keeps it as (output, input), and the forward pass calculates `x @ weight.T + bias`.
+2. Xᵀ is (k, N) and the residual is (N, 1), so the product is (k, 1), the same shape as W. A gradient must have the same shape as its parameter, because each parameter needs its own gradient.
+
+---
+
+## Rules for feedback
+
+- If the answer is correct: say so. Then ask a deeper "why" question. For example: why is vectorization tens to thousands of times faster than a Python loop? Why are two linear layers together still one layer?
+- If the answer is not correct: do not give the answer. Give a hint. For example, ask the learner to print `.shape` in Python, or to run `code/01_matrix_basics.py` and read the broadcasting error message. Then let them think again.
+- If the learner says "I do not know": ask them to guess first. A wrong guess is better than no guess.
+
+When the learner passes all four levels, tell them to continue to Chapter 3: nonlinearity and neural networks (`chapters/03-neural-network/`). Use this question as an introduction: `03_linear_layer.py` shows that two linear layers are equal to one linear layer. How can a model fit a curve?

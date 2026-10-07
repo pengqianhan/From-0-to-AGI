@@ -1,4 +1,4 @@
-"""断点续训：训练 N 步 == 训练 k 步、存盘、重新加载、再训练 N-k 步（loss 逐位相同）。"""
+"""Resume: train N steps == train k steps, save, load again, train N-k more steps (bitwise identical loss)."""
 
 from __future__ import annotations
 
@@ -23,17 +23,17 @@ def test_resume_matches_uninterrupted(tmp_path: Path, random_shards, make_config
     src = _sources(tmp_path, random_shards)
     val = random_shards(tmp_path / "data", "val", 1, 2000, 64, 2)
 
-    # 不中断：一口气训 8 步
+    # No interruption: train 8 steps in one run.
     cfg_a = make_config(tmp_path / "run_a", src, val)
     trainer_a = Trainer(cfg_a, DistInfo(), log=lambda _: None)
     hist_a = trainer_a.train()
     params_a = {k: v.clone() for k, v in trainer_a.raw_model.state_dict().items()}
 
-    # 中断：训到第 5 步时"崩溃"（最后一个 checkpoint 在第 4 步），然后用新进程状态续训
+    # Interruption: "crash" at step 5 (the last checkpoint is at step 4), then resume with a new process state.
     cfg_b = make_config(tmp_path / "run_b", src, val)
     Trainer(cfg_b, DistInfo(), log=lambda _: None).train(stop_at=5)
     assert find_latest(cfg_b.train.checkpoint_dir).name == "step_00000004"
-    torch.manual_seed(999)  # 故意打乱全局随机数状态，续训必须把它恢复回来
+    torch.manual_seed(999)  # change the global RNG state on purpose; the resume must restore it
     trainer_b = Trainer(cfg_b, DistInfo(), log=lambda _: None)
     assert trainer_b.step == 4
     hist_b = trainer_b.train()
@@ -50,21 +50,22 @@ def test_resume_matches_uninterrupted(tmp_path: Path, random_shards, make_config
         assert torch.equal(v, params_a[k]), k
     assert trainer_b.tokens_seen == trainer_a.tokens_seen
 
-    # JSONL 日志
+    # JSONL log
     lines = (tmp_path / "run_a" / "log.jsonl").read_text().strip().split("\n")
     rec = json.loads(lines[-1])
     assert rec["step"] == 8 and "tok_per_s" in rec and "mixture_counts" in rec
 
 
 def test_stop_step_then_continue_matches_uninterrupted(tmp_path: Path, random_shards, make_config) -> None:  # noqa: ANN001
-    # 阶梯实验的逐轮淘汰：先用 train.stop_step 训到 checkpoint 处停下，留下的配置再接着训到底
+    # Round-by-round elimination of the ladder experiment: first train.stop_step stops at a checkpoint,
+    # then the configs that stay continue to the end.
     src = _sources(tmp_path, random_shards)
     val = random_shards(tmp_path / "data", "val", 1, 2000, 64, 2)
     trainer_a = Trainer(make_config(tmp_path / "run_a", src, val), DistInfo(), log=lambda _: None)
     hist_a = trainer_a.train()
 
     cfg_b = make_config(tmp_path / "run_b", src, val)
-    cfg_b.train.stop_step = 4  # 与 checkpoint.every 对齐
+    cfg_b.train.stop_step = 4  # aligned with checkpoint.every
     first = Trainer(cfg_b, DistInfo(), log=lambda _: None).train()
     assert [r["step"] for r in first][-1] == 4
     assert find_latest(cfg_b.train.checkpoint_dir).name == "step_00000004"

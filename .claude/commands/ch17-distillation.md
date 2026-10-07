@@ -1,58 +1,62 @@
 ---
-description: 第 17 章自我检验：蒸馏（软标签与暗知识、温度与 τ²、KD 梯度 p_S − p_T、同一个词表、序列级蒸馏、前向/反向 KL、在线策略蒸馏、拒绝采样与执行验证、教师许可证）
+description: "Chapter 17 self-check: distillation — soft labels and dark knowledge, temperature and τ², KD gradient p_S − p_T, the same vocabulary, sequence-level distillation, forward/reverse KL, on-policy distillation, rejection sampling and execution check, teacher license (第 17 章自检：蒸馏——软标签与暗知识、温度与 τ²、KD 梯度 p_S − p_T、同一个词表、序列级蒸馏、前向/反向 KL、在线策略蒸馏、拒绝采样与执行验证、教师许可证)"
 ---
 
-# 第 17 章自我检验：蒸馏
+# Chapter 17 self-check: distillation
 
-用户调用了 `/ch17-distillation`，说明他们刚学完第 17 章（`chapters/17-distillation/`）。你的任务是帮他们检验自己是否真正理解了，而不是告诉他们答案。
+The learner typed `/ch17-distillation`. They finished Chapter 17 (`chapters/17-distillation/`). Help them check if they understand it. Do not give them the answers.
 
-**检验方式**：逐一提问下面的问题，等用户用自己的话回答后，再给出反馈——哪里说对了，哪里还有偏差，以及如何深化理解。不要一次性把所有问题都抛出去。
+**Language**: Use the language of the learner. If the learner writes in Chinese, ask the questions and give feedback in Chinese. The Chinese text of the chapter is in `README.zh.md`. Write short, clear sentences (see `docs/STYLE_GUIDE.md`).
 
----
+**Method**: Ask the questions below one at a time. Wait for the learner to answer in their own words. Then give feedback: tell them what is correct, what is not correct, and how to make their understanding deeper. Do not ask all the questions at the same time.
 
-## 检验问题（按难度递进）
-
-**第一关：概念——软标签里多了什么**
-
-问用户：
-> 上文是"今天天气很"，训练文本里下一个字是"好"。one-hot 标签和教师给的软标签（好 0.607、热 0.223、冷 0.100、晴 0.067、猫 0.002、跑 0.001）分别告诉了学生什么？温度 τ 调大以后，这张分布会怎样变，什么不会变？
-
-期望回答：one-hot 只说"答案是好"，熵为 0；软标签还说出了"热、冷、晴也说得通，猫、跑不行"以及它们之间的相对大小（暗知识）。τ 越大分布越平，排在后面的候选分到更多概率（p(晴)/p(猫) 从 44.7 降到 τ=4 时的 2.6），但排名不变。能说出"最小化 KL(p_T‖p_S) 等价于以教师分布为标签的交叉熵，one-hot 是它的特例"是加分项。
+The chapter uses a Chinese example. The context is "今天天气很" ("Today the weather is very"). The candidate next characters are 好 (good), 热 (hot), 冷 (cold), 晴 (sunny), 猫 (cat), and 跑 (run). Keep these characters as they are, and give the English meaning when it helps.
 
 ---
 
-**第二关：直觉——梯度和 τ²**
+## Questions (from easy to difficult)
 
-问用户：
-> KD 损失 L = τ²·KL(p_T^τ ‖ p_S^τ) 对学生 logits 的梯度是什么？和第 5 章交叉熵的梯度 p − onehot 比，哪里一样、哪里不一样？为什么要乘 τ²？
+**Level 1: concept — what does a soft label add?**
 
-期望回答：∂L/∂z_S = τ·(p_S^τ − p_T^τ)，同样是"学生的预测减去目标"，只是目标从 one-hot 换成了教师分布；因此学生低估的次优答案（热、晴）也会被往上推，而不是一律往下压。不乘 τ² 时梯度量级按 1/τ² 缩小（一个 1/τ 来自对 z/τ 求导，另一个来自两个分布都变平后差值变小），乘上后换温度不必重调学习率和 α。能提到"τ 很大时 KD 近似于直接匹配 logits"是加分项。
+Ask the learner:
+> The context is "今天天气很" ("Today the weather is very"), and the next character in the training text is "好" ("good"). What does the one-hot label tell the student? What does the soft label of the teacher tell the student (好 0.607, 热 0.223, 冷 0.100, 晴 0.067, 猫 0.002, 跑 0.001)? When you increase the temperature τ, how does this distribution change, and what does not change?
 
----
-
-**第三关：发现问题——为什么主线只能做序列级蒸馏**
-
-问用户：
-> 主线模型用第 13 章自训的 65,536 词表。第二步打算用一个 Apache-2.0 的千问模型当教师。为什么不能做 logits 蒸馏，也不能做在线策略蒸馏？如果当初改用千问的分词器，能换来什么、要付出什么？
-
-期望回答：logits 蒸馏逐位置、逐维比较两个分布，要求第 t 个位置是同一个"下一个 token"、第 v 维是同一个 token，也就是同一个分词器；在线策略蒸馏要教师在学生的 token 上打分，同样要求。两个词表切同一句话，token 数和边界都不同，没法对齐（zero 的 kd_loss 会报形状错误，run_distill 会比较分词器哈希）。换成 Qwen3 的 151,936 词表，就能做 logits 和在线策略蒸馏，但在主线形状上 embedding 从 83.9M 变成 194.5M，总参数 689.5M → 800.1M，越过 0.8B 上限，词表也不是按我们的中英代码配比训的。所以主线走序列级蒸馏：教师写、学生做 SFT，对教师只要求能生成文本。
+Expected answer: the one-hot label says only "the answer is 好", and its entropy is 0. The soft label also says "热, 冷, and 晴 are possible; 猫 and 跑 are not", and it gives their relative sizes (dark knowledge). A larger τ makes the distribution flatter, and the low-ranked candidates get more probability (p(晴)/p(猫) decreases from 44.7 to 2.6 at τ = 4). But the ranking does not change. Extra credit: "to minimize KL(p_T‖p_S) is the same as to minimize the cross-entropy with the teacher distribution as the label; one-hot is a special case of it".
 
 ---
 
-**第四关：迁移——前向/反向 KL、验证器与许可证**
+**Level 2: intuition — the gradient and τ²**
 
-问用户（可以分两问）：
-> (a) 教师对同一个工具调用问题有两种都正确的写法，学生容量有限。只用序列级蒸馏（前向 KL）和用在线策略蒸馏（反向 KL），学生分别可能学成什么样？
-> (b) 你拿到一批"执行验证全部通过"的教师数据，准备直接训练。还应该检查什么？再说说：一个工具调用很强、但许可证要求"用它的输出训练的模型名字必须以它开头"的教师，主线能不能用？
+Ask the learner:
+> What is the gradient of the KD loss L = τ²·KL(p_T^τ ‖ p_S^τ) for the student logits? Compare it with the gradient of the cross-entropy from Chapter 5, p − onehot. What is the same, and what is different? Why do we multiply by τ²?
 
-期望回答：(a) 前向 KL 是 mode covering：学生要给教师的两种写法都留概率，容量不够时可能"各学一半"、混出一种哪种都不是的写法（双峰实验里山谷分到 24% 的概率，教师只有 1.6%）；反向 KL 是 mode seeking：学生挑一种写法做好，放弃另一种，代价是多样性下降，落在哪个模式取决于起点。(b) 验证器只保证它检查的东西：不需要工具的任务只查"没乱调工具"、不查内容（冒烟测试里唯一通过的是"讲一句鼓励的话 → 坚下云，气温 28°C"）；执行结果一致不等于参数正确（weekday 日期差 7 天）；还要按任务类型看通过率、做 13-gram 与 BFCL 函数名/schema 去污染。许可证方面：主线只用 Apache-2.0 / MIT 的教师（GOAL.md 3.3），Llama 社区许可这类命名要求会传到学生身上，不用；每条数据记录教师名称、版本、许可证，`check_license` 未确认就拒绝运行。
+Expected answer: ∂L/∂z_S = τ·(p_S^τ − p_T^τ). It is also "the prediction of the student minus the target"; only the target changes from one-hot to the teacher distribution. Thus KD also pushes up the second-best answers that the student underestimates (热, 晴), instead of pushing all other answers down. Without τ², the size of the gradient decreases as 1/τ². One 1/τ comes from the derivative of z/τ. The other comes from the smaller difference, because both distributions become flatter. With τ², you do not need to tune the learning rate and α again when you change the temperature. Extra credit: "for a very large τ, KD is approximately a direct match of the logits".
 
 ---
 
-## 反馈原则
+**Level 3: find the problem — why can the main line use only sequence-level distillation?**
 
-- 答对了：认可，然后追问一个更深的"为什么"（例如"如果教师本身在某类题上是错的，在线策略蒸馏会怎样？"）。
-- 答错了：不要直接给答案，给一个提示，让他们回到代码里跑一跑：`01_soft_labels.py`（温度表、梯度对比）、`03_forward_reverse_kl.py`（双峰）、`04_rejection_sampling.py`（漏斗与胡话）、`05_shared_vocab.py`（参数账）。
-- 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
+Ask the learner:
+> The main-line model uses its own trained vocabulary of 65,536 tokens from Chapter 13. For step 2, we plan to use a Qwen model with an Apache-2.0 license as the teacher. Why can we not do logits distillation or on-policy distillation? If we had used the Qwen tokenizer from the start, what would we get, and what would it cost?
 
-四关都通过后，告诉用户可以进入第 18 章（`chapters/18-preference-alignment/`）：偏好对齐——从 RLHF 推到 DPO。
+Expected answer: logits distillation compares the two distributions position by position and dimension by dimension. Position t must be the same "next token", and dimension v must be the same token: the tokenizer must be the same. On-policy distillation needs the teacher to score the tokens of the student, so it has the same requirement. Two vocabularies cut the same sentence into different numbers of tokens with different boundaries, so the positions do not align (the kd_loss of zero raises a shape error, and run_distill compares the tokenizer hashes). With the Qwen3 vocabulary of 151,936 tokens, logits and on-policy distillation become possible. But with the main-line shape, the embedding grows from 83.9M to 194.5M, and the total parameters grow from 689.5M to 800.1M. This is over the 0.8B limit. Also, that vocabulary was not trained on our mix of Chinese, English, and code. Thus the main line uses sequence-level distillation: the teacher writes and the student does SFT. The teacher only needs to generate text.
+
+---
+
+**Level 4: transfer — forward/reverse KL, verifiers, and licenses**
+
+Ask the learner (you can ask in two parts):
+> (a) For one tool-call question, the teacher has two correct ways to write the call, and the capacity of the student is limited. What can the student learn with sequence-level distillation only (forward KL)? What can it learn with on-policy distillation (reverse KL)?
+> (b) You have a set of teacher data in which all samples passed the execution check. You plan to train on it directly. What else must you check? Also: a teacher calls tools very well, but its license requires that "a model trained on its outputs has a name that starts with its name". Can the main line use this teacher?
+
+Expected answer: (a) Forward KL is mode covering. The student must give probability to both forms of the teacher. With limited capacity, it can "learn half of each" and produce a form that is neither of them. (In the two-peak experiment, the valley gets 24% of the probability, but the teacher has only 1.6% there.) Reverse KL is mode seeking. The student picks one form, does it well, and gives up the other. The cost is less diversity, and the start point decides which mode. (b) A verifier guarantees only the things that it checks. For tasks that need no tool, the old verifier checked only "no unnecessary tool call", not the content. (The only sample that passed in the smoke test was "讲一句鼓励的话" ("Say something encouraging") → "坚下云，气温 28°C" ("<nonsense words>, temperature 28°C").) The same execution result does not mean correct arguments (the weekday date that was wrong by 7 days). Also check the pass rate by task type, and do decontamination: 13-gram checks, and BFCL function names / schemas. For licenses: the main line uses only Apache-2.0 / MIT teachers (GOAL.md 3.3). A naming requirement such as the one in the Llama Community License passes to the student, so we do not use such a teacher. Each sample records the name, version, and license of the teacher, and `check_license` stops the run when the license is not confirmed.
+
+---
+
+## Rules for feedback
+
+- If the answer is correct: say so. Then ask a deeper "why" question (for example, "If the teacher itself is wrong on one type of question, what happens in on-policy distillation?").
+- If the answer is not correct: do not give the answer. Give a hint, and ask them to run the code again: `01_soft_labels.py` (temperature table, gradient comparison), `03_forward_reverse_kl.py` (two peaks), `04_rejection_sampling.py` (funnel and nonsense answers), `05_shared_vocab.py` (parameter cost).
+- If the learner says "I do not know": ask them to guess first. A wrong guess is better than no guess.
+
+When the learner passes all four levels, tell them to continue to Chapter 18 (`chapters/18-preference-alignment/`): preference alignment, from RLHF to DPO.

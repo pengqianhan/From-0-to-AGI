@@ -1,4 +1,4 @@
-"""训练显存计算器（zero/tools/memory_calc.py）：手算的数字 + 与真实保存的激活逐字节对拍（第 14 章）。"""
+"""Training memory calculator (zero/tools/memory_calc.py): hand-calculated numbers + a byte-exact parity check against the activations that are really saved (Chapter 14)."""
 
 from __future__ import annotations
 
@@ -38,14 +38,14 @@ def _tiny() -> ModelConfig:
 
 def test_per_token_formulas_hand_checked() -> None:
     cfg = _tiny()  # d=128, q=128, kv=64, f=384, h=4, h_kv=2, V=512
-    # BF16：26·128 + 10·128 + 10·64 + 8·384 + 8·4 + 4·2 + 8 = 3328+1280+640+3072+32+8+8
+    # BF16: 26·128 + 10·128 + 10·64 + 8·384 + 8·4 + 4·2 + 8 = 3328+1280+640+3072+32+8+8
     assert layer_activation_bytes_per_token(cfg, "bf16") == 8368
-    # FP32：24·128 + 16·128 + 16·64 + 16·384 + 8·4 + 4·2 + 8 = 3072+2048+1024+6144+32+8+8
+    # FP32: 24·128 + 16·128 + 16·64 + 16·384 + 8·4 + 4·2 + 8 = 3072+2048+1024+6144+32+8+8
     assert layer_activation_bytes_per_token(cfg, "fp32") == 12336
-    # 头部：BF16 10·128 + 4 + 4·512 + 8 = 3340；FP32 12·128 + 4 + 2048 + 8 = 3596
+    # Head: BF16 10·128 + 4 + 4·512 + 8 = 3340; FP32 12·128 + 4 + 2048 + 8 = 3596
     assert head_activation_bytes_per_token(cfg, "bf16") == 3340
     assert head_activation_bytes_per_token(cfg, "fp32") == 3596
-    # BF16 权重副本：每层 (128·128 + 2·128·64 + 128·128 + 3·128·384) = 196,608 个，lm_head 65,536 个，× 2 字节
+    # BF16 weight copies: (128·128 + 2·128·64 + 128·128 + 3·128·384) = 196,608 per layer, 65,536 for lm_head, × 2 bytes
     assert weight_copy_bytes(cfg) == 2 * (2 * 196_608 + 65_536)
     assert weight_copy_bytes(cfg, "fp32") == 0
 
@@ -56,21 +56,21 @@ def test_static_memory_16_bytes_per_param_and_sharding() -> None:
     one = estimate_memory(cfg, 1, 128, num_gpus=1, strategy="ddp")
     assert (one.params, one.grads, one.optimizer, one.ddp_buckets) == (4 * P, 4 * P, 8 * P, 0)
     ddp = estimate_memory(cfg, 1, 128, num_gpus=8, strategy="ddp")
-    assert ddp.static == 20 * P  # 16 字节/参数 + DDP 通信桶里的一份 FP32 梯度
+    assert ddp.static == 20 * P  # 16 bytes/parameter + one FP32 copy of the gradients in the DDP buckets
     z1 = estimate_memory(cfg, 1, 128, num_gpus=8, strategy="zero1")
     assert z1.optimizer == 8 * P // 8 and z1.grads == 4 * P
     z2 = estimate_memory(cfg, 1, 128, num_gpus=8, strategy="zero2")
     assert (z2.grads, z2.optimizer, z2.ddp_buckets) == (4 * P // 8, 8 * P // 8, 0)
     fsdp = estimate_memory(cfg, 1, 128, num_gpus=8, strategy="fsdp")
     assert fsdp.static == 4 * P // 8 + 4 * P // 8 + 8 * P // 8
-    # 激活与切分方式无关，只和每卡 token 数有关
+    # Activations do not depend on the sharding method, only on the tokens per GPU
     assert fsdp.activations == ddp.activations
     with pytest.raises(ValueError):
         estimate_memory(cfg, 1, 128, strategy="tp")
 
 
 def test_main_config_numbers() -> None:
-    """主线模型（689.5M）：参数量手算；16 字节/参数；micro batch 8 在 80 GiB 里放不下（eager 估算）。"""
+    """Main-line model (689.5M): parameter count by hand; 16 bytes/parameter; micro batch 8 does not fit in 80 GiB (eager estimate)."""
     cfg = ModelConfig(
         vocab_size=65536,
         dim=1280,
@@ -83,9 +83,9 @@ def test_main_config_numbers() -> None:
         tie_embeddings=True,
     )
     P = count_params(cfg)["total"]
-    # 每层：注意力 1280·2048 + 2·1280·1024 + 2048·1280 = 7,864,320；QK-Norm 256；
-    # SwiGLU 3·1280·3584 = 13,762,560；两个 RMSNorm 2,560 → 21,629,696 × 28 = 605,631,488
-    # embedding 65,536·1280 = 83,886,080（与 lm_head 共享），最后的 norm 1,280
+    # Each layer: attention 1280·2048 + 2·1280·1024 + 2048·1280 = 7,864,320; QK-Norm 256;
+    # SwiGLU 3·1280·3584 = 13,762,560; two RMSNorms 2,560 → 21,629,696 × 28 = 605,631,488
+    # embedding 65,536·1280 = 83,886,080 (shared with lm_head), final norm 1,280
     assert P == 605_631_488 + 83_886_080 + 1_280 == 689_518_848
     assert layer_activation_bytes_per_token(cfg) == 92_840
     est = estimate_memory(cfg, 8, 4096, num_gpus=8, strategy="ddp")
@@ -97,7 +97,10 @@ def test_main_config_numbers() -> None:
 
 
 def _saved_bytes(model: nn.Module, tokens: torch.Tensor, autocast: bool) -> int:
-    """真实记录前向为反向保存的张量（按存储去重，不含参数和 buffer 本身）。"""
+    """Record the tensors that the forward pass really saves for the backward pass.
+
+    Count each storage once. Do not count the parameters and buffers.
+    """
     own = {p.untyped_storage().data_ptr() for p in model.parameters()}
     own |= {b.untyped_storage().data_ptr() for b in model.buffers()}
     seen: dict[int, int] = {}
@@ -113,7 +116,7 @@ def _saved_bytes(model: nn.Module, tokens: torch.Tensor, autocast: bool) -> int:
             logits = model(tokens)
         loss = cross_entropy_loss(logits, tokens)
     loss.backward()
-    return sum(seen.values()) - 4  # 减去交叉熵保存的一个标量
+    return sum(seen.values()) - 4  # subtract the one scalar that cross-entropy saves
 
 
 @pytest.mark.parametrize("dtype", ["bf16", "fp32"])
@@ -138,7 +141,10 @@ class _CheckpointedBlock(nn.Module):
 
 
 def test_checkpointing_keeps_only_block_inputs() -> None:
-    """激活检查点：每层只剩块输入（FP32 残差流 4d 字节/token）；公式另加的一层是重算时的瞬时峰值。"""
+    """Activation checkpointing: each layer keeps only the block input (FP32 residual stream, 4d bytes/token).
+
+    The one extra layer in the formula is the transient peak during the recomputation.
+    """
     torch.manual_seed(0)
     cfg = _tiny()
     model = Transformer(cfg)

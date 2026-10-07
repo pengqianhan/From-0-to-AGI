@@ -1,5 +1,6 @@
-# 阶梯实验 l60m：总参数约 71.3M（含 embedding），按约 20 token/参数（Chinchilla 经验值）给 1.43B token。
-# 步数 = 1.43B / 262,144 token/步 ≈ 5440。学习率是起点，第 12 章做小范围扫描后确定。
+# Ladder experiment l60m: about 71.3M total parameters (with embedding). At about 20 tokens per parameter
+# (the Chinchilla rule of thumb), it gets 1.43B tokens. Steps = 1.43B / 262,144 tokens per step ≈ 5440.
+# The learning rate is a starting point. Chapter 12 sets it after a small sweep.
 base = "base.toml"
 
 [model]

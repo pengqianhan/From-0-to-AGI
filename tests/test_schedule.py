@@ -1,4 +1,4 @@
-"""学习率调度：warmup、cosine、WSD 的关键点。"""
+"""Learning-rate schedules: the key points of warmup, cosine, and WSD."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def test_wsd(shape: str) -> None:
         for s in range(total)
     ]
     assert f[0] == pytest.approx(0.1)
-    assert all(v == 1.0 for v in f[warm:80])  # 稳定段
+    assert all(v == 1.0 for v in f[warm:80])  # stable phase
     decay = f[80:]
     assert all(a >= b for a, b in zip(decay, decay[1:]))
     assert decay[0] < 1.0

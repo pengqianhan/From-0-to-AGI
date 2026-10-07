@@ -1,14 +1,14 @@
-"""第 4 章 · 极简代码 1：约 150 行的标量自动微分引擎（autograd）+ 一个小 MLP
+"""Chapter 4 · Minimal code 1: a scalar autograd engine in about 150 lines, and a small MLP.
 
-思路来自 Andrej Karpathy 的 micrograd（https://github.com/karpathy/micrograd，MIT 许可），
-这里是按本课的讲法重新写的版本。只用 Python 标准库。
+The idea comes from micrograd by Andrej Karpathy (https://github.com/karpathy/micrograd, MIT license).
+This version is rewritten to match the method of this course. It uses only the Python standard library.
 
-核心只有两件事：
-1. 前向：每做一次运算，就新建一个 Value 节点，记住"我是由谁、用什么运算算出来的"——计算图就这样被记录下来；
-2. 反向：从损失出发，按拓扑序的逆序走一遍计算图，每个节点把自己的梯度乘上"局部导数"，
-   用 += 累加到它的输入节点上（链式法则）。
+The core has two parts:
+1. Forward pass: each operation makes a new Value node that records its inputs and its operation (the graph).
+2. Backward pass: go from the loss through the graph in reverse topological order. Each node multiplies its
+   gradient by the local derivative and adds (+=) the result to the gradients of its inputs (the chain rule).
 
-运行：uv run python chapters/04-backprop-autograd/code/01_engine.py
+Run: uv run python chapters/04-backprop-autograd/code/01_engine.py
 """
 
 from __future__ import annotations
@@ -18,21 +18,21 @@ import random
 
 
 class Value:
-    """一个标量节点：存数值 data、梯度 grad，以及"怎么把梯度传给输入"的 _backward。"""
+    """A scalar node. It keeps the value `data`, the gradient `grad`, and `_backward`, which sends the gradient to the inputs."""
 
     def __init__(self, data: float, _children: tuple = (), _op: str = ""):
         self.data = float(data)
-        self.grad = 0.0                   # ∂L/∂(这个节点)，反向传播前是 0
-        self._backward = lambda: None     # 叶子节点（输入、参数）没有东西要往回传
-        self._prev = _children            # 计算图的边：这个节点由哪些节点算出来
-        self._op = _op                    # 运算名，只用于打印和画图
+        self.grad = 0.0                   # ∂L/∂(this node); 0 before the backward pass
+        self._backward = lambda: None     # a leaf node (input, parameter) has nothing to send back
+        self._prev = _children            # graph edges: the nodes that this node comes from
+        self._op = _op                    # operation name, only for printing and drawing
 
-    # ── 基本运算：每个运算 = 前向算数值 + 一个局部求导的 _backward ──────────────
+    # ── Basic operations: each one = a forward value + a _backward with the local derivative ──
     def __add__(self, other) -> Value:
         other = other if isinstance(other, Value) else Value(other)
         out = Value(self.data + other.data, (self, other), "+")
 
-        def _backward():                  # ∂(a+b)/∂a = 1，∂(a+b)/∂b = 1
+        def _backward():                  # ∂(a+b)/∂a = 1, ∂(a+b)/∂b = 1
             self.grad += out.grad
             other.grad += out.grad
         out._backward = _backward
@@ -42,14 +42,14 @@ class Value:
         other = other if isinstance(other, Value) else Value(other)
         out = Value(self.data * other.data, (self, other), "*")
 
-        def _backward():                  # ∂(a·b)/∂a = b，∂(a·b)/∂b = a
+        def _backward():                  # ∂(a·b)/∂a = b, ∂(a·b)/∂b = a
             self.grad += other.data * out.grad
             other.grad += self.data * out.grad
         out._backward = _backward
         return out
 
     def __pow__(self, k: float) -> Value:
-        assert isinstance(k, (int, float)), "只支持常数次幂"
+        assert isinstance(k, (int, float)), "the exponent must be a constant number"
         out = Value(self.data**k, (self,), f"**{k}")
 
         def _backward():                  # ∂(a^k)/∂a = k·a^(k−1)
@@ -60,7 +60,7 @@ class Value:
     def relu(self) -> Value:
         out = Value(max(0.0, self.data), (self,), "relu")
 
-        def _backward():                  # 正数时导数 1，负数时导数 0
+        def _backward():                  # derivative 1 for a positive input, 0 for a negative input
             self.grad += (self.data > 0) * out.grad
         out._backward = _backward
         return out
@@ -90,9 +90,9 @@ class Value:
         out._backward = _backward
         return out
 
-    # ── 反向传播 ──────────────────────────────────────────────────────────────
+    # ── Backward pass ─────────────────────────────────────────────────────────
     def backward(self) -> None:
-        # 1. 拓扑排序：保证一个节点排在所有"用到它的节点"之前
+        # 1. Topological sort: each node comes before all nodes that use it.
         topo, visited = [], set()
 
         def build(v: Value) -> None:
@@ -102,12 +102,12 @@ class Value:
                     build(child)
                 topo.append(v)
         build(self)
-        # 2. 起点：∂L/∂L = 1；然后按拓扑序的逆序，每个节点把梯度传给它的输入
+        # 2. Start with ∂L/∂L = 1. Then, in reverse topological order, each node sends its gradient to its inputs.
         self.grad = 1.0
         for v in reversed(topo):
             v._backward()
 
-    # ── 其余运算都能用上面几个拼出来 ─────────────────────────────────────────────
+    # ── The other operations are combinations of the operations above ──────────
     def __neg__(self) -> Value:                return self * -1
     def __sub__(self, other) -> Value:         return self + (-other)
     def __truediv__(self, other) -> Value:     return self * other**-1
@@ -120,12 +120,12 @@ class Value:
         return f"Value(data={self.data:.4f}, grad={self.grad:.4f})"
 
 
-# ── 用 Value 搭一个多层感知机（MLP），和第 3 章的结构一样 ──────────────────────────
+# ── A multilayer perceptron (MLP) made of Value nodes, with the same structure as in Chapter 3 ──
 class Neuron:
-    """一个神经元：act(w·x + b)。"""
+    """One neuron: act(w·x + b)."""
 
     def __init__(self, nin: int, act: str = "tanh"):
-        s = nin**-0.5                     # 让初始输出的尺度不随输入个数变大
+        s = nin**-0.5                     # the scale of the initial output does not grow with the number of inputs
         self.w = [Value(random.uniform(-s, s)) for _ in range(nin)]
         self.b = Value(0.0)
         self.act = act
@@ -139,7 +139,7 @@ class Neuron:
 
 
 class Layer:
-    """一层 = 若干个并排的神经元，对应第 2 章的 y = xW + b。"""
+    """One layer = some neurons side by side. It is the y = xW + b of Chapter 2."""
 
     def __init__(self, nin: int, nout: int, act: str):
         self.neurons = [Neuron(nin, act) for _ in range(nout)]
@@ -152,7 +152,7 @@ class Layer:
 
 
 class MLP:
-    """例如 MLP(1, [16, 16, 1])：输入 1 维，两个 16 维隐藏层，输出 1 维（最后一层不加激活）。"""
+    """Example: MLP(1, [16, 16, 1]) has a 1-D input, two 16-D hidden layers, and a 1-D output (no activation in the last layer)."""
 
     def __init__(self, nin: int, nouts: list[int], act: str = "tanh"):
         sizes = [nin] + nouts
@@ -173,22 +173,22 @@ class MLP:
 
 
 if __name__ == "__main__":
-    # 一个小例子：L = (a·b + c)²，a=2, b=−3, c=10（视频里画的就是这张计算图）
+    # A small example: L = (a·b + c)², a=2, b=−3, c=10 (the video draws this computational graph)
     a, b, c = Value(2.0), Value(-3.0), Value(10.0)
     d = a * b          # d = −6
     e = d + c          # e = 4
     L = e**2           # L = 16
     L.backward()
-    print("前向：d = a·b =", d.data, "  e = d + c =", e.data, "  L = e² =", L.data)
-    print("反向：∂L/∂e =", e.grad, " ∂L/∂d =", d.grad,
+    print("Forward:  d = a·b =", d.data, "  e = d + c =", e.data, "  L = e² =", L.data)
+    print("Backward: ∂L/∂e =", e.grad, " ∂L/∂d =", d.grad,
           " ∂L/∂a =", a.grad, " ∂L/∂b =", b.grad, " ∂L/∂c =", c.grad)
 
-    # 分叉（fan-out）：x 被用了两次，梯度要把两条路加起来
+    # Fan-out: y uses x more than one time, so the gradient of x is the sum over all paths
     x = Value(3.0)
     y = x * x + x      # dy/dx = 2x + 1 = 7
     y.backward()
-    print("\n分叉：y = x·x + x，x = 3 → ∂y/∂x =", x.grad, "（手算 2x + 1 = 7）")
+    print("\nFan-out: y = x·x + x, x = 3 → ∂y/∂x =", x.grad, "(by hand: 2x + 1 = 7)")
 
     random.seed(0)
     net = MLP(1, [8, 8, 1])
-    print(f"\nMLP(1, [8, 8, 1]) 共有 {len(net.parameters())} 个参数，每个都是一个 Value")
+    print(f"\nMLP(1, [8, 8, 1]) has {len(net.parameters())} parameters. Each parameter is a Value.")

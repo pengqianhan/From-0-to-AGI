@@ -1,20 +1,20 @@
-# tiny 中期训练配置（第 15 章"极小配置演示"）：在 tiny 预训练权重上同时演示三件事
-#   1) 换数据混合（加大中文比例）；
-#   2) 纯衰减段的学习率（WSD 的 decay_frac = 1.0：从峰值一路线性降下去）；
-#   3) 长上下文扩展：seq_len 128 → 256，并用 YaRN（factor = 2）缩放 RoPE。
-# 先跑 configs/tiny/pretrain.toml，再：
+# Tiny mid-training config (Chapter 15, "Tiny-configuration demo"). On the tiny pretrained weights, it shows three things together:
+#   1) A different data mix (a larger share of Chinese).
+#   2) The learning rate of a decay-only stage (WSD with decay_frac = 1.0: a linear decrease from the peak to the end).
+#   3) Long-context extension: seq_len 128 → 256, with YaRN (factor = 2) to scale RoPE.
+# Run configs/tiny/pretrain.toml first, then:
 #   uv run python -m zero.train.midtrain --config configs/tiny/midtrain.toml
-base = "pretrain.toml"   # 其余字段继承预训练配置
+base = "pretrain.toml"   # The other fields come from the pretraining config
 
 [model]
-# YaRN：原训练长度 128，扩展 2 倍到 256。模型形状不变，只有 RoPE 的 cos/sin 重新计算
+# YaRN: the original training length is 128; 2 times longer is 256. The model shape does not change; only the RoPE cos/sin are computed again
 rope_scaling = { type = "yarn", factor = 2.0, original_max_position_embeddings = 128, beta_fast = 32.0, beta_slow = 1.0 }
 
 [train]
 max_steps = 60
-micro_batch_size = 8     # 序列翻倍，batch 减半，每步 token 数不变
+micro_batch_size = 8     # The sequences double and the batch halves, so the tokens per step do not change
 out_dir = "out/tiny/midtrain"
-init_from = "out/tiny/pretrain/ckpt"   # 预训练 checkpoint（取其中最新的一个）
+init_from = "out/tiny/pretrain/ckpt"   # Pretraining checkpoint (the latest one in this folder)
 eval_every = 30
 
 [data]
@@ -41,7 +41,7 @@ lr = 1e-3
 [schedule]
 kind = "wsd"
 warmup_steps = 0
-decay_frac = 1.0         # 整段都是衰减
+decay_frac = 1.0         # The full stage is decay
 min_lr_ratio = 0.0
 
 [checkpoint]

@@ -1,22 +1,31 @@
-"""大海捞针（needle-in-a-haystack）：长上下文的冒烟测试（对应第 15 章）。
+"""Needle in a haystack: a smoke test for long context (Chapter 15).
 
-在一段很长的无关文字（"草堆"）的某个深度插入一句"针"：
+The test puts one sentence (the "needle") at some depth in a long text with no relation to it
+(the "haystack"):
 
-    The pass key for <key> is <7 位数字>.
+    The pass key for <key> is <7-digit number>.
 
-最后问模型这个数字是多少，看它能不能从上下文里找回来。长度 × 深度扫一遍，得到一张表。
-写法参照 Kamradt（2023）的原始测试、passkey 检索（Mohtashami & Jaggi 2023）与 RULER
-（Hsieh et al. 2024, arXiv:2404.06654）的 S-NIAH：针是"key → 7 位数字"，草堆默认用 RULER 的
-重复噪声句子，也可以换成任意真实文本。
+At the end, the test asks the model for the number. It checks if the model can find the number
+in the context. A sweep over length × depth gives a table.
+The design follows the original test of Kamradt (2023), passkey retrieval
+(Mohtashami & Jaggi 2023), and S-NIAH from RULER (Hsieh et al. 2024, arXiv:2404.06654).
+The needle is "key → 7-digit number". By default, the haystack is the repeated noise sentences of
+RULER. You can also use any real text.
 
-两种打分：
-- **生成式**（与 RULER 一样按召回判分）：贪心生成若干 token，里面出现正确数字就算对；
-- **似然式**：正确数字的平均负对数似然（NLL），并和"对照提示词"比较——对照提示词结构完全相同，
-  只是针里的数字换成另一个随机数。`nll_gain = NLL(对照) − NLL(真针)` > 0 说明模型确实在用针里的信息。
-  极小模型的生成式得分几乎一定是 0，似然式指标能看出更细的差别。
+There are two scores:
+- **Generation** (recall score, as in RULER): greedy decoding generates some tokens. The answer is
+  correct if the correct number is in them.
+- **Likelihood**: the mean negative log-likelihood (NLL) of the correct number, compared with a
+  "control prompt". The control prompt has the same structure; only the number in the needle is a
+  different random number. `nll_gain = NLL(control) − NLL(true needle)` > 0 shows that the model
+  really uses the information in the needle.
+  For a very small model, the generation score is almost always 0. The likelihood metric shows
+  smaller differences.
 
-大海捞针只是**冒烟测试**：通过了不代表长上下文能力好（RULER 发现很多模型 NIAH 接近满分，
-复杂任务却随长度明显下降），没通过则一定有问题。正式评测用 RULER 等基准（第 11、20 章）。
+Needle in a haystack is only a **smoke test**. A pass does not show good long-context ability.
+(RULER found that many models get almost full NIAH scores, but their scores on complex tasks
+decrease much as the length increases.) A fail always shows a problem. For a real evaluation, use
+benchmarks such as RULER (Chapters 11 and 20).
 
     uv run python -m zero.tools.needle --model out/tiny/midtrain/ckpt --lengths 64,128,240 --depths 0,0.5,1
 """
@@ -33,7 +42,7 @@ from typing import Any, Protocol
 import torch
 import torch.nn.functional as F
 
-# RULER 的噪声草堆（沿用 Mohtashami & Jaggi 2023 的 passkey 句子）
+# The noise haystack of RULER (it uses the passkey sentences of Mohtashami & Jaggi 2023)
 NOISE_EN = [
     "The grass is green.",
     "The sky is blue.",
@@ -70,23 +79,25 @@ class TokenizerLike(Protocol):
 
 @dataclass
 class NeedleCase:
-    """一道大海捞针题。prompt_ids 的长度恰好等于 context_tokens。"""
+    """One needle-in-a-haystack question. The length of prompt_ids is exactly context_tokens."""
 
     prompt_ids: list[int]
-    control_ids: list[int]  # 对照：针里的数字换成 decoy，其余逐 token 相同
+    control_ids: list[int]  # control: the number in the needle is the decoy; all other tokens are the same
     answer: str
     answer_ids: list[int]
     decoy: str
     key: str
-    depth: float  # 请求的深度（0 = 开头，1 = 紧挨着问题）
-    needle_pos: int  # 针的第一个 token 在 prompt_ids 里的下标
+    depth: float  # requested depth (0 = start, 1 = immediately before the question)
+    needle_pos: int  # index of the first needle token in prompt_ids
     context_tokens: int
 
 
 def _texts(lang: str, key: str, number: str) -> tuple[str, str, str]:
-    """(针, 问题, 答案文本)。问题以"...is"结尾，Base 模型可以直接接着写出数字（续写式提问）。
+    """(needle, question, answer text). The question ends with "...is", so a base model can
+    continue with the number (a completion-style question).
 
-    句式比 RULER 的短（小模型的上下文只有几百个 token，问题本身不能太长）。
+    The sentences are shorter than in RULER: the context of a small model has only a few hundred
+    tokens, so the question must not be long.
     """
     if lang == "zh":
         needle = f"{key}的密码是{number}。"
@@ -103,8 +114,8 @@ def _sentences(lang: str, haystack_text: str | None) -> list[str]:
     else:
         parts = [p.strip() for p in re.split(r"(?<=[.!?。！？\n])", haystack_text) if p.strip()]
         if not parts:
-            raise ValueError("haystack_text 里切不出句子")
-    return parts if lang == "zh" else [" " + p for p in parts]  # 英文句子之间留空格
+            raise ValueError("Cannot split haystack_text into sentences")
+    return parts if lang == "zh" else [" " + p for p in parts]  # English sentences need a space between them
 
 
 def make_case(
@@ -115,12 +126,13 @@ def make_case(
     lang: str = "en",
     haystack_text: str | None = None,
 ) -> NeedleCase:
-    """构造一道题：草堆 + 在 depth 处插入的针 + 问题，总长度恰好 context_tokens 个 token。
+    """Make one question: haystack + needle at depth + question, exactly context_tokens tokens in total.
 
-    各段分别编码再拼接（而不是整段一起编码），这样长度可以精确控制，针的位置也精确可知。
+    Encode each part separately and then join them (do not encode the full text at once).
+    Then the length is exact, and the position of the needle is known exactly.
     """
     if not 0.0 <= depth <= 1.0:
-        raise ValueError(f"depth 必须在 [0, 1]，当前 {depth}")
+        raise ValueError(f"depth must be in [0, 1], got {depth}")
     rng = random.Random(seed)
     key = rng.choice(KEYS_ZH if lang == "zh" else KEYS)
     number = str(rng.randint(1_000_000, 9_999_999))
@@ -136,12 +148,14 @@ def make_case(
     if budget < 0 or len(decoy_ids) != len(needle_ids):
         if budget < 0:
             raise ValueError(
-                f"context_tokens={context_tokens} 太短：针 + 问题就要 {len(needle_ids) + len(question_ids)} 个 token"
+                f"context_tokens={context_tokens} is too short: needle + question need {len(needle_ids) + len(question_ids)} tokens"
             )
-        # 极少数情况下两个数字切出来的 token 数不同：换一个种子重来，保证对照提示词逐位对齐
+        # In rare cases, the two numbers give different token counts. Try again with a new seed,
+        # so that the control prompt aligns token by token.
         return make_case(tokenizer, context_tokens, depth, seed + 7919, lang, haystack_text)
 
-    # 草堆：从随机的一句开始循环填充，记录句子边界，最后截到恰好 budget 个 token
+    # Haystack: start at a random sentence and repeat the sentences. Record the sentence
+    # boundaries. At the end, cut to exactly budget tokens.
     sents = _sentences(lang, haystack_text)
     start = rng.randrange(len(sents))
     filler: list[int] = []
@@ -153,7 +167,7 @@ def make_case(
         i += 1
     filler = filler[:budget]
     target = depth * budget
-    ins = min(bounds, key=lambda b: (abs(b - target), b))  # 离目标最近的句子边界
+    ins = min(bounds, key=lambda b: (abs(b - target), b))  # the sentence boundary nearest to the target
     prompt = filler[:ins] + needle_ids + filler[ins:] + question_ids
     control = filler[:ins] + decoy_ids + filler[ins:] + question_ids
     assert len(prompt) == context_tokens == len(control)
@@ -171,7 +185,7 @@ def make_case(
 
 
 def score_text(generated: str, answer: str) -> float:
-    """召回式判分（与 RULER 相同）：生成文本里出现完整的正确数字就得 1 分。"""
+    """Recall score (the same as RULER): 1 point if the generated text contains the full correct number."""
     return 1.0 if answer in generated else 0.0
 
 
@@ -179,7 +193,7 @@ def score_text(generated: str, answer: str) -> float:
 def answer_nll(
     model: torch.nn.Module, prompt_ids: Sequence[int], answer_ids: Sequence[int]
 ) -> float:
-    """在 prompt 之后，正确答案各 token 的平均负对数似然（nat/token）。"""
+    """Mean negative log-likelihood of the correct answer tokens after the prompt (nat/token)."""
     device = next(model.parameters()).device
     ids = torch.tensor([list(prompt_ids) + list(answer_ids)], dtype=torch.long, device=device)
     logits = model(ids[:, :-1])
@@ -193,8 +207,8 @@ class CellResult:
     length: int
     depth: float
     accuracy: float
-    nll: float  # 正确答案的平均 NLL
-    nll_control: float  # 同一答案在对照提示词下的平均 NLL
+    nll: float  # mean NLL of the correct answer
+    nll_control: float  # mean NLL of the same answer after the control prompt
     samples: list[str] = field(default_factory=list)
 
     @property
@@ -224,10 +238,11 @@ def run_grid(
     generate_fn: Callable[[list[int]], str] | None = None,
     with_nll: bool = True,
 ) -> list[CellResult]:
-    """长度 × 深度扫一遍，每格 n 道题。
+    """Sweep length × depth, with n questions in each cell.
 
-    generate_fn(prompt_ids) -> 文本：默认用 zero.generate 贪心解码；也可以传别的（比如 HF 模型、测试用的假模型）。
-    with_nll=False 时不算似然（model 不是 zero Transformer 时用）。
+    generate_fn(prompt_ids) -> text: by default, greedy decoding with zero.generate. You can give
+    a different function (for example an HF model, or a fake model for tests).
+    with_nll=False skips the likelihood (use it when model is not a zero Transformer).
     """
     gen = generate_fn or _default_generate(model, tokenizer, max_new_tokens)
     out = []
@@ -249,18 +264,18 @@ def run_grid(
 
 
 def format_grid(results: Sequence[CellResult]) -> str:
-    """打印成"长度 × 深度"的两张表：生成式准确率、似然增益 nll_gain。"""
+    """Format two "length × depth" tables: generation accuracy and likelihood gain nll_gain."""
     lengths = sorted({r.length for r in results})
     depths = sorted({r.depth for r in results})
     cell = {(r.length, r.depth): r for r in results}
     lines = []
     for title, get, fmt in [
-        ("生成式准确率（贪心解码里出现正确数字的比例）", lambda r: r.accuracy, "{:>8.2f}"),
-        ("似然增益 nll_gain = NLL(对照) − NLL(真针)，> 0 表示模型在用针的信息", lambda r: r.nll_gain,
+        ("Generation accuracy (fraction of greedy outputs that contain the correct number)", lambda r: r.accuracy, "{:>8.2f}"),
+        ("Likelihood gain nll_gain = NLL(control) − NLL(true needle); > 0 means that the model uses the needle", lambda r: r.nll_gain,
          "{:>+8.3f}"),
     ]:  # fmt: skip
         lines.append(title)
-        lines.append("   长度\\深度" + "".join(f"{d:>8.2f}" for d in depths))
+        lines.append("length\\depth" + "".join(f"{d:>8.2f}" for d in depths))
         for L in lengths:
             row = "".join(fmt.format(get(cell[(L, d)])) for d in depths if (L, d) in cell)
             lines.append(f"   {L:>9}" + row)
@@ -273,16 +288,16 @@ def _parse_list(s: str, typ: type) -> list:
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description="大海捞针：长度 × 深度的检索冒烟测试")
-    ap.add_argument("--model", required=True, help="zero checkpoint 目录或导出的 HF 目录")
+    ap = argparse.ArgumentParser(description="Needle in a haystack: a length × depth retrieval smoke test")
+    ap.add_argument("--model", required=True, help="zero checkpoint directory or exported HF directory")
     ap.add_argument(
-        "--tokenizer", default=None, help="分词器路径（默认从 checkpoint 的 meta 里读）"
+        "--tokenizer", default=None, help="tokenizer path (default: from the checkpoint meta)"
     )
-    ap.add_argument("--lengths", default="128,256", help="上下文长度（token），逗号分隔")
-    ap.add_argument("--depths", default="0,0.25,0.5,0.75,1", help="针的深度，逗号分隔")
-    ap.add_argument("--n", type=int, default=5, help="每格几道题")
+    ap.add_argument("--lengths", default="128,256", help="context lengths (tokens), comma-separated")
+    ap.add_argument("--depths", default="0,0.25,0.5,0.75,1", help="needle depths, comma-separated")
+    ap.add_argument("--n", type=int, default=5, help="questions per cell")
     ap.add_argument("--lang", choices=["en", "zh"], default="en")
-    ap.add_argument("--haystack", default=None, help="用这个文本文件当草堆（默认用噪声句子）")
+    ap.add_argument("--haystack", default=None, help="use this text file as the haystack (default: noise sentences)")
     ap.add_argument("--max-new-tokens", type=int, default=12)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args(argv)
@@ -297,19 +312,19 @@ def main(argv: list[str] | None = None) -> None:
     for L in _parse_list(args.lengths, int):
         if L + args.max_new_tokens > max_len:
             print(
-                f"跳过长度 {L}：加上生成的 {args.max_new_tokens} 个 token 超过 max_seq_len={max_len}"
+                f"Skip length {L}: with {args.max_new_tokens} generated tokens, it is longer than max_seq_len={max_len}"
             )
         else:
             lengths.append(L)
     hay = open(args.haystack, encoding="utf-8").read() if args.haystack else None
     res = run_grid(model, tok, lengths, _parse_list(args.depths, float), n=args.n, seed=args.seed,
                    lang=args.lang, haystack_text=hay, max_new_tokens=args.max_new_tokens)  # fmt: skip
-    print(f"模型 {args.model}（max_seq_len={max_len}，rope_theta={model.config.rope_theta}，"
-          f"rope_scaling={model.config.rope_scaling}）；每格 {args.n} 道题\n")  # fmt: skip
+    print(f"Model {args.model} (max_seq_len={max_len}, rope_theta={model.config.rope_theta}, "
+          f"rope_scaling={model.config.rope_scaling}); {args.n} questions per cell\n")  # fmt: skip
     print(format_grid(res))
     first = res[0] if res else None
     if first is not None and first.samples:
-        print(f"示例（长度 {first.length}、深度 {first.depth}）的生成：{first.samples[0]!r}")
+        print(f"Example output (length {first.length}, depth {first.depth}): {first.samples[0]!r}")
 
 
 if __name__ == "__main__":

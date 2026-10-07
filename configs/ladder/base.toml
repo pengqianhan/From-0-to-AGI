@@ -1,8 +1,11 @@
-# 阶梯实验（scaling ladder）的公共配置（第 12 章）。各尺寸文件用 base = "base.toml" 继承，只改模型形状、步数和学习率。
-# 用途：闸门 1 的"外推预测"——用几个小模型的 loss 拟合 scaling law，外推主线模型的 loss。
-# 全部是第二步（有 GPU 之后）才跑的配置；数值是起点，不是结论。
-# 假设单机 8 卡：每步 token 数 = micro_batch_size × grad_accum_steps × 8 × seq_len = 16 × 1 × 8 × 2048 = 262,144。
-# 词表与主线相同（暂定 65,536，第 13 章定），这样阶梯的结论才能外推到主线。
+# Shared config for the ladder experiment (scaling ladder, Chapter 12). Each size file inherits it
+# with base = "base.toml" and changes only the model shape, the number of steps, and the learning rate.
+# Purpose: the "extrapolated prediction" of gate 1. Fit a scaling law to the loss of some small models,
+# then extrapolate the loss of the main-line model.
+# All these configs run only in Step 2 (when we have GPUs). The values are starting points, not results.
+# We assume one machine with 8 GPUs: tokens per step = micro_batch_size × grad_accum_steps × 8 × seq_len = 16 × 1 × 8 × 2048 = 262,144.
+# The vocabulary is the same as the main line (65,536 for now; Chapter 13 sets it).
+# Then the ladder results can extrapolate to the main line.
 
 [model]
 vocab_size = 65536
@@ -18,7 +21,7 @@ seed = 1337
 micro_batch_size = 16
 grad_accum_steps = 1
 device = "auto"
-dtype = "auto"           # CUDA 上 BF16 autocast
+dtype = "auto"           # BF16 autocast on CUDA
 parallel = "ddp"
 eval_every = 250
 eval_batches = 20
@@ -28,7 +31,7 @@ tokenizer = "data/tokenizer/tokenizer.json"
 seq_len = 2048
 val = "data/pretrain/val_*.bin"
 
-# 数据配比待第 13 章消融实验确定；这里是占位的起点
+# The ablations of Chapter 13 will set the data mix. These values are placeholder starting points.
 [[data.sources]]
 name = "fineweb-edu"
 path = "data/pretrain/fineweb-edu_*.bin"
@@ -56,7 +59,7 @@ beta2 = 0.95
 grad_clip = 1.0
 
 [schedule]
-kind = "wsd"             # WSD：阶梯里可以从稳定段分叉出不同长度的衰减，一次训练得到多个 token 预算的点
+kind = "wsd"             # WSD: decays of different lengths branch from the stable phase, so one training run gives points for several token budgets
 warmup_steps = 200
 decay_frac = 0.2
 min_lr_ratio = 0.0

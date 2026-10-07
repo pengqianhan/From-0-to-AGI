@@ -1,4 +1,4 @@
-"""pytest 公共设置与小工具。"""
+"""Shared pytest setup and small helpers."""
 
 from __future__ import annotations
 
@@ -8,7 +8,8 @@ import numpy as np
 import pytest
 import torch
 
-# CPU 被其他进程占用时，多线程会互相抢核，反而慢几十倍；测试统一用单线程，结果也更稳定
+# When other processes use the CPU, many threads compete for the cores and can be tens of times slower.
+# All tests use one thread. This also makes the results more stable.
 torch.set_num_threads(1)
 
 REPO = Path(__file__).resolve().parent.parent
@@ -18,7 +19,10 @@ TINY_CORPUS = REPO / "assets" / "tiny_corpus"
 def write_random_shards(
     out_dir: Path, name: str, n_shards: int, tokens_per_shard: int, vocab: int, seed: int
 ) -> str:
-    """写几个随机 token 分片（带一点可学习的结构：下一个 token 常常是当前 token + 1），返回 glob。"""
+    """Write some random token shards and return their glob.
+
+    The shards have a small learnable structure: the next token is often the current token + 1.
+    """
     rng = np.random.default_rng(seed)
     out_dir.mkdir(parents=True, exist_ok=True)
     for i in range(n_shards):
@@ -33,7 +37,7 @@ def write_random_shards(
 
 @pytest.fixture(scope="session")
 def tiny_texts() -> dict[str, str]:
-    """从 tiny_corpus 里各取一小段中文、英文、代码。"""
+    """Take a short piece of Chinese, English, and code from tiny_corpus."""
     return {
         "en": (TINY_CORPUS / "shakespeare.txt").read_text("utf-8")[:60_000],
         "zh": (TINY_CORPUS / "chinese_poetry.txt").read_text("utf-8")[:30_000],
@@ -43,14 +47,14 @@ def tiny_texts() -> dict[str, str]:
 
 @pytest.fixture
 def random_shards():  # noqa: ANN201
-    """返回 write_random_shards 函数本身，方便测试里调用。"""
+    """Return the write_random_shards function itself, so that tests can call it."""
     return write_random_shards
 
 
 def small_train_config(
     out_dir: Path, sources: dict[str, str], val: str = "", **train_overrides: object
 ):  # noqa: ANN201
-    """构造一个几秒钟就能训完的 Config（随机分片数据、极小模型、CPU、FP32）。"""
+    """Make a Config that trains in a few seconds (random shard data, tiny model, CPU, FP32)."""
     from zero.config import config_from_dict
 
     train = {
@@ -99,7 +103,8 @@ def make_config():  # noqa: ANN201
 
 
 # ---------------------------------------------------------------------------
-# 后训练测试共用：见过对话 / 工具调用格式的小分词器 + 随机初始化的极小模型 checkpoint
+# Shared by the post-training tests: a small tokenizer that saw the chat / tool-calling format,
+# and a checkpoint of a tiny model with random initialization
 # ---------------------------------------------------------------------------
 
 
@@ -136,7 +141,10 @@ TINY_POST_MODEL = {
 
 @pytest.fixture(scope="session")
 def tiny_ckpt(tmp_path_factory, chat_tok, chat_tok_path):  # noqa: ANN001, ANN201
-    """随机初始化的极小模型，存成 zero checkpoint（meta 里记着分词器路径，load_policy 能直接读）。"""
+    """Save a tiny model with random initialization as a zero checkpoint.
+
+    The meta records the tokenizer path, so load_policy can read the checkpoint directly.
+    """
     from zero.config import ModelConfig
     from zero.model import Transformer
     from zero.train.checkpoint import save_checkpoint
@@ -162,7 +170,7 @@ def tiny_ckpt(tmp_path_factory, chat_tok, chat_tok_path):  # noqa: ANN001, ANN20
 
 
 def post_config(tmp_path: Path, tok_path: Path, init_from: Path, vocab: int, **sections):  # noqa: ANN003, ANN201
-    """构造后训练阶段用的配置 dict（模型形状与 tiny_ckpt 一致）。"""
+    """Make a config dict for the post-training stages (the model shape is the same as tiny_ckpt)."""
     d = {
         "model": {"vocab_size": vocab, **TINY_POST_MODEL},
         "train": {

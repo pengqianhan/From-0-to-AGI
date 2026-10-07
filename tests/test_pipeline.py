@@ -1,4 +1,4 @@
-"""数据流水线（zero/data/pipeline.py）：各阶段的纯函数 + 小语料端到端 + 预切分正则预设。"""
+"""Data pipeline (zero/data/pipeline.py): pure functions of each stage + end to end on a small corpus + pre-tokenization regex presets."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ def doc(i: int, text: str, **kw) -> dict:  # noqa: ANN003
 
 
 # ---------------------------------------------------------------------------
-# 分词器：预切分正则预设
+# Tokenizer: pre-tokenization regex presets
 # ---------------------------------------------------------------------------
 
 
@@ -62,15 +62,15 @@ def test_qwen35_preset_roundtrip_and_marks(tiny_texts: dict[str, str], tmp_path:
     hindi = "सभी मनुष्यों को गौरव"
     for text in ["学而时习之，不亦说乎？", "def f(x):\n    return x + 1\n", hindi, "x = 2026"]:
         assert tok.decode(tok.encode(text)) == text
-    assert len(tok.encode("2026")) == 4  # 数字仍然逐个切
+    assert len(tok.encode("2026")) == 4  # digits are still split one by one
     assert tok.special_id("<|im_start|>") == 1
-    # 存取后正则还在（写在 tokenizer.json 里）
+    # After save and load, the regex is still there (it is in tokenizer.json)
     p = tok.save(tmp_path / "t.json")
     assert "\\p{M}" in p.read_text() and Tokenizer.load(p).encode(hindi) == tok.encode(hindi)
 
 
 # ---------------------------------------------------------------------------
-# 各阶段
+# Stages
 # ---------------------------------------------------------------------------
 
 
@@ -137,7 +137,7 @@ def test_split_and_tokenizer_sampling() -> None:
     docs = [doc(i, "x" * 100) for i in range(40)]
     tr, va = split_train_val(docs, 0.1, 0, "s")
     assert len(va) == 4 and len(tr) == 36 and not {d["id"] for d in tr} & {d["id"] for d in va}
-    assert split_train_val(docs, 0.1, 0, "s") == (tr, va)  # 确定性
+    assert split_train_val(docs, 0.1, 0, "s") == (tr, va)  # deterministic
     s = sample_for_tokenizer({"a": docs, "b": docs}, {"a": 0.75, "b": 0.25}, 2000, 0)
     assert len(s) == 15 + 5
 
@@ -160,7 +160,7 @@ def test_repo_configs_parse() -> None:
     from zero.data.sources import SOURCES
 
     assert all(s.registry in SOURCES for s in main.sources)
-    # 词表是 128 的倍数（GPU 上矩阵乘更整齐），且装得下 256 个字节 + 16 个特殊 token
+    # The vocabulary size is a multiple of 128 (better for matrix multiplication on a GPU), and it holds 256 bytes + 16 special tokens
     assert main.tokenizer.vocab_size % 128 == 0 and main.tokenizer.vocab_size > 272
     with open(REPO / "configs" / "main" / "pretrain.toml", "rb") as f:
         pre = tomllib.load(f)
@@ -168,18 +168,18 @@ def test_repo_configs_parse() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 端到端（小语料，几秒）
+# End to end (small corpus, a few seconds)
 # ---------------------------------------------------------------------------
 
 
 def test_end_to_end_small(tmp_path: Path, tiny_texts: dict[str, str]) -> None:
     (tmp_path / "en.txt").write_text(tiny_texts["en"][:40_000])
     (tmp_path / "zh.txt").write_text(tiny_texts["zh"][:30_000])
-    # 一个 JSONL 来源（download.py 的格式），带质量分数和一篇重复
+    # A JSONL source (the format of download.py), with quality scores and one duplicate
     rows = [{"id": i, "text": PROSE * (2 + i % 3), "int_score": i % 5} for i in range(12)]
-    rows.append({"id": 99, "text": PROSE * 2, "int_score": 4})  # 与 id=0 完全相同
+    rows.append({"id": 99, "text": PROSE * 2, "int_score": 4})  # identical to id=0
     quiz = "Which planet is known as the red planet and has two small moons named Phobos and Deimos"
-    rows.append({"id": 100, "text": PROSE + quiz + "?\n" + PROSE, "int_score": 4})  # 泄漏的考题
+    rows.append({"id": 100, "text": PROSE + quiz + "?\n" + PROSE, "int_score": 4})  # a leaked test item
     (tmp_path / "web.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
     ev = tmp_path / "ev.txt"
     ev.write_text(quiz + "\n")
@@ -233,6 +233,6 @@ def test_end_to_end_small(tmp_path: Path, tiny_texts: dict[str, str]) -> None:
     x, y = loader.next_batch()
     assert x.shape == (2, 16) and int(x.max()) < tok.vocab_size
     assert (Path(cfg.pipeline.work_dir) / "pretrain_sources.toml").exists()
-    # 每一步的中间结果都落盘
+    # The intermediate result of each step is on disk
     assert list((Path(cfg.pipeline.work_dir)).glob("*_dedup/en.jsonl"))
     assert np.fromfile(shard_dir / "zh_val_00000.bin", dtype=np.uint32).size > 0

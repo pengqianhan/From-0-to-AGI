@@ -1,17 +1,20 @@
-"""第 23 章 · 极简代码 4：同一个小语言模型，四种"混合方式"
+"""Chapter 23 · Minimal code 4: one small language model, four "hybrid layouts"
 
-每层的 token mixer 用一个字母表示：
-  A = softmax 注意力（因果、RoPE，推理时要存 KV cache）
-  L = 朴素线性注意力（S ← S + v kᵀ，只累加）
-  G = Gated DeltaNet（S ← α S (I − β k kᵀ) + β v kᵀ）
-比较四种 4 层结构：AAAA（纯注意力）、LLLL、GGGG（纯线性）、GGGA（3:1 混合，Qwen3.5 的排法）。
+One letter gives the token mixer of each layer:
+  A = softmax attention (causal, RoPE; stores a KV cache at inference)
+  L = naive linear attention (S ← S + v kᵀ, only adds)
+  G = Gated DeltaNet (S ← α S (I − β k kᵀ) + β v kᵀ)
+We compare four 4-layer layouts: AAAA (pure attention), LLLL, GGGG (pure linear),
+and GGGA (3:1 hybrid, the layer order of Qwen3.5).
 
-  - 训练：assets/tiny_corpus/shakespeare.txt，字符级，每种 800 步（CPU 单线程每种约几分钟；
-    构建机多任务共享 CPU 时要十几分钟到半小时）；
-  - 报告：验证集 loss，以及推理缓存（KV cache + 线性层状态）随上下文长度的增长。
-权重缓存在 code/out/*.pt（已被 .gitignore 忽略），05_associative_recall.py 复用这里的模型定义。
+  - Training: assets/tiny_corpus/shakespeare.txt, character level, 800 steps for each layout
+    (a few minutes each on one CPU thread; 10 to 30 min each when other jobs share the CPU of the build machine).
+  - Report: the validation loss, and how the inference cache (KV cache + linear-layer state)
+    grows with the context length.
+The weights are cached in code/out/*.pt (.gitignore ignores them).
+05_associative_recall.py uses the model definitions of this file.
 
-运行：uv run python chapters/23-linear-attention-hybrid/code/04_hybrid_lm.py
+Run: uv run python chapters/23-linear-attention-hybrid/code/04_hybrid_lm.py
 """
 
 from __future__ import annotations
@@ -35,9 +38,10 @@ delta = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(delta)
 
 
-# ── 两种线性算子的分块形式（批量，形状 (B, H, T, d)）──────────────────────────────
+# ── Chunkwise forms of the two linear operators (batched, shape (B, H, T, d)) ─────────
 def linear_chunked(q, k, v, C: int = 32):
-    """朴素线性注意力的分块形式：块内 (QKᵀ ⊙ M) V，块间传状态 S ← S + Vᵀ K。"""
+    """Chunkwise form of naive linear attention: (QKᵀ ⊙ M) V in a chunk;
+    pass the state S ← S + Vᵀ K between chunks."""
     T = q.shape[-2]
     S = q.new_zeros(*q.shape[:-2], v.shape[-1], q.shape[-1])
     mask = torch.ones(C, C).tril()
@@ -50,7 +54,7 @@ def linear_chunked(q, k, v, C: int = 32):
 
 
 def rope(x, base: float = 10000.0):
-    """x: (B, H, T, d)。标准 RoPE（第 9 章）。"""
+    """x: (B, H, T, d). Standard RoPE (Chapter 9)."""
     T, d = x.shape[-2], x.shape[-1]
     f = 1.0 / base ** (torch.arange(0, d, 2).float() / d)
     ang = torch.outer(torch.arange(T).float(), f)
@@ -60,8 +64,9 @@ def rope(x, base: float = 10000.0):
 
 
 class SoftmaxAttention(nn.Module):
-    """conv > 0 时，q/k/v 投影之后也过一个和 LinearMixer 相同的因果短卷积（05 的回忆实验用，
-    让所有结构的"局部混合"能力相同，差别只来自全局的 token mixer）。"""
+    """If conv > 0, q/k/v also go through the same short causal convolution as in LinearMixer.
+    The recall experiment in 05 uses this. Then all layouts have the same "local mixing" ability,
+    and the differences come only from the global token mixer."""
 
     def __init__(self, dim: int, n_heads: int, conv: int = 0) -> None:
         super().__init__()
@@ -82,8 +87,9 @@ class SoftmaxAttention(nn.Module):
 
 
 class LinearMixer(nn.Module):
-    """kind='linear'：朴素线性注意力；kind='gdn'：Gated DeltaNet。
-    两者共用：q/k/v 投影 → 因果短卷积(核长 4) + SiLU → q、k 做 L2 归一化 → 核心算子 → 每头 RMSNorm → 输出投影。"""
+    """kind='linear': naive linear attention; kind='gdn': Gated DeltaNet.
+    Both use: q/k/v projection → short causal convolution (kernel size 4) + SiLU
+    → L2 normalization of q and k → core operator → RMSNorm per head → output projection."""
 
     def __init__(self, dim: int, n_heads: int, kind: str = "gdn", conv: int = 4) -> None:
         super().__init__()
@@ -93,18 +99,19 @@ class LinearMixer(nn.Module):
         self.wo = nn.Linear(dim, dim, bias=False)
         self.out_norm = nn.RMSNorm(self.dh)
         if kind == "gdn":
-            self.wb = nn.Linear(dim, n_heads)  # β_t = sigmoid(·)：写入强度
-            self.wa = nn.Linear(dim, n_heads)  # α_t = exp(−e^{A} softplus(· + dt_bias))：衰减门
+            self.wb = nn.Linear(dim, n_heads)  # β_t = sigmoid(·): write strength
+            self.wa = nn.Linear(dim, n_heads)  # α_t = exp(−e^{A} softplus(· + dt_bias)): decay gate
             self.A_log = nn.Parameter(torch.zeros(n_heads))
-            # Mamba-2 式初始化：各头的 softplus(dt_bias) 从 0.001 到 0.1 等比分布，
-            # 初始 α ≈ 0.9 ~ 0.999（不这样做的话 α 一开始约为 0.5，十几步就忘光了）
+            # Mamba-2 style initialization: softplus(dt_bias) of the heads is geometric from 0.001 to 0.1.
+            # Then the initial α ≈ 0.9 to 0.999. Without it, α starts at about 0.5,
+            # and the layer forgets everything after 10 to 20 steps.
             dt = torch.exp(torch.linspace(math.log(1e-3), math.log(1e-1), n_heads))
             self.dt_bias = nn.Parameter(dt + torch.log(-torch.expm1(-dt)))
 
     def forward(self, x):
         B, T, D = x.shape
         h = self.wqkv(x).transpose(1, 2)
-        h = F.silu(self.conv(F.pad(h, (self.conv_k - 1, 0)))).transpose(1, 2)  # 因果：只看过去
+        h = F.silu(self.conv(F.pad(h, (self.conv_k - 1, 0)))).transpose(1, 2)  # causal: sees only the past
         q, k, v = h.view(B, T, 3, self.h, self.dh).permute(2, 0, 3, 1, 4)
         q = F.normalize(q, dim=-1) / math.sqrt(self.dh)
         k = F.normalize(k, dim=-1)
@@ -112,7 +119,7 @@ class LinearMixer(nn.Module):
             o = linear_chunked(q, k, v)
         else:
             beta = torch.sigmoid(self.wb(x)).transpose(1, 2)  # (B, H, T)
-            g = -self.A_log.exp() * F.softplus(self.wa(x) + self.dt_bias)  # 对数衰减 ≤ 0
+            g = -self.A_log.exp() * F.softplus(self.wa(x) + self.dt_bias)  # log decay ≤ 0
             g = g.transpose(1, 2)
             o, _ = delta.gated_delta_chunked(q, k, v, g, beta, C=32)
         o = self.out_norm(o)
@@ -138,7 +145,8 @@ class Block(nn.Module):
 
 
 class TinyLM(nn.Module):
-    """pattern 例如 "GGGA"：每个字母一层。attn_conv：注意力层是否也带短卷积（默认不带）。"""
+    """pattern, for example "GGGA": one letter for each layer.
+    attn_conv: if the attention layers also have the short convolution (default: no)."""
 
     def __init__(self, vocab: int, pattern: str, dim: int = 128, n_heads: int = 4,
                  ffn: int = 384, attn_conv: int = 0) -> None:
@@ -156,7 +164,7 @@ class TinyLM(nn.Module):
         return self.norm(x) @ self.emb.weight.T
 
 
-# ── 数据与训练 ──────────────────────────────────────────────────────────────────
+# ── Data and training ─────────────────────────────────────────────────────────────
 class CharData:
     def __init__(self) -> None:
         text = (ROOT / "assets" / "tiny_corpus" / "shakespeare.txt").read_text("utf-8")
@@ -184,10 +192,10 @@ def train_lm(pattern: str, steps: int = 800, bsz: int = 16, seq: int = 128, lr: 
         model.load_state_dict(torch.load(path, weights_only=True))
         return model.eval(), None
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.1)
-    g = torch.Generator().manual_seed(seed)  # 同一个种子 → 四种结构看到完全相同的数据
+    g = torch.Generator().manual_seed(seed)  # same seed → the four layouts see exactly the same data
     t0 = time.time()
     for step in range(steps + 1):
-        for pg in opt.param_groups:  # warmup + cosine（第 6 章）
+        for pg in opt.param_groups:  # warmup + cosine (Chapter 6)
             pg["lr"] = lr * min(1, (step + 1) / 100) * 0.5 * (1 + math.cos(math.pi * step / steps))
         x, y = data.batch("train", bsz, seq, g)
         loss = F.cross_entropy(model(x).flatten(0, 1), y.flatten())
@@ -214,7 +222,8 @@ def val_loss(model, seq: int = 128, n_batches: int = 20) -> float:
 
 
 def cache_bytes(pattern: str, T: int, dim: int = 128, n_heads: int = 4, conv: int = 4) -> int:
-    """推理时一条序列的缓存：A 层存 K、V（2·T·dim 个数，BF16）；L/G 层存状态（H·dh·dh，FP32）+ 卷积尾巴。"""
+    """Inference cache of one sequence: an A layer stores K and V (2·T·dim numbers, BF16);
+    an L/G layer stores the state (H·dh·dh, FP32) + the convolution tail."""
     dh = dim // n_heads
     total = 0
     for c in pattern:
@@ -227,9 +236,9 @@ def cache_bytes(pattern: str, T: int, dim: int = 128, n_heads: int = 4, conv: in
 
 PATTERNS = ["AAAA", "LLLL", "GGGG", "GGGA"]
 
-# Qwen3.5-0.8B 的真实配置（huggingface.co/Qwen/Qwen3.5-0.8B 的 config.json，text_config，2026-09 读取）
+# Real configuration of Qwen3.5-0.8B (config.json of huggingface.co/Qwen/Qwen3.5-0.8B, text_config, read 2026-09)
 QWEN35_08B = {
-    "layer_types": ["linear_attention"] * 3 + ["full_attention"],  # × 6，full_attention_interval = 4
+    "layer_types": ["linear_attention"] * 3 + ["full_attention"],  # × 6, full_attention_interval = 4
     "repeat": 6,
     "num_key_value_heads": 2,
     "head_dim": 256,
@@ -242,8 +251,10 @@ QWEN35_08B = {
 
 
 def qwen35_cache_mib(T: int, all_full: bool = False) -> tuple[float, float]:
-    """Qwen3.5-0.8B 一条序列的缓存（MiB）：KV 用 BF16，递推状态用 FP32（config 里 mamba_ssm_dtype）。
-    all_full=True：假设 24 层全换成同样配置的全注意力层，作对照。返回 (KV, 线性层状态)。"""
+    """Cache of one sequence of Qwen3.5-0.8B (MiB): KV in BF16, recurrent state in FP32
+    (mamba_ssm_dtype in the config).
+    all_full=True: a baseline that changes all 24 layers to full-attention layers with the same configuration.
+    Returns (KV, linear-layer state)."""
     c = QWEN35_08B
     types = c["layer_types"] * c["repeat"]
     if all_full:
@@ -267,19 +278,19 @@ def main() -> None:
         model, secs = train_lm(p)
         n_params = sum(x.numel() for x in model.parameters())
         rows.append((p, n_params, val_loss(model), secs))
-    print("\n== 验证集 loss（字符级，nats/字符；800 步，同一数据顺序，种子 0）==")
-    print(f"{'结构':>6} | {'参数量':>9} | {'val loss':>8} | 训练用时")
+    print("\n== Validation loss (character level, nats/char; 800 steps, same data order, seed 0) ==")
+    print(f"{'Arch':>6} | {'Params':>9} | {'val loss':>8} | train time")
     for p, n, vl, secs in rows:
-        print(f"{p:>6} | {n:>9,} | {vl:>8.3f} | {'(已缓存)' if secs is None else f'{secs:.0f}s'}")
+        print(f"{p:>6} | {n:>9,} | {vl:>8.3f} | {'(cached)' if secs is None else f'{secs:.0f}s'}")
 
-    print("\n== 一条序列的推理缓存（KB）：KV cache 随长度增长，线性层的状态不增长 ==")
+    print("\n== Inference cache of one sequence (KB): the KV cache grows with the length; the linear-layer state does not ==")
     Ts = (128, 1024, 8192, 65536)
-    print(f"{'结构':>6} | " + " | ".join(f"T={T:>6}" for T in Ts))
+    print(f"{'Arch':>6} | " + " | ".join(f"T={T:>6}" for T in Ts))
     for p in PATTERNS:
         print(f"{p:>6} | " + " | ".join(f"{cache_bytes(p, T) / 1024:>8.0f}" for T in Ts))
 
-    print("\n== 真实模型：Qwen3.5-0.8B（24 层 = 6 × [3 层 Gated DeltaNet + 1 层全注意力]）一条序列的缓存 ==")
-    print(f"{'上下文':>8} | {'KV(6 层)':>9} | {'线性状态(18 层)':>14} | {'合计':>8} | {'假如 24 层全注意力':>16}")
+    print("\n== Real model: Qwen3.5-0.8B (24 layers = 6 × [3 Gated DeltaNet + 1 full attention]), cache of one sequence ==")
+    print(f"{'Context':>8} | {'KV(6 attn)':>9} | {'State(18 GDN)':>14} | {'Total':>8} | {'If 24 full attn':>16}")
     for T in (4096, 32768, 262144):
         kv, st = qwen35_cache_mib(T)
         full = sum(qwen35_cache_mib(T, all_full=True))

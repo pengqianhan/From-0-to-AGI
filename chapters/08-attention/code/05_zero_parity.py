@@ -1,10 +1,13 @@
-"""第 8 章 · 极简代码 5：极简注意力 ↔ 主线模型 zero/model.py 的 Attention 对拍
+"""Chapter 8 · Minimal code 5: parity check,
+minimal attention ↔ Attention in the main-line model zero/model.py
 
-zero 的 Attention 比极简版多了三样东西：QK-Norm（第 9 章）、RoPE（第 9 章）、GQA（第 10 章）。
-把前两样"关掉"（qk_norm=False；cos=1、sin=0 让 RoPE 变成恒等变换），同一组权重的输出必须一致。
-再打开 GQA：2 个 K/V 头给 4 个查询头共用，等价于把每个 K/V 头复制一份再做普通多头注意力。
+The zero Attention has three more parts than the minimal version: QK-Norm (Chapter 9), RoPE (Chapter 9),
+and GQA (Chapter 10). Turn off the first two (qk_norm=False; cos=1, sin=0 make RoPE the identity).
+Then the same weights must give the same output.
+Then turn on GQA: 4 query heads share 2 K/V heads. This is the same as a copy of each K/V head,
+followed by normal multi-head attention.
 
-运行：uv run python chapters/08-attention/code/05_zero_parity.py
+Run: uv run python chapters/08-attention/code/05_zero_parity.py
 """
 
 from __future__ import annotations
@@ -16,12 +19,14 @@ from pathlib import Path
 import torch
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parents[2]))  # 让脚本能 import 仓库根目录下的 zero
+sys.path.insert(0, str(HERE.parents[2]))  # lets the script import zero from the repository root
 
 from zero.config import ModelConfig  # noqa: E402
 from zero.model import Attention  # noqa: E402
 
-torch.set_num_threads(1)  # 小张量单线程最快；构建机多任务共享 CPU（本机可删）
+# One thread is fastest for small tensors. Many jobs share the CPU of the build machine.
+# You can remove this line on your computer.
+torch.set_num_threads(1)
 
 _spec = importlib.util.spec_from_file_location("attn02", HERE / "02_attention_from_scratch.py")
 attn02 = importlib.util.module_from_spec(_spec)
@@ -43,25 +48,29 @@ def zero_attention(C: int, H: int, n_kv: int) -> Attention:
 
 
 def parity() -> dict:
-    """返回两项对拍的最大差，以及两种注意力的参数量和 Wk 形状。"""
+    """Return the max differences of the two parity checks.
+
+    Also return the parameter counts and the Wk shapes of the two attention types.
+    """
     torch.manual_seed(0)
     B, T, C, H = 2, 10, 32, 4
     d = C // H
     x = torch.randn(B, T, C)
-    cos, sin = torch.ones(T, d), torch.zeros(T, d)  # RoPE 恒等：x·cos + rotate(x)·sin = x
+    cos, sin = torch.ones(T, d), torch.zeros(T, d)  # RoPE becomes the identity: x·cos + rotate(x)·sin = x
 
-    # ① 普通多头注意力（MHA）：K/V 头数 = 查询头数
+    # ① Normal multi-head attention (MHA): number of K/V heads = number of query heads
     ours = attn02.MultiHeadAttention(C, H).eval()
     prod = zero_attention(C, H, n_kv=H)
-    prod.load_state_dict(ours.state_dict())  # 参数名一样：wq、wk、wv、wo
+    prod.load_state_dict(ours.state_dict())  # the parameter names are the same: wq, wk, wv, wo
     with torch.no_grad():
         mha_diff = float((ours(x) - prod(x, cos, sin)).abs().max())
 
-    # ② GQA：4 个查询头共享 2 组 K/V
+    # ② GQA: 4 query heads share 2 K/V groups
     gqa = zero_attention(C, H, n_kv=2)
     with torch.no_grad():
         y_gqa = gqa(x, cos, sin)
-        # 手工版：K/V 各复制一份，头 0、1 用第 0 组，头 2、3 用第 1 组，再做普通注意力
+        # Manual version: copy K and V once. Heads 0 and 1 use group 0, heads 2 and 3 use group 1.
+        # Then do normal attention
         q = gqa.wq(x).view(B, T, H, d).transpose(1, 2)
         k = gqa.wk(x).view(B, T, 2, d).transpose(1, 2).repeat_interleave(H // 2, dim=1)
         v = gqa.wv(x).view(B, T, 2, d).transpose(1, 2).repeat_interleave(H // 2, dim=1)
@@ -80,13 +89,13 @@ def parity() -> dict:
 def main() -> None:
     r = parity()
     print(
-        f"① 极简 MultiHeadAttention vs zero.model.Attention（关掉 QK-Norm 和 RoPE）最大差：{r['mha_diff']:.1e}"
+        f"① Minimal MultiHeadAttention vs zero.model.Attention (QK-Norm and RoPE off), max difference: {r['mha_diff']:.1e}"
     )
     print(
-        f"② GQA 的 Wk 形状 {r['wk_gqa']}（MHA 是 {r['wk_mha']}）：K/V 投影和 KV cache 都只有一半大"
+        f"② GQA Wk shape {r['wk_gqa']} (MHA: {r['wk_mha']}): the K/V projections and the KV cache are half the size"
     )
-    print(f'   zero 的 GQA vs 手工"复制 K/V 再做多头注意力" 最大差：{r["gqa_diff"]:.1e}')
-    print(f"   注意力参数量：MHA {r['n_mha']}，GQA {r['n_gqa']}")
+    print(f'   zero GQA vs manual "copy K/V, then multi-head attention", max difference: {r["gqa_diff"]:.1e}')
+    print(f"   Attention parameters: MHA {r['n_mha']}, GQA {r['n_gqa']}")
 
 
 if __name__ == "__main__":

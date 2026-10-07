@@ -1,37 +1,41 @@
-# 第 23 章：线性注意力与混合架构 —— 把 KV cache 压成一个固定大小的矩阵
+# Chapter 23: Linear attention and hybrid architectures — Compress the KV cache into a fixed-size matrix
 
-> **一句话目标**：读完这一章，你能从 softmax 注意力出发，推导出线性注意力的递推形式 `S_t = S_{t−1} + v_t k_tᵀ`，写出 delta 规则和 Gated DeltaNet 的更新公式并验证"分块形式 == 递推形式"；还能用真实配置算出 Qwen3.5-0.8B 这种"3 层线性 + 1 层全注意力"的混合结构省下多少 KV cache，并说清楚它为什么还要保留那几层全注意力。
+**English** · [中文](README.zh.md)
 
-📺 **本章视频**：待发布（本地渲染：`bash chapters/23-linear-attention-hybrid/video/build.sh`）
-🧪 **本章自检**：学完后在 Claude Code 里输入 `/ch23-linear-attention`
+> **Goal**: After this chapter, you can start from softmax attention and derive the recurrent form of linear attention, `S_t = S_{t−1} + v_t k_tᵀ`. You can write the update formulas of the delta rule and Gated DeltaNet, and you can verify that "chunkwise form == recurrent form". Qwen3.5-0.8B is a hybrid of "3 linear layers + 1 full-attention layer". You can also use its real configuration to calculate how much KV cache such a hybrid saves. Finally, you can explain why such a model still keeps those few full-attention layers.
+
+📺 **Video**: Not published yet. To render it on your computer, run `bash chapters/23-linear-attention-hybrid/video/build.sh`.
+🧪 **Self-check**: After the chapter, type `/ch23-linear-attention` in Claude Code.
 
 ---
 
-上一章我们用滑动窗口给注意力"限长"：一部分层只看最近的几千个 token，KV cache 就不再随上下文无限增长，但被窗口挡在外面的内容也就真的看不见了。这一章要解决的问题是：**能不能让一层注意力"看见"全部历史，却只花固定大小的内存？** 答案是线性注意力（linear attention）——把 softmax 拿掉，注意力就变成了一个 RNN，全部历史被压进一个 d×d 的状态矩阵。压缩必然有代价：状态会"满"，精确回忆会变差。于是有了两代改进（衰减门、delta 规则，合起来是 Gated DeltaNet），以及今天工业界的主流答案：**少量全注意力 + 大量线性层**的混合架构。千问 Qwen3.5 连 0.8B 的小模型都用了 3:1 的混合。
+In the last chapter, we used a sliding window to limit the length that attention reads. Some layers read only the most recent few thousand tokens. Then the KV cache no longer grows without limit as the context grows. But those layers really cannot see the content outside the window. This chapter asks a different question: **Can one attention layer "see" the full history and use only a fixed amount of memory?**
 
-本章代码：
+The answer is **linear attention**. Remove the softmax, and attention becomes an RNN (recurrent neural network): one d×d state matrix holds the full history in compressed form. Compression always has a cost: the state becomes "full", and exact recall becomes worse. Thus two improvements followed: the decay gate and the delta rule. Together, they give Gated DeltaNet. The main answer of the industry today is a hybrid architecture: **a few full-attention layers + many linear layers**. Qwen3.5 uses a 3:1 hybrid even in its small 0.8B model.
+
+The code for this chapter:
 
 ```bash
-uv run python chapters/23-linear-attention-hybrid/code/01_linear_attention.py   # 结合律、KV vs 状态、解码一步（几秒）
-uv run python chapters/23-linear-attention-hybrid/code/02_chunked.py            # 衰减门 + 分块并行形式（十几秒）
-uv run python chapters/23-linear-attention-hybrid/code/03_delta_rule.py         # 覆盖、容量、Gated DeltaNet 的分块形式（几秒）
-uv run python chapters/23-linear-attention-hybrid/code/04_hybrid_lm.py          # 四种结构的小语言模型（首次训练较慢，之后读缓存）
-uv run python chapters/23-linear-attention-hybrid/code/05_associative_recall.py # 联想回忆：纯线性 vs 混合（首次训练较慢）
+uv run python chapters/23-linear-attention-hybrid/code/01_linear_attention.py   # associativity, KV vs state, one decode step (a few seconds)
+uv run python chapters/23-linear-attention-hybrid/code/02_chunked.py            # decay gate + chunkwise parallel form (10 to 20 seconds)
+uv run python chapters/23-linear-attention-hybrid/code/03_delta_rule.py         # overwrite, capacity, chunkwise form of Gated DeltaNet (a few seconds)
+uv run python chapters/23-linear-attention-hybrid/code/04_hybrid_lm.py          # small language models with four layouts (slow on the first run, then reads the cache)
+uv run python chapters/23-linear-attention-hybrid/code/05_associative_recall.py # associative recall: pure linear vs hybrid (slow on the first run)
 ```
 
-> 本章所有计时都在一台被多个任务共享的 CPU 上单线程测得，同一脚本多跑几次会有成倍的波动；表里的计时只用来看**数量级和趋势**。数值结果（误差、loss、准确率）固定随机种子，可复现。
+> **Note:** We measured all times in this chapter with one thread on a CPU that other jobs shared. If you run the same script several times, the times can differ by a large factor. Use the times in the tables only to see the **order of magnitude and the trend**. The numerical results (errors, losses, accuracies) use fixed random seeds, so you can reproduce them.
 
-## 1. 问题：softmax 注意力必须记住一切
+## 1. The problem: softmax attention must remember everything
 
-回忆第 8 章的因果注意力：生成第 t 个 token 时，
+Recall the causal attention of Chapter 8. To generate token t, it calculates:
 
 ```
 o_t = Σ_{j≤t} softmax_j( q_t·k_j / √d ) · v_j
 ```
 
-softmax 要对**这一行的全部 t 个分数**一起做归一化：只要还有一个 k_j 没参与，分母就算不出来。所以前面每个位置的 K、V 都得留着——这就是第 10、21 章的 KV cache，它随上下文长度线性增长。`01_linear_attention.py` 的第 2 部分算了单层单头（d = 64，BF16）的账：
+The softmax normalizes **all t scores of this row** together. If one k_j is missing, we cannot calculate the denominator. Thus the model must keep the K and V of every earlier position. This is the KV cache of Chapters 10 and 21, and it grows linearly with the context length. Part 2 of `01_linear_attention.py` calculates the memory for one layer and one head (d = 64, BF16):
 
-| 上下文长度 T | KV cache | 线性注意力的状态 |
+| Context length T | KV cache | Linear-attention state |
 |---:|---:|---:|
 | 128 | 32 KB | 8 KB |
 | 1,024 | 256 KB | 8 KB |
@@ -39,105 +43,107 @@ softmax 要对**这一行的全部 t 个分数**一起做归一化：只要还�
 | 65,536 | 16,384 KB | 8 KB |
 | 262,144 | 65,536 KB | 8 KB |
 
-右边那一列就是这一章要得到的东西：**不管上下文多长，大小都不变。**
+The right column is the goal of this chapter: **the size stays the same for any context length.**
 
-## 2. 去掉 softmax：矩阵乘法换个顺序
+## 2. Remove the softmax: change the order of the matrix products
 
-如果注意力分数不过 softmax，而是直接用 `φ(q)·φ(k)`（φ 是某个把向量变成非负数的特征映射，Katharopoulos 等人 2020 年用的是 `elu(x) + 1`），那么整段序列的输出就是三个矩阵连乘，再乘一个因果掩码 M：
+Suppose that the attention scores do not go through a softmax. Instead, each score is `φ(q)·φ(k)`. Here, φ is a feature map that makes the vector entries non-negative; Katharopoulos et al. (2020) used `elu(x) + 1`. Then the output of the full sequence is a product of three matrices, multiplied element-wise by a causal mask M:
 
 ```
 O = ( φ(Q) φ(K)ᵀ ⊙ M ) V
 ```
 
-矩阵乘法满足**结合律**。不带掩码时，`(φ(Q) φ(K)ᵀ) V = φ(Q) (φ(K)ᵀ V)`：左边要先造一个 T×T 的大矩阵，右边只要一个 d×d 的小矩阵，和 T 无关。带上因果掩码，意思是"第 t 个位置只累加它之前的项"，于是可以边走边算：
+Matrix multiplication is **associative**. Without the mask, `(φ(Q) φ(K)ᵀ) V = φ(Q) (φ(K)ᵀ V)`. The left side first builds a large T×T matrix. The right side needs only a small d×d matrix, which does not depend on T. The causal mask means that position t adds only the terms at positions up to t. Thus we can calculate the output step by step:
 
 ```
-S_t = S_{t−1} + v_t φ(k_t)ᵀ      （写入：状态 S 是 d_v × d_k 的矩阵）
-o_t = S_t φ(q_t)                 （读出）
+S_t = S_{t−1} + v_t φ(k_t)ᵀ      (write: the state S is a d_v × d_k matrix)
+o_t = S_t φ(q_t)                 (read)
 ```
 
-这就是一个**循环神经网络（RNN）**：每来一个 token，把 v 和 k 的外积加进状态，再用 q 去读。每一步的内存和计算都是常数。代码（`01_linear_attention.py`）：
+This is a **recurrent neural network (RNN)**. For each new token, add the outer product of v and k to the state. Then read the state with q. The memory and the compute of each step are constant. The code (`01_linear_attention.py`):
 
 ```python
 def linear_attention_recurrent(q, k, v):
     S = torch.zeros(v.shape[1], q.shape[1])
     out = []
     for t in range(q.shape[0]):
-        S = S + torch.outer(v[t], phi(k[t]))  # S_t = S_{t-1} + v_t φ(k_t)ᵀ   （写入）
-        out.append(S @ phi(q[t]))             # o_t = S_t φ(q_t)                （读出）
+        S = S + torch.outer(v[t], phi(k[t]))  # S_t = S_{t-1} + v_t φ(k_t)ᵀ   (write)
+        out.append(S @ phi(q[t]))             # o_t = S_t φ(q_t)                (read)
     return torch.stack(out)
 ```
 
-和一次性算 T×T 矩阵的并行形式对比，T = 256、d = 16 时两种算法输出的**最大相对误差 4.7e-07**——只差 float32 的舍入误差。softmax 为什么不行？因为它的分母把一整行绑在一起，拆不开，所以 softmax 注意力没有这种递推形式。
+We compare it with the parallel form, which calculates the full T×T matrix at once. With T = 256 and d = 16, the **maximum relative error** between the outputs of the two algorithms is **4.7e-07**. This is only the float32 rounding error. Why does this not work with the softmax? The denominator of the softmax ties a full row together, and we cannot split it. Thus softmax attention has no recurrent form of this kind.
 
-> 说明：原论文的线性注意力还要除以一个归一化项 `φ(q_t)ᵀ Σ_j φ(k_j)`。后来的工作（GLA、DeltaNet、Qwen3.5 等）大多去掉了这个分母，改为对 q、k 做 L2 归一化、在输出上加一个 RMSNorm，数值更稳定。本章从第 3 节起都用这种现代写法（φ 取恒等映射）。
+> **Note:** In the original paper, linear attention also divides by a normalization term `φ(q_t)ᵀ Σ_j φ(k_j)`. Most later work (GLA, DeltaNet, Qwen3.5, and others) removes this denominator. Instead, it applies L2 normalization to q and k, and it adds an RMSNorm to the output. This is numerically more stable. From Section 3 on, this chapter uses this modern form (φ is the identity map).
 
-**推理时快了多少？** `01` 的第 3 部分测了"已经有 T 个历史 token 时，生成下一个 token 的注意力部分"（单头 d = 64）：
+**How much faster is inference?** Part 3 of `01` measures the attention part of one generation step: T earlier tokens exist, and the model generates the next token (one head, d = 64):
 
-| 已有上下文 | softmax 注意力 | 线性注意力 |
+| Existing context | Softmax attention | Linear attention |
 |---:|---:|---:|
 | 1,024 | 0.033 ms | 0.030 ms |
 | 8,192 | 0.250 ms | 0.030 ms |
 | 65,536 | 12.5 ms | 0.030 ms |
 | 262,144 | 44.2 ms | 0.030 ms |
 
-softmax 注意力每一步要读全部 T 个 K、V，时间随 T 增长；线性注意力每一步只碰一个 64×64 的状态，是常数。（计时波动很大：另一次运行里 262,144 那一格是 19–25 ms。）
+At each step, softmax attention reads all T K and V vectors, so the time grows with T. At each step, linear attention uses only one 64×64 state, so the time is constant. (The times vary a lot: in another run, the cell for 262,144 was 19–25 ms.)
 
-## 3. 训练怎么办：分块并行形式
+## 3. Training: the chunkwise parallel form
 
-推理可以一个 token 一个 token 地走，训练却要一次处理整段序列。逐 token 的 for 循环没法并行，GPU 会闲着；完全并行的形式 `(QKᵀ ⊙ M) V` 又退回到 T×T 的矩阵。折中办法是**分块（chunkwise）**：把序列切成长度 C 的块，
+Inference can go one token at a time. But training processes the full sequence at once. A token-by-token for loop cannot run in parallel, so the GPU waits. The fully parallel form `(QKᵀ ⊙ M) V` goes back to the T×T matrix. The compromise is the **chunkwise** form. Cut the sequence into chunks of length C:
 
-- **块内**：用并行形式，一次矩阵乘法；
-- **块间**：把前面所有块压缩成的状态 S 传下去，块内每个位置再额外读一次 S。
+- **In a chunk**: use the parallel form, one matrix multiplication.
+- **Between chunks**: pass on the state S, which compresses all earlier chunks. Each position in the chunk also reads S one time.
 
 ```python
 for s in range(0, T, C):
     qc, kc, vc = q[s:s+C], k[s:s+C], v[s:s+C]
-    b = g[s:s+C].cumsum(0)                                   # 块内累计对数衰减（下一节）
+    b = g[s:s+C].cumsum(0)                                   # cumulative log decay in the chunk (next section)
     D = (b[:, None] - b[None, :]).masked_fill(~mask, -inf).exp()
-    inter = (qc * b.exp()[:, None]) @ S.T                    # 读块开始时的状态
-    intra = ((qc @ kc.T) * D) @ vc                           # 块内的并行注意力
+    inter = (qc * b.exp()[:, None]) @ S.T                    # read the state from the chunk start
+    intra = ((qc @ kc.T) * D) @ vc                           # parallel attention in the chunk
     out[s:s+C] = inter + intra
-    S = b[-1].exp() * S + vc.T @ (kc * (b[-1] - b).exp()[:, None])   # 整块压进状态
+    S = b[-1].exp() * S + vc.T @ (kc * (b[-1] - b).exp()[:, None])   # compress the full chunk into the state
 ```
 
-`02_chunked.py` 验证三种算法数值一致（T = 512：递推 vs 并行最大差 1.8e-06，递推 vs 分块 6.0e-07），再比速度（单头 d = 64，CPU 单线程，毫秒）：
+`02_chunked.py` verifies that the three algorithms give the same numbers. With T = 512, the maximum difference is 1.8e-06 for recurrent vs parallel and 6.0e-07 for recurrent vs chunkwise. Then it compares the speed (one head, d = 64, one CPU thread, ms):
 
-| T | 递推（逐 token） | 分块 C = 64 | 完全并行 |
+| T | Recurrent (token by token) | Chunkwise, C = 64 | Fully parallel |
 |---:|---:|---:|---:|
 | 256 | 33.4 | 4.1 | 3.9 |
 | 1,024 | 76.2 | 12.7 | 79.6 |
 | 4,096 | 344.1 | 47.2 | 2015.0 |
 
-短序列时完全并行最快（一次大矩阵乘法）；序列一长，T² 的代价压倒一切，分块形式比逐 token 快约 7 倍、比完全并行快 40 多倍。GPU 上的差距会更大，因为分块把工作变成了 GPU 最擅长的矩阵乘法。**训练和 prefill 用分块形式，decode 用递推形式**，两者数学上完全等价——这是所有线性注意力模型的标准做法。
+For short sequences, the fully parallel form is the fastest (one large matrix multiplication). For long sequences, the T² cost is larger than all other costs. The chunkwise form is then about 7 times faster than the token-by-token form and more than 40 times faster than the fully parallel form. On a GPU, the difference is larger, because the chunkwise form changes the work into matrix multiplications, which GPUs do best. **Use the chunkwise form for training and prefill, and the recurrent form for decode.** The two forms are mathematically equivalent. All linear-attention models use this standard method.
 
-## 4. 衰减门：学会遗忘
+## 4. The decay gate: learn to forget
 
-朴素线性注意力有个明显的问题：它**只会累加**。一万个 token 之前写进去的东西，和刚写进去的东西权重一样，状态里越堆越多。第一个改进是加一个**衰减门（decay / gate）**：
+Naive linear attention has a clear problem: it **can only add**. Content from 10,000 tokens ago has the same weight as the newest content. The state collects more and more content. The first improvement adds a **decay gate**:
 
 ```
 S_t = α_t · S_{t−1} + v_t k_tᵀ,     α_t ∈ (0, 1]
 ```
 
-每写入一次之前，先把旧状态整体乘上 α_t。`02_chunked.py` 里只在第 0 步写入一次，然后看它随距离怎么衰减：
+Before each write, multiply the full old state by α_t. `02_chunked.py` writes only once, at step 0. Then it shows how the written value decays with distance:
 
-| α | 距离 10 | 距离 100 | 距离 500 |
+| α | Distance 10 | Distance 100 | Distance 500 |
 |---|---:|---:|---:|
 | 1.0 | 1.000 | 1.000 | 1.000 |
 | 0.99 | 0.904 | 0.366 | 0.007 |
 | 0.9 | 0.349 | 0.000 | 0.000 |
 
-正好是 α^距离。更关键的是，在真实模型里 **α_t 是由当前输入算出来的**（数据相关，data-dependent）：模型可以在"换了一个话题"时把门关小、清掉旧记忆，在需要长期记住的时候把门开到接近 1。分块形式里，衰减只是多了上面代码中的 `D` 矩阵和几个 `exp(b)` 因子（用对数衰减的累加和 b 表示，指数里永远是"后减前"，不会溢出）。
+The values are exactly α^distance. More important: in real models, **the model calculates α_t from the current input** (data-dependent). When the topic changes, the model can make the gate smaller and clear the old memory. When it must remember for a long time, it can open the gate to near 1. In the chunkwise form, the decay adds only the `D` matrix and a few `exp(b)` factors in the code above. Here, b is the cumulative sum of the log decays. The exponent is always "later minus earlier", so it cannot overflow.
 
-一大批模型的骨架就是这个"带衰减的线性递推"，区别只在 α 怎么参数化：RetNet 用固定的每头常数，GLA（Gated Linear Attention）用数据相关的向量门，Mamba-2 用数据相关的每头标量门（Mamba-2 论文把这类状态空间模型和线性注意力统一成了同一个框架，"结构化状态空间对偶"）。本章不逐一展开它们，只讲共同骨架；其中被主流模型真正采用的是 Mamba-2 和下面的 Gated DeltaNet 一族。
+Many models share this skeleton, a "linear recurrence with decay". They differ only in how they parameterize α. RetNet uses a fixed constant for each head. GLA (Gated Linear Attention) uses a data-dependent vector gate. Mamba-2 uses a data-dependent scalar gate for each head. (The Mamba-2 paper puts state space models of this type and linear attention into one framework, "structured state space duality".)
 
-## 5. 代价：固定大小的记忆会满
+This chapter does not discuss each of these models. It discusses only their common skeleton. Of this family, mainstream models really use two branches: Mamba-2 and the Gated DeltaNet family (see below).
 
-天下没有免费的午餐。把整段历史压进一个固定大小的矩阵，记忆就会"满"。把状态 S 看成一张"键 → 值"的表：写入 (k, v)，之后用同一个 k 去读，希望 `S k ≈ v`。如果 key 两两正交，一个 d_k 维的状态最多存 d_k 个互不干扰的键值对；再多，不同 key 就互相串扰。
+## 5. The cost: a fixed-size memory becomes full
 
-`03_delta_rule.py` 第 2 部分往一个 64×64 的状态里写入 N 个随机的单位向量 key 和随机 value，再逐个读回，报告相对误差 `‖S k − v‖ / ‖v‖`（0 = 完美读回，1 ≈ 读出来的噪声和信号一样大）：
+This compression has a cost. When we compress the full history into a fixed-size matrix, the memory becomes "full". Think of the state S as a "key → value" table. Write (k, v), then read with the same k. We want `S k ≈ v`. If the keys are pairwise orthogonal, a state with d_k key dimensions can store at most d_k key-value pairs without interference. With more pairs, different keys interfere with each other.
 
-| 写入 N 个 | 线性注意力 | delta 规则（下一节） | softmax 注意力（存全部 KV） |
+Part 2 of `03_delta_rule.py` writes N random unit-vector keys and random values into a 64×64 state. Then it reads each one back and reports the relative error `‖S k − v‖ / ‖v‖`. Here, 0 = a perfect read, and 1 ≈ the read noise is as large as the signal:
+
+| N written | Linear attention | Delta rule (next section) | Softmax attention (stores all KV) |
 |---:|---:|---:|---:|
 | 16 | 0.469 | 0.309 | 0.000 |
 | 32 | 0.692 | 0.479 | 0.000 |
@@ -145,55 +151,57 @@ S_t = α_t · S_{t−1} + v_t k_tᵀ,     α_t ∈ (0, 1]
 | 128 | 1.431 | 0.972 | 0.000 |
 | 256 | 1.974 | 1.206 | 0.000 |
 
-softmax 注意力把 K、V 原样存着，用 key 去"查表"，误差始终是 0——代价是内存随 N 增长。线性注意力内存固定，代价是**精确回忆（recall）**：写得越多，读回来越糊。这是线性注意力最大的弱点，Zoology（Arora 等 2023）用"多查询联想回忆（MQAR）"任务系统地测过它，第 8.3 节我们也会做一个小版本。
+Softmax attention stores K and V unchanged and "looks up" the table with the key. Its error is always 0, but its memory grows with N. Linear attention has a fixed memory, and it pays with **exact recall**: the more it writes, the less accurate the read. This is the largest weakness of linear attention. Zoology (Arora et al. 2023) measured it systematically with the "multi-query associative recall (MQAR)" task. In Section 8.3, we do a small version of this task.
 
-## 6. delta 规则：覆盖，而不是累加
+## 6. The delta rule: overwrite, do not add
 
-线性注意力的写入是盲目的：不管状态里已经存了什么，直接把 `v kᵀ` 加上去。同一个 key 写两次，读出来是两个值的和。**delta 规则**（delta rule，来自 Widrow–Hoff 的经典学习规则；Schlag 等人 2021 年把它用到线性注意力上，叫 DeltaNet）换了一种写法：先用 k 读出旧答案 `S k`，只把"新值与旧答案的差"写回去：
+Linear attention writes blindly. It adds `v kᵀ` directly and ignores what the state already contains. If we write the same key two times, the read gives the sum of the two values. The **delta rule** writes in a different way. (It comes from the classic Widrow–Hoff learning rule. Schlag et al. used it for linear attention in 2021 and called the result DeltaNet.) First, it uses k to read the old answer `S k`. Then it writes back only "the difference between the new value and the old answer":
 
 ```
 S_t = S_{t−1} + β_t (v_t − S_{t−1} k_t) k_tᵀ
     = S_{t−1} (I − β_t k_t k_tᵀ) + β_t v_t k_tᵀ
 ```
 
-β_t ∈ (0, 1) 是写入强度（也由输入算出）。当 β = 1、‖k‖ = 1 时，写完以后 `S_t k_t = v_t` 恰好成立——旧值被干净地**覆盖**。它其实是对"让 S k 逼近 v"这个平方误差做了一步梯度下降（学习率 β），所以也被叫作"测试时学习"的一种。`03_delta_rule.py` 第 1 部分：同一个 key 先写 v1 = [1, 0]，再写 v2 = [0, 1]：
+β_t ∈ (0, 1) is the write strength (the model also calculates it from the input). When β = 1 and ‖k‖ = 1, `S_t k_t = v_t` is exactly true after the write: the new value cleanly **overwrites** the old value. The update is one step of gradient descent (learning rate β) on the squared error between S k and v. Thus people also call it a kind of "test-time learning". Part 1 of `03_delta_rule.py` writes v1 = [1, 0] and then v2 = [0, 1] with the same key:
 
-| | 用 k 读出 |
+| | Read with k |
 |---|---|
-| 线性注意力 | [1.0, 1.0]（v1 + v2） |
-| delta 规则 | [0.0, 1.0]（v2） |
+| Linear attention | [1.0, 1.0] (v1 + v2) |
+| Delta rule | [0.0, 1.0] (v2) |
 
-上一节的容量表里，delta 规则在每个 N 上都比朴素累加的误差低（N = 64 时 0.737 vs 0.996）：写入前先"擦掉"key 方向上的旧内容，串扰小了很多。
+Look at the capacity table of the last section. For each N, the delta rule has a lower error than naive addition (0.737 vs 0.996 at N = 64). Before it writes, it "erases" the old content in the direction of the key. This makes the interference much smaller.
 
-## 7. Gated DeltaNet：衰减 × delta 规则
+## 7. Gated DeltaNet: decay × delta rule
 
-两个改进各管一件事：衰减门让旧信息整体淡出（适合"换话题"），delta 规则精确地改写某个 key 上的内容（适合"更新一条记忆"）。Gated DeltaNet（Yang, Kautz, Hatamizadeh 2024）把它们乘在一起：
+Each of the two improvements does one job. The decay gate fades out all old information (good for a "topic change"). The delta rule changes exactly the content of one key (good for "update one memory"). Gated DeltaNet (Yang, Kautz, Hatamizadeh 2024) multiplies them together:
 
 ```
 S_t = α_t · S_{t−1} (I − β_t k_t k_tᵀ) + β_t v_t k_tᵀ
 o_t = S_t q_t
 ```
 
-`03_delta_rule.py` 第 3 部分做了一个流式实验：连续写入 1024 个键值对，只读最近写入的 32 个：
+Part 3 of `03_delta_rule.py` does a streaming experiment. It writes 1024 key-value pairs one after the other and reads only the 32 newest:
 
-| 写入规则 | 最近 32 个的读回误差 |
+| Write rule | Read error of the 32 newest |
 |---|---:|
-| 线性注意力 | 4.049 |
-| 线性 + 固定衰减 α = 0.95 | 0.644 |
-| delta 规则 | 0.584 |
-| delta + 固定衰减 α = 0.95 | 0.652 |
-| 线性 + 换话题时 α = 0 | 0.675 |
-| delta + 换话题时 α = 0（数据相关的门） | 0.502 |
+| Linear attention | 4.049 |
+| Linear + fixed decay α = 0.95 | 0.644 |
+| Delta rule | 0.584 |
+| Delta + fixed decay α = 0.95 | 0.652 |
+| Linear + α = 0 at the topic change | 0.675 |
+| Delta + α = 0 at the topic change (data-dependent gate) | 0.502 |
 
-几个观察：朴素累加被 1000 个旧条目淹没（4.05）；衰减或 delta 任何一个都能把误差拉回 0.6 左右；**固定的**衰减叠在 delta 上反而略差（它连最近的条目也一起衰减了）；而在"换话题"那一步把门关到 0 的**数据相关**门控，配合 delta 规则效果最好（0.502）。这说明门的价值在于"由输入决定什么时候忘"，这也是 Gated DeltaNet 里 α_t 必须由当前 token 算出来的原因。当然，0.5 离 softmax 注意力的 0 还很远——固定大小的状态终究有容量上限。
+We see four things. The 1000 old items overwhelm naive addition (4.05). Decay or the delta rule alone brings the error back to about 0.6. A **fixed** decay on top of the delta rule is a little worse, because it also decays the newest items. The best result (0.502) comes from the delta rule with a **data-dependent** gate that closes to 0 at the topic change.
 
-**分块形式。** delta 规则比朴素线性注意力多了一个麻烦：块内第 i 个位置真正写进状态的"修正值" u_i = β_i (v_i − S k_i) 依赖前面位置写入的 u_j，不能直接一次矩阵乘法算出来。把块内的依赖写成矩阵，是一个下三角线性方程组：
+Thus the value of the gate is that "the input decides when to forget". This is also why Gated DeltaNet must calculate α_t from the current token. But 0.5 is still far from the 0 of softmax attention: a fixed-size state always has a capacity limit.
+
+**The chunkwise form.** The delta rule has one more difficulty than naive linear attention. Position i of a chunk writes a "correction" u_i = β_i (v_i − S k_i) into the state. This value depends on the u_j that the earlier positions write, so one matrix multiplication cannot calculate it directly. If we write the dependencies in the chunk as matrices, we get a lower-triangular linear system:
 
 ```
 (I + A) U = β ⊙ (V − e^{b} ⊙ K S₀ᵀ),     A_ij = β_i e^{b_i − b_j} (k_i · k_j)   (j < i)
 ```
 
-解出 U（一次三角求解，Yang 等人 2024 年的"UT 变换"/WY 表示），剩下的就和带衰减的线性注意力完全同形，只是把 v 换成 u：
+Solve for U with one triangular solve (the "UT transform" / WY representation of Yang et al. 2024). The rest has exactly the same form as linear attention with decay, but with u in place of v:
 
 ```python
 A = (bt[..., :, None] * (kc @ kc.mT) * D).tril(-1)            # A_ij = β_i e^{b_i−b_j} k_i·k_j, j<i
@@ -203,247 +211,266 @@ out.append((qc * b.exp()[..., None]) @ S.mT + ((qc @ kc.mT) * D) @ u)
 S = b[..., -1, None, None].exp() * S + u.mT @ (kc * (b[..., -1:] - b).exp()[..., None])
 ```
 
-`03_delta_rule.py` 第 4 部分验证：B = 2、H = 3、T = 128、块长 32 时，分块与递推的最大输出差 4.8e-07，最终状态差 3.6e-07。
+Part 4 of `03_delta_rule.py` verifies this. The test uses B = 2, H = 3, T = 128, and a chunk length of 32. The maximum output difference between the chunkwise and recurrent forms is 4.8e-07. The difference of the final states is 3.6e-07.
 
-**真实模型里的 Gated DeltaNet 层**还多了几样东西（以 Qwen3.5 为准，见 `zero/arch/linear_attention.py`）：q、k、v 投影之后先过一个核长为 4 的**因果短卷积**（depthwise conv，让每个位置先混合一下左边相邻几个 token 的信息，这对回忆任务帮助很大）；q、k 做 **L2 归一化**（保证 ‖k‖ = 1，delta 规则才稳定）；α_t 用 Mamba-2 的参数化 `α_t = exp(−e^{A} · softplus(a_t + dt_bias))`；β_t = sigmoid(b_t)；输出过一个**门控 RMSNorm**（RMSNorm(o) ⊙ SiLU(z)）；多头，且 value 头数可以是 q/k 头数的整数倍（Qwen3-Next 是 16 个 q/k 头、32 个 v 头）。线性层**不加 RoPE**——递推本身就有先后顺序，短卷积也提供了局部位置信息。
+**A Gated DeltaNet layer in a real model** has some more parts. We follow Qwen3.5 here; see `zero/arch/linear_attention.py`. The parts are:
 
-## 8. 混合：少量全注意力 + 大量线性层
+- After the q, k, v projections, a **short causal convolution** with kernel size 4 (a depthwise convolution). Each position first mixes in the information of a few neighbor tokens on its left. This helps recall tasks a lot.
+- **L2 normalization** of q and k. It makes sure that ‖k‖ = 1, which keeps the delta rule stable.
+- The Mamba-2 parameterization of α_t: `α_t = exp(−e^{A} · softplus(a_t + dt_bias))`. Also, β_t = sigmoid(b_t).
+- A **gated RMSNorm** on the output: RMSNorm(o) ⊙ SiLU(z).
+- Multiple heads. The number of value heads can be an integer multiple of the number of q/k heads (Qwen3-Next has 16 q/k heads and 32 v heads).
 
-线性层记性有限，全注意力又太贵，工业界的答案是**混合**：大部分层用线性注意力（或状态空间层），每隔几层放一层全注意力，专门负责精确回忆。
+The linear layers **do not use RoPE**. The recurrence itself has an order in time, and the short convolution also gives local position information.
 
-### 8.1 Qwen3.5-0.8B 的真实结构
+## 8. Hybrid: a few full-attention layers + many linear layers
 
-从 Hugging Face 上 `Qwen/Qwen3.5-0.8B` 的 `config.json` 读到（2026-09）：
+Linear layers have a limited memory, and full attention is too expensive. The answer of the industry is a **hybrid**. Most layers use linear attention (or state space layers). After every few layers, there is one full-attention layer, which does the exact recall.
+
+### 8.1 The real architecture of Qwen3.5-0.8B
+
+We read this from the `config.json` of `Qwen/Qwen3.5-0.8B` on Hugging Face (2026-09):
 
 ```
 "full_attention_interval": 4,
 "layer_types": ["linear_attention", "linear_attention", "linear_attention", "full_attention", ... ×6]
-"num_key_value_heads": 2, "head_dim": 256,                       # 全注意力层（gated attention）
+"num_key_value_heads": 2, "head_dim": 256,                       # full-attention layers (gated attention)
 "linear_num_key_heads": 16, "linear_num_value_heads": 16,
-"linear_key_head_dim": 128, "linear_value_head_dim": 128,        # Gated DeltaNet 层
+"linear_key_head_dim": 128, "linear_value_head_dim": 128,        # Gated DeltaNet layers
 "linear_conv_kernel_dim": 4, "mamba_ssm_dtype": "float32"
 ```
 
-模型卡写得更直白：`Hidden Layout: 6 × (3 × (Gated DeltaNet → FFN) → 1 × (Gated Attention → FFN))`。`04_hybrid_lm.py` 最后一部分按这份配置算了一条序列的推理缓存（KV 用 BF16，递推状态按 config 用 FP32）：
+The model card says it more directly: `Hidden Layout: 6 × (3 × (Gated DeltaNet → FFN) → 1 × (Gated Attention → FFN))`. The last part of `04_hybrid_lm.py` uses this configuration to calculate the inference cache of one sequence. KV uses BF16, and the recurrent state uses FP32, as the config says:
 
-| 上下文 | KV cache（6 层全注意力） | 线性状态（18 层 Gated DeltaNet） | 合计 | 假如 24 层全是全注意力 |
+| Context | KV cache (6 full-attention layers) | Linear state (18 Gated DeltaNet layers) | Total | If all 24 layers were full attention |
 |---:|---:|---:|---:|---:|
 | 4,096 | 48 MiB | 18.6 MiB | 67 MiB | 192 MiB |
 | 32,768 | 384 MiB | 18.6 MiB | 403 MiB | 1,536 MiB |
 | 262,144 | 3,072 MiB | 18.6 MiB | 3,091 MiB | 12,288 MiB |
 
-KV cache 只跟着那 6 层全注意力走；另外 18 层 Gated DeltaNet 的状态加起来 18.6 MiB，与上下文长度无关。上下文越长，省得越接近 4 倍（3:1 的理论上限）。注意这里的"24 层全注意力"是一个假想对照（把线性层换成同配置的全注意力层），不是某个真实模型。
+Only the 6 full-attention layers have a KV cache. The states of the other 18 Gated DeltaNet layers total 18.6 MiB, independent of the context length. The longer the context, the closer the saving gets to 4 times (the theoretical limit for 3:1). Note that "24 layers of full attention" is a hypothetical baseline: we replace the linear layers with full-attention layers of the same configuration. It is not a real model.
 
-### 8.2 小实验一：同一个小语言模型，四种结构
+### 8.2 Small experiment 1: one small language model, four architectures
 
-`04_hybrid_lm.py` 用第 10 章同款的字符级莎士比亚语料，训练四个 4 层小模型（宽度 128、4 个头、SwiGLU FFN、同样的数据顺序和超参，各 800 步），只换每层的 token mixer：A = softmax 注意力（带 RoPE），L = 朴素线性注意力，G = Gated DeltaNet（L 和 G 都带短卷积和输出归一化）。
+`04_hybrid_lm.py` uses the same character-level Shakespeare corpus as Chapter 10. It trains four small 4-layer models (width 128, 4 heads, SwiGLU FFN, the same data order and hyperparameters, 800 steps each). Only the **token mixer** of each layer changes. (The token mixer is the part of a layer that mixes information between tokens.) A = softmax attention (with RoPE), L = naive linear attention, G = Gated DeltaNet. L and G both have the short convolution and the output normalization.
 
-> 关于数字：本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同机器、不同版本的底层数学库，浮点运算的顺序略有不同，训练几百步后会把这些微小差异放大，你本机跑出的数字可能从小数点后第二三位开始就不一样；请以下文不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-21-23.md](../../runs/2026-10-01-gpu0-check/chapters-21-23.md)。
+> **Note:** The numbers of the training experiments in this chapter come from one CPU run on the build machine of the course. Different machines and different versions of the low-level math libraries do floating-point operations in a slightly different order. After a few hundred training steps, these small differences become larger. Your numbers can differ from the second or third decimal place. Trust the conclusions below that do not depend on exact values. For a rerun on another server in 2026-10, see [runs/2026-10-01-gpu0-check/chapters-21-23.md](../../runs/2026-10-01-gpu0-check/chapters-21-23.md).
 
-| 结构 | 参数量 | 验证集 loss（nats/字符） | 另一台服务器复跑（2026-10） | 推理缓存 T=1,024 | T=65,536 |
+| Architecture | Parameters | Validation loss (nats/char) | Rerun on another server (2026-10) | Inference cache, T=1,024 | T=65,536 |
 |---|---:|---:|---:|---:|---:|
-| AAAA（纯注意力） | 861,440 | 1.685 | 1.683 | 2,048 KB | 131,072 KB |
-| LLLL（纯朴素线性） | 867,712 | 1.754 | 1.760 | 73 KB | 73 KB |
-| GGGG（纯 Gated DeltaNet） | 871,872 | 1.661 | 1.648 | 73 KB | 73 KB |
-| GGGA（3:1 混合） | 869,264 | 1.649 | 1.652 | 567 KB | 32,823 KB |
+| AAAA (pure attention) | 861,440 | 1.685 | 1.683 | 2,048 KB | 131,072 KB |
+| LLLL (pure naive linear) | 867,712 | 1.754 | 1.760 | 73 KB | 73 KB |
+| GGGG (pure Gated DeltaNet) | 871,872 | 1.661 | 1.648 | 73 KB | 73 KB |
+| GGGA (3:1 hybrid) | 869,264 | 1.649 | 1.652 | 567 KB | 32,823 KB |
 
-（缓存按"KV 用 BF16、线性状态用 FP32"计算，见 `cache_bytes`。）
+(The cache uses "KV in BF16, linear state in FP32"; see `cache_bytes`.)
 
-- 朴素线性注意力最差（1.754）：只会累加的状态在字符级建模里也吃亏；
-- Gated DeltaNet 在这个规模上甚至比纯注意力略好（1.661 vs 1.685）。这并不说明它"比注意力强"：800 步、0.87M 参数、128 字符的上下文，模型主要在学局部拼写，短卷积 + 门控递推恰好很擅长这种局部模式；
-- 3:1 混合和纯 Gated DeltaNet 几乎一样低（1.649 vs 1.661；另一台服务器上复跑是 1.652 vs 1.648，名次反了过来），差别在单一种子的随机波动之内。混合相对纯注意力的好处是缓存只有约 1/4（T 越长越接近 1/4）；它相对纯线性模型的真正优势是精确回忆，这在语言建模的 loss 上看不出来——见下一个实验。
+- Naive linear attention is the worst (1.754). A state that can only add is a disadvantage even in character-level modeling.
+- At this scale, Gated DeltaNet is even a little better than pure attention (1.661 vs 1.685). This does not show that it is "stronger than attention". With 800 steps, 0.87M parameters, and a context of 128 characters, the model learns mainly local spelling. The short convolution + gated recurrence happens to be very good at such local patterns.
+- The 3:1 hybrid is almost as low as pure Gated DeltaNet (1.649 vs 1.661). In the rerun on another server, it was 1.652 vs 1.648, so the order changed. The difference is within the random variation of a single seed. Compared with pure attention, the advantage of the hybrid is a cache of only about 1/4 (closer to 1/4 for longer T). Its real advantage over a pure linear model is exact recall, and the language-modeling loss does not show it. See the next experiment.
 
-**如实说明**：单一随机种子，四者差距（最大 0.1 nats，前三名之间只差 0.04）与第 10 章观察到的种子波动同一量级，这里不能据此排出可靠的名次。它能说明的只是：在同样的参数量下，把大部分层换成线性层**没有让语言建模明显变差**，而缓存省了大半。线性层真正的短板要用专门的任务才看得出来——下一个实验。
+**Limits of this result**: We used a single random seed. The differences between the four models are at most 0.1 nats, and only 0.04 among the top three. In Chapter 10, we saw seed variation of the same order of magnitude. Thus we cannot make a reliable ranking from them. The result shows only one thing: with the same number of parameters, linear layers in most positions **did not make language modeling clearly worse**, and they saved most of the cache. To see the real weakness of linear layers, we need a special task: the next experiment.
 
-### 8.3 小实验二：联想回忆——纯线性掉队，混合找回来
+### 8.3 Small experiment 2: associative recall — pure linear falls behind, the hybrid recovers
 
-语言模型的 loss 对"精确回忆"不太敏感（大部分字符靠局部上下文就能猜）。`05_associative_recall.py` 专门测回忆：序列前半段是 N 个随机的"键 值"对，后半段反复给出其中的某个键，模型要答出它对应的值（Zoology 的 MQAR 任务的缩小版）。
+The loss of a language model is not very sensitive to "exact recall": the local context is enough to guess most characters. `05_associative_recall.py` measures recall directly. The first half of the sequence has N random "key value" pairs. The second half gives some of these keys again and again, and the model must give the value of each key. This is a small version of the MQAR task of Zoology.
 
-四种 2 层小模型（宽度 64，4 个头，线性层 head_dim 故意取得很小 = 16，让状态容量明显不够用；为了公平，注意力层的 q/k/v 也带同样的短卷积），每种训练 600 步（每步随机取 N ∈ [4, 24]），每个 N 测 256 条序列，随机猜的准确率是 1/64：
+We use four small 2-layer models (width 64, 4 heads). The head_dim of the linear layers is small on purpose, 16, so the state capacity is clearly too small. For a fair comparison, the q/k/v of the attention layers also have the same short convolution. We train each model for 600 steps, with a random N ∈ [4, 24] at each step. We test 256 sequences for each N. A random guess has an accuracy of 1/64:
 
-| 结构 | N = 4 | N = 8 | N = 12 | N = 16 | N = 20 | N = 24 | 推理时每层要存的数 |
+| Architecture | N = 4 | N = 8 | N = 12 | N = 16 | N = 20 | N = 24 | Numbers stored per layer at inference |
 |---|---:|---:|---:|---:|---:|---:|---|
-| AA（纯注意力） | 100% | 99% | 97% | 97% | 96% | 94% | KV 8192 + KV 8192 |
-| LL（纯朴素线性） | 64% | 40% | 30% | 24% | 19% | 17% | 状态 1024 + 状态 1024 |
-| GG（纯 Gated DeltaNet） | 85% | 62% | 48% | 39% | 32% | 29% | 状态 1024 + 状态 1024 |
-| GA（1 层 GDN + 1 层全注意力） | 99% | 96% | 91% | 86% | 83% | 79% | 状态 1024 + KV 8192 |
+| AA (pure attention) | 100% | 99% | 97% | 97% | 96% | 94% | KV 8192 + KV 8192 |
+| LL (pure naive linear) | 64% | 40% | 30% | 24% | 19% | 17% | state 1024 + state 1024 |
+| GG (pure Gated DeltaNet) | 85% | 62% | 48% | 39% | 32% | 29% | state 1024 + state 1024 |
+| GA (1 GDN layer + 1 full-attention layer) | 99% | 96% | 91% | 86% | 83% | 79% | state 1024 + KV 8192 |
 
-三个结论，和第 5–7 节的容量实验一致：
+We draw three conclusions. They agree with the capacity experiments of Sections 5–7:
 
-- **纯线性模型的准确率随 N 单调下降**：键值对越多，固定大小的状态越装不下。朴素线性注意力在 N = 24 时只剩 17%；
-- **Gated DeltaNet 比朴素线性强得多**（每个 N 上都高十几到二十几个百分点），覆盖式写入和门控确实让有限的状态用得更好，但仍然远不如注意力；
-- **只把两层中的一层换成全注意力，回忆能力就回来了大半**（N = 24 时 29% → 79%），而这个混合模型的缓存只有纯注意力的一半多一点。
+- **The accuracy of the pure linear models decreases monotonically with N.** The more key-value pairs there are, the less the fixed-size state can hold. Naive linear attention has only 17% at N = 24.
+- **Gated DeltaNet is much stronger than naive linear attention** (12 to 22 percentage points higher at each N). Overwriting and gating really make better use of the limited state. But Gated DeltaNet is still far below attention.
+- **Change only one of the two layers to full attention, and most of the recall ability comes back** (29% → 79% at N = 24). The cache of this hybrid model is only a little more than half of the cache of pure attention.
 
-**如实说明**：这是一个极小规模的实验——2 层、600 步、单一随机种子，线性层的状态被故意设得很小。纯注意力在 N 大时的优势会随训练步数和模型大小变化，混合模型和纯注意力之间的差距（79% vs 94%）在更长的训练下可能缩小，也可能不变，这里没有做；真实模型的对比请看 Zoology、Gated DeltaNet 和 Kimi Linear 论文里的回忆类评测。
+**Limits of this result**: This is a very small experiment: 2 layers, 600 steps, a single random seed, and a linear-layer state that we made small on purpose. The advantage of pure attention at large N changes with the number of training steps and the model size. With longer training, the gap between the hybrid model and pure attention (79% vs 94%) can become smaller, or it can stay the same. We did not test this. For comparisons of real models, see the recall evaluations in the Zoology, Gated DeltaNet, and Kimi Linear papers.
 
-### 8.4 为什么是"少量全注意力 + 大量线性层"
+### 8.4 Why "a few full-attention layers + many linear layers"
 
-把上面的现象合起来：
+Put the results above together:
 
-- **线性层负责"便宜的深度"**：它们处理局部模式、语法、逐步累积的语义，内存和每步计算都与长度无关；
-- **少量全注意力层负责"精确回忆"**：从很远的上下文里原样找回某个名字、数字、代码变量，这恰恰是固定大小的状态最不擅长的；
-- **KV cache 只随全注意力层数增长**：3:1 时约为纯注意力的 1/4，9:1 时约 1/10。
+- **The linear layers give "cheap depth".** They process local patterns, grammar, and meaning that accumulates step by step. Their memory and the compute of each step do not depend on the length.
+- **A few full-attention layers do the "exact recall".** They find a name, a number, or a code variable unchanged from far back in the context. A fixed-size state is worst at exactly this task.
+- **The KV cache grows only with the number of full-attention layers.** At 3:1, it is about 1/4 of pure attention; at 9:1, it is about 1/10.
 
-比例没有标准答案：Qwen3.5、Kimi Linear、Ling-3.0 是 3:1；IBM Granite 4.0-H 是 9:1；NVIDIA Nemotron 3 Nano 在 52 层里只放了 6 层注意力；Falcon-H1 干脆在同一层里把注意力头和 Mamba-2 头并联。它们在"KV cache 能省多少"和"回忆能力保留多少"之间各取了一个点。
+There is no standard ratio. Qwen3.5, Kimi Linear, and Ling-3.0 use 3:1. IBM Granite 4.0-H uses 9:1. NVIDIA Nemotron 3 Nano has only 6 attention layers in 52 layers. Falcon-H1 puts attention heads and Mamba-2 heads in parallel in the same layer. Each model chooses its own point between "how much KV cache it saves" and "how much recall ability it keeps".
 
-也有明确的反例。MiniMax-Text-01（2025 年初）用了 lightning attention（一种线性注意力）与 softmax 注意力 7:1 的混合（config 里 80 层的 `attn_type_list` 每 8 层有 1 层是 softmax）；但它的下一代 MiniMax-M2 回到了**每一层都是全注意力**（MiniMax-M2.5 的 `attn_type_list` 全是 1）。MiniMax 官方博客解释了原因：在代码、数学、智能体、长链推理和强化学习这些复杂任务上，线性/稀疏注意力的效果还不够稳定；线性注意力的训练和推理基础设施不成熟、很多实现受限于显存带宽；它对数值精度更敏感，低精度存储状态有困难；和推测解码的配合也还是未解决的问题。所以混合架构是一个已经被多家采用的**工程权衡**，而不是免费的午餐。
+There is also a clear counterexample. MiniMax-Text-01 (early 2025) used a 7:1 hybrid of lightning attention (a type of linear attention) and softmax attention. In its config, the `attn_type_list` of the 80 layers has 1 softmax layer in every 8 layers. But its next generation, MiniMax-M2, went back to **full attention in every layer** (all values in the `attn_type_list` of MiniMax-M2.5 are 1). The official MiniMax blog gives these reasons:
 
-## 9. 小结
+- On complex tasks such as code, math, agents, long-chain reasoning, and reinforcement learning, the quality of linear/sparse attention is not yet stable enough.
+- The training and inference infrastructure for linear attention is not mature, and memory bandwidth limits many implementations.
+- Linear attention is more sensitive to numerical precision, and it is difficult to store the state in low precision.
+- How linear attention works with speculative decoding is still an open problem.
 
-- softmax 注意力要对一整行分数归一化，只能把全部 K、V 留着：KV cache ∝ T。
-- 去掉 softmax，矩阵乘法换个顺序，注意力就变成 RNN：`S_t = S_{t−1} + v_t k_tᵀ`，`o_t = S_t q_t`，状态大小固定。
-- 训练用**分块形式**（块内并行、块间传状态），decode 用**递推形式**，两者数学等价。
-- 固定大小的状态会满：精确回忆是线性注意力最大的弱点。
-- **衰减门** α_t 让旧信息淡出（RetNet / GLA / Mamba-2 一族）；**delta 规则**先读后写、只写差值，实现"覆盖"；两者相乘就是 **Gated DeltaNet**。
-- **混合架构**：大量线性层 + 少量全注意力层（Qwen3.5 是 3:1），KV cache 只随全注意力层增长，精确回忆由全注意力层兜底。
+Thus the hybrid architecture is an **engineering trade-off** that several companies use. It does not come for free.
+
+## 9. Summary
+
+- Softmax attention normalizes a full row of scores, so it must keep all K and V: KV cache ∝ T.
+- Remove the softmax and change the order of the matrix products, and attention becomes an RNN: `S_t = S_{t−1} + v_t k_tᵀ`, `o_t = S_t q_t`. The state has a fixed size.
+- Training uses the **chunkwise form** (parallel in a chunk, the state passes between chunks). Decode uses the **recurrent form**. The two forms are mathematically equivalent.
+- A fixed-size state becomes full: exact recall is the largest weakness of linear attention.
+- The **decay gate** α_t fades out old information (the RetNet / GLA / Mamba-2 family). The **delta rule** reads before it writes and writes only the difference, so it can "overwrite". Multiply the two, and you get **Gated DeltaNet**.
+- **Hybrid architecture**: many linear layers + a few full-attention layers (3:1 in Qwen3.5). The KV cache grows only with the full-attention layers, and the full-attention layers make sure that exact recall still works.
 
 ---
 
-## GPU 实测（单张 RTX 3090）
+## GPU measurements (one RTX 3090)
 
-> 上面正文里的数字都来自 CPU 运行。本节换到一张 NVIDIA GeForce RTX 3090（24 GB 显存，Ampere 架构；规格表：BF16 张量核稠密峰值约 71 TFLOPS，FP32 约 35.6 TFLOPS，显存带宽约 936 GB/s）上实测，环境：PyTorch 2.11.0+cu128、CUDA 12.8，2026 年 10 月。这张卡的功耗上限被服务器设成了 240 W（出厂默认 350 W），持续满载时会降频，所以算力、带宽的绝对值比满功耗的 3090 偏低，看相对关系更可靠。没有 GPU 可以跳过本节。
+> **Note:** The numbers in the main text above all come from CPU runs. This section uses one NVIDIA GeForce RTX 3090: 24 GB of GPU memory, Ampere architecture. Spec sheet: dense BF16 tensor-core peak about 71 TFLOPS, FP32 about 35.6 TFLOPS, GPU memory bandwidth about 936 GB/s. Environment: PyTorch 2.11.0+cu128, CUDA 12.8, October 2026. The server sets the power limit of this card to 240 W (the factory default is 350 W). Under a continuous full load, the card decreases its clock speed. Thus the absolute compute and bandwidth are lower than on a 3090 at full power, and the relative values are more reliable. If you have no GPU, skip this section.
 
-运行：
+Run:
 
 ```bash
 uv run python chapters/23-linear-attention-hybrid/code/06_gpu_linear_vs_softmax.py
 ```
 
-形状取 Qwen3.5-0.8B 的 Gated DeltaNet 层：batch 1、16 个头、d_k = d_v = 128；softmax 注意力也用 16 × 128。线性注意力这边原封不动地调用本章代码——04 的 `linear_chunked`、03 的 `gated_delta_chunked` 和 `gated_delta_recurrent`，只是放进 `with torch.device("cuda")` 里，让函数内部新建的张量也落在 GPU 上（纯 PyTorch、FP32、块长 64，Python 逐块循环）；softmax 注意力用 PyTorch 自带的 FlashAttention kernel（BF16）。先确认 GPU 上数学没变：T = 1,024 时 Gated DeltaNet 的分块形式与递推形式最大输出差 6.0e-07，最终状态差 4.8e-07。
+The shapes are those of the Gated DeltaNet layer of Qwen3.5-0.8B: batch 1, 16 heads, d_k = d_v = 128. Softmax attention also uses 16 × 128. For linear attention, the script calls the code of this chapter without changes: `linear_chunked` from 04, and `gated_delta_chunked` and `gated_delta_recurrent` from 03. It only puts the calls in `with torch.device("cuda")`, so the tensors that the functions create are also on the GPU. The linear attention is pure PyTorch in FP32, with chunk length 64 and a Python loop over the chunks. Softmax attention uses the FlashAttention kernel of PyTorch (BF16). First, we make sure that the math did not change on the GPU. At T = 1,024, the maximum output difference between the chunkwise and recurrent forms of Gated DeltaNet is 6.0e-07. The difference of the final states is 4.8e-07.
 
-整段处理 T 个 token（训练 / prefill；毫秒，取中位数；括号里是输入之外额外占的峰值显存）：
+Process all T tokens at once (training / prefill; ms, median; in parentheses: the peak extra GPU memory on top of the inputs):
 
-| 序列长 T | softmax（FlashAttention） | 线性注意力·分块 | Gated DeltaNet·分块 | Gated DeltaNet·递推 |
+| Sequence length T | Softmax (FlashAttention) | Linear attention, chunkwise | Gated DeltaNet, chunkwise | Gated DeltaNet, recurrent |
 |---:|---:|---:|---:|---:|
-| 1,024 | 0.2（4 MiB） | 2.9（17 MiB） | 10.7（19 MiB） | 198.8 |
-| 4,096 | 1.3（16 MiB） | 11.2（65 MiB） | 43.1（67 MiB） | 813.5 |
-| 16,384 | 21.9（65 MiB） | 48.8（257 MiB） | 193.5（259 MiB） | — |
-| 65,536 | 460.1（260 MiB） | 180.7（1,025 MiB） | 757.5（1,027 MiB） | — |
+| 1,024 | 0.2 (4 MiB) | 2.9 (17 MiB) | 10.7 (19 MiB) | 198.8 |
+| 4,096 | 1.3 (16 MiB) | 11.2 (65 MiB) | 43.1 (67 MiB) | 813.5 |
+| 16,384 | 21.9 (65 MiB) | 48.8 (257 MiB) | 193.5 (259 MiB) | — |
+| 65,536 | 460.1 (260 MiB) | 180.7 (1,025 MiB) | 757.5 (1,027 MiB) | — |
 
-（逐 token 递推太慢，只测了前两行。）
+(The token-by-token recurrence is too slow, so we measured only the first two rows.)
 
-decode 一步：已有 T 个 token 的上下文，再来 1 个。Gated DeltaNet 这边先用分块形式把 T 个 token 真的压成状态，再从这个状态递推一步（毫秒，50 次取中位数）：
+One decode step: a context of T tokens exists, and 1 more token comes. For Gated DeltaNet, the script first uses the chunkwise form to really compress the T tokens into the state. Then it does one recurrent step from this state (ms, median of 50 runs):
 
-| 上下文 T | softmax 的 KV cache | softmax 一步 | Gated DeltaNet 的状态 | Gated DeltaNet 一步 |
+| Context T | Softmax KV cache | Softmax step | Gated DeltaNet state | Gated DeltaNet step |
 |---:|---:|---:|---:|---:|
-| 1,024 | 8 MiB | 0.053 | (1, 16, 128, 128)，1 MiB | 0.259 |
-| 16,384 | 128 MiB | 0.217 | (1, 16, 128, 128)，1 MiB | 0.245 |
-| 65,536 | 512 MiB | 0.705 | (1, 16, 128, 128)，1 MiB | 0.242 |
-| 262,144 | 2,048 MiB | 3.408 | (1, 16, 128, 128)，1 MiB | 0.306 |
+| 1,024 | 8 MiB | 0.053 | (1, 16, 128, 128), 1 MiB | 0.259 |
+| 16,384 | 128 MiB | 0.217 | (1, 16, 128, 128), 1 MiB | 0.245 |
+| 65,536 | 512 MiB | 0.705 | (1, 16, 128, 128), 1 MiB | 0.242 |
+| 262,144 | 2,048 MiB | 3.408 | (1, 16, 128, 128), 1 MiB | 0.306 |
 
-第二张表是第 1、2 节那两张表在 GPU 上的样子：softmax 注意力的 KV cache 跟着上下文涨到 2 GiB，每一步都要整块读一遍，耗时从 0.053 ms 涨到 3.4 ms；Gated DeltaNet 的状态从头到尾是同一个 1 MiB 的 (1, 16, 128, 128)，一步 0.24–0.31 ms，和上下文多长无关。1.6 万个 token 时两者还差不多（0.217 对 0.245 ms），6.5 万时 softmax 这一步已经是它的 2.9 倍，26 万时是 11 倍。第一张表印证了第 3 节"训练和 prefill 用分块形式"：T = 4,096 时逐 token 递推要 814 ms，分块只要 43 ms，差了约 19 倍，比 CPU 上（第 3 节的 7 倍）更悬殊；分块形式的耗时随 T 线性涨，FlashAttention 按 T² 涨（16K → 64K 涨了 21 倍），到 T = 65,536 时朴素线性注意力的分块形式（181 ms）已经比 FlashAttention（460 ms）快。出乎意料的是短序列上差得这么远——T = 1,024 时本章的 Gated DeltaNet 分块形式比 FlashAttention 慢几十倍（10.7 对 0.2 ms），decode 一步的耗时也是 1K 上下文 softmax 的 5 倍：时间几乎全花在 Python 循环的固定开销上（分块形式每块约 0.7 ms、朴素线性每块约 0.18 ms，不随 T 变；每块十几个小 kernel，Gated DeltaNet 还有一次三角求解），GPU 本身没忙起来。这正是生产里要用 flash-linear-attention 的 Triton kernel 把整个循环融合成一个 kernel 的原因（本机没装 fla，没有对比）。
+The second table shows the two tables of Sections 1 and 2 on a GPU. The KV cache of softmax attention grows with the context to 2 GiB. Each step must read all of it, so the time grows from 0.053 ms to 3.4 ms. The state of Gated DeltaNet is the same 1 MiB tensor (1, 16, 128, 128) from start to end. One step takes 0.24–0.31 ms, independent of the context length. At 16K tokens, the two are about the same (0.217 vs 0.245 ms). At 65K tokens, the softmax step takes 2.9 times as long, and at 262K tokens, 11 times as long.
 
-## 从极简到生产级
+The first table confirms the rule of Section 3: "use the chunkwise form for training and prefill". At T = 4,096, the token-by-token recurrence takes 814 ms, but the chunkwise form takes only 43 ms. That is about 19 times faster, a larger gap than on the CPU (7 times in Section 3). The time of the chunkwise form grows linearly with T. The time of FlashAttention grows as T² (21 times from 16K to 64K). At T = 65,536, the chunkwise form of naive linear attention (181 ms) is already faster than FlashAttention (460 ms).
 
-生产级实现在 `zero/arch/linear_attention.py`（第五部分的实验模块，**不用于主线模型**）。它的结构和参数名与 Hugging Face transformers 的 Qwen3.5 实现（`transformers/models/qwen3_5/modeling_qwen3_5.py` 的 `Qwen3_5GatedDeltaNet`）一致，可以直接搬权重。
+The surprise is the large gap on short sequences. At T = 1,024, the Gated DeltaNet chunkwise form of this chapter is tens of times slower than FlashAttention (10.7 vs 0.2 ms). One decode step also takes 5 times as long as the softmax step at a 1K context. Almost all the time goes to the fixed overhead of the Python loop: about 0.7 ms per chunk for the Gated DeltaNet chunkwise form and about 0.18 ms per chunk for naive linear attention, independent of T. Each chunk launches more than ten small kernels, and Gated DeltaNet also does one triangular solve. The GPU itself is not busy. This is why production code uses the Triton kernels of flash-linear-attention, which fuse the full loop into one kernel. (fla is not installed on this machine, so we have no comparison.)
 
-| 极简版（`code/`） | 生产级（`zero/arch/linear_attention.py`） | 多做了什么、为什么 |
+## From minimal code to production code
+
+The production code is in `zero/arch/linear_attention.py`. It is an experimental module of Part 5 and is **not used in the main-line model**. Its structure and parameter names match the Qwen3.5 implementation of Hugging Face transformers (`Qwen3_5GatedDeltaNet` in `transformers/models/qwen3_5/modeling_qwen3_5.py`). Thus you can load weights directly from one into the other.
+
+| Minimal code (`code/`) | Production code (`zero/arch/linear_attention.py`) | What it adds, and why |
 |---|---|---|
-| `01` 的 `linear_attention_recurrent`、`02` 的 `recurrent` | `recurrent_linear_attention(q, k, v, g, initial_state)` | 批量、多头 `(B, H, T, D)`；可以接着上一次的状态继续算（decode 需要）；内部用 float32 |
-| `02` 的 `chunked`（要求 T 是 C 的整数倍） | `chunk_linear_attention(..., chunk_size, initial_state)` | 自动补零（补的位置 k = 0、g = 0，对状态没有影响）；带初始状态，支持分段 prefill |
-| `03` 的 `gated_delta_recurrent` / `gated_delta_chunked` | `recurrent_gated_delta_rule` / `chunk_gated_delta_rule` | 同上；状态布局改成 HF / fla 的 `(d_k, d_v)`（极简版是 `(d_v, d_k)`，只是转置） |
-| `04` 的 `LinearMixer`（q/k/v 投影、短卷积、L2 归一化、每头 RMSNorm） | `LinearAttention`、`GatedDeltaNet`（共用 `_LinearMixer`） | 参数名与 HF 相同（`in_proj_qkv`、`in_proj_z`、`in_proj_b`、`in_proj_a`、`conv1d`、`A_log`、`dt_bias`、`norm`、`out_proj`）；**门控 RMSNorm**（输出乘 SiLU(z)）；value 头数可以是 q/k 头数的整数倍；Mamba-2 式的 A、dt 初始化；短卷积带缓存（保存最后 K−1 个输入），分段喂和一次喂结果相同；`mode="auto"` 时 T = 1 走递推、否则走分块 |
-| `04` 的 `TinyLM(pattern="GGGA")` | `HybridConfig`、`HybridTransformer`、`hybrid_layer_types(n_layers, full_attention_interval=4)` | 配置驱动，`layer_types` 与 HF 的 Qwen3.5 config 同名同义；全注意力层直接复用主线的 `zero.model.Attention`（GQA + QK-Norm + RoPE + SDPA） |
-| 无 | `HybridCache`：全注意力层用预分配的 `KVCache`（只为全注意力层分配），线性层用 `LinearState`（递推状态 + 卷积尾巴）；`generate_greedy` | 推理时两种缓存并存；`cache_bytes_per_sequence` 按层记账（第 21 章账本的延伸） |
-| `04` 的 `cache_bytes`、`qwen35_cache_mib` | `cache_bytes_per_sequence`；以及第 21 章的 `zero/tools/kv_cache_calc.py`（`layout_from_config` 直接读 HF config 里的 `layer_types` / Kimi 的 `linear_attn_config`，线性层按固定状态记账） | 读真实 config 算任意混合模型的缓存，不用手抄层数 |
-| 无 | 未实现：Qwen3.5 全注意力层的**输出门**（gated attention，`attn_output_gate: true`）、部分 RoPE（`partial_rotary_factor: 0.25`）、MoE、MTP | 本章只关心 token mixer 的混合方式；这些在第 24、25 章和第 26 章的全景里讲 |
+| `linear_attention_recurrent` in `01`, `recurrent` in `02` | `recurrent_linear_attention(q, k, v, g, initial_state)` | Batched and multi-head `(B, H, T, D)`. It can continue from the last state (decode needs this). It uses float32 internally |
+| `chunked` in `02` (T must be a multiple of C) | `chunk_linear_attention(..., chunk_size, initial_state)` | It pads with zeros automatically (padded positions have k = 0 and g = 0, so they do not change the state). It takes an initial state, so prefill can run in segments |
+| `gated_delta_recurrent` / `gated_delta_chunked` in `03` | `recurrent_gated_delta_rule` / `chunk_gated_delta_rule` | Same as above. The state layout changes to the HF / fla layout `(d_k, d_v)` (the minimal code uses `(d_v, d_k)`; it is only a transpose) |
+| `LinearMixer` in `04` (q/k/v projections, short convolution, L2 normalization, RMSNorm per head) | `LinearAttention`, `GatedDeltaNet` (both use `_LinearMixer`) | The parameter names are the same as in HF (`in_proj_qkv`, `in_proj_z`, `in_proj_b`, `in_proj_a`, `conv1d`, `A_log`, `dt_bias`, `norm`, `out_proj`). **Gated RMSNorm** (the output is multiplied by SiLU(z)). The number of value heads can be an integer multiple of the number of q/k heads. Mamba-2 style initialization of A and dt. The short convolution has a cache (it keeps the last K−1 inputs), so input in segments gives the same result as input in one pass. With `mode="auto"`, T = 1 uses the recurrent form, and other lengths use the chunkwise form |
+| `TinyLM(pattern="GGGA")` in `04` | `HybridConfig`, `HybridTransformer`, `hybrid_layer_types(n_layers, full_attention_interval=4)` | Driven by the configuration: `layer_types` has the same name and meaning as in the HF Qwen3.5 config. The full-attention layers reuse `zero.model.Attention` of the main line (GQA + QK-Norm + RoPE + SDPA) |
+| None | `HybridCache`: the full-attention layers use a preallocated `KVCache` (allocated only for the full-attention layers), and the linear layers use `LinearState` (recurrent state + convolution tail); `generate_greedy` | The two cache types exist together at inference. `cache_bytes_per_sequence` counts layer by layer (an extension of the ledger of Chapter 21) |
+| `cache_bytes`, `qwen35_cache_mib` in `04` | `cache_bytes_per_sequence`; also `zero/tools/kv_cache_calc.py` of Chapter 21 (`layout_from_config` reads `layer_types` from the HF config, or the `linear_attn_config` of Kimi, directly, and it counts each linear layer as a fixed state) | It reads a real config and calculates the cache of any hybrid model. You do not copy the layer counts by hand |
+| None | Not implemented: the **output gate** of the Qwen3.5 full-attention layers (gated attention, `attn_output_gate: true`), partial RoPE (`partial_rotary_factor: 0.25`), MoE, MTP | This chapter is only about how to mix token mixers. Chapters 24 and 25, and the overview in Chapter 26, discuss these parts |
 
-**对拍**：`tests/test_arch_linear_attention.py`（`uv run pytest tests/test_arch_linear_attention.py`，本机 33 项全部通过，约 10 秒），保证：
+**Parity check**: `tests/test_arch_linear_attention.py` (`uv run pytest tests/test_arch_linear_attention.py`; all 33 tests passed on this machine in about 10 s). The tests make sure of these points:
 
-- 线性注意力（带/不带衰减）、gated delta rule（带/不带衰减）的**分块形式 == 递推形式**，块长 1、5、8、16、64，长度不整除块长，带随机初始状态；
-- 不衰减的线性注意力 == 掩码并行形式 `(QKᵀ ⊙ M) V`；
-- gated delta rule == 逐步用显式矩阵 `S_t = α_t (I − β_t k_t k_tᵀ) S_{t−1} + β_t k_t v_tᵀ` 的朴素参考；同一个 key 写两次时 delta 规则覆盖、线性注意力累加；
-- `LinearAttention` / `GatedDeltaNet` 层：分块、递推、分三段带状态喂（10 + 1 + 12 个 token）三者输出一致；状态形状与长度无关；
-- **与 HF transformers 的 `Qwen3_5GatedDeltaNet` 对拍**：随机化 HF 层的全部权重后 `load_state_dict(strict=True)` 搬进来，输出在 1e-4 内一致；
-- `HybridTransformer`（间隔 2、4、99，即 1:1、3:1、纯线性；Gated DeltaNet 与朴素线性两种）：**状态缓存生成 == 每步全量重算**（贪心 30 个 token 完全相同）；分块 prefill（20 + 1 + 24）== 一次性前向；KV 字节数随长度翻倍、线性状态不变；几步训练 loss 下降（梯度能穿过三角求解）。
+- For linear attention (with and without decay) and the gated delta rule (with and without decay): **chunkwise form == recurrent form**. The tests use chunk lengths 1, 5, 8, 16, 64, lengths that are not a multiple of the chunk length, and a random initial state.
+- Linear attention without decay == the masked parallel form `(QKᵀ ⊙ M) V`.
+- The gated delta rule == a naive reference that uses the explicit matrix `S_t = α_t (I − β_t k_t k_tᵀ) S_{t−1} + β_t k_t v_tᵀ` at each step. When we write the same key two times, the delta rule overwrites and linear attention adds.
+- `LinearAttention` / `GatedDeltaNet` layers: the chunkwise form, the recurrent form, and input in three segments with state (10 + 1 + 12 tokens) give the same output. The state shape does not depend on the length.
+- **Parity check with `Qwen3_5GatedDeltaNet` of HF transformers**: randomize all weights of the HF layer, then load them with `load_state_dict(strict=True)`. The outputs agree within 1e-4.
+- `HybridTransformer` (interval 2, 4, and 99, that is, 1:1, 3:1, and pure linear; both Gated DeltaNet and naive linear): **generation with the state cache == full recalculation at each step** (30 greedy tokens are exactly the same). Chunked prefill (20 + 1 + 24) == one forward pass. The KV bytes double when the length doubles, and the linear state does not change. The loss decreases in a few training steps (the gradient flows through the triangular solve).
 
-**真正训练和部署时**，纯 PyTorch 的分块循环太慢了。行业做法是：
+**For real training and deployment**, the pure PyTorch chunk loop is too slow. The industry uses these tools:
 
-- **flash-linear-attention（fla-org）**：Triton 写的线性注意力 kernel 库，`fla.ops.gated_delta_rule.chunk_gated_delta_rule` / `fused_recurrent_gated_delta_rule` 就是本章两种形式的 GPU 实现，Kimi Linear 的 KDA kernel（`fla.ops.kda`）也开源在里面；HF transformers 的 Qwen3.5 实现在装了 fla 和 causal-conv1d 时会自动换用这些 kernel，否则退回到和本章同构的纯 PyTorch 版本。
-- **vLLM**：`vllm/model_executor/models/qwen3_next.py`、`qwen3_5.py` 等支持这些混合模型；它的混合 KV cache 管理器（Hybrid KV Cache Manager 设计文档）为不同类型的层分配不同的缓存：全注意力层按 token 数分配 KV 页，Mamba / 线性层按请求分配固定大小的状态。
+- **flash-linear-attention (fla-org)**: a library of linear-attention kernels written in Triton. `fla.ops.gated_delta_rule.chunk_gated_delta_rule` / `fused_recurrent_gated_delta_rule` are the GPU implementations of the two forms of this chapter. The KDA kernel of Kimi Linear (`fla.ops.kda`) is also open source there. When fla and causal-conv1d are installed, the Qwen3.5 implementation of HF transformers automatically uses these kernels. Otherwise, it falls back to a pure PyTorch version with the same structure as this chapter.
+- **vLLM**: `vllm/model_executor/models/qwen3_next.py`, `qwen3_5.py`, and other files support these hybrid models. Its hybrid KV cache manager (see the Hybrid KV Cache Manager design document) gives different cache types to different layer types. Full-attention layers get KV pages by the number of tokens. Mamba / linear layers get a fixed-size state for each request.
 
-`zero/arch/linear_attention.py` 在 CUDA 上的前向、反向和生成已在 RTX 3090 上验证（顺带修了 `generate_greedy` 把输入建在 CPU 上的 bug；BF16 下 Gated DeltaNet 的梯度与 FP32 相对差约 20%，纯 PyTorch 分块实现在低精度下不够准，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 11、12 节）；fla、causal-conv1d 这些 CUDA kernel 没有安装，仍未验证。
+We verified the forward pass, the backward pass, and generation of `zero/arch/linear_attention.py` with CUDA on an RTX 3090. During this check, we also fixed a bug: `generate_greedy` created the input on the CPU. In BF16, the gradients of Gated DeltaNet differ from FP32 by about 20% (relative). Thus the pure PyTorch chunkwise implementation is not accurate enough in low precision. See Sections 11 and 12 of [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md). The CUDA kernels of fla and causal-conv1d are not installed, so we did not verify them.
 
 ---
 
-## 前沿观察
+## Frontier notes
 
-> **不算共识、只在这里提一句的技术**
+> **Techniques that are not a consensus yet. We mention them only here.**
 >
-> - **纯线性 / 纯状态空间模型**（纯 Mamba、RWKV、RetNet 等）：它们证明了线性递推可以单独撑起一个语言模型，但头部开源模型家族的主力版本没有采用纯线性结构，全部是混合（GOAL.md 2.1 把它们列在"只在前沿观察一句带过"）。
-> - **KDA（Kimi Delta Attention）**：Kimi Linear 提出的 Gated DeltaNet 改进版，把每头一个标量的衰减门换成逐通道（每个 key 维度一个）的细粒度门；蚂蚁 Ling-3.0 也采用了它。目前只有这两家（且 Ling 明确说继承自 Kimi Linear 的设计思路），还不算独立的多家共识。
-> - **并联混合**（Falcon-H1）：同一层里注意力头和 Mamba-2 头并行、输出拼接，而不是按层交替。目前只见于 Falcon-H1。
-> - **比例之争**：3:1、9:1、甚至"全注意力"（MiniMax-M2）都有头部模型在用，最佳比例和"全注意力层放在哪几层"还没有共识。
-> - **稀疏注意力**（DeepSeek DSA/NSA 一类，MiniMax-M3 也用了块稀疏注意力）是另一条"让长上下文变便宜"的路线，见第 22 章。
+> - **Pure linear / pure state space models** (pure Mamba, RWKV, RetNet, and others): they show that a linear recurrence alone can support a language model. But the main versions of the leading open model families do not use a pure linear architecture. All of them use hybrids. (Section 2.1 of GOAL.md lists these models as "mention in one sentence in the frontier notes".)
+> - **KDA (Kimi Delta Attention)**: an improved Gated DeltaNet from Kimi Linear. It replaces the scalar decay gate of each head with a fine-grained gate for each channel (one for each key dimension). Ling-3.0 of Ant Group also uses it. At the moment, only these two companies use it, and Ling says clearly that it follows the design ideas of Kimi Linear. Thus it is not yet an independent consensus of several companies.
+> - **Parallel hybrid** (Falcon-H1): attention heads and Mamba-2 heads run in parallel in the same layer, and the layer concatenates their outputs. The layer types do not alternate. At the moment, only Falcon-H1 does this.
+> - **The ratio debate**: leading models use 3:1, 9:1, and even "full attention" (MiniMax-M2). There is no consensus yet on the best ratio, or on which layers should be full attention.
+> - **Sparse attention** (the DeepSeek DSA/NSA type; MiniMax-M3 also uses block-sparse attention) is another way to make long context cheaper. See Chapter 22.
 
-## 采用方与来源
+## Adopters and sources
 
-| 技术 | 采用方（主力版本） | 来源 |
+| Technique | Adopters (main versions) | Sources |
 |---|---|---|
-| 混合线性注意力：DeltaNet 一族线性层 + 少量全注意力 | **Qwen3-Next-80B-A3B**（48 层 = 12 × [3 × Gated DeltaNet + 1 × Gated Attention]）；**Qwen3.5 全系列**（0.8B、2B、4B、9B、27B、35B-A3B、122B-A10B、397B-A17B 的 config 均为 `full_attention_interval: 4`）；**Kimi Linear 48B-A3B**（KDA : MLA = 3:1，27 层中 7 层 MLA）；**蚂蚁 Ling-3.0-tiny**（3 层 KDA + 1 层 MLA 为一组） | 模型卡与 config.json：[Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B)、[Qwen3.5-27B config](https://huggingface.co/Qwen/Qwen3.5-27B/blob/main/config.json)、[Qwen3.5-397B-A17B config](https://huggingface.co/Qwen/Qwen3.5-397B-A17B/blob/main/config.json)、[Qwen3-Next-80B-A3B-Instruct](https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct)、[Kimi-Linear-48B-A3B-Instruct](https://huggingface.co/moonshotai/Kimi-Linear-48B-A3B-Instruct)（技术报告 arXiv:2510.26692）、[Ling-3.0-tiny](https://huggingface.co/inclusionAI/Ling-3.0-tiny) |
-| 混合状态空间：Mamba-2 层 + 少量注意力层 | **NVIDIA Nemotron-H**、**Nemotron 3**（Nano 30B-A3B：52 层里 23 层 Mamba-2、23 层 MoE、6 层注意力；Ultra 550B-A55B 同为 `nemotron_h` 结构）；**IBM Granite 4.0-H**（H-Small：40 层里 4 层注意力，官方称 Mamba-2 : Transformer = 9:1）；**TII Falcon-H1**（每层注意力与 Mamba-2 并联） | [Nemotron-H 技术报告 arXiv:2504.03624](https://arxiv.org/abs/2504.03624)、[Nemotron 3 Nano 技术报告 arXiv:2512.20848](https://arxiv.org/abs/2512.20848) 与 [模型卡](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16)（`hybrid_override_pattern`）；[granite-4.0-h-small config](https://huggingface.co/ibm-granite/granite-4.0-h-small/blob/main/config.json) 与 [IBM 发布公告](https://www.ibm.com/new/announcements/ibm-granite-4-0-hyper-efficient-high-performance-hybrid-models)；[Falcon-H1 技术报告 arXiv:2507.22448](https://arxiv.org/abs/2507.22448) |
-| 线性注意力（lightning attention）+ softmax 7:1（后放弃） | **MiniMax-Text-01 / M1**（80 层，每 8 层 1 层 softmax）；**MiniMax-M2 / M2.5 回到全注意力** | [MiniMax-01 技术报告 arXiv:2501.08313](https://arxiv.org/abs/2501.08313)、[MiniMax-Text-01 config](https://huggingface.co/MiniMaxAI/MiniMax-Text-01/blob/main/config.json)、[MiniMax-M2.5 config](https://huggingface.co/MiniMaxAI/MiniMax-M2.5/blob/main/config.json)、官方博客 [Why Did M2 End Up as a Full Attention Model?](https://www.minimax.io/news/why-did-m2-end-up-as-a-full-attention-model) |
-| 分块形式 + 递推形式的 kernel | flash-linear-attention（被 HF transformers 的 Qwen3.5 / Qwen3-Next 实现调用，Kimi 的 KDA kernel 开源于此）；vLLM 的混合缓存管理 | <https://github.com/fla-org/flash-linear-attention>；vLLM [Hybrid KV Cache Manager](https://github.com/vllm-project/vllm/blob/main/docs/design/hybrid_kv_cache_manager.md) |
+| Hybrid linear attention: DeltaNet-family linear layers + a few full-attention layers | **Qwen3-Next-80B-A3B** (48 layers = 12 × [3 × Gated DeltaNet + 1 × Gated Attention]); **the full Qwen3.5 series** (the configs of 0.8B, 2B, 4B, 9B, 27B, 35B-A3B, 122B-A10B, and 397B-A17B all have `full_attention_interval: 4`); **Kimi Linear 48B-A3B** (KDA : MLA = 3:1, 7 MLA layers in 27 layers); **Ant Group Ling-3.0-tiny** (groups of 3 KDA layers + 1 MLA layer) | Model cards and config.json: [Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B), [Qwen3.5-27B config](https://huggingface.co/Qwen/Qwen3.5-27B/blob/main/config.json), [Qwen3.5-397B-A17B config](https://huggingface.co/Qwen/Qwen3.5-397B-A17B/blob/main/config.json), [Qwen3-Next-80B-A3B-Instruct](https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct), [Kimi-Linear-48B-A3B-Instruct](https://huggingface.co/moonshotai/Kimi-Linear-48B-A3B-Instruct) (technical report arXiv:2510.26692), [Ling-3.0-tiny](https://huggingface.co/inclusionAI/Ling-3.0-tiny) |
+| Hybrid state space: Mamba-2 layers + a few attention layers | **NVIDIA Nemotron-H**, **Nemotron 3** (Nano 30B-A3B: 23 Mamba-2 layers, 23 MoE layers, and 6 attention layers in 52 layers; Ultra 550B-A55B also has the `nemotron_h` architecture); **IBM Granite 4.0-H** (H-Small: 4 attention layers in 40 layers; IBM calls it Mamba-2 : Transformer = 9:1); **TII Falcon-H1** (attention and Mamba-2 in parallel in each layer) | [Nemotron-H technical report arXiv:2504.03624](https://arxiv.org/abs/2504.03624), [Nemotron 3 Nano technical report arXiv:2512.20848](https://arxiv.org/abs/2512.20848) and [model card](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16) (`hybrid_override_pattern`); [granite-4.0-h-small config](https://huggingface.co/ibm-granite/granite-4.0-h-small/blob/main/config.json) and [IBM announcement](https://www.ibm.com/new/announcements/ibm-granite-4-0-hyper-efficient-high-performance-hybrid-models); [Falcon-H1 technical report arXiv:2507.22448](https://arxiv.org/abs/2507.22448) |
+| Linear attention (lightning attention) + softmax at 7:1 (later abandoned) | **MiniMax-Text-01 / M1** (80 layers, 1 softmax layer in every 8); **MiniMax-M2 / M2.5 went back to full attention** | [MiniMax-01 technical report arXiv:2501.08313](https://arxiv.org/abs/2501.08313), [MiniMax-Text-01 config](https://huggingface.co/MiniMaxAI/MiniMax-Text-01/blob/main/config.json), [MiniMax-M2.5 config](https://huggingface.co/MiniMaxAI/MiniMax-M2.5/blob/main/config.json), official blog [Why Did M2 End Up as a Full Attention Model?](https://www.minimax.io/news/why-did-m2-end-up-as-a-full-attention-model) |
+| Kernels for the chunkwise + recurrent forms | flash-linear-attention (the Qwen3.5 / Qwen3-Next implementations of HF transformers call it; the KDA kernel of Kimi is open source there); the hybrid cache management of vLLM | <https://github.com/fla-org/flash-linear-attention>; vLLM [Hybrid KV Cache Manager](https://github.com/vllm-project/vllm/blob/main/docs/design/hybrid_kv_cache_manager.md) |
 
-按 GOAL.md 2.1 的规则 A 计数：**"少量全注意力 + 大量线性/状态空间层"的混合结构**有 Qwen、Kimi、NVIDIA Nemotron 三个清单内的头部家族在主力版本中明确采用（另有 IBM Granite、Falcon、蚂蚁 Ling），满足共识条件，进正文。**Gated DeltaNet 本身**只有 Qwen 直接采用（Kimi 的 KDA、Ling 是它的改进版），所以本章把它作为"DeltaNet 一族线性层"的代表来讲，把 KDA 放在前沿观察。
+We count with rule A of GOAL.md 2.1. Three leading families on the list clearly use **the hybrid architecture "a few full-attention layers + many linear/state space layers"** in their main versions: Qwen, Kimi, and NVIDIA Nemotron. IBM Granite, Falcon, and Ant Group's Ling also use it. This meets the consensus condition, so the hybrid architecture is in the main text. Only Qwen uses **Gated DeltaNet itself** directly (Kimi's KDA and Ling use improved versions of it). Thus this chapter uses Gated DeltaNet as the representative of "DeltaNet-family linear layers", and it puts KDA in the frontier notes.
 
-说明：各模型的层数、比例都读自 Hugging Face 上的 config.json 和模型卡（2026-09 读取）；Qwen3.5 技术报告写作时未找到独立的 arXiv 版本，以官方博客和模型卡为准（**待核实**是否有正式技术报告）。
-
----
-
-## 引导问题
-
-带着这些问题去问 Claude Code，直到你能用自己的话讲清楚：
-
-1. 线性注意力的递推形式里，状态 S 的形状是 d_v × d_k。如果把多头注意力的 H 个头都换成线性注意力，整层的状态有多大？和同样 H 个头、长度为 T 的 KV cache 相比，T 为多少时两者相等？
-2. 为什么 delta 规则要求 k 做 L2 归一化？如果 ‖k‖ = 2、β = 1，写完以后 S k 等于什么？会不会发散？（提示：看 I − β k kᵀ 的特征值。）
-3. 本章说 delta 规则是"对 ‖S k − v‖² 做了一步梯度下降"。试着自己求一下这个损失对 S 的梯度，验证它和 delta 规则的更新一致。那么"衰减门"在这个视角下相当于什么？（提示：权重衰减。）
-4. 训练用分块形式、推理用递推形式。如果训练时块长取 1，分块形式退化成什么？如果块长取整个序列长度呢？块长应该怎么选？
-5. Qwen3.5 的线性层不加 RoPE，全注意力层只对 head_dim 的 25% 加 RoPE（`partial_rotary_factor: 0.25`）。线性层的位置信息从哪里来？
-6. MiniMax-M2 回到了全注意力。如果你要为一个 0.6B、主要做工具调用的小模型（本课的主线模型）选择架构，你会用 3:1 混合还是全注意力？列出你的理由和需要做的对比实验。
-
-## 动手任务
-
-每个任务都要真的运行代码、看到结果。
-
-**任务 1（基础）**：在 `03_delta_rule.py` 的容量实验里，把 key 换成**两两正交**的向量（例如 `torch.linalg.qr` 得到的正交矩阵的行），N 取 16、32、64、65。线性注意力和 delta 规则的读回误差分别是多少？为什么 N = 64 和 65 之间会有突变？
-
-**任务 2（核心）**：在 `05_associative_recall.py` 里加一种结构"GAGG"（全注意力放在第 2 层而不是最后一层），和"GGGA"比较回忆准确率。再试试把线性层的 head_dim 翻倍（状态变成 4 倍大），纯 Gated DeltaNet 的准确率能追上多少？
-
-**任务 3（挑战）**：用 `zero/arch/linear_attention.py` 的 `HybridTransformer` 搭一个和 `04_hybrid_lm.py` 同尺寸的 3:1 混合模型，在同样的语料上训练 800 步，对比验证 loss；然后用 `model.new_cache()` 做缓存生成，测量生成 2000 个字符时 `HybridCache.nbytes()` 里 KV 和线性状态各占多少，并和 `cache_bytes_per_sequence` 的公式核对。
+Note: we read the layer counts and ratios of all models from the config.json files and model cards on Hugging Face (read in 2026-09). At the time of writing, we found no separate arXiv version of a Qwen3.5 technical report. We use the official blog and the model cards (**to be verified**: is there a formal technical report?).
 
 ---
 
-## 想深入：CS336
+## Guided questions
 
-本章对应斯坦福 CS336（Spring 2026）<https://cs336.stanford.edu/>：
+Ask Claude Code these questions. Continue until you can explain the answers in your own words:
 
-- **第 4 讲：注意力的替代方案与 MoE**。讲义与录像见课程页；课上讨论了为什么要找 softmax 注意力的替代品，以及线性注意力、状态空间模型这些方向的基本思路。本章的推导（结合律 → 递推 → 分块）和这一讲的线性注意力部分对应。
-- **CS336 未深入**：delta 规则、Gated DeltaNet 的分块（UT 变换）算法，以及 Qwen3.5 / Kimi Linear / Nemotron 这类工业混合架构的具体配置，CS336 没有展开，见本章参考文献（尤其是 Songlin Yang 等人的 DeltaNet 与 Gated DeltaNet 论文，以及 flash-linear-attention 仓库）。
+1. In the recurrent form of linear attention, the state S has the shape d_v × d_k. Suppose that we change all H heads of multi-head attention to linear attention. How large is the state of the full layer? Compare it with the KV cache of the same H heads at length T. At which T are the two equal?
+2. Why does the delta rule need L2 normalization of k? If ‖k‖ = 2 and β = 1, what is S k after the write? Can it diverge? (Hint: look at the eigenvalues of I − β k kᵀ.)
+3. This chapter says that the delta rule "does one step of gradient descent on ‖S k − v‖²". Calculate the gradient of this loss with respect to S yourself, and verify that it agrees with the update of the delta rule. In this view, what does the "decay gate" correspond to? (Hint: weight decay.)
+4. Training uses the chunkwise form, and inference uses the recurrent form. If the chunk length in training is 1, what does the chunkwise form become? What if the chunk length is the full sequence length? How should you choose the chunk length?
+5. The linear layers of Qwen3.5 do not use RoPE. The full-attention layers use RoPE on only 25% of head_dim (`partial_rotary_factor: 0.25`). Where do the linear layers get their position information from?
+6. MiniMax-M2 went back to full attention. Suppose that you choose an architecture for a 0.6B small model that mainly calls tools (the main-line model of this course). Do you use a 3:1 hybrid or full attention? List your reasons and the comparison experiments that you must do.
+
+## Hands-on tasks
+
+For each task, run the code and look at the result.
+
+**Task 1 (basic)**: In the capacity experiment of `03_delta_rule.py`, change the keys to **pairwise orthogonal** vectors (for example, the rows of an orthogonal matrix from `torch.linalg.qr`). Use N = 16, 32, 64, and 65. What are the read errors of linear attention and of the delta rule? Why is there a sudden change between N = 64 and N = 65?
+
+**Task 2 (core)**: In `05_associative_recall.py`, add an architecture "GAGG" (full attention in layer 2, not in the last layer). Compare its recall accuracy with "GGGA". Then double the head_dim of the linear layers (the state becomes 4 times larger). How much of the gap can pure Gated DeltaNet close?
+
+**Task 3 (challenge)**: Use `HybridTransformer` from `zero/arch/linear_attention.py` to build a 3:1 hybrid model of the same size as in `04_hybrid_lm.py`. Train it for 800 steps on the same corpus and compare the validation loss. Then generate with the cache from `model.new_cache()`. When you generate 2000 characters, measure how much of `HybridCache.nbytes()` is KV and how much is linear state. Compare the result with the formula of `cache_bytes_per_sequence`.
 
 ---
 
-## 本章参考文献
+## Go deeper: CS336
 
-- Katharopoulos, Vyas, Pappas, Fleuret. *Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention*，2020：<https://arxiv.org/abs/2006.16236>
-- Schlag, Irie, Schmidhuber. *Linear Transformers Are Secretly Fast Weight Programmers*（delta 规则用于线性注意力），2021：<https://arxiv.org/abs/2102.11174>
-- Yang, Wang, Zhang, Shen, Kim. *Parallelizing Linear Transformers with the Delta Rule over Sequence Length*（DeltaNet 的分块并行算法），2024：<https://arxiv.org/abs/2406.06484>
-- Yang, Kautz, Hatamizadeh. *Gated Delta Networks: Improving Mamba2 with Delta Rule*，2024：<https://arxiv.org/abs/2412.06464>
-- Yang, Wang, Shen, Panda, Kim. *Gated Linear Attention Transformers with Hardware-Efficient Training*（GLA），2023：<https://arxiv.org/abs/2312.06635>
-- Dao, Gu. *Transformers are SSMs: Generalized Models and Efficient Algorithms Through Structured State Space Duality*（Mamba-2），2024：<https://arxiv.org/abs/2405.21060>
-- Sun et al. *Retentive Network: A Successor to Transformer for Large Language Models*（RetNet），2023：<https://arxiv.org/abs/2307.08621>
-- Arora et al. *Zoology: Measuring and Improving Recall in Efficient Language Models*（MQAR 联想回忆任务），2023：<https://arxiv.org/abs/2312.04927>
-- Qiu et al. *Gated Attention for Large Language Models: Non-linearity, Sparsity, and Attention-Sink-Free*（Qwen 的 gated attention），2025：<https://arxiv.org/abs/2505.06708>
-- Kimi Team. *Kimi Linear: An Expressive, Efficient Attention Architecture*，2025：<https://arxiv.org/abs/2510.26692>
-- MiniMax. *MiniMax-01: Scaling Foundation Models with Lightning Attention*，2025：<https://arxiv.org/abs/2501.08313>；*Why Did M2 End Up as a Full Attention Model?*：<https://www.minimax.io/news/why-did-m2-end-up-as-a-full-attention-model>
-- NVIDIA. *Nemotron-H: A Family of Accurate and Efficient Hybrid Mamba-Transformer Models*，2025：<https://arxiv.org/abs/2504.03624>；*Nemotron 3 Nano*，2025：<https://arxiv.org/abs/2512.20848>
-- TII. *Falcon-H1: A Family of Hybrid-Head Language Models Redefining Efficiency and Performance*，2025：<https://arxiv.org/abs/2507.22448>
-- IBM. *IBM Granite 4.0: hyper-efficient, high performance hybrid models for enterprise*：<https://www.ibm.com/new/announcements/ibm-granite-4-0-hyper-efficient-high-performance-hybrid-models>
-- Qwen Team. Qwen3-Next 与 Qwen3.5 的官方博客与模型卡：<https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct>、<https://huggingface.co/Qwen/Qwen3.5-0.8B>
-- 蚂蚁百灵 Ling-3.0-tiny 模型卡：<https://huggingface.co/inclusionAI/Ling-3.0-tiny>（本仓库 `small-llms-under-5b-2026-08-30/` 的调研报告里也提到了它）
-- flash-linear-attention：<https://github.com/fla-org/flash-linear-attention>
-- Hugging Face transformers 的 Qwen3.5 实现：<https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_5/modeling_qwen3_5.py>
-- vLLM Hybrid KV Cache Manager 设计文档：<https://github.com/vllm-project/vllm/blob/main/docs/design/hybrid_kv_cache_manager.md>
-- CS336：<https://cs336.stanford.edu/>
+This chapter matches Stanford CS336 (Spring 2026) <https://cs336.stanford.edu/>:
 
-**下一章**：这一章让每个 token 的"记忆"变便宜了：大部分层只需要一个固定大小的状态。但每个 token 经过的 FFN 计算一点没少，而 FFN 占了模型参数和算力的大头。能不能让模型参数很多、每个 token 却只用其中一小部分？第 24 章，混合专家（MoE）。
+- **Lecture 4: Alternatives to attention, and MoE.** The slides and recordings are on the course page. The lecture discusses why we look for alternatives to softmax attention. It also gives the basic ideas of directions such as linear attention and state space models. The derivation of this chapter (associativity → recurrence → chunkwise form) matches the linear-attention part of this lecture.
+- **CS336 does not go deep into these topics**: the delta rule, the chunkwise algorithm (UT transform) of Gated DeltaNet, and the exact configurations of industrial hybrid architectures (Qwen3.5 / Kimi Linear / Nemotron). See the references of this chapter, especially the DeltaNet and Gated DeltaNet papers by Songlin Yang et al., and the flash-linear-attention repository.
+
+---
+
+## References
+
+- Katharopoulos, Vyas, Pappas, Fleuret. *Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention*, 2020: <https://arxiv.org/abs/2006.16236>
+- Schlag, Irie, Schmidhuber. *Linear Transformers Are Secretly Fast Weight Programmers* (the delta rule for linear attention), 2021: <https://arxiv.org/abs/2102.11174>
+- Yang, Wang, Zhang, Shen, Kim. *Parallelizing Linear Transformers with the Delta Rule over Sequence Length* (the chunkwise parallel algorithm of DeltaNet), 2024: <https://arxiv.org/abs/2406.06484>
+- Yang, Kautz, Hatamizadeh. *Gated Delta Networks: Improving Mamba2 with Delta Rule*, 2024: <https://arxiv.org/abs/2412.06464>
+- Yang, Wang, Shen, Panda, Kim. *Gated Linear Attention Transformers with Hardware-Efficient Training* (GLA), 2023: <https://arxiv.org/abs/2312.06635>
+- Dao, Gu. *Transformers are SSMs: Generalized Models and Efficient Algorithms Through Structured State Space Duality* (Mamba-2), 2024: <https://arxiv.org/abs/2405.21060>
+- Sun et al. *Retentive Network: A Successor to Transformer for Large Language Models* (RetNet), 2023: <https://arxiv.org/abs/2307.08621>
+- Arora et al. *Zoology: Measuring and Improving Recall in Efficient Language Models* (the MQAR associative recall task), 2023: <https://arxiv.org/abs/2312.04927>
+- Qiu et al. *Gated Attention for Large Language Models: Non-linearity, Sparsity, and Attention-Sink-Free* (the gated attention of Qwen), 2025: <https://arxiv.org/abs/2505.06708>
+- Kimi Team. *Kimi Linear: An Expressive, Efficient Attention Architecture*, 2025: <https://arxiv.org/abs/2510.26692>
+- MiniMax. *MiniMax-01: Scaling Foundation Models with Lightning Attention*, 2025: <https://arxiv.org/abs/2501.08313>; *Why Did M2 End Up as a Full Attention Model?*: <https://www.minimax.io/news/why-did-m2-end-up-as-a-full-attention-model>
+- NVIDIA. *Nemotron-H: A Family of Accurate and Efficient Hybrid Mamba-Transformer Models*, 2025: <https://arxiv.org/abs/2504.03624>; *Nemotron 3 Nano*, 2025: <https://arxiv.org/abs/2512.20848>
+- TII. *Falcon-H1: A Family of Hybrid-Head Language Models Redefining Efficiency and Performance*, 2025: <https://arxiv.org/abs/2507.22448>
+- IBM. *IBM Granite 4.0: hyper-efficient, high performance hybrid models for enterprise*: <https://www.ibm.com/new/announcements/ibm-granite-4-0-hyper-efficient-high-performance-hybrid-models>
+- Qwen Team. Official blogs and model cards of Qwen3-Next and Qwen3.5: <https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct>, <https://huggingface.co/Qwen/Qwen3.5-0.8B>
+- Model card of Ling-3.0-tiny (Ant Group, Bailing): <https://huggingface.co/inclusionAI/Ling-3.0-tiny> (the survey report in `small-llms-under-5b-2026-08-30/` of this repository also mentions it)
+- flash-linear-attention: <https://github.com/fla-org/flash-linear-attention>
+- The Qwen3.5 implementation of Hugging Face transformers: <https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_5/modeling_qwen3_5.py>
+- vLLM Hybrid KV Cache Manager design document: <https://github.com/vllm-project/vllm/blob/main/docs/design/hybrid_kv_cache_manager.md>
+- CS336: <https://cs336.stanford.edu/>
+
+**Next chapter**: This chapter made the "memory" of each token cheap: most layers need only a fixed-size state. But the FFN compute for each token did not become smaller, and the FFN has most of the parameters and compute of the model. Can a model have very many parameters but use only a small part of them for each token? Chapter 24: mixture of experts (MoE).

@@ -1,4 +1,4 @@
-"""大海捞针工具（zero/tools/needle.py，第 15 章）的正确性测试。"""
+"""Correctness tests for the needle-in-a-haystack tool (zero/tools/needle.py, Chapter 15)."""
 
 from __future__ import annotations
 
@@ -20,12 +20,14 @@ def test_case_length_and_needle_position(chat_tok, lang: str, length: int) -> No
         assert len(case.prompt_ids) == length == len(case.control_ids)
         text = chat_tok.decode(case.prompt_ids)
         assert case.answer in text and case.key in text
-        # 对照提示词里没有正确答案，只有 decoy；除了针里的数字，其余 token 完全相同
+        # The control prompt has no correct answer, only the decoy. All tokens except the number
+        # in the needle are the same.
         ctrl = chat_tok.decode(case.control_ids)
         assert case.answer not in ctrl and case.decoy in ctrl
         diff = [i for i, (a, b) in enumerate(zip(case.prompt_ids, case.control_ids)) if a != b]
         assert diff and min(diff) >= case.needle_pos
-    # 深度 0 的针在最前面；深度 1 的针在草堆末尾（紧挨着问题），且越深位置越靠后
+    # At depth 0, the needle is at the start. At depth 1, it is at the end of the haystack
+    # (immediately before the question). A larger depth gives a later position.
     pos = [make_case(chat_tok, 200, d, seed=3).needle_pos for d in (0.0, 0.25, 0.5, 0.75, 1.0)]
     assert pos[0] == 0 and pos == sorted(pos) and pos[-1] > pos[1]
 
@@ -53,7 +55,7 @@ def test_score_text() -> None:
 
 
 def test_grid_with_oracle_and_blank_generators(chat_tok) -> None:
-    """用假的生成函数检验打分链路：能读出针的"神谕"得满分，什么都不说的得 0 分。"""
+    """Test the scoring path with fake generators: an "oracle" that reads the needle gets the full score; an empty output gets 0."""
 
     def oracle(prompt_ids: list[int]) -> str:
         text = chat_tok.decode(prompt_ids)
@@ -63,7 +65,7 @@ def test_grid_with_oracle_and_blank_generators(chat_tok) -> None:
     assert len(res) == 4 and all(r.accuracy == 1.0 for r in res)
     res0 = run_grid(None, chat_tok, [96], [0.5], n=2, generate_fn=lambda ids: "", with_nll=False)
     assert res0[0].accuracy == 0.0
-    assert "长度" in format_grid(res)
+    assert "length" in format_grid(res)
 
 
 def test_answer_nll_matches_manual_and_runs_on_zero_model(chat_tok) -> None:
@@ -73,7 +75,7 @@ def test_answer_nll_matches_manual_and_runs_on_zero_model(chat_tok) -> None:
     model = Transformer(cfg).eval()
     case = make_case(chat_tok, 120, 0.5, seed=5)
     nll = answer_nll(model, case.prompt_ids, case.answer_ids)
-    # 手算：逐个 token 取 log softmax
+    # Manual calculation: log softmax token by token
     ids = torch.tensor([case.prompt_ids + case.answer_ids])
     with torch.no_grad():
         logp = model(ids).log_softmax(-1)[0]
@@ -82,6 +84,6 @@ def test_answer_nll_matches_manual_and_runs_on_zero_model(chat_tok) -> None:
         -sum(logp[len(case.prompt_ids) - 1 + j, case.answer_ids[j]].item() for j in range(n)) / n
     )
     assert abs(nll - manual) < 1e-4
-    # 真实的 zero 模型走一遍（随机初始化，准确率应为 0，但流程要通）
+    # One pass with a real zero model (random initialization: accuracy is 0, but the pipeline must run)
     res = run_grid(model, chat_tok, [120], [0.0, 1.0], n=1, max_new_tokens=8)
     assert all(0.0 <= r.accuracy <= 1.0 and r.nll > 0 and r.nll_control > 0 for r in res)

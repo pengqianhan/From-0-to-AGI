@@ -64,6 +64,8 @@ X, Y = mlp.make_data()
 LINE_A, LINE_B, LINE_MSE = lin.best_line(X, Y)
 VAR_Y = float(np.var(Y))
 STACKS = lin.stack_demo(X)                              # [(名字, 参数量, W, b, 最大差), ...]
+# 代码里的网络名已改成英文；视频仍显示原来的中文名
+STACK_ZH = {"2 layers 1→8→1": "两层 1→8→1", "3 layers 1→8→8→1": "三层 1→8→8→1"}
 _, LIN_LOSSES, _ = mlp.train(X, Y, 8, act="linear")     # 两层线性（无激活）的训练损失
 SNAP_STEPS = (0, 1000, 5000, mlp.STEPS)
 P64, L64, SNAP64 = mlp.train(X, Y, 64, snapshot_steps=SNAP_STEPS)
@@ -203,7 +205,7 @@ class ChapterScene(NarratedScene):
             self.play(*self.set_heading("用数字验证：线性叠起来还是线性"), run_time=self.fit(0.6))
             rows = VGroup()
             for name, n_p, _, _, diff in STACKS:
-                rows.add(VGroup(zh(f"{name}：{n_p} 个参数", 26, theme.FG),
+                rows.add(VGroup(zh(f"{STACK_ZH[name]}：{n_p} 个参数", 26, theme.FG),
                                 zh(f"逐层算 vs 合并算：差 {sci(diff)}", 22, theme.MUTED)
                                 ).arrange(DOWN, aligned_edge=LEFT, buff=0.12))
             rows.arrange(DOWN, aligned_edge=LEFT, buff=0.4).move_to([3.4, 1.3, 0])

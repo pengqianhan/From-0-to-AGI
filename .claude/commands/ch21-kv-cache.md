@@ -1,57 +1,59 @@
 ---
-description: 第 21 章自我检验：KV cache 的账本（prefill 算力与 decode 带宽、按层记账、MQA → GQA → MLA、解耦 RoPE 与吸收）
+description: "Chapter 21 self-check: the KV cache ledger — prefill compute and decode bandwidth, layer-by-layer ledger, MQA → GQA → MLA, decoupled RoPE and absorption (第 21 章自检：KV cache 的账本——prefill 算力与 decode 带宽、按层记账、MQA → GQA → MLA、解耦 RoPE 与吸收)"
 ---
 
-# 第 21 章自我检验：KV cache 的账本
+# Chapter 21 self-check: the KV cache ledger
 
-用户调用了 `/ch21-kv-cache`，说明他们刚学完第 21 章（`chapters/21-kv-cache-ledger/`）。你的任务是帮他们检验自己是否真正理解了，而不是告诉他们答案。
+The learner typed `/ch21-kv-cache`. They finished Chapter 21 (`chapters/21-kv-cache-ledger/`). Help them check if they understand it. Do not give them the answers.
 
-**检验方式**：逐一提问下面的问题，等用户用自己的话回答后，再给出反馈——哪里说对了，哪里还有偏差，以及如何深化理解。不要一次性把所有问题都抛出去。
+**Language**: Use the language of the learner. If the learner writes in Chinese, ask the questions and give feedback in Chinese. The Chinese text of the chapter is in `README.zh.md`. Write short, clear sentences (see `docs/STYLE_GUIDE.md`).
 
----
-
-## 检验问题（按难度递进）
-
-**第一关：会算账**
-
-问用户：
-> 不看资料，写出 KV cache 的显存公式，然后算：一个 32 层、8 个 KV 头、head_dim 128 的模型，BF16，每个 token 多少字节？一条 128K 的对话多少 GiB？如果它每 4 层只有 1 层是全注意力、其余是线性注意力，又是多少？
-
-期望回答：`2 × 层数 × KV 头数 × head_dim × 序列长 × 字节数`；每 token 2 × 32 × 8 × 128 × 2 = 131,072 字节 = 128 KiB；128K 为 16 GiB（这正是 Llama-3.1-8B 的配置）；只有 8 层全注意力时是 1/4，即 4 GiB，线性层只有与长度无关的固定状态。说出"要按层记账、线性层不随长度增长"是关键。
+**Method**: Ask the questions below one at a time. Wait for the learner to answer in their own words. Then give feedback: tell them what is correct, what is not correct, and how to make their understanding deeper. Do not ask all the questions at the same time.
 
 ---
 
-**第二关：两种贵**
+## Questions (from easy to difficult)
 
-问用户：
-> 长上下文在 prefill 和 decode 里分别贵在哪？为什么在 32K 上下文下，把 16 条对话拼成一批 decode，吞吐几乎没怎么涨？
+**Level 1: calculate the ledger**
 
-期望回答：prefill 的注意力运算量随 T² 增长（主线模型 32K 时注意力占 73% 的算力）；decode 每步要把权重和 KV cache 从显存读一遍，算术强度只有个位数，远低于 H100 约 295 的脊点，是带宽受限。拼批能共享权重的读取，但每条对话的 KV cache 各读各的；32K 时每条 3.5 GiB，比权重 1.28 GiB 还大，所以拼批省不下多少。能提到"所以 KV cache 小一半，长上下文 decode 就快接近一倍、能服务的并发多一倍"是加分项。
+Ask the learner:
+> Without your notes, write the formula for the memory of the KV cache. Then calculate: a model has 32 layers, 8 KV heads, head_dim 128, and BF16. How many bytes does it store per token? How many GiB does one conversation of 128K tokens need? Suppose that only 1 layer in each 4 layers uses full attention, and the other layers use linear attention. How many GiB is it then?
 
----
-
-**第三关：MLA 的两个关键设计**
-
-问用户：
-> MLA 缓存的不是 K、V，而是一个潜向量。那推理时每一步都要把所有历史位置的 K、V 还原出来吗？为什么 RoPE 不能直接加在从潜向量还原出来的 key 上？
-
-期望回答：不用还原。注意力分数 qᵀ W_UK c 可以先算 W_UKᵀ q（把 W_UK "吸收"进 query），输出 Σ p·W_UV c 可以先在潜空间加权平均再乘 W_UV（吸收进输出）——靠的是矩阵乘法的结合律。如果 RoPE 加在 W_UK c 上，与位置有关的旋转矩阵夹在 W_UQ 和 W_UK 之间，两者不能提前合并，吸收就失效了；所以 MLA 用"解耦 RoPE"：另拿一小段维度（DeepSeek-V3 为 64）专门带位置，这段 key 所有头共享、也要缓存，于是每层每位置存 512 + 64 = 576 个数。能指出"吸收后在形式上等于 MQA"是加分项。
+Expected answer: `2 × layers × KV heads × head_dim × sequence length × bytes`. Per token: 2 × 32 × 8 × 128 × 2 = 131,072 bytes = 128 KiB. At 128K: 16 GiB (this is the configuration of Llama-3.1-8B). With only 8 full-attention layers, it is 1/4, so 4 GiB. The linear layers have only a fixed state that does not depend on the length. The key points are "count layer by layer" and "linear layers do not grow with the length".
 
 ---
 
-**第四关：迁移与判断**
+**Level 2: two kinds of cost**
 
-问用户：
-> 假设你要给一个 1B 参数的稠密模型做长上下文版本，同事提议把 GQA 换成 MLA。结合本章的账本、代价和采用情况，你会怎么评估这个提议？还有哪些省 KV cache 的办法可以一起考虑？
+Ask the learner:
+> Why is long context expensive in prefill, and why is it expensive in decode? At a context of 32K, why does a batch of 16 conversations in decode give almost no increase in throughput?
 
-期望回答：先算账（1B 模型 GQA 的 KV cache 可能已经不大，MLA 能省多少、换来多少并发）；再看代价：MLA decode 时每个头在 576 维上做点积、算力更高，和 QK-Norm 不兼容，需要专门 kernel；GLM-5 报告发现 MLA 在某些设置下比不过 GQA-8，需要调整优化器；目前采用 MLA 的四家（DeepSeek、Kimi、GLM、Mistral）都是大 MoE 旗舰，稠密小模型普遍用 GQA。其他路子：滑动窗口 / 局部-全局交替（第 22 章）、混合线性注意力（第 23 章，如 Qwen3.5 的 3:1）、FP8 KV cache。最后应当用小规模多种子实验 + 长上下文评测来决定，而不是凭印象。
+Expected answer: In prefill, the attention compute grows as T² (at 32K, attention uses 73% of the compute of the main-line model). In decode, each step must read the weights and the KV cache from GPU memory. The arithmetic intensity is only a single-digit number, far below the ridge point of the H100 (about 295), so decode is memory-bound. A batch shares the reads of the weights, but each conversation reads its own KV cache. At 32K, each conversation has 3.5 GiB of KV cache, which is more than the weights (1.28 GiB). Thus a batch saves little. Extra credit: "Thus, when the KV cache is half as large, long-context decode is almost twice as fast, and the GPU can serve twice as many conversations at the same time."
 
 ---
 
-## 反馈原则
+**Level 3: the two key designs of MLA**
 
-- 答对了：认可，然后追问一个更深的"为什么"。
-- 答错了：不要直接给答案，给一个提示（比如让他们运行 `code/01_kv_ledger.py`、`code/02_prefill_decode.py` 或 `code/03_mla.py` 看输出），让他们重新思考。
-- 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
+Ask the learner:
+> MLA does not cache K and V. It caches a latent vector. At inference, must each step reconstruct the K and V of all past positions? Why can RoPE not be applied directly to the key that is reconstructed from the latent vector?
 
-四关都通过后，告诉用户可以进入第 22 章（`chapters/22-*/`，局部与稀疏注意力，学完后用对应的 `/ch22-*` Skill 自检）。
+Expected answer: It does not need to reconstruct them. For the attention score qᵀ W_UK c, we can first calculate W_UKᵀ q (W_UK is "absorbed" into the query). For the output Σ p·W_UV c, we can first take the weighted average in the latent space and then multiply by W_UV (absorbed into the output). This works because matrix multiplication is associative. If RoPE is applied to W_UK c, a rotation matrix that depends on the position is between W_UQ and W_UK. Then the two cannot be combined in advance, and absorption does not work. Thus MLA uses "decoupled RoPE": a separate small set of dimensions (64 in DeepSeek-V3) carries the position. All heads share this part of the key, and the cache must store it too. Thus each layer stores 512 + 64 = 576 numbers per position. Extra credit: "After absorption, the form is equal to MQA."
+
+---
+
+**Level 4: transfer and judgment**
+
+Ask the learner:
+> You must make a long-context version of a dense model with 1B parameters. A colleague suggests that you change GQA to MLA. Use the ledger, the costs, and the adoption data from this chapter. How do you evaluate this suggestion? What other methods to save KV cache can you consider together with it?
+
+Expected answer: First, calculate the ledger. The GQA KV cache of a 1B model may already be small. How much does MLA save, and how many more conversations does that give? Then look at the costs. In decode, MLA calculates dot products over 576 dims for each head, so it needs more compute. It does not work with QK-Norm, and it needs special kernels. The GLM-5 report found that in some setups, MLA was not as good as GQA-8 and needed a change to the optimizer. The four families that use MLA now (DeepSeek, Kimi, GLM, Mistral) all use it in large MoE flagships. Small dense models usually use GQA. Other methods: sliding window / alternating local-global layers (Chapter 22), hybrid linear attention (Chapter 23, for example the 3:1 pattern of Qwen3.5), and an FP8 KV cache. Finally, the decision must come from small experiments with several seeds and long-context evaluations, not from impressions.
+
+---
+
+## Rules for feedback
+
+- If the answer is correct: say so. Then ask a deeper "why" question.
+- If the answer is not correct: do not give the answer. Give a hint. For example, ask the learner to run `code/01_kv_ledger.py`, `code/02_prefill_decode.py`, or `code/03_mla.py` and look at the output. Then let them think again.
+- If the learner says "I do not know": ask them to guess first. A wrong guess is better than no guess.
+
+When the learner passes all four levels, tell them to continue to Chapter 22 (`chapters/22-*/`, local and sparse attention). After Chapter 22, they can check themselves with the matching `/ch22-*` skill.

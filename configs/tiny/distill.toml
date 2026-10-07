@@ -1,11 +1,12 @@
-# tiny 蒸馏配置（第 17 章"极小配置演示"）。
+# Tiny distillation config (Chapter 17, "Tiny-configuration demo").
 #   uv run python -m zero.post.distill --config configs/tiny/distill.toml
 #
-# 教师是替身：这个环境下载不了任何开源权重（huggingface.co 不可达），所以用 tiny SFT 模型自己当教师
-# （自蒸馏 / 拒绝采样微调）。只验证"教师采样 → 执行验证 → 打包 → 序列级 + logits 蒸馏"这条通路。
-# 第二步换成真教师：见 configs/main/distill.toml。
+# The teacher is a stand-in. This environment cannot download any open weights (huggingface.co is not reachable).
+# Thus the tiny SFT model is its own teacher (self-distillation / rejection-sampling fine-tuning).
+# This config verifies only the path "teacher sampling → execution check → packing → sequence-level + logits distillation".
+# Step 2 uses a real teacher: see configs/main/distill.toml.
 
-[model]                  # 学生：与 SFT 的 checkpoint 形状一致
+[model]                  # Student: same shape as the SFT checkpoint
 vocab_size = 2048
 dim = 128
 n_layers = 4
@@ -26,17 +27,17 @@ device = "cpu"
 dtype = "fp32"
 cpu_threads = 1
 out_dir = "out/tiny/distill"
-init_from = "out/tiny/sft/ckpt"   # 学生从 SFT 出发
+init_from = "out/tiny/sft/ckpt"   # The student starts from SFT
 eval_every = 0
 
 [data]
-format = "sft"           # 教师轨迹按 SFT 的方式打包（只在助手 token 上算损失）
+format = "sft"           # Pack the teacher trajectories as in SFT (the loss uses only the assistant tokens)
 tokenizer = "out/tiny/tokenizer.json"
 seq_len = 1024
 
 [teacher]
 backend = "local"
-path = "out/tiny/sft/ckpt"        # 替身教师：tiny SFT 模型自己
+path = "out/tiny/sft/ckpt"        # Stand-in teacher: the tiny SFT model itself
 name = "zero-tiny-sft (self-distillation stand-in)"
 version = "local"
 license = "same as this repository"
@@ -51,13 +52,13 @@ n_tasks = 48
 samples_per_task = 4
 keep_per_task = 1
 env_seed = 3
-mix_sft_jsonl = "out/tiny/sft/train.jsonl"   # 教师数据很少时混入原 SFT 数据，防止遗忘
+mix_sft_jsonl = "out/tiny/sft/train.jsonl"   # When there is little teacher data, mix in the original SFT data to prevent forgetting
 mix_sft_max = 200
 logits_kd = true
 kd_alpha = 0.5
 kd_temperature = 1.0
 kd_topk = 0
-on_policy_steps = 0      # 在线策略蒸馏：待核实（GOAL.md 2.1），默认关
+on_policy_steps = 0      # On-policy distillation: to be verified (GOAL.md 2.1); off by default
 
 [optim]
 lr = 3e-4

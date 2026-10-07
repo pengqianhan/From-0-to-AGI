@@ -1,13 +1,14 @@
-"""第 3 章 · 极简代码 3：两层 MLP 拟合 y = sin(2x)，手推梯度 + 梯度下降
+"""Chapter 3 · Minimal code 3: fit y = sin(2x) with a two-layer MLP, manual gradients, and gradient descent
 
-模型（行向量写法，和第 2 章的 y = XW + b 一致）：
-    Z = X·W1 + b1        (N, 1) → (N, H)   第 1 层：线性
-    A = ReLU(Z)          (N, H)            激活：把每个数小于 0 的部分砍成 0
-    Ŷ = A·W2 + b2        (N, H) → (N, 1)   第 2 层：线性
-    L = mean((Ŷ − Y)²)                     损失：和第 1 章一样的均方误差
-梯度是用链式法则手推的（第 4 章会系统讲反向传播，这里先用、并用数值梯度验证它没推错）。
-只用 NumPy，CPU 上约 25 秒跑完（大部分时间花在第 3 部分的多种子实验）。
-运行：uv run python chapters/03-neural-network/code/03_mlp_numpy.py
+The model (row-vector form, the same as y = XW + b in Chapter 2):
+    Z = X·W1 + b1        (N, 1) → (N, H)   layer 1: linear
+    A = ReLU(Z)          (N, H)            activation: set each negative number to 0
+    Ŷ = A·W2 + b2        (N, H) → (N, 1)   layer 2: linear
+    L = mean((Ŷ − Y)²)                     loss: the same mean squared error as in Chapter 1
+We derived the gradients by hand with the chain rule. Chapter 4 explains backpropagation in full.
+Here we use the gradients, and we check them against numerical gradients.
+Uses only NumPy. It runs in about 25 seconds on a CPU (most of the time is for the multi-seed test in part 3).
+Run: uv run python chapters/03-neural-network/code/03_mlp_numpy.py
 """
 
 import importlib.util
@@ -20,15 +21,15 @@ _spec = importlib.util.spec_from_file_location(
 )
 lin = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(lin)
-make_data = lin.make_data  # x ∈ [−3, 3] 上 100 个点，y = sin(2x)
+make_data = lin.make_data  # 100 points for x ∈ [−3, 3], y = sin(2x)
 
 LR = 0.01
 STEPS = 20000
 
 
 def init_params(hidden: int, seed: int = 0) -> dict:
-    """随机初始化。b1 的取法让每个隐藏单元的折点（x = −b1/W1）一开始就散落在 [−3, 3] 里。
-    （初始化有很多讲究，第 6 章再系统讲。）"""
+    """Random initialization. We choose b1 so that the kink of each hidden unit (x = −b1/W1)
+    starts at a random point in [−3, 3]. (Initialization has many details. Chapter 6 explains them.)"""
     rng = np.random.default_rng(seed)
     W1 = rng.normal(0, 1, size=(1, hidden))
     b1 = rng.uniform(-3, 3, size=hidden) * np.abs(W1[0])
@@ -38,7 +39,7 @@ def init_params(hidden: int, seed: int = 0) -> dict:
 
 
 def act_fn(z: np.ndarray, act: str) -> np.ndarray:
-    return np.maximum(0.0, z) if act == "relu" else z        # "linear"：不用激活
+    return np.maximum(0.0, z) if act == "relu" else z        # "linear": no activation
 
 
 def act_grad(z: np.ndarray, act: str) -> np.ndarray:
@@ -58,22 +59,24 @@ def mse(p: dict, x, y, act: str = "relu") -> float:
 
 
 def gradients(p: dict, x, y, act: str = "relu"):
-    """手推梯度：从损失往回，一层一层用链式法则。返回 (损失, 梯度字典)。"""
+    """Manual gradients: go back from the loss, one layer at a time, with the chain rule.
+    Returns (loss, dict of gradients)."""
     n = len(x)
     y_hat, (z, a) = forward(p, x, act)
     loss = float(np.mean((y_hat - y) ** 2))
-    d_yhat = 2 * (y_hat - y) / n          # ∂L/∂Ŷ：和第 1 章的 2/N·(ŷ − y) 一样
+    d_yhat = 2 * (y_hat - y) / n          # ∂L/∂Ŷ: the same as 2/N·(ŷ − y) in Chapter 1
     d_W2 = a.T @ d_yhat                   # ∂L/∂W2 = Aᵀ · ∂L/∂Ŷ
     d_b2 = d_yhat.sum(axis=0)             # ∂L/∂b2 = Σ ∂L/∂Ŷ
     d_a = d_yhat @ p["W2"].T              # ∂L/∂A  = ∂L/∂Ŷ · W2ᵀ
-    d_z = d_a * act_grad(z, act)          # ∂L/∂Z  = ∂L/∂A ⊙ ReLU′(Z)：没激活的单元梯度为 0
+    d_z = d_a * act_grad(z, act)          # ∂L/∂Z  = ∂L/∂A ⊙ ReLU′(Z): an inactive unit gets gradient 0
     d_W1 = x.T @ d_z                      # ∂L/∂W1 = Xᵀ · ∂L/∂Z
     d_b1 = d_z.sum(axis=0)                # ∂L/∂b1 = Σ ∂L/∂Z
     return loss, {"W1": d_W1, "b1": d_b1, "W2": d_W2, "b2": d_b2}
 
 
 def numerical_gradients(p: dict, x, y, act: str = "relu", eps: float = 1e-6) -> dict:
-    """数值梯度：(L(θ+ε) − L(θ−ε)) / 2ε，逐个参数算。慢，但不会推错，用来检验手推的公式。"""
+    """Numerical gradients: (L(θ+ε) − L(θ−ε)) / 2ε, one parameter at a time.
+    This is slow, but it has no derivation errors. We use it to check the manual formulas."""
     grads = {}
     for k, v in p.items():
         g = np.zeros_like(v)
@@ -91,7 +94,7 @@ def numerical_gradients(p: dict, x, y, act: str = "relu", eps: float = 1e-6) -> 
 
 def train(x, y, hidden: int, lr: float = LR, steps: int = STEPS, seed: int = 0,
           act: str = "relu", snapshot_steps=()):
-    """梯度下降。返回 (最终参数, 每一步的损失, {步数: 当时的参数副本})。"""
+    """Gradient descent. Returns (final parameters, loss at each step, {step: copy of the parameters at that step})."""
     p = init_params(hidden, seed)
     losses, snaps = [], {}
     for step in range(steps + 1):
@@ -102,13 +105,13 @@ def train(x, y, hidden: int, lr: float = LR, steps: int = STEPS, seed: int = 0,
         if step == steps:
             break
         for k in p:
-            p[k] -= lr * g[k]             # θ ← θ − η · ∂L/∂θ，和第 1 章一模一样
+            p[k] -= lr * g[k]             # θ ← θ − η · ∂L/∂θ, the same as in Chapter 1
     return p, losses, snaps
 
 
 def pieces(p: dict, x: np.ndarray):
-    """把网络输出拆成 H 个"折线片"：第 j 个隐藏单元贡献 W2[j] · ReLU(W1[j]·x + b1[j])。
-    返回 (每片的值 (N, H), 每片的折点位置 (H,))。输出 = 各片之和 + b2。"""
+    """Split the network output into H "hinge pieces": hidden unit j adds W2[j] · ReLU(W1[j]·x + b1[j]).
+    Returns (the value of each piece (N, H), the kink position of each piece (H,)). Output = sum of the pieces + b2."""
     z = x @ p["W1"] + p["b1"]
     contrib = np.maximum(0.0, z) * p["W2"][:, 0]
     kinks = -p["b1"] / p["W1"][0]
@@ -116,45 +119,45 @@ def pieces(p: dict, x: np.ndarray):
 
 
 def n_params(hidden: int) -> int:
-    return 3 * hidden + 1                 # W1: H，b1: H，W2: H，b2: 1
+    return 3 * hidden + 1                 # W1: H, b1: H, W2: H, b2: 1
 
 
 if __name__ == "__main__":
     x, y = make_data()
 
-    # 1) 梯度检验：手推的梯度和数值梯度对得上吗？
+    # 1) Gradient check: do the manual gradients agree with the numerical gradients?
     p0 = init_params(8, seed=0)
     ga, gn = gradients(p0, x, y)[1], numerical_gradients(p0, x, y)
     err = max(np.max(np.abs(ga[k] - gn[k])) for k in p0)
-    print(f"1) 梯度检验（宽度 8）：手推 vs 数值梯度，最大差 = {err:.1e}")
+    print(f"1) Gradient check (width 8): manual vs numerical gradients, max difference = {err:.1e}")
 
-    # 2) 不同宽度，学习率 0.01，梯度下降 20000 步
-    print(f"\n2) 拟合 y = sin(2x)，学习率 {LR}，梯度下降 {STEPS} 步（种子 0）")
+    # 2) Different widths, learning rate 0.01, 20000 steps of gradient descent
+    print(f"\n2) Fit y = sin(2x), learning rate {LR}, {STEPS} steps of gradient descent (seed 0)")
     _, _, line_mse = lin.best_line(x, y)
-    print(f"   {'模型':<18}{'参数量':>6}{'第0步':>9}{'第1000步':>10}{'第5000步':>10}{'第20000步':>10}")
-    configs = [("两层线性，宽 8", 8, "linear"), ("ReLU，宽 2", 2, "relu"),
-               ("ReLU，宽 8", 8, "relu"), ("ReLU，宽 64", 64, "relu")]
+    print(f"   {'Model':<16}{'Params':>6}{'Step 0':>10}{'1000':>10}{'5000':>10}{'20000':>10}")
+    configs = [("Linear, width 8", 8, "linear"), ("ReLU, width 2", 2, "relu"),
+               ("ReLU, width 8", 8, "relu"), ("ReLU, width 64", 64, "relu")]
     for name, h, act in configs:
         _, losses, _ = train(x, y, h, act=act)
         cols = "".join(f"{losses[s]:>10.4f}" for s in (0, 1000, 5000, STEPS))
         print(f"   {name:<16}{n_params(h):>6}{cols}")
-    print(f"   （对照：最好的直线 MSE = {line_mse:.4f}）")
+    print(f"   (Reference: MSE of the best straight line = {line_mse:.4f})")
 
-    # 3) 换 5 个随机种子，看结论稳不稳
-    print("\n3) 换 5 个随机种子（0–4），20000 步后的损失")
+    # 3) Use 5 random seeds to check that the result is stable
+    print("\n3) 5 random seeds (0–4), loss after 20000 steps")
     for h in (2, 8, 64):
         finals = [train(x, y, h, seed=s)[1][-1] for s in range(5)]
-        print(f"   宽 {h:>2}：" + "  ".join(f"{v:.4f}" for v in finals)
-              + f"   中位数 {np.median(finals):.4f}")
+        print(f"   width {h:>2}: " + "  ".join(f"{v:.4f}" for v in finals)
+              + f"   median {np.median(finals):.4f}")
 
-    # 4) 把宽度 8 的网络拆开：输出 = 8 个折线片之和 + b2
+    # 4) Take the width-8 network apart: output = sum of 8 hinge pieces + b2
     p8, _, _ = train(x, y, 8)
     contrib, kinks = pieces(p8, x)
     y_hat, _ = forward(p8, x)
     diff = np.max(np.abs(contrib.sum(axis=1, keepdims=True) + p8["b2"] - y_hat))
     order = np.argsort(kinks)
-    print("\n4) 宽度 8 的网络：每个隐藏单元是一个折点")
-    print("   折点位置 x = −b1/W1：" + "  ".join(f"{kinks[j]:.2f}" for j in order))
-    print(f"   单条折线在数据范围内的最大幅度 = {np.max(np.abs(contrib)):.2f}"
-          f"（网络输出的幅度只有 {np.max(np.abs(y_hat)):.2f}：各片互相抵消）")
-    print(f"   各片之和 + b2 与网络输出的最大差 = {diff:.1e}")
+    print("\n4) The width-8 network: each hidden unit is one kink")
+    print("   Kink positions x = −b1/W1: " + "  ".join(f"{kinks[j]:.2f}" for j in order))
+    print(f"   Max amplitude of one hinge piece in the data range = {np.max(np.abs(contrib)):.2f}"
+          f" (the network output has an amplitude of only {np.max(np.abs(y_hat)):.2f}: the pieces cancel each other)")
+    print(f"   Max difference between (sum of pieces + b2) and the network output = {diff:.1e}")

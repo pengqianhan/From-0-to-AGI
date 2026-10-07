@@ -1,17 +1,22 @@
-"""质量过滤：启发式规则 + 分类器接口（对应第 13 章）。
+"""Quality filtering: heuristic rules + a classifier interface (Chapter 13).
 
-两类方法，业界通常叠加使用：
+There are two types of methods. Industry usually uses both together:
 
-1. **启发式规则**（这里实现）：参考 Gopher（Rae et al. 2021, arXiv:2112.11446, 附录 A）的
-   质量与重复规则，以及 FineWeb（Penedo et al. 2024, arXiv:2406.17557）新增的三条规则。
-   每条规则都是一个便宜的统计量 + 阈值，专门干掉"明显不是正常文章"的页面：导航栏、
-   关键词堆砌、乱码、大段重复。中文没有空格分词，"词"按 CJK 单字计，停用词用中文常用虚词。
-   阈值是英文网页上调出来的，用在中文上之前需要在第 13 章的实验里复核（待核实）。
+1. **Heuristic rules** (implemented here): based on the quality and repetition rules of Gopher
+   (Rae et al. 2021, arXiv:2112.11446, Appendix A), and the three new rules of FineWeb
+   (Penedo et al. 2024, arXiv:2406.17557). Each rule is a cheap statistic + a threshold. The rules
+   remove pages that are "clearly not normal text": navigation bars, keyword lists, garbled text,
+   long repeated parts. Chinese has no spaces between words, so each CJK character counts as one
+   "word", and the stop words are common Chinese function words.
+   The thresholds were tuned on English web pages. Before we use them on Chinese text, an
+   experiment in Chapter 13 must check them again (to be verified).
 
-2. **分类器打分**（这里只定义接口）：FineWeb-Edu 的做法是让大模型给几十万个网页的
-   "教育价值"打 0–5 分，再训练一个小分类器给全量数据打分，只留高分页面。第一步没有 GPU，
-   这里只提供 `QualityClassifier` 协议和一个按关键词打分的玩具实现 `KeywordClassifier`，
-   第二步再接入真正的分类器（例如 fastText 或小型 BERT）。
+2. **Classifier scores** (only the interface is defined here): FineWeb-Edu asks a large model to
+   give hundreds of thousands of web pages an "educational value" score from 0 to 5. Then it trains
+   a small classifier that scores all data, and keeps only the pages with high scores. Step 1 has
+   no GPU. So this module gives only the `QualityClassifier` protocol and a toy implementation that
+   scores by keywords, `KeywordClassifier`. Step 2 will connect a real classifier (for example
+   fastText or a small BERT).
 """
 
 from __future__ import annotations
@@ -28,13 +33,13 @@ _ALPHA_RE = re.compile(r"[^\W\d_]", re.UNICODE)
 
 EN_STOP_WORDS = frozenset(
     {"the", "be", "to", "of", "and", "that", "have", "with"}
-)  # Gopher 用的 8 个
-ZH_STOP_WORDS = frozenset("的了是在和有也就不都而与之其以")  # 中文常用虚词（本课自定，待核实）
+)  # the 8 words that Gopher uses
+ZH_STOP_WORDS = frozenset("的了是在和有也就不都而与之其以")  # common Chinese function words (chosen for this course, to be verified)
 _END_PUNCT = (".", "!", "?", '"', "'", "。", "！", "？", "”", "’", "…", "」", "』")
 
 
 def words(text: str) -> list[str]:
-    """把文本切成"词"：CJK 按单字，其他按空白分隔。"""
+    """Split the text into "words": each CJK character is one word; other text is split at white space."""
     return _WORD_RE.findall(text)
 
 
@@ -45,24 +50,24 @@ def cjk_ratio(text: str) -> float:
 
 @dataclass
 class QualityThresholds:
-    """默认值取自 Gopher 附录 A 与 FineWeb 论文第 3 节。"""
+    """The default values come from Gopher Appendix A and Section 3 of the FineWeb paper."""
 
     min_words: int = 50
     max_words: int = 100_000
-    min_mean_word_len: float = 3.0  # 只对非 CJK 文本生效
+    min_mean_word_len: float = 3.0  # applies only to non-CJK text
     max_mean_word_len: float = 10.0
-    max_symbol_word_ratio: float = 0.1  # "#" 与 "..." 的数量 / 词数
-    max_bullet_lines_frac: float = 0.9  # 以项目符号开头的行占比
-    max_ellipsis_lines_frac: float = 0.3  # 以省略号结尾的行占比
-    min_alpha_words_frac: float = 0.8  # 至少含一个字母的词占比
+    max_symbol_word_ratio: float = 0.1  # number of "#" and "..." / number of words
+    max_bullet_lines_frac: float = 0.9  # fraction of lines that start with a bullet
+    max_ellipsis_lines_frac: float = 0.3  # fraction of lines that end with an ellipsis
+    min_alpha_words_frac: float = 0.8  # fraction of words with at least one letter
     min_stop_words: int = 2
-    # Gopher 重复规则
+    # Gopher repetition rules
     max_dup_line_frac: float = 0.3
     max_dup_line_char_frac: float = 0.2
     max_top_2gram_char_frac: float = 0.2
-    # FineWeb 新增规则
-    min_line_punct_frac: float = 0.12  # 以标点结尾的行占比
-    max_short_line_frac: float = 0.67  # 长度 <= 30 字符的行占比
+    # New rules of FineWeb
+    min_line_punct_frac: float = 0.12  # fraction of lines that end with punctuation
+    max_short_line_frac: float = 0.67  # fraction of lines with <= 30 characters
     short_line_chars: int = 30
 
 
@@ -83,7 +88,7 @@ def _top_ngram_char_frac(ws: list[str], n: int) -> float:
 
 
 def quality_check(text: str, th: QualityThresholds | None = None) -> QualityResult:
-    """对一篇文档跑全部启发式规则，返回是否保留、未通过的规则名和统计量。"""
+    """Run all heuristic rules on one document. Return if we keep it, the names of the failed rules, and the statistics."""
     th = th or QualityThresholds()
     reasons: list[str] = []
     ws = words(text)
@@ -122,7 +127,7 @@ def quality_check(text: str, th: QualityThresholds | None = None) -> QualityResu
     if n_stop < th.min_stop_words:
         reasons.append("stop_words")
 
-    # 重复
+    # Repetition
     line_counts = Counter(lines)
     dup_lines = sum(c for c in line_counts.values() if c > 1)
     dup_line_chars = sum(len(ln) * c for ln, c in line_counts.items() if c > 1)
@@ -143,36 +148,37 @@ def quality_check(text: str, th: QualityThresholds | None = None) -> QualityResu
     short = sum(1 for ln in lines if len(ln.strip()) <= th.short_line_chars)
     stats["short_line_frac"] = short / n_lines
     if not is_cjk and stats["short_line_frac"] > th.max_short_line_frac:
-        # 中文一行 30 个字符信息量已经很大，这条规则只用于非 CJK 文本
+        # A Chinese line of 30 characters already holds much information, so this rule applies only to non-CJK text
         reasons.append("short_lines")
 
     return QualityResult(keep=not reasons, reasons=reasons, stats=stats)
 
 
 def quality_filter(texts: Sequence[str], th: QualityThresholds | None = None) -> list[int]:
-    """返回通过全部规则的下标。"""
+    """Return the indices of the documents that pass all rules."""
     return [i for i, t in enumerate(texts) if quality_check(t, th).keep]
 
 
 # ---------------------------------------------------------------------------
-# 分类器接口（第二步接入真实模型）
+# Classifier interface (Step 2 connects a real model)
 # ---------------------------------------------------------------------------
 
 
 class QualityClassifier(Protocol):
-    """质量分类器协议：给每篇文档打一个分（越高越好）。
+    """Quality classifier protocol: give each document a score (higher is better).
 
-    第二步的计划（参照 FineWeb-Edu）：
-    1. 用许可证允许的开放权重大模型给约 50 万篇样本打 0–5 分"教育价值"；
-    2. 在其 embedding 上训练一个线性回归头（或 fastText），对全量数据打分；
-    3. 保留分数 >= 3 的文档（阈值由第 13 章的小模型消融实验决定）。
+    The plan for Step 2 (as in FineWeb-Edu):
+    1. Use a large open-weight model whose license allows it to give about 500,000 samples an
+       "educational value" score from 0 to 5.
+    2. Train a linear regression head (or fastText) on its embeddings, and score all data.
+    3. Keep the documents with a score >= 3 (an ablation with small models in Chapter 13 decides the threshold).
     """
 
     def score(self, texts: Sequence[str]) -> list[float]: ...
 
 
 class KeywordClassifier:
-    """玩具分类器：按"教育类关键词"出现频率打分，只用于测试和演示接口。"""
+    """Toy classifier: the score is the frequency of "educational keywords". Only for tests and to show the interface."""
 
     def __init__(
         self, keywords: Sequence[str] = ("定理", "证明", "例如", "because", "therefore", "example")

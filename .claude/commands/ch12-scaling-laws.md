@@ -1,57 +1,59 @@
 ---
-description: 第 12 章自我检验：Scaling Law 与实验设计（C≈6ND、Chinchilla、过训练、先调参再拟合、外推与留出检验、闸门 1、预算决策）
+description: "Chapter 12 self-check: scaling laws and experiment design — C≈6ND, Chinchilla, overtraining, tune first then fit, extrapolation and held-out tests, gate 1, budget decisions (第 12 章自检：Scaling Law 与实验设计——C≈6ND、Chinchilla、过训练、先调参再拟合、外推与留出检验、闸门 1、预算决策)"
 ---
 
-# 第 12 章自我检验：Scaling Law 与实验设计
+# Chapter 12 self-check: scaling laws and experiment design
 
-用户调用了 `/ch12-scaling-laws`，说明他们刚学完第 12 章（`chapters/12-scaling-laws/`）。你的任务是帮他们检验自己是否真正理解了，而不是告诉他们答案。
+The learner typed `/ch12-scaling-laws`. They finished Chapter 12 (`chapters/12-scaling-laws/`). Help them check if they understand it. Do not give them the answers.
 
-**检验方式**：逐一提问下面的问题，等用户用自己的话回答后，再给出反馈——哪里说对了，哪里还有偏差，以及如何深化理解。不要一次性把所有问题都抛出去。需要数字时，让用户自己跑 `chapters/12-scaling-laws/code/` 里的脚本，不要替他们算。
+**Language**: Use the language of the learner. If the learner writes in Chinese, ask the questions and give feedback in Chinese. The Chinese text of the chapter is in `README.zh.md`. Write short, clear sentences (see `docs/STYLE_GUIDE.md`).
 
----
-
-## 检验问题（按难度递进）
-
-**第一关：算账（概念）**
-
-问用户：
-> 训练一个 token 为什么大约要 6N 次浮点运算？"6"里的 2 和 4 分别来自哪里？主线模型（0.69B、序列 4096）每 token 实际要 6.96 GFLOPs，比 6N 多出来的 40% 是什么？
-
-期望回答：前向每个参数一次乘加 = 2 FLOPs；反向对输入和对权重各求一次梯度（第 4 章 y = Wx 的反向是两个矩阵乘）= 4 FLOPs；合计 6N。多出来的是注意力里 QKᵀ 和 AV 两个没有参数的矩阵乘，每层每 token 12·d_attn·T，序列越长越大（主线 q_dim 2048、T 4096 时占 40%）。加分：这个口径不为因果掩码减半，所以 MFU 的数值依赖口径；`01_flops.py` 用 FlopCounterMode 实测和公式逐位一致。
+**Method**: Ask the questions below one at a time. Wait for the learner to answer in their own words. Then give feedback: tell them what is correct, what is not correct, and how to make their understanding deeper. Do not ask all the questions at the same time. When a question needs numbers, tell the learner to run the scripts in `chapters/12-scaling-laws/code/` themselves. Do not calculate the numbers for them.
 
 ---
 
-**第二关：Chinchilla 与过训练（直觉）**
+## Questions (from easy to difficult)
 
-问用户：
-> Chinchilla 说算力最优大约是每个参数 20 个 token，可 Qwen3-0.6B 训了 36T token（约 6 万倍参数）。它们谁错了？主线模型为什么选 0.69B、约 400B token，而不是同样算力下"最优"的 3.6B、77B？
+**Level 1: do the arithmetic (concept)**
 
-期望回答：都没错，回答的是不同的问题。Chinchilla 只最小化**训练**算力下的 loss；部署时还有推理成本（每生成一个 token 约 2N FLOPs），要服务的 token 越多，越该用小模型训更久（`02_chinchilla.py` 第 ③ 部分）。主线还有硬约束：尺寸 ≤ 0.8B（与 Qwen3.5-0.8B 同级比较）、端侧可用。代价是 loss 比同算力最优高一点（按 Epoch 复现系数约高 3.5%，同样的 loss 最优分配只要约 40% 的算力），这是明码标价的交易。
+Ask the learner:
+> Why does training on one token take about 6N floating-point operations? Where do the 2 and the 4 in the "6" come from? The main-line model (0.69B, sequence length 4096) actually needs 6.96 GFLOPs per token. What is the extra 40% above 6N?
 
----
-
-**第三关：小实验为什么会骗人（发现问题）**
-
-问用户：
-> 在迷你阶梯里，如果所有尺寸都沿用最小模型调出来的学习率 0.02，会看到什么？这会让你对"模型做大有没有用"得出什么错误结论？正确的做法是什么？
-
-期望回答：大模型的最优学习率更小；沿用小模型的学习率时，大模型反而比小模型差（`03_lr_sweep.py`：s3、s4 比调好时差 0.19–0.24 bit/字节，比 s1、s2 还差），拟合出的 scaling law 会说"做大没用"。这就是 Lourie et al.（arXiv:2608.11859）的结论：小模型对超参极其敏感，没调好的阶梯会扭曲 scaling law；每个尺寸先扫学习率（最优在网格边上就外扩），再拟合。加分：Delphi 第一次失败也是学习率规则在长训练下不成立，修的是配方而不是拟合。
+Expected answer: in the forward pass, each parameter does one multiply-add = 2 FLOPs. The backward pass calculates one gradient for the input and one for the weights (in Chapter 4, the backward pass of y = Wx is two matrix products) = 4 FLOPs. The total is 6N. The extra part is the two matrix products in attention that have no parameters, QKᵀ and AV: 12·d_attn·T for each layer and each token. It grows with the sequence length (for the main line, with q_dim 2048 and T 4096, it is 40%). Extra credit: this convention does not halve the cost for the causal mask, so the MFU value depends on the convention. `01_flops.py` uses FlopCounterMode, and the measured values are equal to the formula in every digit.
 
 ---
 
-**第四关：迁移（闸门 1）**
+**Level 2: Chinchilla and overtraining (intuition)**
 
-问用户：
-> 第二步有了 GPU。你要写闸门 1 报告：阶梯 l20m–l150m 拟合，l300m 留出。l300m 的实际 loss 落在外推 95% 区间外、高了 2%。你会怎么做？报告里除了 loss，还必须回答哪两件事？
+Ask the learner:
+> Chinchilla says that the compute-optimal ratio is about 20 tokens per parameter. But Qwen3-0.6B trained on 36T tokens (about 60,000 tokens per parameter). Which one is wrong? Why does the main-line model use 0.69B and about 400B tokens, and not the "optimal" 3.6B and 77B for the same compute?
 
-期望回答：不删点、不在原拟合上打补丁，先诊断配方在更大/更长训练下哪里失效（学习率随训练长度的修正、batch、数据、稳定性），修配方后重跑阶梯（Delphi 的做法）；外推到主线的区间会更宽，要如实写。报告还必须有：(1) 基准分数外推——两步法，软指标（正确答案对数概率 / bits-per-byte）先做 scaling law，再用公开模型拟合"软指标 → 硬分数"的 S 形映射，接近随机的基准不外推；(2) 配方验证 (a) 后训练配方套在阶梯 Base 上拟合"Base 质量 → 工具调用得分"，(b) 套在现成同尺寸开源 Base 上看配方上限。预测达不到硬目标就不开始预训练。见 `runs/gate1_report_template.md`。
+Expected answer: neither is wrong. They answer different questions. Chinchilla minimizes the loss only for the **training** compute. A deployed model also has an inference cost (about 2N FLOPs for each generated token). The more tokens the model must serve, the smaller the model should be and the longer it should train (part ③ of `02_chinchilla.py`). The main line also has hard constraints: size ≤ 0.8B (to compare with Qwen3.5-0.8B in the same class), and usable on devices. The cost is a slightly higher loss than the compute-optimal choice (about 3.5% higher with the Epoch replication coefficients; for the same loss, the optimal allocation needs only about 40% of the compute). This is a trade with a known price.
 
 ---
 
-## 反馈原则
+**Level 3: why small experiments can mislead (find the problem)**
 
-- 答对了：认可，然后追问一个更深的"为什么"（例如：为什么 bootstrap 要按尺寸分组重采样，而不是按单个点？——同一次训练分叉出的点彼此相关）。
-- 答错了：不要直接给答案，给一个提示（比如让他们去跑 `02_chinchilla.py` 或看 `03_lr_sweep.py` 的表），让他们重新思考。
-- 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
+Ask the learner:
+> In the mini ladder, suppose that all sizes use the learning rate 0.02 that was tuned on the smallest model. What do you see? What wrong conclusion about "does a larger model help" does this give? What is the correct method?
 
-四关都通过后，告诉用户可以进入第 13 章（`chapters/13-data/`）：阶梯实验固定了"配方"，而配方里最重要的一项是数据——下一章讲怎么收集、清洗、去重、配比，以及训练主线的分词器。
+Expected answer: a larger model has a smaller best learning rate. With the learning rate of the small model, the larger models are worse than the small models (`03_lr_sweep.py`: s3 and s4 are 0.19–0.24 bit/byte worse than when tuned, and worse than s1 and s2). A scaling law fitted on these data says "a larger model does not help". This is the conclusion of Lourie et al. (arXiv:2608.11859): small models are very sensitive to hyperparameters, and a badly tuned ladder distorts the scaling law. For each size, sweep the learning rate first (if the best value is at an edge of the grid, extend the grid), and then fit. Extra credit: the first failure of Delphi also came from a learning-rate rule that did not hold for long training. They fixed the recipe, not the fit.
+
+---
+
+**Level 4: transfer (gate 1)**
+
+Ask the learner:
+> Step 2 has started, and you have GPUs. You write the gate 1 report: the fit uses ladder sizes l20m–l150m, and l300m is held out. The actual loss of l300m is outside the 95% interval of the extrapolation, 2% too high. What do you do? Besides the loss, which two other questions must the report answer?
+
+Expected answer: do not delete points, and do not patch the old fit. First find where the recipe fails for larger or longer training (the correction of the learning rate for training length, the batch size, the data, the stability). Fix the recipe and run the ladder again (the method of Delphi). The interval of the extrapolation to the main line becomes wider; write this honestly. The report must also have: (1) the benchmark score extrapolation, with the two-step method: first a scaling law of soft metrics (log probability of the correct answer / bits per byte), then an S-shaped mapping "soft metric → hard score" fitted on public models; do not extrapolate a benchmark that is near random; (2) the recipe validation: (a) apply the post-training recipe to ladder Base models and fit "Base quality → tool-calling score"; (b) apply it to an existing open Base model of the same size to see the upper limit of the recipe. If the prediction does not reach the hard goal, do not start pretraining. See `runs/gate1_report_template.md`.
+
+---
+
+## Rules for feedback
+
+- If the answer is correct: say so. Then ask a deeper "why" question. For example: why must the bootstrap resample by size as groups, and not by single points? (The points from the branches of one training run are correlated.)
+- If the answer is not correct: do not give the answer. Give a hint. For example, ask the learner to run `02_chinchilla.py` or look at the table of `03_lr_sweep.py`. Then let them think again.
+- If the learner says "I do not know": ask them to guess first. A wrong guess is better than no guess.
+
+When the learner passes all four levels, tell them to continue to Chapter 13 (`chapters/13-data/`). The ladder experiment fixes the "recipe", and the most important part of the recipe is the data. The next chapter shows how to collect, clean, deduplicate, and mix the data, and how to train the tokenizer of the main line.

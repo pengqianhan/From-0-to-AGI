@@ -20,7 +20,7 @@ uv run torchrun --standalone --nproc_per_node=1 -m zero.post.sft --config config
   --set data.tokenizer="\"$S/tokenizer.json\"" \
   --set sft.train_jsonl="\"$S/sft/train.jsonl\"" --set sft.val_jsonl="\"$S/sft/val.jsonl\"" \
   --set sft.shard_dir="\"$O/sft_torchrun/data\"" > $O/sft_torchrun.log 2>&1
-grep -E "模型参数|step +(1|10|20)/|加载|Error" $O/sft_torchrun.log
+grep -E "Model parameters|step +(1|10|20)/|Loaded|Error" $O/sft_torchrun.log
 
 echo "== 2. HF 导出对拍"
 uv run python runs/2026-10-01-gpu0-check/export_check.py $S/grpo/ckpt $O/export_grpo 2>&1 | grep -v Warning

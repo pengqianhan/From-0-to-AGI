@@ -1,20 +1,27 @@
-"""去重：精确哈希 + MinHash LSH 近似去重（对应第 13 章）。
+"""Deduplication: exact hashes + MinHash LSH near-deduplication (Chapter 13).
 
-网页语料里重复极多（转载、模板页、镜像站）。重复数据会让模型"背书"、浪费算力，还会放大
-评测污染。两层去重：
+Web corpora contain very many duplicates (reposts, template pages, mirror sites). Duplicate data
+makes the model memorize text, wastes compute, and makes evaluation contamination worse.
+Deduplication has two levels:
 
-1. **精确去重**：规范化后的全文做哈希，相同哈希只留第一篇。便宜，但差一个字就认不出来。
-2. **近似去重（MinHash + LSH）**：
-   - 把文档切成字符 n-gram 集合（shingles），两篇文档的相似度用 Jaccard = |A∩B| / |A∪B| 衡量；
-   - MinHash：用 num_perm 个随机哈希函数，每个函数取集合里的最小哈希值，得到一个签名向量。
-     两个签名某一位相等的概率恰好等于 Jaccard（这是 MinHash 的核心性质）；
-   - LSH：把签名切成 bands 段、每段 rows 位。只要有一段完全相同就成为"候选对"。
-     相似度为 s 的一对成为候选的概率是 1 - (1 - s^rows)^bands，是一条 S 形曲线，
-     拐点大约在 (1/bands)^(1/rows)，这就是有效阈值；
-   - 候选对再用签名估计的 Jaccard 复核，超过阈值的用并查集连成簇，每簇只留一篇。
+1. **Exact deduplication**: hash the full normalized text, and keep only the first document of each
+   hash. This is cheap, but it cannot find two documents that differ by one character.
+2. **Near-deduplication (MinHash + LSH)**:
+   - Split each document into a set of character n-grams (shingles). The similarity of two
+     documents is the Jaccard index = |A∩B| / |A∪B|.
+   - MinHash: use num_perm random hash functions. Each function takes the minimum hash value over
+     the set. The result is a signature vector. The probability that two signatures are equal at
+     one position is exactly the Jaccard index (this is the core property of MinHash).
+   - LSH: split the signature into `bands` bands of `rows` positions each. If one band is fully
+     equal, the two documents become a "candidate pair". A pair with similarity s becomes a
+     candidate with the probability 1 - (1 - s^rows)^bands. This is an S-shaped curve. Its
+     inflection point is at about (1/bands)^(1/rows), and this is the effective threshold.
+   - For each candidate pair, the Jaccard index estimated from the signatures is checked again.
+     Pairs above the threshold are joined into clusters with union-find. Each cluster keeps one document.
 
-用字符 n-gram 而不是词 n-gram，是为了让中文（没有空格分词）和英文用同一套代码。
-纯 NumPy 实现，适合讲解和中小规模；第二步处理 TB 级数据时用 datatrove 等工具的同款算法。
+The code uses character n-grams, not word n-grams. Then Chinese (no spaces between words) and
+English use the same code. The implementation is pure NumPy, for teaching and for small to medium
+data sizes. For terabytes of data in Step 2, use the same algorithm in tools such as datatrove.
 """
 
 from __future__ import annotations
@@ -40,7 +47,7 @@ def text_hash(text: str, normalize: bool = True) -> str:
 
 
 def exact_dedup(texts: Sequence[str], normalize: bool = True) -> list[int]:
-    """返回要保留的下标（每组完全相同的文档只留第一篇）。"""
+    """Return the indices to keep (from each group of identical documents, keep only the first one)."""
     seen: set[str] = set()
     keep = []
     for i, t in enumerate(texts):
@@ -52,7 +59,7 @@ def exact_dedup(texts: Sequence[str], normalize: bool = True) -> list[int]:
 
 
 def shingles(text: str, ngram: int = 5) -> set[str]:
-    """字符 n-gram 集合（先规范化、转小写、压缩空白）。"""
+    """The set of character n-grams (first normalize, change to lowercase, and collapse white space)."""
     t = " ".join(normalize_text(text).lower().split())
     if len(t) <= ngram:
         return {t} if t else set()
@@ -66,14 +73,14 @@ def jaccard(a: set[str], b: set[str]) -> float:
 
 
 def _hash32(s: str) -> int:
-    # 稳定的 32 位哈希（Python 自带的 hash() 每个进程加盐不同，不能用）
+    # A stable 32-bit hash. Do not use the built-in hash(): it uses a different salt in each process.
     return int.from_bytes(hashlib.blake2b(s.encode("utf-8"), digest_size=4).digest(), "little")
 
 
 class MinHasher:
-    """MinHash 签名：h_i(x) = ((a_i * x + b_i) mod p) & 0xFFFFFFFF，取集合上的最小值。
+    """MinHash signature: h_i(x) = ((a_i * x + b_i) mod p) & 0xFFFFFFFF, minimum over the set.
 
-    a_i < 2^31、x < 2^32，乘积 < 2^63，在 uint64 里不会溢出。
+    a_i < 2^31 and x < 2^32, so the product is < 2^63. It does not overflow in uint64.
     """
 
     def __init__(self, num_perm: int = 128, ngram: int = 5, seed: int = 0) -> None:
@@ -97,7 +104,7 @@ def estimate_jaccard(sig_a: np.ndarray, sig_b: np.ndarray) -> float:
 
 
 def lsh_threshold(bands: int, rows: int) -> float:
-    """LSH S 形曲线的近似拐点 (1/b)^(1/r)。"""
+    """Approximate inflection point (1/b)^(1/r) of the S-shaped LSH curve."""
     return (1.0 / bands) ** (1.0 / rows)
 
 
@@ -114,7 +121,7 @@ class _UnionFind:
     def union(self, a: int, b: int) -> None:
         ra, rb = self.find(a), self.find(b)
         if ra != rb:
-            # 让下标小的当根：每簇保留最早出现的那篇
+            # The smaller index becomes the root: each cluster keeps the document that occurs first
             if ra < rb:
                 self.parent[rb] = ra
             else:
@@ -122,7 +129,11 @@ class _UnionFind:
 
 
 def _signatures(args: tuple[int, int, int, list[str]]) -> np.ndarray:
-    """一批文档的 MinHash 签名（多进程时每个子进程算一批；同样的种子 → 同样的 a、b → 与单进程逐位相同）。"""
+    """MinHash signatures of a batch of documents.
+
+    With multiple processes, each child process computes one batch. The same seed gives the same a and b,
+    so the result is identical, bit for bit, to one process.
+    """
     num_perm, ngram, seed, texts = args
     hasher = MinHasher(num_perm=num_perm, ngram=ngram, seed=seed)
     if not texts:
@@ -139,19 +150,21 @@ def near_dedup(
     seed: int = 0,
     n_jobs: int = 1,
 ) -> tuple[list[int], list[list[int]]]:
-    """MinHash LSH 近似去重。
+    """MinHash LSH near-deduplication.
 
-    返回 (keep, clusters)：keep 是保留的下标；clusters 是所有大小 >= 2 的重复簇（每簇第一个是被保留的）。
-    n_jobs > 1 时用多进程计算签名（最耗时的一步，纯 Python 逐个 n-gram 哈希，单进程约 1 MB/s）；
-    分桶和复核仍在主进程里做，结果与单进程完全相同。
+    Returns (keep, clusters). keep holds the indices to keep. clusters holds all duplicate clusters
+    with size >= 2 (the first index of each cluster is the one that we keep).
+    With n_jobs > 1, multiple processes compute the signatures. This is the slowest step: pure Python
+    hashes each n-gram, at about 1 MB/s in one process.
+    The bucketing and the second check still run in the main process. The result is identical to one process.
     """
     if num_perm % bands != 0:
-        raise ValueError(f"num_perm={num_perm} 必须能被 bands={bands} 整除")
+        raise ValueError(f"num_perm={num_perm} must be divisible by bands={bands}")
     rows = num_perm // bands
     batch = 2000
     if n_jobs > 1 and len(texts) > batch:
         jobs = [(num_perm, ngram, seed, list(texts[i : i + batch])) for i in range(0, len(texts), batch)]
-        # spawn 而不是 fork：流水线进程里已有 numpy / tokenizers 的线程，fork 之后子进程可能死锁
+        # spawn, not fork: the pipeline process already has numpy / tokenizers threads, and after a fork the child can deadlock
         with ProcessPoolExecutor(n_jobs, mp_context=multiprocessing.get_context("spawn")) as ex:
             sigs = np.concatenate(list(ex.map(_signatures, jobs)))
     else:
@@ -166,7 +179,7 @@ def near_dedup(
         for members in buckets.values():
             if len(members) < 2:
                 continue
-            # 桶内两两复核（桶一般很小）；已经在同一簇的跳过
+            # Check each pair in the bucket again (buckets are usually small). Skip pairs that are already in the same cluster.
             for jj, j in enumerate(members[1:], start=1):
                 for i in members[:jj]:
                     if uf.find(i) != uf.find(j) and estimate_jaccard(sigs[i], sigs[j]) >= threshold:
@@ -181,7 +194,7 @@ def near_dedup(
 
 
 def dedup(texts: Sequence[str], near: bool = True, **near_kwargs: float) -> list[int]:
-    """先精确去重，再（可选）近似去重；返回保留的原始下标。"""
+    """Exact deduplication first, then (optional) near-deduplication. Return the original indices that we keep."""
     keep = exact_dedup(texts)
     if not near:
         return keep

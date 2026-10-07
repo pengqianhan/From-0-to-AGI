@@ -1,17 +1,22 @@
-"""第 12 章 · 极简代码 6：Muon —— 把矩阵的更新"正交化"，和 AdamW 在同样的 token 数下比一比
+"""Chapter 12 · Minimal code 6: Muon. "Orthogonalize" the update of each matrix, and compare with AdamW
+for the same number of tokens.
 
-Muon 对每个隐藏层权重矩阵：
-    M ← μ·M + G                 （动量）
-    U ← NS5(μ·M + G)            （5 步 Newton–Schulz，把 G = UΣVᵀ 变成约 UVᵀ：所有方向步长相同）
-    W ← W·(1 − ηλ) − η·0.2·√max(m,n)·U   （0.2·√max(m,n)：让更新的 RMS 和 AdamW 相当，学习率可以沿用）
-embedding、lm_head、RMSNorm 仍然用 AdamW（Kimi K2、GLM-4.5、DeepSeek-V4 的分组方式）。
+For each hidden-layer weight matrix, Muon does this:
+    M ← μ·M + G                 (momentum)
+    U ← NS5(μ·M + G)            (5 Newton–Schulz steps change G = UΣVᵀ into about UVᵀ:
+                                 the step size is the same in all directions)
+    W ← W·(1 − ηλ) − η·0.2·√max(m,n)·U   (0.2·√max(m,n) makes the RMS of the update similar to AdamW,
+                                          so the AdamW learning rate still works)
+The embedding, lm_head, and RMSNorm still use AdamW (the grouping of Kimi K2, GLM-4.5, and DeepSeek-V4).
 
-实验：阶梯里的 s2、s3 两个尺寸，和 03 脚本同样的 131,072 个字节，Muon 扫 3 个学习率，
-和 03 脚本里调好的 AdamW 最优值比较。这是"极小配置演示"：几万参数上的结果不能直接推到 0.7B。
+Experiment: the sizes s2 and s3 of the ladder, with the same 131,072 bytes as script 03. Sweep 3 learning
+rates for Muon, and compare with the best tuned AdamW from script 03. This is a "tiny-configuration demo":
+results on tens of thousands of parameters do not transfer directly to 0.7B.
 
-运行：uv run python chapters/12-scaling-laws/code/06_muon.py
-      （需要先跑 03_lr_sweep.py；共享 CPU 上单线程实测约 5 分钟，结果缓存在 out/ch12/muon.json）
-生产级实现：zero/train/muon.py（MuonAdamW + build_muon_optimizer），测试 tests/test_muon.py。
+Run: uv run python chapters/12-scaling-laws/code/06_muon.py
+     (run 03_lr_sweep.py first. Single thread, about 5 min measured on a shared CPU. The results are cached
+      in out/ch12/muon.json.)
+Production implementation: zero/train/muon.py (MuonAdamW + build_muon_optimizer), tests in tests/test_muon.py.
 """
 
 import argparse
@@ -32,9 +37,12 @@ SIZES = ["s2", "s3"]
 
 
 def newton_schulz5(G, steps=5):
-    """G → 约 UVᵀ。系数来自 Keller Jordan 的参考实现：5 步就把奇异值推到 1 附近。"""
+    """G → about UVᵀ. The coefficients come from the reference implementation of Keller Jordan.
+
+    5 steps move the singular values to about 1.
+    """
     a, b, c = 3.4445, -4.7750, 2.0315
-    X = G / (G.norm() + 1e-7)  # 最大奇异值 ≤ 1，迭代才收敛
+    X = G / (G.norm() + 1e-7)  # the iteration converges only when the largest singular value is ≤ 1
     tall = X.shape[0] > X.shape[1]
     if tall:
         X = X.T
@@ -45,7 +53,7 @@ def newton_schulz5(G, steps=5):
 
 
 class Muon(torch.optim.Optimizer):
-    """极简版：组里 muon=True 的走 Muon，否则走 torch 自带的 AdamW 公式。"""
+    """Minimal version: groups with muon=True use Muon. The other groups use the AdamW formula from torch."""
 
     def __init__(self, groups, lr, wd=0.1, momentum=0.95):
         super().__init__(groups, dict(lr=lr, wd=wd, momentum=momentum, muon=False))
@@ -63,14 +71,14 @@ class Muon(torch.optim.Optimizer):
                 U = newton_schulz5(p.grad + g["momentum"] * buf)  # Nesterov
                 p.mul_(1 - g["lr"] * g["wd"])
                 p.add_(U, alpha=-g["lr"] * 0.2 * math.sqrt(max(p.shape)))
-        for ga in self.adam.param_groups:  # AdamW 部分跟着调度走同一个学习率
+        for ga in self.adam.param_groups:  # the AdamW part follows the schedule with the same learning rate
             ga["lr"] = self.param_groups[0]["lr"]
         self.adam.step()
 
     def zero_grad(self, set_to_none=True):
         super().zero_grad(set_to_none)
 
-    def state_dict(self):  # 分叉时复制优化器状态用
+    def state_dict(self):  # copies the optimizer state at a branch
         return {"muon": super().state_dict(), "adam": self.adam.state_dict()}
 
     def load_state_dict(self, sd):
@@ -92,8 +100,8 @@ def main():
     torch.manual_seed(0)
     G = torch.randn(64, 32)
     s = torch.linalg.svdvals(newton_schulz5(G))
-    print(f"NS5 检查：随机 64×32 梯度的奇异值 {torch.linalg.svdvals(G / G.norm()).min():.3f}–"
-          f"{torch.linalg.svdvals(G / G.norm()).max():.3f} → 正交化后 {s.min():.3f}–{s.max():.3f}")
+    print(f"NS5 check: singular values of a random 64×32 gradient {torch.linalg.svdvals(G / G.norm()).min():.3f}–"
+          f"{torch.linalg.svdvals(G / G.norm()).max():.3f} → after orthogonalization {s.min():.3f}–{s.max():.3f}")
 
     sweep = sw.run_sweep()
     best = sw.best_lrs(sweep)
@@ -105,7 +113,7 @@ def main():
         if name not in SIZES:
             continue
         grid = list(MUON_LRS)
-        while True:  # 和 03 一样：最优在网格边上就往外扩一倍
+        while True:  # as in 03: if the best value is at an edge of the grid, add a value 2× farther out
             for lr in grid:
                 if (name, lr) in done:
                     continue
@@ -122,8 +130,8 @@ def main():
                 grid = [top * 2]
             else:
                 break
-    print(f"\n同样 {sw.SWEEP_TOKENS:,} 字节，验证 loss（bit/字节）：")
-    print(f"{'尺寸':>4} {'N':>8} | {'AdamW 最优':>14} | {'Muon 最优':>14} | 差")
+    print(f"\nSame {sw.SWEEP_TOKENS:,} bytes, validation loss (bit/byte):")
+    print(f"{'size':>4} {'N':>8} | {'AdamW best':>14} | {'Muon best':>14} | diff")
     for name in SIZES:
         mu = min((r for r in rows if r["size"] == name), key=lambda r: r["val_bpb"])
         ad = best[name]

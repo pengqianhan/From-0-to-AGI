@@ -1,7 +1,10 @@
-"""GGUF 导出：llama.cpp 官方转换脚本 + 分词对拍 + 贪心生成对拍 + 量化（第 20 章）。
+"""GGUF export: the official llama.cpp conversion script + tokenizer parity check + greedy generation
+parity check + quantization (Chapter 20).
 
-需要本地已有 llama.cpp 仓库（默认 ~/.cache/zero/llama.cpp，或环境变量 ZERO_LLAMA_CPP）；
-没有就跳过（测试不联网）。编译好的 llama-tokenize / llama-simple / llama-quantize 存在时再做对拍和量化。
+The tests need a local llama.cpp repository (default ~/.cache/zero/llama.cpp, or the environment
+variable ZERO_LLAMA_CPP). Without it, they are skipped (the tests do not use the network). The
+parity checks and the quantization run only if the built llama-tokenize / llama-simple /
+llama-quantize exist.
 """
 
 from __future__ import annotations
@@ -13,9 +16,9 @@ from zero.export import gguf
 
 LLAMA = gguf.default_llama_cpp_dir()
 pytestmark = pytest.mark.skipif(
-    not (LLAMA / "convert_hf_to_gguf.py").exists(), reason=f"没有 llama.cpp 仓库（{LLAMA}）"
+    not (LLAMA / "convert_hf_to_gguf.py").exists(), reason=f"No llama.cpp repository ({LLAMA})"
 )
-pytest.importorskip("sentencepiece")  # 官方转换脚本 import 它
+pytest.importorskip("sentencepiece")  # the official conversion script imports it
 
 
 @pytest.fixture(scope="module")
@@ -51,7 +54,7 @@ def test_convert_produces_gguf(exported) -> None:  # noqa: ANN001
     assert f32.read_bytes()[:4] == b"GGUF"
 
 
-@pytest.mark.skipif(gguf.find_binary("llama-tokenize") is None, reason="llama.cpp 未编译")
+@pytest.mark.skipif(gguf.find_binary("llama-tokenize") is None, reason="llama.cpp is not built")
 def test_llama_cpp_tokenizer_matches_ours(exported, chat_tok) -> None:  # noqa: ANN001
     _, f32, _ = exported
     for text in [
@@ -62,7 +65,7 @@ def test_llama_cpp_tokenizer_matches_ours(exported, chat_tok) -> None:  # noqa: 
         assert gguf.llama_tokenize(f32, text) == chat_tok.encode(text), text
 
 
-@pytest.mark.skipif(gguf.find_binary("llama-simple") is None, reason="llama.cpp 未编译")
+@pytest.mark.skipif(gguf.find_binary("llama-simple") is None, reason="llama.cpp is not built")
 def test_llama_cpp_greedy_matches_zero(exported, chat_tok) -> None:  # noqa: ANN001
     from zero.generate import generate
 
@@ -71,10 +74,10 @@ def test_llama_cpp_greedy_matches_zero(exported, chat_tok) -> None:  # noqa: ANN
     ours = generate(model, chat_tok.encode(prompt), 12, temperature=0.0)
     out = gguf.run_llama(f32, prompt, 12)
     assert out.strip().startswith(prompt.strip()[:10])
-    assert chat_tok.decode(ours).strip() in out  # f32 GGUF 的贪心输出与 zero 逐 token 一致
+    assert chat_tok.decode(ours).strip() in out  # the greedy output of the f32 GGUF is the same as zero, token by token
 
 
-@pytest.mark.skipif(gguf.find_binary("llama-quantize") is None, reason="llama.cpp 未编译")
+@pytest.mark.skipif(gguf.find_binary("llama-quantize") is None, reason="llama.cpp is not built")
 @pytest.mark.parametrize("qtype", ["Q8_0", "Q4_K_M"])
 def test_quantize_and_run(exported, qtype: str) -> None:  # noqa: ANN001
     _, f32, d = exported

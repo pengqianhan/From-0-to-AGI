@@ -1,26 +1,34 @@
-"""第 20 章 · GPU 实测：权重少一半，decode 就快近一倍吗？
+"""Chapter 20 · GPU measurement: with half the weight bytes, is decode almost 2× faster?
 
-第 3.1 节说：逐 token 生成（decode）时，每一步都要把全部权重从内存读一遍，瓶颈是带宽，
-所以权重小一半，读得就快近一倍。这里在一张 GPU 上实测这笔账（需要 CUDA）。
+Section 3.1 says: in token-by-token generation (decode), each step reads all weights from memory once.
+The bottleneck is bandwidth. Thus, with half the weight bytes, the read is almost 2× faster.
+This script measures this on one GPU (it needs CUDA).
 
-按主线模型（configs/main/pretrain.toml：28 层、宽 1280、FFN 3584、16 个查询头 / 8 个 K/V 头、
-共享 embedding 的输出层 65,536 × 1280）的全部矩阵搭一个 decode 步：batch 1，一个 token 的向量
-乘过 28 × 7 个矩阵和输出层。只保留矩阵乘（注意力、KV cache、norm 读的字节很少，第 21 章另算）。
-权重是随机的（N(0, 0.02²)，和初始化一样），这里只测速度，误差一列只作对照。几种格式和内核：
+We build one decode step from all matrices of the main-line model (configs/main/pretrain.toml:
+28 layers, width 1280, FFN 3584, 16 query heads / 8 K/V heads, output layer 65,536 × 1280 with a shared
+embedding): batch 1, the vector of one token goes through 28 × 7 matrices and the output layer.
+We keep only the matrix multiplications (attention, KV cache, and norm read few bytes; Chapter 21
+calculates them separately). The weights are random (N(0, 0.02²), the same as the initialization).
+We measure only the speed here; the error column is only for comparison. Formats and kernels:
 
-  BF16，cuBLAS              F.linear 的默认路径                                          16 bit/权重
-  BF16，torch.compile       同一个矩阵–向量乘写成"逐元素乘再求和"，让 torch.compile 生成一个内核
-  INT8，每行一个 scale        同样写法，但权重存 int8：编译出的内核直接读 int8、在芯片上转成 BF16
-                            再乘加，最后乘 scale（反量化融合进矩阵乘）                        ≈ 8 bit
-  INT4，每 32 个数一组        _weight_int4pack_mm（tinygemm 内核，torchao / gpt-fast 用的就是它）：
-                            每组一个 bf16 scale + 一个 bf16 zero，ŵ = (q − 8)·scale + zero     5 bit
-  INT8，先反量化再乘          w.to(bf16) * scale 先写出一份完整的 BF16 权重，再 F.linear（不融合）
+  BF16, cuBLAS              the default path of F.linear                                   16 bits/weight
+  BF16, torch.compile       the same matrix–vector product written as "multiply elementwise, then sum",
+                            so that torch.compile makes one kernel
+  INT8, 1 scale per row     the same code, but the weights are int8: the compiled kernel reads int8,
+                            converts to BF16 on the chip, multiplies and adds, then multiplies by
+                            the scale (dequantization is fused into the matrix multiplication)  ≈ 8 bits
+  INT4, groups of 32        _weight_int4pack_mm (the tinygemm kernel that torchao / gpt-fast use):
+                            each group has one bf16 scale + one bf16 zero, ŵ = (q − 8)·scale + zero  5 bits
+  INT8, dequantize first    w.to(bf16) * scale first writes a full BF16 copy of the weights,
+                            then F.linear (not fused)
 
-一步有近 200 个小 kernel，从 Python 逐个发射的开销（每个几微秒）会盖过读显存的时间，所以用 CUDA Graph
-把整步录下来、一次提交（推理引擎也是这么做的）。再看 batch 变大（一次同时生成 B 条）时 BF16 和 INT4 这笔账怎么变，
-最后单看几种大小不同的矩阵，各自能跑到多少带宽。
-没有 GPU 可以跳过；正文里贴了一次 RTX 3090 上的结果。
-运行：uv run python chapters/20-release/code/05_gpu_quant_matvec.py
+One step has almost 200 small kernels. The cost of launching each kernel from Python (a few
+microseconds each) is larger than the time to read the GPU memory. Thus, we record the full step with
+a CUDA Graph and submit it in one call (inference engines do the same). Then we look at how the
+comparison of BF16 and INT4 changes when the batch becomes larger (B sequences at the same time).
+At the end, we look at matrices of different sizes and the bandwidth that each one reaches.
+If you do not have a GPU, skip this script; the chapter text shows the results of one run on an RTX 3090.
+Run: uv run python chapters/20-release/code/05_gpu_quant_matvec.py
 """
 
 from __future__ import annotations
@@ -36,12 +44,12 @@ import torch.nn.functional as F
 
 ROOT = Path(__file__).resolve().parents[3]
 CFG = ROOT / "configs" / "main" / "pretrain.toml"
-HBM_BW = 936e9  # RTX 3090 显存带宽（规格表），字节/秒
-GROUP = 32  # INT4 每 32 个数一组
+HBM_BW = 936e9  # RTX 3090 memory bandwidth (data sheet), bytes/s
+GROUP = 32  # INT4: one group for each 32 numbers
 
 
 def shapes(m: dict) -> list[tuple[str, int, int]]:
-    """decode 一步要乘的全部矩阵：(名字, 输出维 N, 输入维 K)，和 nn.Linear 的 weight 一样是 N × K。"""
+    """All matrices of one decode step: (name, output dim N, input dim K). Each is N × K, the same as the weight of nn.Linear."""
     d, hd, f = m["dim"], m["head_dim"], m["ffn_dim"]
     q, kv = m["n_heads"] * hd, m["n_kv_heads"] * hd
     layer = [("wq", q, d), ("wk", kv, d), ("wv", kv, d), ("wo", d, q),
@@ -49,7 +57,7 @@ def shapes(m: dict) -> list[tuple[str, int, int]]:
     return layer * m["n_layers"] + [("lm_head", m["vocab_size"], d)]
 
 
-# ── 量化：INT8 每行一个 scale；INT4 按 tinygemm 的格式每 32 个数一组 ─────────────────
+# ── Quantization: INT8 with 1 scale per row; INT4 in groups of 32 in the tinygemm format ──
 def int8_rowwise(w: torch.Tensor):
     scale = w.float().abs().amax(1) / 127                                   # scale = max|w| / 127
     q = torch.round(w.float() / scale[:, None]).clamp(-127, 127).to(torch.int8)
@@ -57,45 +65,47 @@ def int8_rowwise(w: torch.Tensor):
 
 
 def int4_groupwise(w: torch.Tensor):
-    """每 GROUP 个数一组：q = round((w − min) / scale) ∈ [0, 15]，ŵ = (q − 8)·scale + zero，zero = min + 8·scale。"""
+    """One group for each GROUP numbers: q = round((w − min) / scale) ∈ [0, 15], ŵ = (q − 8)·scale + zero, zero = min + 8·scale."""
     N, K = w.shape
     g = w.float().view(N, K // GROUP, GROUP)
     mn, mx = g.amin(-1), g.amax(-1)
     scale = ((mx - mn) / 15).clamp(min=1e-8)
     q = torch.round((g - mn[..., None]) / scale[..., None]).clamp(0, 15).to(torch.int32)
     zero = mn + 8 * scale
-    deq = ((q - 8) * scale[..., None] + zero[..., None]).view(N, K)         # 参考：反量化后的权重
+    deq = ((q - 8) * scale[..., None] + zero[..., None]).view(N, K)         # reference: the dequantized weights
     q = q.view(N, K)
     packed = torch.ops.aten._convert_weight_to_int4pack((q[:, ::2] << 4 | q[:, 1::2]).to(torch.uint8), 8)
     sz = torch.stack([scale, zero], -1).transpose(0, 1).contiguous().to(torch.bfloat16)  # (K/32, N, 2)
     return packed, sz, deq
 
 
-# ── batch 1 的矩阵–向量乘写成"逐元素乘再沿 K 求和"，torch.compile 把它编译成一个内核 ──────
+# ── Batch-1 matrix–vector product as "multiply elementwise, then sum over K"; torch.compile makes one kernel ──
 @torch.compile(dynamic=False)
-def matvec_bf16(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:  # x (1, K)，w (N, K) → (N,)
+def matvec_bf16(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:  # x (1, K), w (N, K) → (N,)
     return (x * w).sum(-1)
 
 
 @torch.compile(dynamic=False)
 def matvec_int8(x: torch.Tensor, q: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
-    return (x * q.to(x.dtype)).sum(-1) * s  # 读 int8 → 在芯片上转 BF16 → 乘加 → 乘 scale，一个内核
+    return (x * q.to(x.dtype)).sum(-1) * s  # read int8 → convert to BF16 on the chip → multiply-add → multiply by scale, in one kernel
 
 
-# ── 计时：CUDA Graph 录下整步，重放多次取中位数 ─────────────────────────────────
+# ── Timing: record the full step with a CUDA Graph, replay it many times, take the median ──
 def graph_ms(fn, budget_s: float = 0.3, rounds: int = 5) -> float:
-    """录下 fn 为一个 CUDA Graph；每轮重放若干次取平均，共 rounds 轮，返回每步毫秒数的中位数。
-    每轮的重放次数按单步耗时定，让每轮大约 budget_s 秒（慢的格式少放几次，总时间可控）。"""
+    """Record fn as a CUDA Graph. In each of `rounds` rounds, replay it several times and take the mean.
+    Return the median milliseconds per step. The number of replays in a round depends on the time of
+    one step, so that each round takes about budget_s seconds (slow formats replay fewer times, so the
+    total time stays under control)."""
     side = torch.cuda.Stream()
     side.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(side):  # 录制前先在旁路 stream 上跑两遍（预热、编译、让 cuBLAS 选好算法）
+    with torch.cuda.stream(side):  # before recording, run twice on a side stream (warm up, compile, let cuBLAS select its algorithm)
         for _ in range(2):
             fn()
     torch.cuda.current_stream().wait_stream(side)
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
         fn()
-    graph.replay()  # 预热一次
+    graph.replay()  # warm up once
     torch.cuda.synchronize()
     a, b = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
     a.record()
@@ -117,7 +127,7 @@ def graph_ms(fn, budget_s: float = 0.3, rounds: int = 5) -> float:
 
 
 def copy_bandwidth(dev: str) -> float:
-    """复制一个 1 GiB 的 BF16 张量：读 1 GiB + 写 1 GiB，返回字节/秒。"""
+    """Copy a 1 GiB BF16 tensor: read 1 GiB + write 1 GiB. Return bytes/s."""
     src = torch.empty(2**29, device=dev, dtype=torch.bfloat16)
     dst = torch.empty_like(src)
     return 2 * src.numel() * 2 / (graph_ms(lambda: dst.copy_(src)) / 1e3)
@@ -125,12 +135,12 @@ def copy_bandwidth(dev: str) -> float:
 
 def main() -> None:
     if not torch.cuda.is_available():
-        print("本脚本需要 CUDA GPU；没有 GPU 可以跳过，正文里贴了一次 RTX 3090 上的结果。")
+        print("This script needs a CUDA GPU. Without a GPU, skip it; the chapter text shows the results of one run on an RTX 3090.")
         sys.exit(0)
     T0 = time.time()
     torch.manual_seed(0)
     dev = "cuda"
-    print(f"GPU：{torch.cuda.get_device_name(0)}，PyTorch {torch.__version__}，CUDA {torch.version.cuda}")
+    print(f"GPU: {torch.cuda.get_device_name(0)}, PyTorch {torch.__version__}, CUDA {torch.version.cuda}")
 
     m = tomllib.loads(CFG.read_text(encoding="utf-8"))["model"]
     mats = shapes(m)
@@ -144,21 +154,21 @@ def main() -> None:
         q8, s8 = int8_rowwise(w)
         p4, sz, deq4 = int4_groupwise(w)
         x = xs[k]
-        ref = x.float() @ w.float().T                                        # BF16 权重的精确输出
+        ref = x.float() @ w.float().T                                        # exact output of the BF16 weights
         y8 = (x.float() @ q8.float().T) * s8.float()
         y4 = torch.ops.aten._weight_int4pack_mm(x, p4, GROUP, sz).float()
-        y4_ref = x.float() @ deq4.T                                          # 用反量化权重手算
-        assert (y4 - y4_ref).norm() / y4_ref.norm() < 1e-2, "INT4 打包格式不对"
+        y4_ref = x.float() @ deq4.T                                          # calculate by hand with the dequantized weights
+        assert (y4 - y4_ref).norm() / y4_ref.norm() < 1e-2, "INT4 packing format is wrong"
         err["int8"].append(float((y8 - ref).norm() / ref.norm()))
         err["int4"].append(float((y4 - ref).norm() / ref.norm()))
         W.append(w)
         Q8.append((q8, s8))
         Q4.append((p4, sz))
-    print(f"主线模型的全部矩阵：28 层 × 7 + 输出层 = {len(mats)} 个，{n_params / 1e6:.1f}M 参数"
-          "（不含一维的 norm 权重）")
+    print(f"All matrices of the main-line model: 28 layers × 7 + output layer = {len(mats)}, {n_params / 1e6:.1f}M parameters"
+          " (without the 1D norm weights)")
 
     def run(fmt: str, B: int = 1, sel: list[int] | None = None):
-        """录下"乘过 sel 里的矩阵"（默认全部 197 个）为一步，返回毫秒数。"""
+        """Record "multiply by the matrices in sel" (by default all 197) as one step. Return milliseconds."""
         x = {k: torch.randn(B, k, device=dev, dtype=torch.bfloat16) for k in xs}
         idx = range(len(mats)) if sel is None else sel
 
@@ -173,26 +183,26 @@ def main() -> None:
                     matvec_int8(x[k], q8, s8)
                 elif fmt == "int4":
                     torch.ops.aten._weight_int4pack_mm(x[k], p4, GROUP, sz)
-                else:  # 先反量化成一份完整的 BF16 权重，再乘
+                else:  # first dequantize to a full BF16 copy of the weights, then multiply
                     F.linear(x[k], q8.to(torch.bfloat16) * s8[:, None])
 
         return graph_ms(step)
 
-    b8 = n_params + 2 * n_rows  # int8 权重 + 每行一个 bf16 scale
-    b4 = n_params // 2 + n_params // GROUP * 4  # 4 bit 权重 + 每组两个 bf16
-    rows = [  # (名字, 格式, 每步要读的权重字节, 误差)
-        ("BF16，cuBLAS（F.linear）", "bf16", 2 * n_params, None),
-        ("BF16，torch.compile 生成的内核", "bf16c", 2 * n_params, None),
-        ("INT8，torch.compile 融合反量化", "int8c", b8, "int8"),
-        ("INT4，tinygemm 内核", "int4", b4, "int4"),
-        ("INT8，先反量化成 BF16 再乘", "naive", b8, "int8"),
+    b8 = n_params + 2 * n_rows  # int8 weights + one bf16 scale per row
+    b4 = n_params // 2 + n_params // GROUP * 4  # 4-bit weights + two bf16 per group
+    rows = [  # (name, format, weight bytes read per step, error)
+        ("BF16, cuBLAS (F.linear)", "bf16", 2 * n_params, None),
+        ("BF16, torch.compile kernel", "bf16c", 2 * n_params, None),
+        ("INT8, compiled fused dequant", "int8c", b8, "int8"),
+        ("INT4, tinygemm kernel", "int4", b4, "int4"),
+        ("INT8, dequant to BF16 first", "naive", b8, "int8"),
     ]
     copy_bw = copy_bandwidth(dev)
-    print(f"参照：这张卡上复制一个 1 GiB 的张量（读 + 写各 1 GiB），实测 {copy_bw / 1e9:.0f} GB/s"
-          f"（规格表 936 GB/s 的 {100 * copy_bw / HBM_BW:.0f}%），这是实际能跑到的带宽上限的一个参照")
-    print("\n① batch 1 的 decode 一步（只有矩阵乘）：")
-    print(f"   {'格式与内核':28s} {'bit/权重':>8s} {'权重字节':>9s} {'一步耗时':>9s} {'等效带宽':>10s} "
-          f"{'占936GB/s':>9s} {'比cuBLAS快':>9s} {'输出相对误差':>10s}")
+    print(f"Reference: a copy of a 1 GiB tensor on this card (read 1 GiB + write 1 GiB) measured {copy_bw / 1e9:.0f} GB/s"
+          f" ({100 * copy_bw / HBM_BW:.0f}% of the 936 GB/s in the data sheet). This is a reference for the highest bandwidth in practice")
+    print("\n① One decode step with batch 1 (matrix multiplications only):")
+    print(f"   {'Format and kernel':28s} {'bits/w':>8s} {'W bytes':>9s} {'Step time':>9s} {'Eff. BW':>10s} "
+          f"{'% of peak':>9s} {'Speedup':>9s} {'Output err':>10s}")
     base = None
     for name, fmt, nbytes, e in rows:
         ms = run(fmt)
@@ -201,17 +211,17 @@ def main() -> None:
         es = "—" if e is None else f"{100 * statistics.mean(err[e]):.2f}%"
         print(f"   {name:28s} {8 * nbytes / n_params:8.2f} {nbytes / 1e9:7.3f}GB {ms:7.3f}ms "
               f"{bw / 1e9:6.0f}GB/s {100 * bw / HBM_BW:8.0f}% {base / ms:8.2f}× {es:>10s}")
-    print(f"   （理论下限 = 权重字节 ÷ 936 GB/s：BF16 {2 * n_params / HBM_BW * 1e3:.3f} ms，"
-          f"INT8 {b8 / HBM_BW * 1e3:.3f} ms，INT4 {b4 / HBM_BW * 1e3:.3f} ms。"
-          "等效带宽 = 权重字节 ÷ 耗时；最后一行实际还要多写、多读一份 BF16 权重）")
+    print(f"   (Theoretical lower bound = weight bytes ÷ 936 GB/s: BF16 {2 * n_params / HBM_BW * 1e3:.3f} ms, "
+          f"INT8 {b8 / HBM_BW * 1e3:.3f} ms, INT4 {b4 / HBM_BW * 1e3:.3f} ms. "
+          "Effective bandwidth = weight bytes ÷ time. The last row also writes and reads one extra BF16 copy of the weights.)")
 
-    print("\n② 一次同时生成 B 条（batch B），一步耗时（毫秒）：")
-    print(f"   {'B':>4s} {'BF16 cuBLAS':>12s} {'INT4 tinygemm':>14s} {'INT4 比 BF16 快':>14s}")
+    print("\n② Generate B sequences at the same time (batch B), time for one step (ms):")
+    print(f"   {'B':>4s} {'BF16 cuBLAS':>12s} {'INT4 tinygemm':>14s} {'INT4 speedup':>14s}")
     for B in (1, 8, 32, 128, 512):
         t16, t4 = run("bf16", B), run("int4", B)
         print(f"   {B:4d} {t16:12.3f} {t4:14.3f} {t16 / t4:13.2f}×")
-    print("\n③ 为什么离理论下限还远：单看一种矩阵（28 层各乘一次，取平均），batch 1 的等效带宽（GB/s）")
-    print(f"   {'矩阵':8s} {'形状 N×K':>12s} {'BF16 大小':>10s} {'BF16 cuBLAS':>12s} {'INT8 编译':>10s} "
+    print("\n③ Why the time is far from the lower bound: one matrix type at a time (one product in each of the 28 layers, mean), effective bandwidth for batch 1 (GB/s)")
+    print(f"   {'Matrix':8s} {'Shape N×K':>12s} {'BF16 size':>10s} {'BF16 cuBLAS':>12s} {'INT8 comp.':>10s} "
           f"{'INT4 tinygemm':>14s}")
     for nm in ("wk", "w_up", "lm_head"):
         sel = [i for i, (name, _, _) in enumerate(mats) if name == nm]
@@ -223,8 +233,8 @@ def main() -> None:
         print(f"   {nm:8s} {f'{n}×{k}':>12s} {2 * n * k / 2**20:8.1f}MiB {gbs[0]:12.0f} {gbs[1]:10.0f} "
               f"{gbs[2]:14.0f}")
 
-    print(f"\n显存峰值 {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB，"
-          f"总耗时 {time.time() - T0:.0f}s")
+    print(f"\nPeak GPU memory {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB, "
+          f"total time {time.time() - T0:.0f}s")
 
 
 if __name__ == "__main__":

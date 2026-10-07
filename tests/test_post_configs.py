@@ -1,4 +1,7 @@
-"""configs/tiny 与 configs/main 的后训练 / 评测配置都能解析，且模型形状与上游阶段一致（第 16–20 章）。"""
+"""The post-training / evaluation configs in configs/tiny and configs/main parse.
+
+The model shape is the same as in the upstream stage (Chapters 16–20).
+"""
 
 from __future__ import annotations
 
@@ -41,7 +44,7 @@ def test_post_configs_parse_and_match_shape(tier: str, upstream: str, stage: str
     if tier == "tiny":
         assert cfg.train.cpu_threads == 1
     if stage == "distill" and tier == "main":
-        assert sec["teacher"].license_allows_distillation is False  # 许可证没核实前拒绝运行
+        assert sec["teacher"].license_allows_distillation is False  # refuse to run until the license is verified
 
 
 @pytest.mark.parametrize("tier", ["tiny", "main"])
@@ -53,7 +56,7 @@ def test_eval_configs_parse(tier: str) -> None:
 def test_unknown_section_rejected(tmp_path) -> None:  # noqa: ANN001
     from zero.config import ConfigError
 
-    with pytest.raises(ConfigError, match="未知的配置节"):
+    with pytest.raises(ConfigError, match="Unknown config section"):
         load_post_config({"dpoo": {}}, {"dpo": DPOConfig})
-    with pytest.raises(ConfigError, match="你是不是想写 'beta'"):
+    with pytest.raises(ConfigError, match="did you mean 'beta'"):
         load_post_config({"dpo": {"betta": 0.1}, "data": {"format": "none"}}, {"dpo": DPOConfig})

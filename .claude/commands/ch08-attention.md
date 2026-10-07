@@ -1,57 +1,59 @@
 ---
-description: 第 8 章自我检验：注意力（加权平均、Q/K/V、缩放点积、因果 mask、多头与张量形状）
+description: "Chapter 8 self-check: attention — weighted average, Q/K/V, scaled dot product, causal mask, multiple heads and tensor shapes (第 8 章自检：注意力——加权平均、Q/K/V、缩放点积、因果 mask、多头与张量形状)"
 ---
 
-# 第 8 章自我检验：注意力
+# Chapter 8 self-check: attention
 
-用户调用了 `/ch08-attention`，说明他们刚学完第 8 章（`chapters/08-attention/`）。你的任务是帮他们检验自己是否真正理解了，而不是告诉他们答案。
+The learner typed `/ch08-attention`. They finished Chapter 8 (`chapters/08-attention/`). Help them check if they really understand it. Do not give them the answers.
 
-**检验方式**：逐一提问下面的问题，等用户用自己的话回答后，再给出反馈——哪里说对了，哪里还有偏差，以及如何深化理解。不要一次性把所有问题都抛出去。
+**Language**: Use the language of the learner. If the learner writes in Chinese, ask the questions and give feedback in Chinese. The Chinese text of the chapter is in `README.zh.md`. Write short, clear sentences (see `docs/STYLE_GUIDE.md`).
 
----
-
-## 检验问题（按难度递进）
-
-**第一关：从平均到注意力**
-
-问用户：
-> 不看资料，用一句话说出注意力的输出是什么。再说说：为什么"把前面所有 token 的向量取平均"可以写成一个下三角矩阵乘以 X？这个矩阵的第 3 行（从 0 数起）长什么样？
-
-期望回答：注意力的输出是前文值向量的加权平均，权重由数据决定、每行和为 1。前缀平均的系数排成下三角矩阵 W，W @ X 的第 t 行就是前 t+1 个向量各乘 1/(t+1) 相加；第 3 行是 `[1/4, 1/4, 1/4, 1/4, 0, …]`。能提到"上三角为 0 = 不看未来"是加分项。
+**Method**: Ask the questions below one at a time. Wait for the learner to answer in their own words. Then give feedback: tell them what is correct, what is not correct, and how to make their understanding deeper. Do not ask all the questions at the same time.
 
 ---
 
-**第二关：Q、K、V 与 √d 的直觉**
+## Questions (from easy to difficult)
 
-问用户：
-> 第 3 节里直接用 `x·x` 做分数时，5 个位置全都最关注自己。为什么？Q、K 分成两个投影是怎么解决这个问题的？另外，如果 head_dim 从 64 换成 1024，不除以 √d 会发生什么？
+**Level 1: from the average to attention**
 
-期望回答：`x·x = |x|²`，向量和自己方向完全一致，点积往往最大。用不同的 `W_q`、`W_k` 投影后，分数变成 `q_t·k_s`，查询"我在找什么"和键"我有什么"可以不一样，模型能学会去找别的位置。不缩放时 `q·k` 的方差约等于 d（`03_why_sqrt_d.py` 实测 d = 1024 时约 1027），softmax 接近 one-hot（最大权重 0.957），梯度变小；除以 √d 后方差回到约 1。
+Ask the learner:
+> Without your notes, say in one sentence what the output of attention is. Then explain: why can "the average of the vectors of all earlier tokens" be written as a lower-triangular matrix multiplied by X? What does row 3 of this matrix look like (count from 0)?
 
----
-
-**第三关：因果 mask 与形状（发现问题）**
-
-问用户：
-> 一个同学实现注意力时把 mask 写成了 `torch.tril(..., diagonal=-1)` 上的位置填 −∞（也就是把下三角 mask 掉）。训练损失降得飞快，但生成的文本一塌糊涂。发生了什么？另外，B=2、T=16、C=64、H=4 时，权重矩阵和每个头的输出分别是什么形状？
-
-期望回答：他把"过去"屏蔽了、把"未来"放开了，模型在训练时可以直接看到下一个 token（答案），所以训练损失很低；生成时未来并不存在，模型没学会用前文预测，所以生成很差。（第 0 行甚至会只剩自己可看，但主要问题是偷看答案。）形状：权重 (2, 4, 16, 16) 即 (B, H, T, T)，每个头的输出 (2, 4, 16, 16) 即 (B, H, T, d)，d = 64/4 = 16；拼回后 (2, 16, 64)。能指出"两个 16 含义不同"是加分项。
+Expected answer: the output of attention is a weighted average of the value vectors of the context. The data sets the weights, and each row of weights sums to 1. Put the coefficients of the prefix average in a lower-triangular matrix W. Then row t of W @ X is the sum of the first t+1 vectors, each multiplied by 1/(t+1). Row 3 is `[1/4, 1/4, 1/4, 1/4, 0, …]`. Extra credit: "the upper triangle is 0 = do not look at the future".
 
 ---
 
-**第四关：迁移到生产级**
+**Level 2: the intuition of Q, K, V and √d**
 
-问用户：
-> `zero/model.py` 的 `Attention` 里，`wk` 的输出维度是 `n_kv_heads × head_dim` 而不是 `n_heads × head_dim`，最后调用 `F.scaled_dot_product_attention(..., enable_gqa=...)`。这比本章的极简版省下了什么？为什么本章的 `05_zero_parity.py` 能证明两者在数学上一致？
+Ask the learner:
+> In Section 3, the score is `x·x` directly, and all 5 positions attend most to themselves. Why? How do two separate projections, Q and K, solve this problem? Also: if head_dim changes from 64 to 1024 and we do not divide by √d, what happens?
 
-期望回答：这是 GQA：几个查询头共用一组 K/V，`wk`、`wv` 的参数更少（例子里 4096 → 3072），推理时 KV cache 也按比例变小（第 10 章）。`05_zero_parity.py` 先关掉 QK-Norm、让 RoPE 变成恒等变换，把极简版的权重原样加载进 zero，输出最大差 8.9e-08；再把 GQA 和"手工复制 K/V 后做普通多头注意力"比较，最大差也是 8.9e-08。整个模型和 HF Qwen3 的一致性由 `tests/test_model_hf_parity.py` 保证。能提到 SDPA 在 GPU 上会走 FlashAttention、但这条路径尚未在 GPU 上验证，是加分项。
+Expected answer: `x·x = |x|²`. A vector points in exactly the same direction as itself, so this dot product is often the largest. With different projections `W_q` and `W_k`, the score becomes `q_t·k_s`. The query ("what am I looking for") and the key ("what do I have") can be different, so the model can learn to look for other positions. Without scaling, the variance of `q·k` is about d (`03_why_sqrt_d.py` measured about 1027 at d = 1024). Softmax comes close to one-hot (max weight 0.957), and the gradient becomes smaller. After division by √d, the variance goes back to about 1.
 
 ---
 
-## 反馈原则
+**Level 3: causal mask and shapes (find the problem)**
 
-- 答对了：认可，然后追问一个更深的"为什么"。
-- 答错了：不要直接给答案，给一个提示（比如让他们去改 `02_attention_from_scratch.py` 或 `03_why_sqrt_d.py` 跑一跑），让他们重新思考。
-- 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
+Ask the learner:
+> A classmate implemented attention and filled the positions of `torch.tril(..., diagonal=-1)` with −∞ (so the mask hides the lower triangle). The training loss decreases very fast, but the generated text is very bad. What happened? Also: with B=2, T=16, C=64, H=4, what are the shapes of the weight matrix and of the output of each head?
 
-四关都通过后，告诉用户可以进入第 9 章（`chapters/09-modern-transformer/`，学完后用 `/ch09-transformer` 自检）。
+Expected answer: the classmate hid the "past" and opened the "future". In training, the model can see the next token (the answer) directly, so the training loss is very low. In generation, the future does not exist. The model did not learn to predict from the context, so the generated text is bad. (Row 0 can even see only itself, but the main problem is that the model looks at the answer.) Shapes: the weights are (2, 4, 16, 16), that is (B, H, T, T). The output of each head is (2, 4, 16, 16), that is (B, H, T, d), with d = 64/4 = 16. After concatenation, the shape is (2, 16, 64). Extra credit: "the two 16s have different meanings".
+
+---
+
+**Level 4: transfer to production code**
+
+Ask the learner:
+> In the `Attention` of `zero/model.py`, the output dimension of `wk` is `n_kv_heads × head_dim`, not `n_heads × head_dim`. At the end, it calls `F.scaled_dot_product_attention(..., enable_gqa=...)`. What does this save, compared with the minimal version of this chapter? Why does `05_zero_parity.py` of this chapter prove that the two are mathematically the same?
+
+Expected answer: this is GQA. Several query heads share one K/V group, so `wk` and `wv` have fewer parameters (4096 → 3072 in the example). During inference, the KV cache also becomes smaller in proportion (Chapter 10). `05_zero_parity.py` first turns off QK-Norm and makes RoPE the identity transformation. Then it loads the weights of the minimal version into zero without changes; the max output difference is 8.9e-08. Then it compares GQA with "a manual copy of K/V, followed by normal multi-head attention"; the max difference is also 8.9e-08. `tests/test_model_hf_parity.py` makes sure that the full model agrees with HF Qwen3. Extra credit: SDPA uses FlashAttention on the GPU. This was verified on an RTX 3090: with BF16 (and `enable_gqa=True` for GQA), the default backend is flash.
+
+---
+
+## Rules for feedback
+
+- If the answer is correct: say so. Then ask a deeper "why" question.
+- If the answer is not correct: do not give the answer. Give a hint. For example, ask the learner to change `02_attention_from_scratch.py` or `03_why_sqrt_d.py` and run it. Then let them think again.
+- If the learner says "I do not know": ask them to guess first. A wrong guess is better than no guess.
+
+When the learner passes all four levels, tell them to continue to Chapter 9 (`chapters/09-modern-transformer/`). After Chapter 9, they can check themselves with `/ch09-transformer`.

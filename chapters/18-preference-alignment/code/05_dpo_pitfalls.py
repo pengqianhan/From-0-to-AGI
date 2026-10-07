@@ -1,14 +1,17 @@
-"""第 18 章 · 极简代码 5：DPO 的几个坑（沿用 04 的小模型和任务）
+"""Chapter 18 · Minimal code 5: pitfalls of DPO (the same small model and task as 04).
 
-① 学习率太大：margin 冲得很高，模型却坏了——留出题答对的概率掉、采样出来的回答连格式都不对。
-   zero 的冒烟测试踩过同一个坑（configs/tiny/dpo.toml 的注释）：lr = 5e-4 时 24 步 margin 冲到 4.8，
-   接下来 GRPO 阶段的格式正确率从 0.16 掉到 0；改成 5e-5 较稳。
-② chosen 的概率也会一起掉：DPO 只要求"chosen 比 rejected 涨得多（或掉得少）"，
-   没要求 chosen 本身变大。当 rejected 和 chosen 很像（错答案只差 1 或 2）时，
-   在这个玩具上 chosen 的 log 概率一路下降，留出题反而变差。
-③ 过拟合：训练集上的隐式奖励准确率远高于留出题。
+① Learning rate too large: the margin goes very high, but the model breaks. The probability of
+   the correct answer on held-out prompts goes down, and many samples do not have the correct format.
+   The smoke test of zero had the same problem (see the comments in configs/tiny/dpo.toml): with
+   lr = 5e-4, the margin went to 4.8 in 24 steps. Then the format accuracy in the GRPO stage fell
+   from 0.16 to 0. With 5e-5, training was more stable.
+② The probability of chosen can go down too. DPO only asks that "chosen goes up more (or goes down
+   less) than rejected". It does not ask that chosen itself goes up. When rejected and chosen are
+   similar (the wrong answer is off by only 1 or 2), the log-probability of chosen goes down
+   all the time in this toy, and the held-out results become worse.
+③ Overfitting: the implicit-reward accuracy on the training set is much higher than on held-out prompts.
 
-运行：uv run python chapters/18-preference-alignment/code/05_dpo_pitfalls.py   （CPU 时间约 1 分钟；机器繁忙时墙钟几分钟）
+Run: uv run python chapters/18-preference-alignment/code/05_dpo_pitfalls.py   (about 1 min of CPU time; a few minutes of wall time on a busy machine)
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from pathlib import Path
 
 import torch
 
-torch.set_num_threads(1)  # 构建机多任务共享 CPU（本机可删）
+torch.set_num_threads(1)  # The build machine shares its CPU between jobs (you can remove this line).
 
 HERE = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("toy04", HERE / "04_toy_dpo.py")
@@ -48,24 +51,27 @@ def near_miss() -> dict:
 
 def main() -> None:
     rows = lr_sweep()
-    print("① 扫学习率（β = 0.1，150 步；第一行 lr = 0 是 SFT 参考模型本身）：")
-    print(f"   {'lr':>6} | {'margin':>7} | {'训练acc':>6} | {'留出答对概率':>10} | {'采样格式正确':>10} | {'采样答对':>7}")
+    print("① Sweep the learning rate (β = 0.1, 150 steps; the first row, lr = 0, is the SFT reference model itself).\n"
+          "   P(correct) is on the held-out prompts. 'well-formed' and 'correct' are fractions of samples:")
+    print(f"   {'lr':>6} | {'margin':>7} | {'tr. acc':>6} | {'  P(correct)':>10} | {' well-formed':>10} | {' correct':>7}")
     for r in rows:
         print(f"   {r['lr']:>6.0e} | {r['margin']:>+7.2f} | {r['acc']:>7.2f} | {r['p_correct']:>12.3f} | "
               f"{r['format']:>12.3f} | {r['sample_acc']:>8.3f}")
-    print("   margin 越大 ≠ 越好：lr 太大时，模型为了把 rejected 压下去，把整片'数字'的概率都压坏了。")
+    print("   Larger margin ≠ better. When lr is too large, the model pushes rejected down "
+          "and damages the probabilities of all 'digit' tokens.")
 
     nm = near_miss()
-    print("\n② 错答案只差 1 或 2（chosen 与 rejected 很像），β = 0.1，lr = 1e-3：")
-    print(f"   {'步':>4} | {'margin':>7} | {'acc':>5} | {'log π(chosen)':>13} | {'log π(rejected)':>15}")
+    print("\n② The wrong answers are off by only 1 or 2 (chosen and rejected are similar), β = 0.1, lr = 1e-3:")
+    print(f"   {'step':>4} | {'margin':>7} | {'acc':>5} | {'log π(chosen)':>13} | {'log π(rejected)':>15}")
     for h in nm["hist"]:
         print(f"   {h['step']:>4} | {h['margin']:>+7.3f} | {h['acc']:.2f} | {h['logp_w']:>13.3f} | {h['logp_l']:>15.3f}")
     b, a = nm["base"], nm["after"]
-    print(f"   留出题：答对的概率 {b['p_correct']:.3f} → {a['p_correct']:.3f} | 采样答对 {b['sample_acc']:.3f} → "
-          f"{a['sample_acc']:.3f} | 格式 {b['format']:.3f} → {a['format']:.3f}")
-    print("   损失在降、margin 在涨、训练 acc 在涨——可 chosen 的概率也在掉，留出题变差了。")
-    print(f"\n③ 训练集隐式奖励 acc {nm['hist'][-1]['acc']:.2f} vs 留出题 {a['pref_acc']:.2f}（①里 lr = 1e-3："
-          f"训练 {rows[2]['acc']:.2f} vs 留出 {rows[2]['pref_acc']:.2f}）：只看训练集指标会高估效果。")
+    print(f"   held-out: P(correct) {b['p_correct']:.3f} → {a['p_correct']:.3f} | correct samples {b['sample_acc']:.3f} → "
+          f"{a['sample_acc']:.3f} | well-formed {b['format']:.3f} → {a['format']:.3f}")
+    print("   The loss goes down, the margin goes up, and the training acc goes up. "
+          "But the probability of chosen also goes down, and the held-out results become worse.")
+    print(f"\n③ Implicit-reward acc: training set {nm['hist'][-1]['acc']:.2f} vs held-out {a['pref_acc']:.2f} (in ①, lr = 1e-3: "
+          f"training {rows[2]['acc']:.2f} vs held-out {rows[2]['pref_acc']:.2f}). Training metrics alone overestimate the result.")
 
 
 if __name__ == "__main__":

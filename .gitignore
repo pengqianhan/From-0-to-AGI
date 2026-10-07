@@ -9,14 +9,14 @@ wheels/
 # Virtual environments
 .venv
 
-# 视频产物（只提交源码，不提交渲染结果）
+# Video outputs (commit only the source code, not the rendered results)
 **/video/out/
 media/
 *.mp4
 *.wav
 *.mp3
 
-# 训练产物（权重、数据、日志不进 git）
+# Training outputs (weights, data, and logs stay out of git)
 *.pt
 *.safetensors
 *.gguf

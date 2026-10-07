@@ -1,15 +1,17 @@
-"""与 Hugging Face Qwen3 格式互转（对应第 9、20 章）。
+"""Conversion to and from the Hugging Face Qwen3 format (Chapters 9 and 20).
 
-`zero` 的模型结构与 `Qwen3ForCausalLM`（稠密版）一一对应，所以可以：
+Each part of the `zero` model structure matches one part of `Qwen3ForCausalLM` (dense version).
+Thus you can:
 
-- `load_from_hf_qwen3`：把官方实现的权重搬进 `zero.Transformer`，用来做 logits 对拍
-  （`tests/test_model_hf_parity.py`）；
-- `export_to_hf_qwen3`：把训练好的 `zero` 模型导出成 transformers / vLLM / llama.cpp 都认识的
-  目录（`config.json` + `model.safetensors` + 可选的分词器文件）。
+- `load_from_hf_qwen3`: move the weights of the official implementation into `zero.Transformer`,
+  for a parity check of the logits (`tests/test_model_hf_parity.py`).
+- `export_to_hf_qwen3`: export a trained `zero` model to a directory that transformers / vLLM /
+  llama.cpp can read (`config.json` + `model.safetensors` + optional tokenizer files).
 
-导出本身只依赖 `safetensors`，不需要安装 transformers；加载 HF 模型对象时才需要。
+The export needs only `safetensors`; it does not need transformers. Only the load of an HF model
+object needs transformers.
 
-参数名对照（i 为层号）：
+Parameter names (i is the layer index):
 
 | zero | Hugging Face Qwen3 |
 |---|---|
@@ -20,7 +22,7 @@
 | layers.i.ffn_norm.weight | model.layers.i.post_attention_layernorm.weight |
 | layers.i.ffn.w_gate/w_up/w_down.weight | model.layers.i.mlp.gate_proj/up_proj/down_proj.weight |
 | norm.weight | model.norm.weight |
-| lm_head.weight | lm_head.weight（共享 embedding 时不单独保存） |
+| lm_head.weight | lm_head.weight (not saved separately when it shares the embedding) |
 """
 
 from __future__ import annotations
@@ -54,7 +56,7 @@ _LAYER_MAP = {
 
 
 def zero_to_hf_name(name: str) -> str:
-    """zero 参数名 → HF 参数名。"""
+    """zero parameter name → HF parameter name."""
     if name == "tok_emb.weight":
         return "model.embed_tokens.weight"
     if name == "norm.weight":
@@ -65,18 +67,19 @@ def zero_to_hf_name(name: str) -> str:
         _, idx, rest = name.split(".", 2)
         if rest in _LAYER_MAP:
             return f"model.layers.{idx}.{_LAYER_MAP[rest]}"
-    raise KeyError(f"无法映射的参数名：{name}")
+    raise KeyError(f"No mapping for the parameter name: {name}")
 
 
 # ---------------------------------------------------------------------------
-# 配置互转
+# Config conversion
 # ---------------------------------------------------------------------------
 
 
 def config_to_hf_qwen3(config: ModelConfig, **extra: Any) -> dict[str, Any]:
-    """ModelConfig → Qwen3 的 config.json 内容（dict）。
+    """ModelConfig → the content of the Qwen3 config.json (dict).
 
-    同时写新旧两种 RoPE 字段：transformers>=5 读 `rope_parameters`，旧版本读 `rope_theta`/`rope_scaling`。
+    Write both the new and the old RoPE fields: transformers>=5 reads `rope_parameters`; older
+    versions read `rope_theta`/`rope_scaling`.
     """
     rope_parameters: dict[str, Any] = {
         "rope_type": "default",
@@ -117,7 +120,7 @@ def config_to_hf_qwen3(config: ModelConfig, **extra: Any) -> dict[str, Any]:
 
 
 def config_from_hf_qwen3(hf_config: Any) -> ModelConfig:
-    """HF 的 Qwen3Config（对象或 dict）→ ModelConfig。"""
+    """HF Qwen3Config (object or dict) → ModelConfig."""
     get = (
         hf_config.get
         if isinstance(hf_config, dict)
@@ -146,9 +149,9 @@ def config_from_hf_qwen3(hf_config: Any) -> ModelConfig:
             if src.get(k) is not None:
                 scaling[k] = src[k]
     elif rope_type != "default":
-        raise ValueError(f"暂不支持的 rope_type：{rope_type}")
+        raise ValueError(f"This rope_type is not supported yet: {rope_type}")
     if get("attention_bias", False):
-        raise ValueError("zero 的模型没有 bias，不能加载 attention_bias=True 的模型")
+        raise ValueError("zero models have no bias, so they cannot load a model with attention_bias=True")
     return ModelConfig(
         vocab_size=get("vocab_size"),
         dim=get("hidden_size"),
@@ -168,7 +171,7 @@ def config_from_hf_qwen3(hf_config: Any) -> ModelConfig:
 
 
 # ---------------------------------------------------------------------------
-# 加载
+# Load
 # ---------------------------------------------------------------------------
 
 
@@ -180,7 +183,7 @@ def _read_hf_dir(path: Path) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
     sd: dict[str, torch.Tensor] = {}
     files = sorted(path.glob("*.safetensors"))
     if not files:
-        raise FileNotFoundError(f"{path} 里没有 .safetensors 文件")
+        raise FileNotFoundError(f"{path} contains no .safetensors files")
     for fp in files:
         sd.update(load_file(str(fp)))
     return sd, cfg
@@ -189,10 +192,10 @@ def _read_hf_dir(path: Path) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
 def load_from_hf_qwen3(
     hf_model_or_state_dict: Any, config: ModelConfig | None = None, strict: bool = True
 ) -> Transformer:
-    """从 HF Qwen3 加载权重，返回 `zero.Transformer`。
+    """Load weights from HF Qwen3 and return a `zero.Transformer`.
 
-    参数可以是：`Qwen3ForCausalLM` 对象、它的 state_dict、或一个导出的目录路径（含 config.json 与 safetensors）。
-    传 state_dict 时必须同时给 config。
+    The argument can be a `Qwen3ForCausalLM` object, its state_dict, or the path of an exported
+    directory (with config.json and safetensors). With a state_dict, also give config.
     """
     if isinstance(hf_model_or_state_dict, str | os.PathLike):
         sd, hf_cfg = _read_hf_dir(Path(hf_model_or_state_dict))
@@ -200,7 +203,7 @@ def load_from_hf_qwen3(
     elif isinstance(hf_model_or_state_dict, dict):
         sd = hf_model_or_state_dict
         if config is None:
-            raise ValueError("传 state_dict 时需要同时传 config")
+            raise ValueError("With a state_dict, also give config")
     else:
         sd = hf_model_or_state_dict.state_dict()
         config = config or config_from_hf_qwen3(hf_model_or_state_dict.config)
@@ -209,23 +212,23 @@ def load_from_hf_qwen3(
     new_sd = {}
     for name in model.state_dict():
         if name == "lm_head.weight" and config.tie_embeddings:
-            continue  # 共享权重：跟着 tok_emb 走
+            continue  # shared weights: they come with tok_emb
         hf_name = zero_to_hf_name(name)
         if hf_name not in sd:
             if name == "lm_head.weight" and "model.embed_tokens.weight" in sd:
                 new_sd[name] = sd["model.embed_tokens.weight"]
                 continue
-            raise KeyError(f"HF 权重里缺少 {hf_name}（对应 zero 的 {name}）")
+            raise KeyError(f"The HF weights do not contain {hf_name} (zero name: {name})")
         new_sd[name] = sd[hf_name]
     missing, unexpected = model.load_state_dict(new_sd, strict=False)
     missing = [m for m in missing if not (m == "lm_head.weight" and config.tie_embeddings)]
     if strict and (missing or unexpected):
-        raise RuntimeError(f"加载不完整：missing={missing} unexpected={unexpected}")
+        raise RuntimeError(f"Incomplete load: missing={missing} unexpected={unexpected}")
     return model
 
 
 # ---------------------------------------------------------------------------
-# 导出
+# Export
 # ---------------------------------------------------------------------------
 
 
@@ -238,12 +241,17 @@ def export_to_hf_qwen3(
     chat: bool = False,
     chat_template: str | None = None,
 ) -> Path:
-    """导出成 HF 目录：config.json、generation_config.json、model.safetensors，以及（给了分词器时）
-    tokenizer.json / tokenizer_config.json（含 chat_template）/ special_tokens_map.json。返回目录路径。
+    """Export to an HF directory and return the path of the directory.
 
-    chat=True 表示对话模型（SFT 之后）：生成的结束符是 `<|im_end|>`（同时保留 `<|endoftext|>`），
-    与 Qwen3 的对话模型一致；Base 模型保持 `<|endoftext|>`。
-    chat_template 默认用 `zero.post.chat.CHAT_TEMPLATE`（Base 模型也写上，与 Qwen3 Base 的做法一致）。"""
+    The directory contains config.json, generation_config.json, and model.safetensors. With a
+    tokenizer, it also contains tokenizer.json / tokenizer_config.json (with chat_template) /
+    special_tokens_map.json.
+
+    chat=True means a chat model (after SFT): the end-of-generation token is `<|im_end|>` (and
+    `<|endoftext|>` stays), as in the Qwen3 chat models. A base model keeps `<|endoftext|>`.
+    chat_template defaults to `zero.post.chat.CHAT_TEMPLATE` (also for a base model, as in
+    Qwen3 Base).
+    """
     from safetensors.torch import save_file
 
     config = config or model.config
@@ -253,7 +261,7 @@ def export_to_hf_qwen3(
     tensors: dict[str, torch.Tensor] = {}
     for name, tensor in model.state_dict().items():
         if name == "lm_head.weight" and config.tie_embeddings:
-            continue  # safetensors 不允许共享存储；HF 通过 tie_word_embeddings=true 自动绑回去
+            continue  # safetensors does not allow shared storage; HF ties the weights again from tie_word_embeddings=true
         tensors[zero_to_hf_name(name)] = tensor.detach().to("cpu", dtype).contiguous()
     save_file(tensors, str(out / "model.safetensors"), metadata={"format": "pt"})
 

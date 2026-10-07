@@ -1,132 +1,137 @@
-# 第 15 章：中期训练与长上下文 —— 最后一段怎么训，读不长怎么办
+# Chapter 15: Mid-training and long context — How to train the last stage, and how to read longer text
 
-> **一句话目标**：读完这一章，你能说清楚"退火"为什么要在 WSD 的衰减段换上高质量数据，并会用"分叉衰减"低成本地比较两种配比；能算出任意 RoPE 设置下每个维度对的波长，讲清楚模型为什么读不了比训练时更长的文本；能手写 YaRN 的频率插值并和官方实现对拍；知道主线模型怎样从 4K 扩到 32K、闸门 2 要检查什么。
+**English** · [中文](README.zh.md)
 
-📺 **本章视频**：待发布（本地渲染：`bash chapters/15-midtraining-long-context/video/build.sh`）
-🧪 **本章自检**：学完后在 Claude Code 里输入 `/ch15-midtraining`
+> **Goal**: After this chapter, you can explain why "annealing" changes to high-quality data in the decay phase of WSD. You can use "branched decay" to compare two data mixtures at a low cost. You can calculate the wavelength of each dimension pair for any RoPE setting, and explain why a model cannot read text that is longer than its training length. You can write the frequency interpolation of YaRN by hand and do a parity check against the official implementation. You know how the main-line model extends from 4K to 32K, and what Gate 2 must check.
+
+📺 **Video**: Not published yet. To render it on your computer, run `bash chapters/15-midtraining-long-context/video/build.sh`.
+🧪 **Self-check**: After the chapter, type `/ch15-midtraining` in Claude Code.
 
 ---
 
-上一章我们把主线模型的预训练搭好了：几千张卡时、几千亿 token，学习率按 WSD 走 warmup 和稳定段（`configs/main/pretrain.toml` 里 `decay_frac = 0`，衰减段故意留着没走）。这一章要解决预训练收尾时的两个问题：
+In the last chapter, we prepared the pretraining of the main-line model: thousands of GPU-hours and hundreds of billions of tokens. The learning rate follows WSD through warmup and the stable phase. (In `configs/main/pretrain.toml`, `decay_frac = 0`: we keep the decay phase for later on purpose.) This chapter solves two problems at the end of pretraining:
 
-1. **最后一段怎么训？** 学习率降下来的那一小段，对最终模型的影响出奇地大。几乎所有头部开源模型都在这一段换上"最好的数据"——这叫**退火（annealing）**或**中期训练（mid-training）**。
-2. **读不长怎么办？** 预训练用的是 4K 长度的片段（注意力的算力随长度平方增长，全程用 32K 太贵）。可主线模型要做工具调用，工具说明加上多轮对话动辄上万 token。一个只见过 4K 的模型，直接读 32K 会崩。办法是改 RoPE 的"转速"再接着训一小段：**调大 RoPE 基频**和 **YaRN**。
+1. **How do we train the last stage?** In the short stage where the learning rate decreases, the training has a surprisingly large effect on the final model. Almost all leading open models change to "the best data" in this stage. This is **annealing** or **mid-training**.
+2. **What do we do when the model cannot read long text?** Pretraining uses sequences of length 4K. (The compute of attention increases with the square of the length, so 32K for all of training costs too much.) But the main-line model must call tools. Tool descriptions and a multi-turn conversation often have more than 10,000 tokens. A model that saw only 4K fails when it reads 32K directly. The solution is to change the "rotation speed" of RoPE and then train a little more: a **larger RoPE base frequency** and **YaRN**.
 
-这两件事做完，主线 Base 模型就出炉了，接着是**闸门 2**：拿它的真实评测成绩和闸门 1 的预测对比，明显偏低就先诊断，不急着进后训练。
+After these two steps, the main-line base model is ready. Then comes **Gate 2**: compare its real evaluation results with the predictions of Gate 1. If the results are clearly lower, diagnose the cause first. Do not hurry into post-training.
 
-本章代码（都在 CPU 上跑）：
+The code of this chapter (all of it runs on a CPU):
 
 ```bash
-uv run python chapters/15-midtraining-long-context/code/01_rope_wavelengths.py   # 波长表、没见过的角度、32K 的算力账（1 秒）
-uv run python chapters/15-midtraining-long-context/code/02_yarn_from_scratch.py  # 从零写 PI / YaRN，与 zero、HF 对拍（几秒）
-uv run python chapters/15-midtraining-long-context/code/03_context_extension.py  # 长度 64 训练 → 读 128/256（单线程约 11 分钟 CPU 时间）
-uv run python chapters/15-midtraining-long-context/code/04_anneal_mixture.py     # 分叉衰减：衰减 × 换数据（单线程约 8 分钟 CPU 时间）
+uv run python chapters/15-midtraining-long-context/code/01_rope_wavelengths.py   # wavelength table, unseen angles, compute cost of 32K (1 s)
+uv run python chapters/15-midtraining-long-context/code/02_yarn_from_scratch.py  # PI / YaRN from scratch, parity check with zero and HF (a few seconds)
+uv run python chapters/15-midtraining-long-context/code/03_context_extension.py  # train at length 64 → read 128/256 (about 11 min of CPU time on one thread)
+uv run python chapters/15-midtraining-long-context/code/04_anneal_mixture.py     # branched decay: decay × new data (about 8 min of CPU time on one thread)
 ```
 
-## 1. 中期训练：学习率最低的那一段，喂最好的数据
+## 1. Mid-training: give the best data in the stage with the lowest learning rate
 
-### 1.1 直觉：最后学到的，记得最牢
+### 1.1 Intuition: what the model learns last, it remembers best
 
-第 6 章做过一个实验：学习率恒定的主干上随时分出一小段衰减，验证损失马上掉一截，追平了事先定好总长的余弦调度。MiniCPM（WSD 的提出者）在 0.036B 模型上看到同样的现象：**衰减段只占约 10% 的步数，损失却急剧下降**。
+Chapter 6 did an experiment. From a trunk with a constant learning rate, it branched off a short decay at different points. Each time, the validation loss immediately decreased by a large step. It became equal to a cosine schedule with a total length that was set in advance. MiniCPM (the paper that introduced WSD) saw the same effect on a 0.036B model: **the decay phase is only about 10% of the steps, but the loss decreases sharply**.
 
-原因可以用第 1 章的画面理解：学习率大时，参数在谷底附近来回跳，"大方向"学得快，细节落不下来；学习率降下来，参数才慢慢落进谷底。换句话说，**衰减段决定了模型最后停在哪里**，而停在哪里，取决于这一段看的是什么数据。
+Use the picture from Chapter 1 to understand the cause. When the learning rate is large, the parameters jump from side to side near the bottom of the valley. The model learns the "general direction" quickly, but it cannot settle on the details. Only when the learning rate decreases do the parameters slowly go down to the bottom of the valley. In other words, **the decay phase sets where the model stops at the end**. And where the model stops depends on the data that it sees in this phase.
 
-于是一个很自然的想法：既然最后这一段这么"有分量"，那就把最好、最想让模型学会的数据留到这一段。这就是中期训练：
+This gives a natural idea. The last stage has a large effect, so keep the best data for this stage: the data that we most want the model to learn. This is mid-training:
 
 ```
-预训练（稳定段）：海量网页为主，学习率恒定          ≈ 90–95% 的算力
-中期训练（衰减段）：换成高质量数据 + 数学/代码 + 指令式数据，学习率降到 0   ≈ 5–10%
+Pretraining (stable phase): mostly a very large amount of web pages, constant learning rate          ≈ 90–95% of the compute
+Mid-training (decay phase): change to high-quality data + math/code + instruction-style data, learning rate decays to 0   ≈ 5–10%
 ```
 
-"中期"这个名字是说它在预训练和后训练（SFT、RL）之间：目标仍然是通用的下一个 token 预测，但数据已经开始向"想要的能力"倾斜。
+The name "mid" means that this stage is between pretraining and post-training (SFT, RL). The objective is still general next-token prediction. But the data starts to move toward "the skills that we want".
 
-### 1.2 谁在这么做
+### 1.2 Who does this
 
-| 模型 | 做法 | 来源 |
+| Model | Method | Source |
 |---|---|---|
-| **OLMo 2** | 明确叫 mid-training，占总算力 5–10%：学习率线性降到 0，数据换成 Dolmino Mix（高质量过滤的网页约占一半，外加 FLAN 指令数据、学术论文、维基、StackExchange 问答、合成数学）。7B 用 50B token 做三遍（不同数据顺序）再把权重平均 | [OLMo 2 §2.3、§4](https://arxiv.org/abs/2501.00656) |
-| **Llama 3** | 预训练最后的退火：学习率线性降到 0，同时上采样"质量非常高"的数据；还用退火来**评估数据**：把训练到一半的 8B 模型在 40B token 上退火，新数据集占 30% | [Llama 3 §3.1.3、§3.4.3](https://arxiv.org/abs/2407.21783) |
-| **SmolLM3** | WSD 的衰减段（10T → 11.1T token）进一步上采样数学和代码，并加入 OpenMathReasoning 等指令与推理数据；之后还有"长上下文 + 推理"的 mid-training | [SmolLM3 博客](https://github.com/huggingface/blog/blob/main/smollm3.md) |
-| **MiniCPM** | 衰减段把高质量的 SFT 数据混进预训练数据；对照实验显示"衰减段就加入"比"只在 SFT 阶段加入"好 | [MiniCPM §5、§6.2](https://arxiv.org/abs/2404.06395) |
-| **Qwen3** | 第二阶段（约 5T token）提高 STEM、代码、推理和合成数据的比例，并"加快学习率衰减" | [Qwen3 §3.2](https://arxiv.org/abs/2505.09388) |
-| **MobileLLM-R1** | 两段各 100B token 的 mid-training，学习率线性降到 0，数据以 Dolmino 为基础再加数学和代码，并用 Llama-3.1-8B 做 logits 蒸馏 | [MobileLLM-R1 §3、附录 A](https://arxiv.org/abs/2509.24945) |
-| **Puro-2B** | 第二阶段 960B token 线性衰减，同时把每个来源内部的数据按质量分从低到高排序，越好的越靠后；排序比随机顺序的 15 项平均高 1.18 分 | [Puro-2B §3.4](https://www.alphaxiv.org/abs/2608.27370) |
+| **OLMo 2** | Explicitly calls it mid-training: 5–10% of the total compute. The learning rate decays linearly to 0. The data changes to Dolmino Mix: about half is high-quality filtered web pages, plus FLAN instruction data, academic papers, Wikipedia, StackExchange Q&A, and synthetic math. The 7B model does three runs with 50B tokens each (different data orders), then averages the weights | [OLMo 2 §2.3, §4](https://arxiv.org/abs/2501.00656) |
+| **Llama 3** | Annealing at the end of pretraining: the learning rate decays linearly to 0, and the training upsamples data of "very high quality". Llama 3 also uses annealing to **evaluate data**: it anneals a half-trained 8B model on 40B tokens, with the new data set at 30% | [Llama 3 §3.1.3, §3.4.3](https://arxiv.org/abs/2407.21783) |
+| **SmolLM3** | In the decay phase of WSD (10T → 11.1T tokens), it upsamples math and code more, and adds instruction and reasoning data such as OpenMathReasoning. After that, it has one more mid-training for "long context + reasoning" | [SmolLM3 blog](https://github.com/huggingface/blog/blob/main/smollm3.md) |
+| **MiniCPM** | In the decay phase, it mixes high-quality SFT data into the pretraining data. A controlled experiment shows that "add it in the decay phase" is better than "add it only in the SFT stage" | [MiniCPM §5, §6.2](https://arxiv.org/abs/2404.06395) |
+| **Qwen3** | The second stage (about 5T tokens) increases the share of STEM, code, reasoning, and synthetic data, and it "accelerates the learning-rate decay" | [Qwen3 §3.2](https://arxiv.org/abs/2505.09388) |
+| **MobileLLM-R1** | Two mid-training stages of 100B tokens each. The learning rate decays linearly to 0. The data is Dolmino plus more math and code. It also uses Llama-3.1-8B for logits distillation | [MobileLLM-R1 §3, Appendix A](https://arxiv.org/abs/2509.24945) |
+| **Puro-2B** | The second stage has 960B tokens with linear decay. In each source, it sorts the data by quality score from low to high, so the better data comes later. The sorted order is 1.18 points higher than a random order on the mean of 15 tasks | [Puro-2B §3.4](https://www.alphaxiv.org/abs/2608.27370) |
 
-OLMo 2 的效果最直观（表 9）：7B 模型中期训练前后，10 项评测平均分从 53.0 升到 62.9，GSM8K 从 24.1 升到 67.5。而每一遍中期训练只有 50B token，约为 3.9T 预训练的 1.3%（做了三遍再平均）。
+OLMo 2 shows the effect most directly (Table 9). For the 7B model, mid-training increases the mean score of 10 evaluations from 53.0 to 62.9, and GSM8K from 24.1 to 67.5. Each mid-training run has only 50B tokens, about 1.3% of the 3.9T tokens of pretraining (three runs, then an average).
 
-### 1.3 为什么有效：三个理由
+### 1.3 Why it works: three reasons
 
-1. **低学习率把东西"定"下来**。上面说过，衰减段决定模型停在哪里；这一段看到的数据分布，对最终模型的影响比同样多的 token 放在前面大得多。
-2. **好数据少，只够用在刀刃上**。高质量数学、代码、指令数据往往只有几十亿到几百亿 token，摊在几万亿 token 的预训练里，要么占比微不足道，要么被重复很多遍。MiniCPM 正是这么论证的：集中放在衰减段，既不用反复重复小数据集，又赶上了"最有分量"的那段。OLMo 2 的"微退火"实验还发现：目标领域的数据只要**出现**就有用，数学占 10% 和 35% 的结果差不多（GSM8K 子集 61 vs 63.5，退火前是 28.5）。
-3. **评估数据变便宜了**。想知道一个新数据集好不好，用不着从头训一个模型：从稳定段的某个 checkpoint 分出一小段衰减，比较"加它"和"不加它"就行。Llama 3 用这个办法给小数据集估值（做法与 Blakeney et al. 2024 类似），OLMo 2 叫它"微退火（microannealing）"。这正是第 6 章"分叉衰减"的用法，只是这回分叉比的是数据。
+1. **A low learning rate "fixes" what the model learns.** As we said above, the decay phase sets where the model stops. The data distribution in this phase has a much larger effect on the final model than the same number of tokens earlier in training.
+2. **Good data is rare, so put it where it has the most effect.** High-quality math, code, and instruction data often has only billions to tens of billions of tokens. Spread over a pretraining run of trillions of tokens, it either has a share that is too small to matter, or it repeats many times. MiniCPM gives this argument: put the data together in the decay phase. Then the small data sets do not repeat many times, and they arrive in the phase with the largest effect. The "microannealing" experiments of OLMo 2 also found that data of the target domain helps when it is **present**. Math at 10% and at 35% gave almost the same result (GSM8K subset 61 vs 63.5; before annealing, 28.5).
+3. **Data evaluation becomes cheap.** To find out if a new data set is good, you do not need to train a model from zero. Branch off a short decay from a checkpoint of the stable phase, and compare "with the data" and "without the data". Llama 3 uses this method to measure the value of small data sets (the method is similar to Blakeney et al. 2024). OLMo 2 calls it "microannealing". This is the same use of "branched decay" as in Chapter 6, but this time the branches compare data.
 
-### 1.4 小实验：衰减 × 换数据
+### 1.4 Small experiment: decay × new data
 
-`04_anneal_mixture.py` 用第 9 章的极简 Transformer（字节级）在三种"来源"上训练：英文（莎士比亚）、中文（古诗词）、代码。主干配比是 英 0.45 / 中 0.45 / 代码 0.10——代码是"少而想补强"的那类数据，好比 OLMo 2 里的数学。主干以恒定学习率训 800 步，然后从同一个点分出 4 条支路，各训 200 步：
+`04_anneal_mixture.py` trains the minimal Transformer of Chapter 9 (byte level) on three "sources": English (Shakespeare), Chinese (classical poetry), and code. The mixture of the trunk is English 0.45 / Chinese 0.45 / code 0.10. Code is the kind of data that is "rare, and we want to make that skill stronger", like math in OLMo 2. The trunk trains for 800 steps at a constant learning rate. Then 4 branches start from the same point, and each branch trains for 200 steps:
 
 ```python
-decay = [PEAK_LR * (1 - (s + 1) / BRANCH_STEPS) for s in range(BRANCH_STEPS)]   # 线性降到 0
+decay = [PEAK_LR * (1 - (s + 1) / BRANCH_STEPS) for s in range(BRANCH_STEPS)]   # linear decay to 0
 const = [PEAK_LR] * BRANCH_STEPS
 branches = {
+    # 恒定 = constant, 衰减 = decay, 原配比 = old mixture, 新配比 = new mixture
     "A 恒定 + 原配比": (const, MIX_PRETRAIN),
     "B 衰减 + 原配比": (decay, MIX_PRETRAIN),
-    "C 恒定 + 新配比": (const, MIX_ANNEAL),     # 新配比：英 0.25 / 中 0.25 / 代码 0.50
+    "C 恒定 + 新配比": (const, MIX_ANNEAL),     # new mixture: English 0.25 / Chinese 0.25 / code 0.50
     "D 衰减 + 新配比": (decay, MIX_ANNEAL),
 }
 ```
 
-输出（验证集 bits-per-byte，越低越好；单线程约 8 分钟 CPU 时间）：
+> **Note:** The names of the branches and the sources in the code stay in Chinese. They are keys in the result cache, and the video of this chapter reads these keys. The comment in the code gives their meanings. The script prints the English names.
 
-| | 英文 | 中文 | 代码 | 平均 |
+Output (validation bits-per-byte, lower is better; about 8 min of CPU time on one thread):
+
+| | English | Chinese | Code | Mean |
 |---|---:|---:|---:|---:|
-| 分叉点（主干 800 步） | 2.759 | 3.148 | 2.746 | 2.884 |
-| A 恒定 + 原配比 | 2.700 | 3.097 | 2.632 | 2.810 |
-| B 衰减 + 原配比 | 2.549 | 3.037 | 2.472 | 2.686 |
-| C 恒定 + 新配比 | 2.803 | 3.168 | 2.223 | 2.731 |
-| D 衰减 + 新配比 | 2.642 | 3.097 | **2.091** | **2.610** |
+| Branch point (trunk, 800 steps) | 2.759 | 3.148 | 2.746 | 2.884 |
+| A constant + old mixture | 2.700 | 3.097 | 2.632 | 2.810 |
+| B decay + old mixture | 2.549 | 3.037 | 2.472 | 2.686 |
+| C constant + new mixture | 2.803 | 3.168 | 2.223 | 2.731 |
+| D decay + new mixture | 2.642 | 3.097 | **2.091** | **2.610** |
 
-> 关于数字：本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同机器、不同版本的底层数学库，浮点运算的顺序略有不同，训练几百步后会把这些微小差异放大，你本机跑出的数字可能从小数点后第二三位开始就不一样；请以下文不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-11-15.md](../../runs/2026-10-01-gpu0-check/chapters-11-15.md)。
+> **About the numbers:** The numbers of the training experiments in this chapter come from one CPU run on the course build machine. Different machines and different versions of the low-level math libraries do the floating-point operations in a slightly different order. After a few hundred training steps, these small differences become larger. Your numbers can be different from the second or third decimal place. Use the conclusions below, which do not depend on the exact values. For a rerun on another server in 2026-10, see [runs/2026-10-01-gpu0-check/chapters-11-15.md](../../runs/2026-10-01-gpu0-check/chapters-11-15.md).
 
-以"继续恒定学习率、不换数据"的 A 为基准，代码的 bits-per-byte 下降了：只衰减（B）0.160，只换数据（C）0.409，两者一起（D）0.541。几个值得注意的地方：
+Use A ("keep the constant learning rate, do not change the data") as the baseline. The bits-per-byte of code decreased by 0.160 with decay only (B), by 0.409 with new data only (C), and by 0.541 with both (D). Look at these points:
 
-- **衰减本身对所有来源都有用**：B 比 A 在英文、中文、代码上都低约 0.06–0.17，这是第 6 章看到过的现象；
-- **换数据是"有取有舍"**：C 的代码大幅变好，但英文、中文比 A 还差（英文 2.803 vs 2.700），因为它们的份额从 0.45 降到了 0.25；
-- **D 把两者叠起来**：代码最好、平均最好；英文、中文不如 B（2.642 vs 2.549、3.097 vs 3.037），但仍然好于或等于 A。真实的中期训练也要做这个权衡——所以 OLMo 2 的 Dolmino 里高质量网页仍占约一半，而不是全换成数学；
-- 四条支路一共只多训了 4 × 200 = 800 步，却回答了"衰减值不值、换数据值不值"两个问题。这就是"分叉衰减"作为数据实验工具的价值。
+- **Decay alone helps all sources**: B is about 0.06–0.17 lower than A on English, Chinese, and code. We saw this effect in Chapter 6.
+- **New data is a trade-off**: in C, code becomes much better, but English and Chinese become worse than in A (English 2.803 vs 2.700). The reason is that their shares decreased from 0.45 to 0.25.
+- **D adds the two effects together**: it has the best code and the best mean. English and Chinese are not as good as in B (2.642 vs 2.549, 3.097 vs 3.037), but they are still better than or equal to A. Real mid-training must make the same trade-off. This is why high-quality web pages are still about half of Dolmino in OLMo 2, and not all of it changes to math.
+- The four branches together added only 4 × 200 = 800 steps. But they answered two questions: "Is decay worth it?" and "Is new data worth it?" This is the value of "branched decay" as a tool for data experiments.
 
-这是单个种子、约 84 万参数（第 9 章的极简 Transformer）的极小实验，只用来演示方法；差距的大小不能外推到主线模型。
+This is a very small experiment with one seed and about 840K parameters (the minimal Transformer of Chapter 9). It only shows the method. Do not extrapolate the size of the differences to the main-line model.
 
-### 1.5 主线模型的中期训练加什么
+### 1.5 What the mid-training of the main-line model adds
 
-按 GOAL.md 3.3，主线模型的中期训练在高质量网页之外加三类数据（`configs/main/midtrain.toml`，比例待第二步的分叉衰减实验确定）：
+GOAL.md Section 3.3 specifies the mid-training data of the main-line model. In addition to the high-quality web pages, it adds three kinds of data (`configs/main/midtrain.toml`; the branched-decay experiments of Step 2 will set the ratios):
 
-- **数学与代码**：FineMath、Stack-Edu（OLMo 2、SmolLM3、Llama 3 都在这一段上采样它们）；
-- **指令式数据**：像 OLMo 2 的 FLAN、MiniCPM 的 SFT 数据那样，让 Base 模型提前熟悉"问—答"的格式；
-- **工具调用格式数据**：这是主线模型自己的需要（第 16、19 章的目标是工具调用）。让 `<tool_call>{...}</tool_call>` 这种格式在预训练末尾就出现，后训练时模型不用从零学格式。**这一点是本课的设计选择，不是已核实的行业共识**，第二步会用分叉衰减验证它到底有没有用。
+- **Math and code**: FineMath and Stack-Edu (OLMo 2, SmolLM3, and Llama 3 all upsample them in this stage).
+- **Instruction-style data**: like FLAN in OLMo 2 and the SFT data in MiniCPM. This data lets the base model learn the "question–answer" format early.
+- **Tool-calling format data**: the main-line model needs this data (the goal of Chapters 16 and 19 is tool calling). If a format such as `<tool_call>{...}</tool_call>` occurs at the end of pretraining, the model does not have to learn the format from zero in post-training. **This point is a design choice of this course, not a verified consensus of the field.** In Step 2, a branched-decay experiment will check if it really helps.
 
-两条纪律：中期训练数据同样要做 13-gram 去污染（GOAL.md 3.2）；OLMo 2 为了调中期训练只允许自己看 GSM8K 1319 题里的 200 题，我们更严格——所有决策只看自己的开发集，测试基准只在闸门上跑。
+Two rules apply. First, the mid-training data also needs 13-gram decontamination (GOAL.md 3.2). Second, OLMo 2 let itself look at only 200 of the 1319 GSM8K questions to tune mid-training. We are stricter: all decisions use only our own development set, and the test benchmarks run only at the gates.
 
-## 2. 长上下文：为什么模型读不长
+## 2. Long context: why the model cannot read long text
 
-### 2.1 RoPE 的钟表
+### 2.1 The clock of RoPE
 
-第 9 章讲过 RoPE：把 q、k 的 `head_dim` 维两两配成 `d/2` 对，第 i 对在位置 m 旋转 `m·ω_i` 弧度：
+Chapter 9 explained RoPE. It puts the `head_dim` dimensions of q and k into `d/2` pairs. At position m, pair i turns by `m·ω_i` radians:
 
 ```
-ω_i = θ^(-2i/d)             转速（θ 是基频，默认 1 万）
-λ_i = 2π / ω_i = 2π·θ^(2i/d)  波长：转满一圈需要多少个 token
+ω_i = θ^(-2i/d)               rotation speed (θ is the base frequency, default 10,000)
+λ_i = 2π / ω_i = 2π·θ^(2i/d)  wavelength: the number of tokens for one full turn
 ```
 
-像一块有 64 根指针的钟：第 0 根是秒针，每个 token 转 1 弧度；最后一根比时针还慢。`01_rope_wavelengths.py` 用主线模型的 `head_dim = 128` 算出每对的波长：
+Think of a clock with 64 hands. Hand 0 is the second hand: it turns 1 radian for each token. The last hand is slower than the hour hand. `01_rope_wavelengths.py` calculates the wavelength of each pair for `head_dim = 128` of the main-line model:
 
 ```python
 def wavelengths(head_dim: int, theta: float) -> np.ndarray:
     return 2 * math.pi / inv_freq(head_dim, theta)    # λ_i = 2π/ω_i
 ```
 
-输出（节选，单位：token）：
+Output (part; unit: tokens):
 
-| 维度对 i | θ = 1 万 | θ = 50 万（Llama 3） | θ = 100 万（Qwen3 长上下文） |
+| Dimension pair i | θ = 10K | θ = 500K (Llama 3) | θ = 1M (Qwen3 long context) |
 |---:|---:|---:|---:|
 | 0 | 6.3 | 6.3 | 6.3 |
 | 16 | 62.8 | 167.1 | 198.7 |
@@ -134,80 +139,80 @@ def wavelengths(head_dim: int, theta: float) -> np.ndarray:
 | 48 | 6,283 | 118K | 199K |
 | 63 | 54K | 2.6M | 5.1M |
 
-| 长度 L 内转不满一圈（λ_i > L）的维度对个数（共 64 对） | θ = 1 万 | θ = 50 万 | θ = 100 万 |
+| Pairs that do not make one full turn in length L (λ_i > L), of 64 pairs | θ = 10K | θ = 500K | θ = 1M |
 |---|---:|---:|---:|
 | L = 4096 | 18 | 32 | 33 |
 | L = 32768 | 4 | 22 | 24 |
 
-最快那一对的波长永远是 2π ≈ 6.3（每个 token 转 1 弧度），和 θ 无关；θ 只决定后面的指针有多慢。
+The wavelength of the fastest pair is always 2π ≈ 6.3 (1 radian for each token). It does not depend on θ. θ sets only how slow the later hands are.
 
-### 2.2 读不长的两个原因
+### 2.2 Two reasons why the model cannot read long text
 
-**原因一：没见过的角度。** 训练长度 4096、θ = 1 万时，有 18 对指针在 4096 个 token 内**转不满一圈**。对这些维度对，模型只见过圆周上的一段弧；读到 32K 时，它们会转到训练中从没出现过的角度——就像一个只见过 0 点到 3 点的人，突然被问"9 点是什么意思"。YaRN 论文的解释是：转不满一圈的维度里其实藏着**绝对位置**信息，一旦越界，模型就不认识了。
+**Reason 1: unseen angles.** With a training length of 4096 and θ = 10K, 18 hands **do not make one full turn** in 4096 tokens. For these dimension pairs, the model saw only one arc of the circle. At 32K, they turn to angles that never occurred in training. Think of a person who saw a clock only between 0:00 and 3:00, and must suddenly say what "9:00" means. The YaRN paper gives this explanation: the dimensions that do not make one full turn carry **absolute position** information. When they go past the training range, the model does not recognize them.
 
-**原因二：注意力被摊薄。** softmax 要在所有位置之间分配权重。位置从 4K 变成 32K，候选多了 8 倍，注意力分布会变"平"（熵变大），原本该集中的注意力被摊到大量无关位置上。YaRN 的"温度"就是针对这一点的（3.3 节）。
+**Reason 2: diluted attention.** The softmax divides the weights among all positions. When the positions increase from 4K to 32K, there are 8 times more candidates. The attention distribution becomes "flatter" (its entropy increases). Attention that should be concentrated spreads over many unrelated positions. The "temperature" of YaRN addresses this problem (Section 3.3).
 
-小实验（`03_context_extension.py`）把问题缩小到 CPU 上：第 9 章的极简 Transformer（字节级，`head_dim = 32`，θ = 1 万），只用长度 **64** 的片段训练 1500 步，然后直接在长度 128、256 的验证片段上算 loss。因果注意力下，位置 p 的预测只看得见 `[0, p]`，所以按位置分段看 loss，就知道"超出训练长度的部分"表现如何：
+A small experiment (`03_context_extension.py`) makes the problem small enough for a CPU. It takes the minimal Transformer of Chapter 9 (byte level, `head_dim = 32`, θ = 10K) and trains it for 1500 steps on sequences of length **64** only. Then it calculates the loss directly on validation sequences of length 128 and 256. With causal attention, the prediction at position p sees only `[0, p]`. Thus the loss in each position range shows how the model does "past the training length":
 
-预训练 3,072,000 个字节（token），然后**不做任何训练**，只换 RoPE 的 cos/sin（验证 loss，nat/字节，越低越好；最后三列按位置分段）：
+Pretrain on 3,072,000 bytes (tokens). Then **do no training**, and change only the RoPE cos/sin (validation loss in nat/byte, lower is better; the last three columns are position ranges):
 
-| 设置 | L = 64 | L = 128 | L = 256 | 位置 0–64 | 位置 64–128 | 位置 128–256 |
+| Setting | L = 64 | L = 128 | L = 256 | Positions 0–64 | Positions 64–128 | Positions 128–256 |
 |---|---:|---:|---:|---:|---:|---:|
-| (a) 什么都不改 | 1.578 | 1.646 | 1.879 | 1.578 | 1.714 | **2.111** |
+| (a) Change nothing | 1.578 | 1.646 | 1.879 | 1.578 | 1.714 | **2.111** |
 
-"什么都不改"时，训练长度以内（位置 0–64）的 loss 是 1.578；一越过 64，loss 就往上走，到位置 128–256 升到 2.111。按理说上下文越长、能参考的内容越多，loss 应该**更低**才对——这就是"读不长"。
+With "change nothing", the loss inside the training length (positions 0–64) is 1.578. Past position 64, the loss increases, and at positions 128–256 it is 2.111. A longer context gives more content to use, so the loss should be **lower**. This is the problem "the model cannot read long text".
 
-（同一张表里 PI、YaRN、调大基频三行放在 3.4 节，讲完三种办法再看。）
+(The rows for PI, YaRN, and the larger base frequency of the same table are in Section 3.4. We look at them after we explain the three methods.)
 
-## 3. 三种办法：调大基频、位置内插、YaRN
+## 3. Three methods: larger base frequency, position interpolation, and YaRN
 
-三种办法都**只改 RoPE 的转速**，不动任何可学参数，改完都要在长文本上再训一小段。
+All three methods **change only the rotation speeds of RoPE**. They do not change any learnable parameter. After the change, each method must train a little more on long text.
 
-### 3.1 调大基频（ABF）
+### 3.1 Larger base frequency (ABF)
 
-最直接的办法：把 θ 调大，所有指针一起变慢。Xiong et al.（2023，Llama 2 Long）把这个做法叫 **ABF（adjusted base frequency）**。θ 从 1 万调到 100 万，第 i 对慢了 `100^(2i/d)` 倍：
+The most direct method is to make θ larger. Then all hands become slower together. Xiong et al. (2023, Llama 2 Long) call this method **ABF (adjusted base frequency)**. When θ increases from 10K to 1M, pair i becomes `100^(2i/d)` times slower:
 
-| 维度对 i | 0 | 16 | 32 | 48 | 63 |
+| Dimension pair i | 0 | 16 | 32 | 48 | 63 |
 |---|---:|---:|---:|---:|---:|
-| 慢了多少倍 | 1.0 | 3.2 | 10.0 | 31.6 | 93.1 |
+| Times slower | 1.0 | 3.2 | 10.0 | 31.6 | 93.1 |
 
-秒针不受影响（近处的位置照样分得清），慢指针被大幅放慢：读到 32K 时，**没有一对指针会转到"θ = 1 万、长度 4K 训练时没见过的角度"**（`01` 的第 3 部分：18 对 → 0 对）。代价是同一个角度对应的距离全变了，所以要在新基频下接着训练。
+The second hand does not change, so the model can still tell near positions apart. The slow hands become much slower. At 32K, **no hand turns to an angle that "training with θ = 10K at length 4K" did not show** (part 3 of `01`: 18 pairs → 0 pairs). The cost: each angle now means a different distance. Thus the model must continue to train with the new base frequency.
 
-谁在用：Qwen3 在长上下文阶段"按 Qwen2.5 的做法用 ABF 把基频从 1 万调到 100 万"（`config.json`：`rope_theta: 1000000`）；SmolLM3 分两段扩展，4K→32K 时 θ 调到 150 万，32K→64K 时调到 500 万（`config.json`：`rope_theta: 5000000.0`）；Gemma 3 全局注意力层的基频从 1 万调到 100 万。Llama 3 和 OLMo 2 则从预训练一开始就用 θ = 50 万（Llama 3 报告引用 Xiong et al. 的结论：这个值对 32K 以内有效）。
+Who uses it: in its long-context stage, Qwen3 "uses ABF to increase the base frequency from 10,000 to 1,000,000, as in Qwen2.5" (`config.json`: `rope_theta: 1000000`). SmolLM3 extends in two stages: θ becomes 1.5M for 4K→32K and 5M for 32K→64K (`config.json`: `rope_theta: 5000000.0`). Gemma 3 increases the base frequency of its global attention layers from 10K to 1M. Llama 3 and OLMo 2 use θ = 500K from the start of pretraining. (The Llama 3 report cites the result of Xiong et al.: this value works for lengths up to 32K.)
 
-### 3.2 位置内插（PI）：YaRN 的铺垫
+### 3.2 Position interpolation (PI): the base for YaRN
 
-Chen et al.（2023）的位置内插（Position Interpolation, PI）换了个思路：不让位置越界，而是把位置"压扁"——要扩 s 倍，就把位置 m 当成 m/s，等价于所有指针都慢 s 倍：
+Position interpolation (PI) by Chen et al. (2023) uses a different idea. It does not let the positions go past the range. Instead, it "compresses" the positions. To extend by s times, it uses m/s in place of position m. This is the same as making all hands s times slower:
 
 ```python
 def pi_inv_freq(head_dim: int, theta: float, s: float) -> torch.Tensor:
-    return rope_inv_freq(head_dim, theta) / s      # 所有维度对一起放慢 s 倍
+    return rope_inv_freq(head_dim, theta) / s      # make all dimension pairs s times slower
 ```
 
-越界的问题解决了，但秒针也被放慢了：原来相邻两个 token 在秒针上差 1 弧度，÷8 之后只差 0.125 弧度——**近处的位置变得难分辨**。YaRN 论文的消融里，不微调直接 PI 扩 8 倍，困惑度超过 10（原模型约 4）。Gemma 3 扩到 128K 时用的就是 PI 式的缩放（`rope_scaling: {rope_type: "linear", factor: 8.0}`），配合了续训。本课把 PI 作为理解 YaRN 的铺垫（GOAL.md 2.1 规则 C）。
+This solves the out-of-range problem, but the second hand also becomes slower. Before, two adjacent tokens differ by 1 radian on the second hand. After ÷8, they differ by only 0.125 radian. **Near positions become hard to tell apart.** In the ablation of the YaRN paper, PI ×8 without fine-tuning gives a perplexity above 10 (the original model: about 4). Gemma 3 uses PI-style scaling to extend to 128K (`rope_scaling: {rope_type: "linear", factor: 8.0}`), together with continued training. This course uses PI as the base to understand YaRN (GOAL.md 2.1, rule C).
 
-### 3.3 YaRN：快指针不动，慢指针内插，再调一下温度
+### 3.3 YaRN: keep the fast hands, interpolate the slow hands, and adjust the temperature
 
-YaRN（Peng et al., 2023）综合了上面两种直觉：**只压那些真的会越界的慢指针，不碰快指针**。按"训练长度 L 内转了多少圈" `r_i = L/λ_i` 把维度对分成三段：
+YaRN (Peng et al., 2023) combines the two ideas above: **compress only the slow hands that really go past the range, and do not touch the fast hands**. It puts the dimension pairs into three zones by "the number of turns in the training length L", `r_i = L/λ_i`:
 
-- 转了 β_fast = 32 圈以上（高频）：**原样保留**——它们只编码相对距离，本来就不会越界；
-- 不满 β_slow = 1 圈（低频）：**完全内插**，÷s，和 PI 一样；
-- 中间：线性过渡。
+- More than β_fast = 32 turns (high frequency): **keep them as they are**. These pairs encode only relative distance, so they cannot go past the range.
+- Less than β_slow = 1 turn (low frequency): **fully interpolate** them, ÷s, as in PI.
+- Between the two: a linear ramp.
 
-另外把注意力 logits 乘一个温度因子：`√(1/t) = 0.1·ln(s) + 1`，补偿"候选变多、注意力变平"。实现上不用改注意力代码，直接把 cos/sin 乘上这个数（q、k 各乘一次，logits 就乘了它的平方）。`02_yarn_from_scratch.py` 的核心：
+YaRN also multiplies the attention logits by a temperature factor, `√(1/t) = 0.1·ln(s) + 1`. This factor compensates for "more candidates, flatter attention". The implementation does not change the attention code. It multiplies cos/sin by this number. The rotation applies the factor once to q and once to k, so the logits get its square. The core of `02_yarn_from_scratch.py`:
 
 ```python
-low = max(math.floor(dim_with_turns(beta_fast)), 0)                # 比它靠前：转了 > β_fast 圈
-high = min(math.ceil(dim_with_turns(beta_slow)), head_dim - 1)     # 比它靠后：转了 < β_slow 圈
-ramp = ((i - low) / (high - low)).clamp(0, 1)   # 0 = 高频段，1 = 低频段
-keep = 1 - ramp                                  # 保留原频率的权重
-new_w = keep * w + (1 - keep) * w / s            # 高频不动、低频 ÷ s、中间混合
+low = max(math.floor(dim_with_turns(beta_fast)), 0)                # pairs before it: > β_fast turns
+high = min(math.ceil(dim_with_turns(beta_slow)), head_dim - 1)     # pairs after it: < β_slow turns
+ramp = ((i - low) / (high - low)).clamp(0, 1)   # 0 = high-frequency zone, 1 = low-frequency zone
+keep = 1 - ramp                                  # weight of the original frequency
+new_w = keep * w + (1 - keep) * w / s            # high: no change; low: ÷ s; between: a mix
 mscale = 0.1 * math.log(s) + 1.0                 # √(1/t) = 0.1·ln(s) + 1
 ```
 
-`02` 打印了本章小实验设置（`head_dim = 32`、θ = 1 万、训练长度 64、s = 4）下每个维度对的处理方式（节选）：
+`02` prints what YaRN does to each dimension pair. It uses the setup of the small experiment of this chapter (`head_dim = 32`, θ = 10K, training length 64, s = 4). Part of the output:
 
-| i | 波长 λ | 训练内圈数 | 保留权重 | ω（原） | ω（PI） | ω（YaRN） |
+| i | Wavelength λ | Turns in training | Keep weight | ω (original) | ω (PI) | ω (YaRN) |
 |---:|---:|---:|---:|---:|---:|---:|
 | 0 | 6.3 | 10.19 | 1.00 | 1.00000 | 0.25000 | 1.00000 |
 | 1 | 11.2 | 5.73 | 0.80 | 0.56234 | 0.14059 | 0.47799 |
@@ -216,174 +221,174 @@ mscale = 0.1 * math.log(s) + 1.0                 # √(1/t) = 0.1·ln(s) + 1
 | 5 | 111.7 | 0.57 | 0.00 | 0.05623 | 0.01406 | 0.01406 |
 | 15 | 35333 | 0.00 | 0.00 | 0.00018 | 0.00004 | 0.00004 |
 
-mscale = 0.1·ln 4 + 1 = 1.1386，注意力 logits 相当于乘 1.2965。注意这里的"圈数"边界要按维度编号取整（`floor` / `ceil`）：训练长度只有 64 时，第 0 对只转了 10 圈，没到 32 圈，但取整后仍被划进"保留"段——这是 YaRN 官方代码的写法，transformers 和 zero 都照此实现。论文公式（10）–（13）把斜坡写成对"圈数"线性，与官方代码在过渡段最多差 57%（`02` 第 4 部分）；以代码为准。
+mscale = 0.1·ln 4 + 1 = 1.1386, so the attention logits are multiplied by 1.2965. Note that the code rounds the "turns" boundaries to whole pair indices (`floor` / `ceil`). With a training length of only 64, pair 0 makes only 10 turns, not 32. But after rounding, it is still in the "keep" zone. This is how the official YaRN code works, and transformers and zero do the same. Equations (10)–(13) of the paper make the ramp linear in the "number of turns". In the ramp zone, this differs from the official code by up to 57% (part 4 of `02`). Use the code as the reference.
 
-对主线模型的设置（`02` 第 2 部分）：
+For the settings of the main-line model (part 2 of `02`):
 
-| 场景 | 原样保留 | 过渡 | 完全内插 | mscale |
+| Case | Keep as they are | Ramp | Full interpolation | mscale |
 |---|---:|---:|---:|---:|
-| θ = 1 万，4K → 32K（只用 YaRN） | 21 对 | 25 对 | 18 对 | 1.208 |
-| θ = 100 万，32K → 128K（Qwen3 模型卡的做法） | 24 对 | 16 对 | 24 对 | 1.139 |
+| θ = 10K, 4K → 32K (YaRN only) | 21 pairs | 25 pairs | 18 pairs | 1.208 |
+| θ = 1M, 32K → 128K (the method of the Qwen3 model card) | 24 pairs | 16 pairs | 24 pairs | 1.139 |
 
-对拍（`02` 第 3 部分）：从零写的版本与 `zero.model.compute_rope_inv_freq`、transformers 的 `Qwen3RotaryEmbedding` 在 4 组设置下频率最大差 ≤ 6.0×10⁻⁸（float32 舍入），mscale 完全相同。
+Parity check (part 3 of `02`): the from-scratch version agrees with `zero.model.compute_rope_inv_freq` and with `Qwen3RotaryEmbedding` of transformers on 4 settings. The largest frequency difference is ≤ 6.0×10⁻⁸ (float32 rounding), and mscale is exactly the same.
 
-### 3.4 小实验：微调一小段
+### 3.4 Small experiment: fine-tune for a short time
 
-零样本（不训练）只是开始。三种办法在真实模型里都要再训：Llama 3 分 6 段从 8K 扩到 128K，约 800B token；Qwen3 的长上下文阶段用了"几千亿" token；DeepSeek-V3 用 YaRN 分两段各训 1000 步（4K→32K→128K）；SmolLM3 两段各 50B token。小实验里每种设置都用长度 256 的片段微调 150 步（预训练 token 数的 1/10），数据顺序完全相同：
+Zero-shot (no training) is only the start. In real models, all three methods train more. Llama 3 extends from 8K to 128K in 6 stages, with about 800B tokens. The long-context stage of Qwen3 uses "hundreds of billions" of tokens. DeepSeek-V3 uses YaRN in two stages of 1000 steps each (4K→32K→128K). SmolLM3 uses two stages of 50B tokens each. In the small experiment, each setting fine-tunes for 150 steps on sequences of length 256 (1/10 of the pretraining tokens), with exactly the same data order:
 
-先看零样本（不训练，只换 RoPE）的完整表：
+First, the full zero-shot table (no training, only a new RoPE):
 
-| 设置 | L = 64 | L = 128 | L = 256 | 位置 0–64 | 位置 64–128 | 位置 128–256 |
+| Setting | L = 64 | L = 128 | L = 256 | Positions 0–64 | Positions 64–128 | Positions 128–256 |
 |---|---:|---:|---:|---:|---:|---:|
-| (a) 什么都不改 | 1.578 | 1.646 | 1.879 | 1.578 | 1.714 | 2.111 |
-| (b) 位置内插 PI（÷4） | 3.461 | 3.531 | 3.561 | 3.461 | 3.602 | 3.590 |
-| (c) YaRN（s = 4） | 1.654 | 1.660 | 1.673 | 1.654 | 1.667 | **1.685** |
-| (d) 调大基频（θ = 10 万） | 1.626 | 1.643 | 1.851 | 1.626 | 1.660 | 2.058 |
+| (a) Change nothing | 1.578 | 1.646 | 1.879 | 1.578 | 1.714 | 2.111 |
+| (b) Position interpolation PI (÷4) | 3.461 | 3.531 | 3.561 | 3.461 | 3.602 | 3.590 |
+| (c) YaRN (s = 4) | 1.654 | 1.660 | 1.673 | 1.654 | 1.667 | **1.685** |
+| (d) Larger base frequency (θ = 100K) | 1.626 | 1.643 | 1.851 | 1.626 | 1.660 | 2.058 |
 
-再用长度 256 的片段微调 150 步（307,200 个 token，预训练的 1/10）之后：
+After fine-tuning for 150 steps on sequences of length 256 (307,200 tokens, 1/10 of pretraining):
 
-| 设置 | L = 64 | L = 128 | L = 256 | 位置 0–64 | 位置 64–128 | 位置 128–256 |
+| Setting | L = 64 | L = 128 | L = 256 | Positions 0–64 | Positions 64–128 | Positions 128–256 |
 |---|---:|---:|---:|---:|---:|---:|
-| (a) 什么都不改 | 1.587 | 1.570 | 1.561 | 1.587 | 1.553 | 1.553 |
-| (b) 位置内插 PI | 1.701 | 1.688 | 1.679 | 1.701 | 1.676 | 1.669 |
+| (a) Change nothing | 1.587 | 1.570 | 1.561 | 1.587 | 1.553 | 1.553 |
+| (b) Position interpolation PI | 1.701 | 1.688 | 1.679 | 1.701 | 1.676 | 1.669 |
 | (c) YaRN | **1.578** | **1.564** | **1.555** | 1.578 | 1.550 | 1.547 |
-| (d) 调大基频 | 1.591 | 1.574 | 1.568 | 1.591 | 1.557 | 1.562 |
+| (d) Larger base frequency | 1.591 | 1.574 | 1.568 | 1.591 | 1.557 | 1.562 |
 
-怎么读这两张表：
+How to read the two tables:
 
-- **零样本，YaRN 最稳**：位置 128–256 的 loss 只有 1.685，几乎和训练长度内一样；代价是长度 64 以内略差（1.654 vs 1.578），因为慢指针被压慢、温度也变了。这正是 Qwen3 模型卡提醒"静态 YaRN 可能影响短文本、只在需要时打开"的原因；
-- **零样本，PI 最糟**：连长度 64 以内都从 1.578 涨到 3.461——四倍压缩把秒针也压慢了，近处的位置分不清，模型连短文本都读不好了；
-- **零样本，只调大基频几乎没用**（2.058 vs 2.111）：所有角度与距离的对应都变了，模型必须重新适应。它本来就是配合续训的办法；
-- **微调之后差距大幅缩小**：YaRN 在三个长度上都最低，"不改"、"调大基频"紧随其后（只差 0.01 左右），PI 仍落后 0.1 以上；
-- **单个种子**：YaRN、不改、调大基频之间零点零几的差距很可能在种子波动以内（动手任务 2 会让你换种子验证）；换一台机器复跑，同一格的数字也会漂移 0.01 左右，和这些差距同一量级。能放心下结论的只有两点：零样本时 YaRN 远好于其他三种；PI 在同样的微调预算下明显落后。
+- **Zero-shot, YaRN is the most stable**: at positions 128–256, the loss is only 1.685, almost the same as inside the training length. The cost is a slightly worse loss up to length 64 (1.654 vs 1.578), because the slow hands are slower and the temperature changed. This is why the Qwen3 model card warns that "static YaRN can affect short text, so turn it on only when you need it".
+- **Zero-shot, PI is the worst**: even up to length 64, the loss increases from 1.578 to 3.461. The 4× compression also makes the second hand slower. The model cannot tell near positions apart, so it cannot read even short text well.
+- **Zero-shot, a larger base frequency alone almost does not help** (2.058 vs 2.111): the relation between each angle and each distance changed, so the model must adapt again. This method is designed for use with continued training.
+- **After fine-tuning, the differences become much smaller**: YaRN is the lowest at all three lengths. "Change nothing" and "larger base frequency" are close behind (only about 0.01 more). PI is still more than 0.1 behind.
+- **One seed only**: the differences among YaRN, "change nothing", and "larger base frequency" are only a few hundredths. They are probably inside the seed noise (Hands-on task 2 asks you to check this with a different seed). A rerun on a different machine also moves the number in a cell by about 0.01, which is the same size as these differences. Only two conclusions are safe: zero-shot, YaRN is much better than the other three; with the same fine-tuning budget, PI is clearly behind.
 
-这个极小实验的规模（长度 64 → 256、1.5 万步都不到）和真实模型（4K → 32K、几十亿 token）差得很远，只用来看清机制，不代表主线模型上哪种办法更好。主线模型的选择（调大基频 + 32K 续训，推理时可再叠加 YaRN）依据的是 3.1–3.3 节列出的头部模型的做法。
+The scale of this very small experiment (length 64 → 256, fewer than 15,000 steps) is very far from a real model (4K → 32K, billions of tokens). The experiment only shows the mechanism. It does not show which method is better for the main-line model. The main-line model uses a larger base frequency + continued training at 32K, with optional YaRN on top at inference. This choice follows the methods of the leading models in Sections 3.1–3.3.
 
-## 4. 长上下文的数据与代价
+## 4. Data and cost of long context
 
-**代价**。注意力里 `QKᵀ` 和 `AV` 的运算量正比于序列长度。`01` 的第 5 部分按 zero 的口径（PaLM 附录 B，不为因果掩码减半）算主线模型每个训练 token 的运算量：
+**Cost.** For each token, the operations of `QKᵀ` and `AV` in attention are proportional to the sequence length. Part 5 of `01` calculates the operations for each training token of the main-line model. It uses the formula of zero (PaLM Appendix B, no halving for the causal mask):
 
-| 序列长 | 每 token 运算量 | 其中注意力（`QKᵀ`、`AV`）占比 |
+| Sequence length | Operations per token | Share of attention (`QKᵀ`, `AV`) |
 |---:|---:|---:|
 | 4096 | 6.96 GFLOP | 41% |
 | 32768 | 26.69 GFLOP | 84% |
 
-同样多的 token，用 32K 序列训练要贵 3.84 倍（FlashAttention 实际会跳过因果掩码的上三角，约省一半注意力运算，但比例关系不变）。
+For the same number of tokens, training with 32K sequences costs 3.84× more. (FlashAttention skips the upper triangle of the causal mask and saves about half of the attention operations. But the relation stays the same.)
 
-所以没有人全程用长序列训练。Llama 3 的原话是"我们不更早地用长序列训练，因为自注意力的算力随序列长度平方增长"。长上下文都放在预训练的最后，而且只占很小一段。
+Thus nobody trains with long sequences all the time. In the words of Llama 3: "We do not train on long sequences earlier because the compute in self-attention layers grows quadratically in the sequence length." All models put long context at the end of pretraining, and it is only a very short stage.
 
-**数据**。长上下文阶段的数据要真的"长"：
+**Data.** The data of the long-context stage must really be "long":
 
-- **天然的长文档**：书、代码仓库、长网页。Qwen3 的长上下文语料里 75% 在 16K–32K token 之间，另外 25% 在 4K–16K——**保留一部分较短的数据**，防止短文本能力退化；
-- **合成的长文本任务**：Llama 3 在 SFT 阶段用模型生成长文档问答、层层摘要、"删掉仓库里一个被很多文件引用的源文件，让模型补回来"，发现只要混 0.1% 这类数据就能兼顾长短；
-- 不是越多越好：SmolLM3 的消融发现，在自然长度分布之外额外上采样书和代码仓库，并没有进一步提高 RULER、HELMET 的成绩，"用衰减段的配比 + 更长的序列 + 更大的基频"就够了。
+- **Naturally long documents**: books, code repositories, and long web pages. In the long-context corpus of Qwen3, 75% of the data is 16K–32K tokens long, and the other 25% is 4K–16K. **Keep some shorter data** to prevent a loss of short-text ability.
+- **Synthetic long-text tasks**: in the SFT stage, Llama 3 uses the model to make question answering on long documents, hierarchical summaries, and a code task: "delete a source file that many files of the repository use, and let the model write it again". Llama 3 found that 0.1% of such data is enough to keep both long and short abilities.
+- More is not always better. SmolLM3 tried extra upsampling of books and code repositories, above the natural length distribution. Its ablations found that this did not improve the RULER and HELMET scores more. "The decay-phase mixture + longer sequences + a larger base frequency" was enough.
 
-**别丢了短文本能力**。Llama 3 判断每一段扩展是否成功的标准有两条：短上下文评测**完全恢复**，大海捞针在该长度下**全部答对**。
+**Do not lose the short-text ability.** Llama 3 uses two criteria to decide if an extension stage succeeded. First, the short-context evaluations **recover completely**. Second, needle in a haystack at that length is **all correct**.
 
-## 5. 怎么评长上下文
+## 5. How to evaluate long context
 
-- **大海捞针（needle-in-a-haystack, NIAH）**（Kamradt, 2023）：在一大段无关文字的某个深度插入一句"针"（比如"某某的密码是 7 位数字"），最后问模型。长度 × 深度扫一遍，画成一张表。它是**冒烟测试**：通不过一定有问题；通过了不代表真的会用长上下文。Llama 3 报告 NIAH 全部答对，DeepSeek-V3 在 128K 以内全部通过。
-- **RULER**（Hsieh et al., 2024，NVIDIA）：把 NIAH 扩展成 4 类 13 个合成任务——检索（多种针、多个干扰针）、多跳追踪（变量赋值链）、聚合（找出最常见的词）、长文档问答。测了 17 个模型，**几乎所有模型在普通 NIAH 上接近满分，但在 RULER 上随长度明显下降**；声称支持 32K 以上的模型里只有一半在 32K 时还达标（以 Llama2-7B 在 4K 的 85.6 分为及格线）。Qwen3、Gemma 3、SmolLM3 的报告都用 RULER 报长上下文成绩。
+- **Needle in a haystack (NIAH)** (Kamradt, 2023): at some depth of a long text with unrelated content, insert one "needle" sentence (for example, "The password of X is a 7-digit number"). At the end, ask the model. Scan length × depth and draw the results as a table. NIAH is a **smoke test**: if the model fails, there is surely a problem; if the model passes, it does not mean that the model really uses long context. The Llama 3 report says that all NIAH answers were correct, and DeepSeek-V3 passes all tests up to 128K.
+- **RULER** (Hsieh et al., 2024, NVIDIA): extends NIAH to 13 synthetic tasks in 4 categories: retrieval (several kinds of needles, several distracting needles), multi-hop tracing (chains of variable assignments), aggregation (find the most common words), and question answering on long documents. It tested 17 models. **Almost all models are near a perfect score on plain NIAH, but their RULER scores decrease clearly with length.** Of the models that claim support for 32K or more, only half still pass at 32K (the pass line is 85.6, the score of Llama2-7B at 4K). The reports of Qwen3, Gemma 3, and SmolLM3 all use RULER for their long-context results.
 
-本章给主线模型加了一个大海捞针工具 `zero/tools/needle.py`（见"从极简到生产级"）。除了"生成的文字里有没有正确数字"，它还算一个更细的**似然增益**：把针里的数字换成另一个随机数作对照，看正确答案的负对数似然降了多少——> 0 才说明模型真的在用针里的信息。
+This chapter adds a needle-in-a-haystack tool to the main-line model: `zero/tools/needle.py` (see "From minimal code to production code"). The tool checks if "the generated text contains the correct number". It also calculates a finer **likelihood gain**: as a control, replace the number in the needle with a different random number. Then measure how much the negative log-likelihood of the correct answer decreases. Only a value > 0 shows that the model really uses the information in the needle.
 
-## 6. 小结
+## 6. Summary
 
-- **中期训练 / 退火**：WSD 的衰减段只占 5–10% 的算力，却决定模型最后停在哪里；把高质量网页、数学代码、指令式数据集中放在这一段。用"分叉衰减"就能低成本比较配比。
-- **为什么读不长**：训练长度内转不满一圈的慢指针，在更长的位置会转到没见过的角度；候选变多，注意力也被摊薄。
-- **调大基频**：所有指针一起变慢，快指针几乎不变；要在新基频下续训。
-- **YaRN**：快指针不动、慢指针 ÷s、中间过渡，再把 logits 乘 `(0.1·ln s + 1)²`；小实验里零样本就几乎不掉点，续训一小段后仍然最好（差距很小）。
-- **代价与评测**：32K 序列每 token 的算力约是 4K 的 3.8 倍，所以只在最后训一小段；大海捞针是冒烟测试，RULER 才是基准。
+- **Mid-training / annealing**: the decay phase of WSD uses only 5–10% of the compute, but it sets where the model stops at the end. Put high-quality web pages, math and code, and instruction-style data together in this phase. "Branched decay" compares mixtures at a low cost.
+- **Why the model cannot read long text**: slow hands that do not make one full turn in the training length turn to unseen angles at longer positions. More candidates also dilute the attention.
+- **Larger base frequency**: all hands become slower together, and the fast hands almost do not change. The model must continue to train with the new base frequency.
+- **YaRN**: keep the fast hands, divide the slow hands by s, use a ramp between them, and multiply the logits by `(0.1·ln s + 1)²`. In the small experiment, YaRN almost does not lose quality zero-shot. After a short continued training, it is still the best (by a small margin).
+- **Cost and evaluation**: at 32K, the compute per token is about 3.8× the compute at 4K, so only a short stage at the end uses long sequences. Needle in a haystack is a smoke test; RULER is the benchmark.
 
 ---
 
-## GPU 实测（单张 RTX 3090）
+## GPU measurements (one RTX 3090)
 
-> 上面正文里的数字都来自 CPU 运行。本节换到一张 NVIDIA GeForce RTX 3090（24 GB 显存，Ampere 架构；规格表：BF16 张量核稠密峰值约 71 TFLOPS，FP32 约 35.6 TFLOPS，显存带宽约 936 GB/s）上实测，环境：PyTorch 2.11.0+cu128、CUDA 12.8，2026 年 10 月。这张卡的功耗上限被服务器设成了 240 W（出厂默认 350 W），持续满载时会降频，所以算力、带宽的绝对值比满功耗的 3090 偏低，看相对关系更可靠。没有 GPU 可以跳过本节。
+> **Note:** All numbers in the text above come from CPU runs. This section measures on one NVIDIA GeForce RTX 3090 (24 GB memory, Ampere architecture; data sheet: dense BF16 Tensor Core peak about 71 TFLOPS, FP32 about 35.6 TFLOPS, memory bandwidth about 936 GB/s). Environment: PyTorch 2.11.0+cu128, CUDA 12.8, October 2026. The server sets the power limit of this card to 240 W (the factory default is 350 W). Under a constant full load, the card decreases its clock. Thus the absolute compute and bandwidth are lower than on a 3090 at full power, and the relative values are more reliable. If you do not have a GPU, skip this section.
 
-第 4 节说"同样多的 token，用 32K 序列训练要贵 3.84 倍"，那是按公式算的。这张 24 GB 的卡装不下主线模型的一整条 32K 序列（按第 14 章的显存公式，光 logits 的瞬时峰值就要 12 GiB），所以这里只量**一层**：长上下文配置（`configs/main/longctx.toml`，RoPE 基频 100 万）里的一个 Block，zero 的实现，BF16 autocast，注意力走 SDPA（在这张卡上就是 FlashAttention，见第 14 章的 GPU 实测）。每次都喂 32,768 个 token，只改序列长度 T，T × micro batch 不变。3090 不是 H100，主线在 8×H100 上的长上下文费用仍是估算；这里看的是"贵几倍"这个比例在真卡上长什么样。
+Section 4 says: "for the same number of tokens, training with 32K sequences costs 3.84× more". That number comes from a formula. This 24 GB card cannot hold one full 32K sequence of the main-line model. (With the memory formula of Chapter 14, the peak of the logits alone needs 12 GiB.) Thus we measure only **one layer**: one Block of the long-context configuration (`configs/main/longctx.toml`, RoPE base frequency 1M). It uses the zero implementation, BF16 autocast, and SDPA attention (on this card, SDPA uses FlashAttention; see the GPU measurements of Chapter 14). Each call gets 32,768 tokens. Only the sequence length T changes, and T × micro batch stays the same. A 3090 is not an H100, so the long-context cost of the main line on 8×H100 is still an estimate. Here we look at the ratio "how many times more expensive" on a real card.
 
-运行：
+Run:
 
 ```bash
-uv run python chapters/15-midtraining-long-context/code/05_gpu_long_context_cost.py   # 一层主线 Block，T = 4K → 32K（约 20 秒）
+uv run python chapters/15-midtraining-long-context/code/05_gpu_long_context_cost.py   # one main-line Block, T = 4K → 32K (about 20 s)
 ```
 
-前向 + 反向，10 次取中位数。"公式"是一层每 token 的运算量 6·N_层 + 12·q_dim·T（第 4 节的口径，只是不含输出层），"因果减半"把注意力项减半；"实际 TFLOPS"按减半后真正做了的运算量算，"按 zero 口径的 MFU"按不减半的公式算，两者都相对 BF16 规格峰值 71 TFLOPS：
+Forward + backward, median of 10 runs. "Formula" is the operations per token for one layer, 6·N_layer + 12·q_dim·T (the rule of Section 4, without the output layer). "Causal halved" uses half of the attention term. "Real TFLOPS" uses the operations that the GPU really does after the halving. "MFU by the zero rule" uses the formula without halving. Both are relative to the BF16 data-sheet peak of 71 TFLOPS:
 
-| T | micro batch | 耗时 | 每 token | 实测倍数 | 公式·不减半 | 公式·因果减半 | 实际 TFLOPS | 占峰值 | 按 zero 口径的 MFU |
+| T | Micro batch | Time | Per token | Measured ratio | Formula, not halved | Formula, causal halved | Real TFLOPS | Share of peak | MFU by the zero rule |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 4,096 | 8 | 172.2 ms | 5,255 ns | 1.00× | 1.00× | 1.00× | 34.3 | 48% | 62% |
 | 8,192 | 4 | 209.2 ms | 6,385 ns | 1.21× | 1.44× | 1.28× | 36.1 | 51% | 73% |
 | 16,384 | 2 | 283.3 ms | 8,644 ns | 1.64× | 2.31× | 1.84× | 38.3 | 54% | 87% |
 | 32,768 | 1 | 435.2 ms | 13,282 ns | 2.53× | 4.06× | 2.96× | 40.1 | 56% | 99% |
 
-显存：四种长度下，这一层前向结束时都多占 2,943 MiB；扣掉 BF16 权重副本，每 token 92,868 字节，和第 14 章 `memory_calc` 的公式（92,840 字节）只差 0.03%，而且**和 T 无关**。
+Memory: at all four lengths, this layer uses 2,943 MiB more at the end of the forward pass. Without the BF16 weight copies, this is 92,868 bytes per token. It differs from the `memory_calc` formula of Chapter 14 (92,840 bytes) by only 0.03%, and it **does not depend on T**.
 
-怎么读：
+How to read the results:
 
-- **32K 的每个 token，实测贵 2.53 倍，不是 4.06 倍**（这是一层的口径；第 4 节的 3.84 倍含输出层）。差距有两个来源。一是因果掩码：FlashAttention 跳过上三角，按减半的公式是 2.96 倍。二是长序列上注意力内核跑得更"满"：按真正做了的运算算，利用率从 48% 升到 56%，而归一化、RoPE、逐元素运算这些开销只和 token 数有关，不随 T 增长。整个模型还要摊上一个与 T 无关的输出层，倍数只会再小一点。所以第 4 节的 3.84 倍是偏保守的上界；在这张卡上，真实代价大约是 2.5 倍。结论的方向不变：长序列确实贵，只在最后训一小段。
-- **看 MFU 要先对口径**：zero 日志里的 MFU 用不减半的公式（第 14 章第 6 节），T 越长，被算进去却没做的上三角越多。32K 时这一层按 zero 口径算出来是 99%，几乎顶到峰值，真正的利用率只有 56%。长上下文阶段和预训练阶段比 MFU 时，要先把注意力项减半，再比。
-- **显存和 T 无关，但和 token 数有关**：每 token 的激活不随 T 变，是因为 FlashAttention 不存 T × T 的矩阵。32K 的麻烦在于一条序列本身就有 32,768 个 token：28 层 × 92,868 字节 × 32,768 ≈ 79 GiB，一条序列光激活就差不多占满一张 80 GB 的 H100。FSDP 切的是参数、梯度和优化器状态，不切激活（第 14 章第 5.3 节），要放下一条 32K 序列，还得靠激活检查点（第 14 章第 2 节），或者把一条序列切到几张卡上。这正是第 14 章动手任务 1 要你算的账。
+- **At 32K, each token costs 2.53× more in the measurement, not 4.06×** (this is for one layer; the 3.84× of Section 4 includes the output layer). The difference has two sources. First, the causal mask: FlashAttention skips the upper triangle, and the halved formula gives 2.96×. Second, the attention kernel is "fuller" on long sequences: with the operations that the GPU really does, the utilization increases from 48% to 56%. The overhead of normalization, RoPE, and element-wise operations depends only on the number of tokens, and it does not increase with T. The full model also has an output layer that does not depend on T, so the ratio becomes a little smaller again. Thus the 3.84× of Section 4 is a conservative upper bound. On this card, the real cost is about 2.5×. The direction of the conclusion does not change: long sequences are expensive, so train only a short stage at the end with them.
+- **Check the formula before you compare MFU**: the MFU in the zero log uses the formula without halving (Chapter 14, Section 6). The longer T is, the more of the upper triangle the formula counts, although the GPU does not do it. At 32K, this layer gets 99% by the zero rule, almost the peak. The real utilization is only 56%. To compare the MFU of the long-context stage with the MFU of the pretraining stage, first halve the attention term, and then compare.
+- **Memory does not depend on T, but it depends on the number of tokens**: the activations per token do not change with T, because FlashAttention does not store the T × T matrix. The problem at 32K is that one sequence has 32,768 tokens: 28 layers × 92,868 bytes × 32,768 ≈ 79 GiB. The activations of one sequence alone almost fill an 80 GB H100. FSDP splits the parameters, gradients, and optimizer states, but not the activations (Chapter 14, Section 5.3). To fit one 32K sequence, you also need activation checkpointing (Chapter 14, Section 2), or you must split one sequence across several GPUs. This is the calculation that Hands-on task 1 of Chapter 14 asks you to do.
 
 ---
 
-## 从极简到生产级
+## From minimal code to production code
 
-| 极简版（`code/`） | 生产级（`zero/`、`configs/`、`tests/`） | 多做了什么、为什么 |
+| Minimal code (`code/`) | Production code (`zero/`, `configs/`, `tests/`) | What it adds, and why |
 |---|---|---|
-| `02` 的 `yarn_inv_freq` | `zero/model.py`：`compute_rope_inv_freq(head_dim, theta, scaling)` 返回 `(inv_freq, attention_scaling)`；`RotaryEmbedding` 预计算 `[0, max_seq_len)` 的 cos/sin，并乘上 `attention_scaling` | cos/sin 是**非持久 buffer**，不进 `state_dict`：改 `rope_theta` 或 `rope_scaling` 后重建即可，其余权重原样加载；位置超过 `max_seq_len` 直接报错，不会悄悄外推 |
-| `03` 里手动替换 cos/sin | `zero/config.py`：`ModelConfig.rope_theta`、`ModelConfig.rope_scaling`（校验：只支持 `type = "yarn"`，`factor ≥ 1`，必须给 `original_max_position_embeddings`，不认识的字段直接报错）；`zero/hf.py` 导出时把它写成 HF 的 `rope_scaling` / `rope_parameters` | 配置驱动，导出后 transformers、vLLM、llama.cpp 都能按同样的 YaRN 参数推理 |
-| `04` 的"从同一个点分叉 + 换配比 + 线性衰减" | `zero/train/midtrain.py`：`init_from` 指向预训练 checkpoint；`check_compatible` 只允许改 `rope_theta`、`rope_scaling`、`max_seq_len`（改层数、维度会直接报错），并打印"变了什么"；`[schedule] kind = "wsd"`、`decay_frac = 1.0` 就是一整段衰减；`[[data.sources]]` 换配比（`zero/data/mixture.py` 按权重采样） | 与预训练共用 `zero/train/trainer.py`（BF16、梯度累积、断点续训、多卡）；中断后重跑同一条命令，从本次运行自己的 checkpoint 续训 |
-| `03` 的"长度 256 微调" | `configs/main/longctx.toml`（见下表） | 32K 序列、FSDP、每步 100 万 token |
-| 无 | `zero/tools/needle.py`：`make_case`（精确控制长度和针的位置，附对照提示词）、`score_text`、`answer_nll`、`run_grid`、`format_grid`；命令行 `uv run python -m zero.tools.needle --model <ckpt> --lengths ... --depths ...` | 可以评任何 zero checkpoint 或导出的 HF 目录；也可以传自己的 `generate_fn` 评别的模型 |
+| `yarn_inv_freq` in `02` | `zero/model.py`: `compute_rope_inv_freq(head_dim, theta, scaling)` returns `(inv_freq, attention_scaling)`. `RotaryEmbedding` precomputes cos/sin for `[0, max_seq_len)` and multiplies them by `attention_scaling` | cos/sin are **non-persistent buffers**, so they are not in the `state_dict`. After a change to `rope_theta` or `rope_scaling`, build them again, and load all other weights as they are. A position past `max_seq_len` causes an error, so the model does not extrapolate silently |
+| Manual replacement of cos/sin in `03` | `zero/config.py`: `ModelConfig.rope_theta`, `ModelConfig.rope_scaling` (checks: only `type = "yarn"` is supported, `factor ≥ 1`, `original_max_position_embeddings` is necessary, and an unknown field causes an error). At export, `zero/hf.py` writes it as the HF `rope_scaling` / `rope_parameters` | Driven by the configuration. After export, transformers, vLLM, and llama.cpp can all run inference with the same YaRN parameters |
+| "Branch from the same point + new mixture + linear decay" in `04` | `zero/train/midtrain.py`: `init_from` points to the pretraining checkpoint. `check_compatible` allows changes only to `rope_theta`, `rope_scaling`, and `max_seq_len` (a change to the number of layers or to a dimension causes an error), and it prints "what changed". `[schedule] kind = "wsd"` with `decay_frac = 1.0` is one full decay phase. `[[data.sources]]` changes the mixture (`zero/data/mixture.py` samples by weight) | Uses the same `zero/train/trainer.py` as pretraining (BF16, gradient accumulation, resume from checkpoints, multiple GPUs). After an interruption, run the same command again. It resumes from the checkpoint of this run |
+| "Fine-tune at length 256" in `03` | `configs/main/longctx.toml` (see the table below) | 32K sequences, FSDP, 1M tokens per step |
+| None | `zero/tools/needle.py`: `make_case` (exact control of the length and of the needle position, with a control prompt), `score_text`, `answer_nll`, `run_grid`, `format_grid`. Command line: `uv run python -m zero.tools.needle --model <ckpt> --lengths ... --depths ...` | Can evaluate any zero checkpoint or exported HF folder. You can also pass your own `generate_fn` to evaluate other models |
 
-**对拍**：
+**Parity checks**:
 
-- `02` 的第 3 部分：从零写的 YaRN 与 `zero.model.compute_rope_inv_freq`、transformers 的 `Qwen3RotaryEmbedding` 在 4 组设置下（包括 Qwen3 推荐的"32K×4"）频率最大差 ≤ 6×10⁻⁸（float32 舍入），mscale 完全相同；
-- [`tests/test_model_hf_parity.py`](../../tests/test_model_hf_parity.py) 的 `yarn`、`yarn_custom_beta` 两个用例：随机初始化的 HF `Qwen3ForCausalLM` 带 YaRN，权重搬进 zero，150 个位置（超过原长度 32 / 48）的 logits 误差在 1e-5 以内；
-- [`tests/test_kv_cache.py`](../../tests/test_kv_cache.py) 的 `test_greedy_batch_and_yarn`：开着 YaRN 时，用 KV cache 和不用 KV cache 的贪心生成完全一致；
-- [`tests/test_needle.py`](../../tests/test_needle.py)（本章新增，9 项）：题目长度恰好等于请求的长度、针的位置随深度单调、对照提示词只在针的数字处不同；"读得出针"的假模型得满分、不说话的假模型得 0 分；`answer_nll` 与逐 token 手算一致；真实的 zero 模型能跑通整张表。
+- Part 3 of `02`: the from-scratch YaRN agrees with `zero.model.compute_rope_inv_freq` and with `Qwen3RotaryEmbedding` of transformers on 4 settings (including "32K×4", which Qwen3 recommends). The largest frequency difference is ≤ 6×10⁻⁸ (float32 rounding), and mscale is exactly the same.
+- The cases `yarn` and `yarn_custom_beta` in [`tests/test_model_hf_parity.py`](../../tests/test_model_hf_parity.py): a randomly initialized HF `Qwen3ForCausalLM` with YaRN. The test copies its weights into zero. On 150 positions (past the original length of 32 / 48), the logits differ by less than 1e-5.
+- `test_greedy_batch_and_yarn` in [`tests/test_kv_cache.py`](../../tests/test_kv_cache.py): with YaRN on, greedy generation with the KV cache and without the KV cache gives exactly the same output.
+- [`tests/test_needle.py`](../../tests/test_needle.py) (new in this chapter, 9 tests): the prompt length is exactly the requested length; the needle position increases with depth; the control prompt differs only in the number of the needle. A fake model that "reads the needle" gets a full score, and a fake model that says nothing gets 0. `answer_nll` agrees with a token-by-token calculation by hand. A real zero model runs through the full table.
 
 ```bash
 uv run pytest tests/test_model_hf_parity.py tests/test_kv_cache.py tests/test_needle.py -q
 ```
 
-本机结果：`24 passed in 16.73s`（其中本章新增的 `test_needle.py` 9 项）。
+Result on our machine: `24 passed in 16.73s` (9 of them are the new tests in `test_needle.py`).
 
-**主线配置逐项说明**：
+**The main-line configuration, item by item**:
 
-`configs/main/midtrain.toml`（继承 `pretrain.toml`）：
+`configs/main/midtrain.toml` (inherits from `pretrain.toml`):
 
-| 设置 | 值 | 为什么 |
+| Setting | Value | Why |
 |---|---|---|
-| `train.init_from` | `out/main/pretrain/ckpt` | 从预训练稳定段的最后一个 checkpoint 接着训 |
-| `train.max_steps` | 50000（≈ 26B token） | 约为预训练 400B 的 6.5%，落在 OLMo 2 的 5–10% 区间内；待定 |
-| `[schedule]` | `wsd`，`warmup_steps = 0`，`decay_frac = 1.0`，`min_lr_ratio = 0` | 整段就是 WSD 的衰减段：从峰值线性降到 0（OLMo 2、Llama 3、MobileLLM-R1 都是线性降到 0） |
-| `[[data.sources]]` | fineweb-edu 0.35、fineweb-2-zh 0.25、stack-edu 0.15、finemath 0.15、instruct-toolcall 0.10 | 数学和代码比预训练的 0.12 / 0.08 翻倍左右，另加 10% 指令与工具调用格式数据；具体比例待第二步用分叉衰减确定 |
-| 其余（模型形状、优化器、seq_len 4096） | 继承 | 中期训练不改模型形状，`check_compatible` 会拦住误改 |
+| `train.init_from` | `out/main/pretrain/ckpt` | Continue from the last checkpoint of the stable phase of pretraining |
+| `train.max_steps` | 50000 (≈ 26B tokens) | About 6.5% of the 400B tokens of pretraining, inside the 5–10% range of OLMo 2; to be decided |
+| `[schedule]` | `wsd`, `warmup_steps = 0`, `decay_frac = 1.0`, `min_lr_ratio = 0` | The full stage is the decay phase of WSD: a linear decay from the peak to 0 (OLMo 2, Llama 3, and MobileLLM-R1 all decay linearly to 0) |
+| `[[data.sources]]` | fineweb-edu 0.35, fineweb-2-zh 0.25, stack-edu 0.15, finemath 0.15, instruct-toolcall 0.10 | Math and code are about double their pretraining shares of 0.12 / 0.08, plus 10% instruction and tool-calling format data. In Step 2, branched decay sets the exact ratios |
+| Other settings (model shape, optimizer, seq_len 4096) | Inherited | Mid-training does not change the model shape. `check_compatible` stops a change by mistake |
 
-`configs/main/longctx.toml`（继承 `pretrain.toml`，从 `midtrain` 的结果接着训）：
+`configs/main/longctx.toml` (inherits from `pretrain.toml`, and continues from the result of `midtrain`):
 
-| 设置 | 值 | 为什么 |
+| Setting | Value | Why |
 |---|---|---|
-| `model.rope_theta` | 1,000,000 | ABF：1 万 → 100 万，与 Qwen3 的长上下文阶段相同 |
-| `model.max_seq_len`、`data.seq_len` | 32768 | 目标长度直接训练（不靠推理时外推） |
-| `micro_batch_size × grad_accum × 8 卡 × 32768` | 1 × 4 × 8 × 32768 = 1,048,576 token/步 | 32K 序列的激活很大，每卡一次只放一条 |
-| `train.parallel` | `fsdp` | 参数、梯度、优化器状态切到 8 张卡上，给激活腾显存（FSDP2 本身已在 2×RTX 3090 上验证；但在 24GB 的卡上 2 卡、3 卡 FSDP 跑 32K 都会 OOM——每卡自己的 logits 和激活切不掉，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 14.5 节；8×H100 上仍需实测） |
-| `train.max_steps` | 4000（≈ 4.2B token） | 待定；参照 DeepSeek-V3 每段 1000 步、SmolLM3 每段 50B token，4.2B 偏保守 |
-| `optim.lr`、`[schedule]` | 1e-4，cosine，200 步 warmup，降到 10% | 待定，见下方"待决定的问题" |
-| 推理时更长 | 可再加 `model.rope_scaling = {type = "yarn", factor = 4, original_max_position_embeddings = 32768}` | Qwen3 模型卡推荐的做法：32K 原生，YaRN ×4 到 128K；只在需要时开（静态 YaRN 会略微影响短文本） |
+| `model.rope_theta` | 1,000,000 | ABF: 10K → 1M, the same as the long-context stage of Qwen3 |
+| `model.max_seq_len`, `data.seq_len` | 32768 | Train directly at the target length (do not depend on extrapolation at inference) |
+| `micro_batch_size × grad_accum × 8 GPUs × 32768` | 1 × 4 × 8 × 32768 = 1,048,576 tokens/step | The activations of a 32K sequence are very large, so each GPU holds only one sequence at a time |
+| `train.parallel` | `fsdp` | Split the parameters, gradients, and optimizer states over 8 GPUs to free memory for the activations. (FSDP2 itself was verified on 2×RTX 3090. But on 24GB cards, FSDP with 2 or 3 GPUs runs out of memory (OOM) at 32K: the logits and activations of each GPU cannot be split. See Section 14.5 of [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md). It still needs a test on 8×H100) |
+| `train.max_steps` | 4000 (≈ 4.2B tokens) | To be decided. DeepSeek-V3 uses 1000 steps per stage, and SmolLM3 uses 50B tokens per stage, so 4.2B is conservative |
+| `optim.lr`, `[schedule]` | 1e-4, cosine, 200 warmup steps, decay to 10% | To be decided; see "Open questions" below |
+| Longer at inference | Optionally add `model.rope_scaling = {type = "yarn", factor = 4, original_max_position_embeddings = 32768}` | The method that the Qwen3 model card recommends: 32K native, YaRN ×4 to 128K. Turn it on only when necessary (static YaRN has a small effect on short text) |
 
-**待决定的问题（第二步用小规模实验定）**：`midtrain` 已经把学习率降到 0，`longctx` 又从 1e-4 重新 warmup，相当于两段退火。头部模型的顺序并不统一：Qwen3 把长上下文放在预训练最后一段；Llama 3 先扩长度、最后 40M token 在 128K 长度上退火；DeepSeek-V3 扩长度时直接沿用预训练末尾的学习率 7.3×10⁻⁶；SmolLM3 则"用衰减段的配比 + 更长的序列"。另外，zero 目前没有做跨文档注意力屏蔽（见"前沿观察"），32K 窗口里会拼进很多短文档。
+**Open questions (in Step 2, small-scale experiments decide them)**: `midtrain` already decays the learning rate to 0. Then `longctx` warms up again to 1e-4. This is the same as two annealing stages. The leading models do not use the same order. Qwen3 puts long context in the last stage of pretraining. Llama 3 first extends the length, and then anneals on the last 40M tokens at length 128K. DeepSeek-V3 extends the length with the learning rate from the end of pretraining, 7.3×10⁻⁶. SmolLM3 uses "the decay-phase mixture + longer sequences". Also, zero does not do intra-document attention masking at this time (see "Frontier notes"). Thus a 32K window contains many short documents that are packed together.
 
-## 主线进度
+## Main-line progress
 
-### 极小配置演示（CPU，`configs/tiny`，约 1.3M 参数）
+### Tiny-configuration demo (CPU, `configs/tiny`, about 1.3M parameters)
 
-> 以下是**极小配置演示**：只说明代码能跑通、各项改动按预期生效，不代表主线模型的任何结果。
+> **Note:** This is a **tiny-configuration demo**. It shows only that the code runs and that each change has the expected effect. It does not show any result of the main-line model.
 
-先跑 tiny 预训练（为了不和其他章节共用输出目录，这里用 `--set` 换了 `out_dir`；直接用默认命令也一样）：
+First, run the tiny pretraining. (To keep the output folder separate from other chapters, we use `--set` to change `out_dir`. The default command also works.)
 
 ```bash
 uv run python -m zero.train.pretrain --config configs/tiny/pretrain.toml --set train.out_dir=out/tiny/ch15/pretrain
@@ -392,163 +397,163 @@ uv run python -m zero.train.midtrain --config configs/tiny/midtrain.toml \
 ```
 
 ```
-# 预训练（节选）
-模型参数 1.31M（非 embedding 0.79M），每步 2048 token，共 200 步，设备 cpu，world_size=1
+# pretraining (part)
+Model parameters 1.31M (non-embedding 0.79M), 2048 tokens per step, 200 steps, device cpu, world_size=1
 step    100/200 | loss 6.1065 | lr 3.00e-03 | gnorm 0.38 | 2,709 tok/s | val 6.0048
 step    200/200 | loss 5.4736 | lr 3.00e-04 | gnorm 0.38 | 2,608 tok/s | val 5.7116
 
-# 中期训练
+# mid-training
 [midtrain] model.rope_scaling: None → {'type': 'yarn', 'factor': 2.0, 'original_max_position_embeddings': 128, 'beta_fast': 32.0, 'beta_slow': 1.0}
 [midtrain] data.seq_len: 128 → 256
-[midtrain] 数据混合: {'shakespeare': 0.45, 'chinese_poetry': 0.45, 'code': 0.1} → {'shakespeare': 0.3, 'chinese_poetry': 0.6, 'code': 0.1}
-从 out/tiny/ch15/pretrain/ckpt 加载模型权重（step 200）
+[midtrain] data mixture: {'shakespeare': 0.45, 'chinese_poetry': 0.45, 'code': 0.1} → {'shakespeare': 0.3, 'chinese_poetry': 0.6, 'code': 0.1}
+Loaded model weights from out/tiny/ch15/pretrain/ckpt (step 200)
 step      1/60 | loss 5.5548 | lr 9.83e-04 | gnorm 0.38 | 1,793 tok/s
 step     30/60 | loss 5.4730 | lr 5.00e-04 | gnorm 0.42 | 2,434 tok/s | val 5.6488
 step     60/60 | loss 5.4976 | lr 0.00e+00 | gnorm 0.38 | 2,229 tok/s | val 5.6101
 ```
 
-读这份日志要注意三点：
+Note three points in this log:
 
-- `check_compatible` 打印出了这次改了什么：YaRN ×2（原长 128）、序列长度 128 → 256、配比向中文倾斜；
-- 学习率从 1e-3 线性降到 0（`decay_frac = 1.0`），正是"整段衰减"；
-- 预训练的 val 5.7116 是在长度 128 的片段上算的，中期训练的 val 5.6101 是在长度 256 上算的，**两者不能直接比**。能说明的只是：换了 RoPE、加长了序列之后，训练照常收敛，没有崩。
+- `check_compatible` prints what this run changed: YaRN ×2 (original length 128), sequence length 128 → 256, and a mixture that moves toward Chinese.
+- The learning rate decays linearly from 1e-3 to 0 (`decay_frac = 1.0`). This is the "full decay".
+- The pretraining val 5.7116 is on sequences of length 128. The mid-training val 5.6101 is on sequences of length 256. **You cannot compare the two directly.** They show only this: after the RoPE change and the longer sequences, training converges as usual and does not break.
 
-2026-10 在另一台服务器上用同样两条命令复跑：预训练第 200 步 val 5.6004，中期训练第 60 步 val 5.5353，数字不同（见 1.4 节的"关于数字"），上面三点同样成立。
+In 2026-10, a rerun of the same two commands on another server gave val 5.6004 at pretraining step 200 and val 5.5353 at mid-training step 60. The numbers are different (see "About the numbers" in Section 1.4), but the three points above are still true.
 
-大海捞针（`uv run python -m zero.tools.needle --model out/tiny/ch15/midtrain/ckpt --lengths 64,128,240 --depths 0,0.5,1 --n 5`）：
+Needle in a haystack (`uv run python -m zero.tools.needle --model out/tiny/ch15/midtrain/ckpt --lengths 64,128,240 --depths 0,0.5,1 --n 5`):
 
 ```
-生成式准确率（贪心解码里出现正确数字的比例）
-   长度\深度    0.00    0.50    1.00
+Generation accuracy (fraction of greedy outputs that contain the correct number)
+length\depth    0.00    0.50    1.00
           64    0.00    0.00    0.00
          128    0.00    0.00    0.00
          240    0.00    0.00    0.00
 
-似然增益 nll_gain = NLL(对照) − NLL(真针)，> 0 表示模型在用针的信息
-   长度\深度    0.00    0.50    1.00
+Likelihood gain nll_gain = NLL(control) − NLL(true needle); > 0 means that the model uses the needle
+length\depth    0.00    0.50    1.00
           64  +0.010  -0.012  +0.000
          128  +0.004  +0.006  -0.064
          240  -0.019  -0.038  -0.027
 ```
 
-一个只训了 260 步、130 万参数的模型当然捞不到针：准确率全是 0，似然增益在 0 附近正负摆动（每格只有 5 题，这些差别都在噪声里）。工具本身的正确性由 `tests/test_needle.py` 保证。
+A model with 1.3M parameters that trained for only 260 steps cannot find the needle. All accuracies are 0. The likelihood gain moves above and below 0. (Each cell has only 5 questions, so these differences are noise.) `tests/test_needle.py` makes sure that the tool itself is correct.
 
-### 待 GPU 训练后补充
+### To be added after GPU training
 
-- 中期训练与长上下文扩展的真实训练曲线、每段的数据配比与花费、失败与返工；
-- 分叉衰减实验：比较中期训练的几种配比（尤其是"工具调用格式数据有没有用"）；
-- 32K 下的大海捞针表、RULER（4K–32K）成绩、短上下文评测是否恢复；
-- **闸门 2** 的对比报告（下方清单）。
+- The real training curves of mid-training and long-context extension, the data mixture and the cost of each stage, and the failures and rework.
+- Branched-decay experiments that compare some mixtures for mid-training (especially: "does the tool-calling format data help?").
+- The needle-in-a-haystack table at 32K, the RULER results (4K–32K), and whether the short-context evaluations recover.
+- The comparison report of **Gate 2** (see the checklist below).
 
-**成本估算**（`zero.tools.estimate_cost`，H100 SXM，MFU 0.4、$2.5/卡时的假设，**尚未在 GPU 上验证**，32K 序列下的实际 MFU 可能更低）：
+**Cost estimate** (`zero.tools.estimate_cost`; assumptions: H100 SXM, MFU 0.4, $2.5 per GPU-hour; **not verified on a GPU yet**; with 32K sequences, the real MFU can be lower):
 
-| 阶段 | token | 每 token 运算量 | 卡时 | 费用 |
+| Stage | Tokens | Operations per token | GPU-hours | Cost |
 |---|---:|---:|---:|---:|
-| 中期训练（`midtrain.toml`，4K） | 26.2B | 6.96 GFLOP | 127.9 | $320 |
-| 长上下文（`longctx.toml`，32K） | 4.19B | 26.69 GFLOP | 78.5 | $196 |
-| 合计 | | | 206.4 | $516（GOAL.md 3.4 预算 $700） |
+| Mid-training (`midtrain.toml`, 4K) | 26.2B | 6.96 GFLOP | 127.9 | $320 |
+| Long context (`longctx.toml`, 32K) | 4.19B | 26.69 GFLOP | 78.5 | $196 |
+| Total | | | 206.4 | $516 (budget in GOAL.md 3.4: $700) |
 
-两项都超过 $100，按 GOAL.md 3.4 须先把估算交给作者批准再开跑。
+Both items are more than $100. Thus, as GOAL.md 3.4 specifies, the author must approve the estimate before the runs start.
 
-### 闸门 2 检查清单（GOAL.md 3.4：预训练结束）
+### Gate 2 checklist (GOAL.md 3.4: end of pretraining)
 
-- [ ] 用预注册（`eval/PREREGISTRATION.md`）里的 Base 模型少样本基准和我们自己的开发集，评测长上下文扩展后的 Base 模型，报 bootstrap 95% 置信区间；
-- [ ] 与闸门 1 的外推预测（loss 与基准分数）逐项对比；**明显偏低时先诊断**（数据、学习率、代码 bug、评测模板），不进后训练；
-- [ ] 短上下文能力：长上下文扩展前后的开发集 loss 与少样本成绩对比，确认"完全恢复"（Llama 3 的标准）；
-- [ ] 长上下文：`zero.tools.needle` 在 4K / 8K / 16K / 32K × 5 个深度上全部答对；RULER 4K–32K 如实报告；
-- [ ] 工具调用格式：在留出的工具调用格式数据上看 loss，确认中期训练里的格式数据被学到；
-- [ ] 中期训练与长上下文数据的 13-gram 去污染检查结果存档；
-- [ ] 花费记入 `runs/ledger.md`；
-- [ ] 不用预注册的测试基准挑 checkpoint 或调配比（GOAL.md 11 节）。
+- [ ] Evaluate the base model after the long-context extension. Use the few-shot base-model benchmarks of the preregistration (`eval/PREREGISTRATION.md`) and our own development set. Report bootstrap 95% confidence intervals.
+- [ ] Compare each item with the extrapolated predictions of Gate 1 (loss and benchmark scores). **If the results are clearly lower, diagnose first** (data, learning rate, code bugs, evaluation templates). Do not start post-training.
+- [ ] Short-context ability: compare the development-set loss and the few-shot results before and after the long-context extension. Make sure that they "recover completely" (the Llama 3 criterion).
+- [ ] Long context: `zero.tools.needle` is all correct at 4K / 8K / 16K / 32K × 5 depths. Report RULER 4K–32K as it is.
+- [ ] Tool-calling format: look at the loss on held-out tool-calling format data. Make sure that the model learned the format data of mid-training.
+- [ ] Archive the results of the 13-gram decontamination check of the mid-training data and the long-context data.
+- [ ] Record the cost in `runs/ledger.md`.
+- [ ] Do not use the preregistered test benchmarks to select checkpoints or to tune mixtures (GOAL.md Section 11).
 
 ---
 
-## 前沿观察
+## Frontier notes
 
-> **NTK-aware 插值**：YaRN 的前身之一，按 `θ' = θ·s^(d/(d−2))` 换一个更大的基频，把"内插的压力"摊到各个维度（Code Llama 手动把基频调到 100 万也被 YaRN 论文归入这一类）；不同倍数下最优的基频要靠试，细节不进正文。
+> **NTK-aware interpolation**: one of the methods before YaRN. It changes to a larger base frequency, `θ' = θ·s^(d/(d−2))`, and spreads "the pressure of interpolation" over all dimensions. (The YaRN paper also puts Code Llama in this group: Code Llama set the base frequency to 1M by hand.) The best base frequency for each factor must be found by trial. The details are not in the main text.
 >
-> **跨文档注意力屏蔽（intra-document masking）**：把多篇短文档拼进一个长窗口时，让每篇只看自己。Llama 3 说它"在标准预训练里影响有限，但在超长序列的续训里很重要"，SmolLM3 也采用了；DeepSeek-V3 明确写了没有用。目前核实到的采用方只有两家，暂不进正文；zero 的预训练也还没有实现它，第二步做长上下文前值得先用小实验验证。
+> **Intra-document masking**: when several short documents are packed into one long window, each document sees only itself. Llama 3 says that it "has a limited effect in standard pretraining, but it is important in continued pretraining on very long sequences". SmolLM3 also uses it. DeepSeek-V3 says explicitly that it does not use it. At this time, we verified only two adopters, so it is not in the main text yet. The pretraining of zero does not implement it yet. Before the long-context work of Step 2, a small experiment should check it first.
 
 ---
 
-## 采用方与来源
+## Adopters and sources
 
-| 技术 | 采用方（主力版本） | 来源 |
+| Technique | Adopters (main versions) | Sources |
 |---|---|---|
-| 中期训练 / 退火（衰减段换高质量数据） | **OLMo 2**（mid-training，Dolmino Mix，LR 线性降到 0）；**Llama 3**（退火上采样高质量数据，并用退火评估数据）；**SmolLM3**（衰减段上采样数学、代码并加入指令与推理数据）；**MiniCPM**（衰减段混入 SFT 数据）；**Qwen3**（S2 阶段提高 STEM/代码/推理/合成数据比例并加快 LR 衰减）；**MobileLLM-R1**（两段 mid-training，LR 线性降到 0）；Puro-2B（第二阶段按质量排序的数据课程 + 线性衰减） | [OLMo 2](https://arxiv.org/abs/2501.00656) §2.3、§4；[Llama 3](https://arxiv.org/abs/2407.21783) §3.1.3、§3.4.3；[SmolLM3 博客](https://github.com/huggingface/blog/blob/main/smollm3.md)；[MiniCPM](https://arxiv.org/abs/2404.06395) §5；[Qwen3](https://arxiv.org/abs/2505.09388) §3.2；[MobileLLM-R1](https://arxiv.org/abs/2509.24945) §3、附录 A；[Puro-2B](https://www.alphaxiv.org/abs/2608.27370) §3.4 |
-| 调大 RoPE 基频（ABF） | **Qwen3**（长上下文阶段 1 万 → 100 万；`rope_theta: 1000000`）；**SmolLM3**（150 万 → 500 万；`rope_theta: 5000000.0`）；**Gemma 3**（全局层 1 万 → 100 万）；**Llama 3**（从预训练起 θ = 50 万；`rope_theta: 500000.0`）；**OLMo 2**（`rope_theta: 500000`）；gpt-oss（`rope_theta: 150000`） | [Qwen3](https://arxiv.org/abs/2505.09388) §3.2；[SmolLM3 博客](https://github.com/huggingface/blog/blob/main/smollm3.md)；[Gemma 3](https://arxiv.org/abs/2503.19786) §2、§5.3；[Llama 3](https://arxiv.org/abs/2407.21783) §3.2；Xiong et al. 2023 [arXiv:2309.16039](https://arxiv.org/abs/2309.16039)；各模型 `config.json`（下方链接） |
-| YaRN | **DeepSeek-V3**（`rope_scaling: {type: yarn, factor: 40, original_max_position_embeddings: 4096, beta_fast: 32, beta_slow: 1}`，两段各 1000 步 4K→32K→128K）；**gpt-oss**（`factor: 32`，`original_max_position_embeddings: 4096`）；**Kimi K2**（`factor: 32`，原长 4096）；**Qwen3**（原生 32K，模型卡推荐 YaRN `factor: 4` 到 128K，RULER 成绩即按此测）；**SmolLM3**（64K 训练，YaRN 外推到 128K） | [YaRN](https://arxiv.org/abs/2309.00071)；[DeepSeek-V3](https://arxiv.org/abs/2412.19437) §4.3；[Qwen3-8B 模型卡](https://huggingface.co/Qwen/Qwen3-8B)；[SmolLM3 博客](https://github.com/huggingface/blog/blob/main/smollm3.md)；各模型 `config.json` |
-| 位置内插 PI（铺垫） | Gemma 3（`rope_scaling: {rope_type: linear, factor: 8.0}`，报告写明沿用 Chen et al. 的做法） | [PI](https://arxiv.org/abs/2306.15595)；[Gemma 3](https://arxiv.org/abs/2503.19786) §5.3 |
-| 长上下文评测 | NIAH：Llama 3、DeepSeek-V3 的报告；RULER：Qwen3（附录 A.1.1）、Gemma 3（表 15）、SmolLM3（博客） | [Kamradt NIAH](https://github.com/gkamradt/LLMTest_NeedleInAHaystack)；[RULER](https://arxiv.org/abs/2404.06654) |
+| Mid-training / annealing (high-quality data in the decay phase) | **OLMo 2** (mid-training, Dolmino Mix, LR decays linearly to 0); **Llama 3** (annealing upsamples high-quality data, and annealing evaluates data); **SmolLM3** (the decay phase upsamples math and code, and adds instruction and reasoning data); **MiniCPM** (the decay phase mixes in SFT data); **Qwen3** (stage S2 increases the share of STEM/code/reasoning/synthetic data and accelerates the LR decay); **MobileLLM-R1** (two mid-training stages, LR decays linearly to 0); Puro-2B (a data curriculum sorted by quality in the second stage + linear decay) | [OLMo 2](https://arxiv.org/abs/2501.00656) §2.3, §4; [Llama 3](https://arxiv.org/abs/2407.21783) §3.1.3, §3.4.3; [SmolLM3 blog](https://github.com/huggingface/blog/blob/main/smollm3.md); [MiniCPM](https://arxiv.org/abs/2404.06395) §5; [Qwen3](https://arxiv.org/abs/2505.09388) §3.2; [MobileLLM-R1](https://arxiv.org/abs/2509.24945) §3, Appendix A; [Puro-2B](https://www.alphaxiv.org/abs/2608.27370) §3.4 |
+| Larger RoPE base frequency (ABF) | **Qwen3** (long-context stage 10K → 1M; `rope_theta: 1000000`); **SmolLM3** (1.5M → 5M; `rope_theta: 5000000.0`); **Gemma 3** (global layers 10K → 1M); **Llama 3** (θ = 500K from the start of pretraining; `rope_theta: 500000.0`); **OLMo 2** (`rope_theta: 500000`); gpt-oss (`rope_theta: 150000`) | [Qwen3](https://arxiv.org/abs/2505.09388) §3.2; [SmolLM3 blog](https://github.com/huggingface/blog/blob/main/smollm3.md); [Gemma 3](https://arxiv.org/abs/2503.19786) §2, §5.3; [Llama 3](https://arxiv.org/abs/2407.21783) §3.2; Xiong et al. 2023 [arXiv:2309.16039](https://arxiv.org/abs/2309.16039); the `config.json` of each model (links below) |
+| YaRN | **DeepSeek-V3** (`rope_scaling: {type: yarn, factor: 40, original_max_position_embeddings: 4096, beta_fast: 32, beta_slow: 1}`, two stages of 1000 steps each, 4K→32K→128K); **gpt-oss** (`factor: 32`, `original_max_position_embeddings: 4096`); **Kimi K2** (`factor: 32`, original length 4096); **Qwen3** (32K native; the model card recommends YaRN `factor: 4` to 128K, and the RULER results use this setting); **SmolLM3** (trains at 64K, extrapolates to 128K with YaRN) | [YaRN](https://arxiv.org/abs/2309.00071); [DeepSeek-V3](https://arxiv.org/abs/2412.19437) §4.3; [Qwen3-8B model card](https://huggingface.co/Qwen/Qwen3-8B); [SmolLM3 blog](https://github.com/huggingface/blog/blob/main/smollm3.md); the `config.json` of each model |
+| Position interpolation PI (base for YaRN) | Gemma 3 (`rope_scaling: {rope_type: linear, factor: 8.0}`; the report says that it follows the method of Chen et al.) | [PI](https://arxiv.org/abs/2306.15595); [Gemma 3](https://arxiv.org/abs/2503.19786) §5.3 |
+| Long-context evaluation | NIAH: the reports of Llama 3 and DeepSeek-V3; RULER: Qwen3 (Appendix A.1.1), Gemma 3 (Table 15), SmolLM3 (blog) | [Kamradt NIAH](https://github.com/gkamradt/LLMTest_NeedleInAHaystack); [RULER](https://arxiv.org/abs/2404.06654) |
 
-**共识判断（GOAL.md 2.1）**：中期训练 / 退火、调大基频、YaRN 各有 3 个以上彼此独立的头部家族在主力版本中明确采用，进正文。PI 只作为 YaRN 的铺垫（规则 C）。NTK-aware 插值与跨文档屏蔽放在"前沿观察"。
+**Consensus decision (GOAL.md 2.1)**: mid-training / annealing, a larger base frequency, and YaRN each have 3 or more independent leading model families that use them explicitly in their main versions. Thus they are in the main text. PI is only the base for YaRN (rule C). NTK-aware interpolation and intra-document masking are in "Frontier notes".
 
-**模型配置**（2026-09 通过 Hugging Face 读取）：
-[Qwen3-0.6B](https://huggingface.co/Qwen/Qwen3-0.6B/blob/main/config.json)、
-[Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B/blob/main/config.json)、
-[SmolLM3-3B](https://huggingface.co/HuggingFaceTB/SmolLM3-3B/blob/main/config.json)、
-[Llama-3.1-8B（unsloth 镜像）](https://huggingface.co/unsloth/Meta-Llama-3.1-8B/blob/main/config.json)、
-[OLMo-2-1124-7B](https://huggingface.co/allenai/OLMo-2-1124-7B/blob/main/config.json)、
-[DeepSeek-V3](https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/config.json)、
-[gpt-oss-20b](https://huggingface.co/openai/gpt-oss-20b/blob/main/config.json)、
-[Kimi-K2-Instruct](https://huggingface.co/moonshotai/Kimi-K2-Instruct/blob/main/config.json)、
-[gemma-3-4b-pt](https://huggingface.co/google/gemma-3-4b-pt/blob/main/config.json)。
+**Model configurations** (read from Hugging Face in 2026-09):
+[Qwen3-0.6B](https://huggingface.co/Qwen/Qwen3-0.6B/blob/main/config.json),
+[Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B/blob/main/config.json),
+[SmolLM3-3B](https://huggingface.co/HuggingFaceTB/SmolLM3-3B/blob/main/config.json),
+[Llama-3.1-8B (unsloth mirror)](https://huggingface.co/unsloth/Meta-Llama-3.1-8B/blob/main/config.json),
+[OLMo-2-1124-7B](https://huggingface.co/allenai/OLMo-2-1124-7B/blob/main/config.json),
+[DeepSeek-V3](https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/config.json),
+[gpt-oss-20b](https://huggingface.co/openai/gpt-oss-20b/blob/main/config.json),
+[Kimi-K2-Instruct](https://huggingface.co/moonshotai/Kimi-K2-Instruct/blob/main/config.json),
+[gemma-3-4b-pt](https://huggingface.co/google/gemma-3-4b-pt/blob/main/config.json).
 
-说明：Llama 3.1 的 `rope_scaling` 是 Meta 自己的 `llama3` 类型（`factor: 8`、`low_freq_factor: 1`、`high_freq_factor: 4`，原长 8192），思路与 YaRN 的"按频率分段"相同但公式不同，没有计入 YaRN 的采用方。Kimi K2 的 `config.json` 里 `beta_fast` 与 `beta_slow` 都是 1.0，与 YaRN 论文推荐的 32 / 1 不同，原因待核实。DeepSeek-V3 的 YaRN 只作用于 MLA 里解耦出来的 RoPE key（第 21 章）。Qwen3 的 `config.json` 里 `rope_scaling` 为 `null`，YaRN 是模型卡推荐用户按需打开的。
-
----
-
-## 引导问题
-
-带着这些问题去问 Claude Code，直到你能用自己的话讲清楚：
-
-1. 中期训练的 token 往往只有预训练的百分之几，为什么效果能这么大？如果把同样的高质量数据均匀撒在整个预训练里，你预期结果会怎样？MiniCPM 的两个论点你同意吗？
-2. 本章 `04` 实验里，"只换数据不衰减"（C）和"只衰减不换数据"（B）各带来多少提升？英文、中文为什么在 D 里没有变差（或者变差了多少）？"想补强的能力"与"已有的能力"之间怎么权衡？
-3. 把 θ 调大以后，读到 32K 时"没见过的角度"就没有了，为什么还要续训？（提示：同一个角度对应的距离变了。）如果 θ 调到无穷大，会发生什么？
-4. PI 把所有指针都放慢 s 倍，YaRN 只放慢慢指针。在 `02` 的表里找出本章小实验中"完全内插"的维度对，解释为什么秒针（i = 0）不能动。
-5. YaRN 的温度 `0.1·ln(s) + 1` 是拟合出来的经验公式。试着让 Claude Code 帮你推一推：候选位置从 L 变成 sL 时，均匀注意力的熵增加多少？温度应该往哪个方向调？
-6. 大海捞针全部答对的模型，RULER 上可能表现很差。设计一个你认为比 NIAH 更能说明"真的会用长上下文"的任务，它要怎样自动判分？
-
-## 动手任务
-
-每个任务都要真的运行代码、看到结果。
-
-**任务 1（基础）**：修改 `01_rope_wavelengths.py`，把 `BASES` 换成你感兴趣的模型：gpt-oss（θ = 15 万，head_dim 64）、SmolLM3（θ = 500 万，head_dim 128）。它们在各自的原生训练长度内，有多少对指针转不满一圈？
-
-**任务 2（核心）**：在 `03_context_extension.py` 里加一个设置 (e)：YaRN 但**不乘温度**（mscale 固定为 1），零样本和微调后各测一次，和 (c) 比较。温度在零样本时帮了多少？微调之后还重要吗？再换一个随机种子（改 `train(..., seed=...)`），看差距是否超出种子之间的波动。
-
-**任务 3（挑战）**：用 `04_anneal_mixture.py` 的办法做一次"微退火"式的数据估值：把"代码"来源换成 `assets/tiny_corpus/` 以外你自己找的一小份文本（比如一本公版书），只在衰减段加入、占 30%（Llama 3 的做法），看它对自己那一类验证集的 bits-per-byte 有多大帮助、对其他来源有没有伤害。然后用 `uv run python -m zero.tools.needle --model out/tiny/midtrain/ckpt --lengths 64,128,240` 跑一次大海捞针，解释为什么 tiny 模型全是 0。
+Notes: the `rope_scaling` of Llama 3.1 is Meta's own `llama3` type (`factor: 8`, `low_freq_factor: 1`, `high_freq_factor: 4`, original length 8192). Its idea is the same as in YaRN ("zones by frequency"), but the formula is different, so we do not count it as a YaRN adopter. In the `config.json` of Kimi K2, `beta_fast` and `beta_slow` are both 1.0. This is different from the 32 / 1 that the YaRN paper recommends; the reason is to be verified. In DeepSeek-V3, YaRN applies only to the decoupled RoPE key in MLA (Chapter 21). In the `config.json` of Qwen3, `rope_scaling` is `null`: the model card recommends that users turn on YaRN when they need it.
 
 ---
 
-## 想深入：CS336
+## Guided questions
 
-本章对应斯坦福 CS336（Spring 2026）<https://cs336.stanford.edu/>，**部分覆盖**：
+Ask Claude Code these questions. Continue until you can explain the answers in your own words:
 
-- **第 14 讲：数据（过滤、去重、配比、合成数据）**。数据配比与合成数据的部分，是本章"中期训练换什么数据"的理论背景；作业 4（Data）里的过滤与配比实验可以直接接到本章的分叉衰减上。
-- **第 15 讲：中期训练与后训练（SFT/RLHF）**。讲中期训练在整条流水线里的位置，以及它和 SFT 的分界。
-- RoPE 的长上下文扩展（ABF、YaRN）与长上下文评测，CS336 未深入，见本章参考文献。
+1. Mid-training often uses only a few percent of the pretraining tokens. Why is its effect so large? If you spread the same high-quality data evenly over all of pretraining, what result do you expect? Do you agree with the two arguments of MiniCPM?
+2. In the `04` experiment of this chapter, how much improvement do "new data without decay" (C) and "decay without new data" (B) each give? Why do English and Chinese not become worse in D (or how much worse do they become)? How do you balance "the skill that you want to make stronger" against "the skills that the model already has"?
+3. After θ becomes larger, there are no "unseen angles" at 32K. Why must the model still train more? (Hint: each angle now means a different distance.) What happens if θ becomes infinitely large?
+4. PI makes all hands s times slower. YaRN makes only the slow hands slower. In the table of `02`, find the dimension pairs that are "fully interpolated" in the small experiment of this chapter. Explain why the second hand (i = 0) must not change.
+5. The YaRN temperature `0.1·ln(s) + 1` is an empirical formula from a fit. Ask Claude Code to help you derive it: when the candidate positions increase from L to sL, how much does the entropy of uniform attention increase? In which direction must the temperature move?
+6. A model that gets all needle-in-a-haystack answers correct can do badly on RULER. Design a task that shows better than NIAH that a model "really uses long context". How can you score it automatically?
+
+## Hands-on tasks
+
+For each task, run the code and look at the result.
+
+**Task 1 (basic)**: In `01_rope_wavelengths.py`, change `BASES` to models that interest you: gpt-oss (θ = 150K, head_dim 64) and SmolLM3 (θ = 5M, head_dim 128). In their native training lengths, how many hands do not make one full turn?
+
+**Task 2 (core)**: In `03_context_extension.py`, add a setting (e): YaRN **without the temperature** (mscale fixed at 1). Measure it zero-shot and after fine-tuning, and compare it with (c). How much does the temperature help zero-shot? Is it still important after fine-tuning? Then change the random seed (change `train(..., seed=...)`), and check if the difference is larger than the variation between seeds.
+
+**Task 3 (challenge)**: Use the method of `04_anneal_mixture.py` for a "microannealing"-style data valuation. Replace the "code" source with a small text that you find outside `assets/tiny_corpus/` (for example, a public-domain book). Add it only in the decay phase, at 30% (the method of Llama 3). How much does it help the bits-per-byte of its own validation set? Does it hurt the other sources? Then run needle in a haystack once with `uv run python -m zero.tools.needle --model out/tiny/midtrain/ckpt --lengths 64,128,240`, and explain why the tiny model gets 0 everywhere.
 
 ---
 
-## 本章参考文献
+## Go deeper: CS336
 
-- OLMo Team. *2 OLMo 2 Furious*（mid-training、Dolmino Mix、微退火、checkpoint soup），2024：<https://arxiv.org/abs/2501.00656>
-- Llama Team. *The Llama 3 Herd of Models*（§3.1.3 退火数据、§3.4.2 长上下文预训练、§3.4.3 退火、§4.3.4 长上下文 SFT），2024：<https://arxiv.org/abs/2407.21783>
-- Hugging Face. *SmolLM3: smol, multilingual, long-context reasoner*（博客）：<https://github.com/huggingface/blog/blob/main/smollm3.md>
-- Hu et al. *MiniCPM: Unveiling the Potential of Small Language Models with Scalable Training Strategies*（WSD 与"衰减段加入高质量数据"），2024：<https://arxiv.org/abs/2404.06395>
-- Qwen Team. *Qwen3 Technical Report*（§3.2 三阶段预训练、附录 A.1.1 RULER），2025：<https://arxiv.org/abs/2505.09388>
-- Zhao et al. *MobileLLM-R1: Exploring the Limits of Sub-Billion Language Model Reasoners with Open Training Recipes*，2025：<https://arxiv.org/abs/2509.24945>
-- Luo et al. *PuRo-2B: Poor Lab's Qwen2-1.5B Trained on RTX 5090 within $5090*，2026：<https://www.alphaxiv.org/abs/2608.27370>（`references.md` 已收录）
-- Blakeney et al. *Does your data spark joy? Performance gains from domain upsampling at the end of training*，2024：<https://arxiv.org/abs/2406.03476>
-- Peng et al. *YaRN: Efficient Context Window Extension of Large Language Models*，2023：<https://arxiv.org/abs/2309.00071>
-- Chen et al. *Extending Context Window of Large Language Models via Positional Interpolation*，2023：<https://arxiv.org/abs/2306.15595>
-- Xiong et al. *Effective Long-Context Scaling of Foundation Models*（ABF），2023：<https://arxiv.org/abs/2309.16039>
-- Gemma Team. *Gemma 3 Technical Report*（§5.3 长上下文），2025：<https://arxiv.org/abs/2503.19786>
-- DeepSeek-AI. *DeepSeek-V3 Technical Report*（§4.3 长上下文扩展），2024：<https://arxiv.org/abs/2412.19437>
-- Hsieh et al. *RULER: What's the Real Context Size of Your Long-Context Language Models?*，2024：<https://arxiv.org/abs/2404.06654>
-- Kamradt. *Needle In A Haystack — Pressure Testing LLMs*，2023：<https://github.com/gkamradt/LLMTest_NeedleInAHaystack>
-- Hägele et al. *Scaling Laws and Compute-Optimal Training Beyond Fixed Training Durations*（WSD 与分叉衰减，第 6 章已引），2024：<https://arxiv.org/abs/2405.18392>
-- [CS336](https://cs336.stanford.edu/) 第 14、15 讲
+This chapter matches Stanford CS336 (Spring 2026) <https://cs336.stanford.edu/>, with **partial coverage**:
 
-**下一章**：Base 模型会续写，但还不会"对话"，更不会按格式调用工具。第 16 章讲 SFT：chat template（包括工具调用格式）怎么设计、为什么只在回复部分算 loss，以及怎样把主线 Base 模型第一次变成一个能听指令的助手。
+- **Lecture 14: Data (filtering, deduplication, mixtures, synthetic data).** The parts on data mixtures and synthetic data are the theory behind "what data mid-training uses" in this chapter. The filtering and mixture experiments of Assignment 4 (Data) connect directly to the branched decay of this chapter.
+- **Lecture 15: Mid-training and post-training (SFT/RLHF).** It explains where mid-training is in the full pipeline, and the boundary between mid-training and SFT.
+- CS336 does not go deep into the long-context extension of RoPE (ABF, YaRN) or long-context evaluation. See the references of this chapter.
+
+---
+
+## References
+
+- OLMo Team. *2 OLMo 2 Furious* (mid-training, Dolmino Mix, microannealing, checkpoint soup), 2024: <https://arxiv.org/abs/2501.00656>
+- Llama Team. *The Llama 3 Herd of Models* (§3.1.3 annealing data, §3.4.2 long-context pretraining, §3.4.3 annealing, §4.3.4 long-context SFT), 2024: <https://arxiv.org/abs/2407.21783>
+- Hugging Face. *SmolLM3: smol, multilingual, long-context reasoner* (blog): <https://github.com/huggingface/blog/blob/main/smollm3.md>
+- Hu et al. *MiniCPM: Unveiling the Potential of Small Language Models with Scalable Training Strategies* (WSD, and "add high-quality data in the decay phase"), 2024: <https://arxiv.org/abs/2404.06395>
+- Qwen Team. *Qwen3 Technical Report* (§3.2 three-stage pretraining, Appendix A.1.1 RULER), 2025: <https://arxiv.org/abs/2505.09388>
+- Zhao et al. *MobileLLM-R1: Exploring the Limits of Sub-Billion Language Model Reasoners with Open Training Recipes*, 2025: <https://arxiv.org/abs/2509.24945>
+- Luo et al. *PuRo-2B: Poor Lab's Qwen2-1.5B Trained on RTX 5090 within $5090*, 2026: <https://www.alphaxiv.org/abs/2608.27370> (already in `references.md`)
+- Blakeney et al. *Does your data spark joy? Performance gains from domain upsampling at the end of training*, 2024: <https://arxiv.org/abs/2406.03476>
+- Peng et al. *YaRN: Efficient Context Window Extension of Large Language Models*, 2023: <https://arxiv.org/abs/2309.00071>
+- Chen et al. *Extending Context Window of Large Language Models via Positional Interpolation*, 2023: <https://arxiv.org/abs/2306.15595>
+- Xiong et al. *Effective Long-Context Scaling of Foundation Models* (ABF), 2023: <https://arxiv.org/abs/2309.16039>
+- Gemma Team. *Gemma 3 Technical Report* (§5.3 long context), 2025: <https://arxiv.org/abs/2503.19786>
+- DeepSeek-AI. *DeepSeek-V3 Technical Report* (§4.3 long-context extension), 2024: <https://arxiv.org/abs/2412.19437>
+- Hsieh et al. *RULER: What's the Real Context Size of Your Long-Context Language Models?*, 2024: <https://arxiv.org/abs/2404.06654>
+- Kamradt. *Needle In A Haystack — Pressure Testing LLMs*, 2023: <https://github.com/gkamradt/LLMTest_NeedleInAHaystack>
+- Hägele et al. *Scaling Laws and Compute-Optimal Training Beyond Fixed Training Durations* (WSD and branched decay, already cited in Chapter 6), 2024: <https://arxiv.org/abs/2405.18392>
+- [CS336](https://cs336.stanford.edu/) Lectures 14 and 15
+
+**Next chapter**: A base model can continue text, but it cannot "have a conversation" yet, and it cannot call tools in a fixed format. Chapter 16 explains SFT. It shows how to design a chat template (with the tool-calling format), and why we calculate the loss only on the reply. It also makes the main-line base model an assistant that follows instructions, for the first time.

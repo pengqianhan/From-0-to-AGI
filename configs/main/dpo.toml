@@ -1,9 +1,9 @@
-# 主线模型 DPO（第 18 章）。第二步默认值，待调。
+# DPO of the main-line model (Chapter 18). Default values for Step 2; tune them later.
 #   uv run python -m zero.post.dpo --config configs/main/dpo.toml
-# zero 的 DPO 目前是单进程实现（一张卡即可放下 0.7B 的策略 + 预先算好的参考 log 概率）；
-# 多卡版本尚未实现，也尚未在 GPU 上验证。
+# The DPO in zero runs in one process now (one GPU can hold the 0.7B policy + the precomputed reference log-probabilities).
+# There is no multi-GPU version yet, and the code is not verified on a GPU yet.
 
-[model]                  # 与 configs/main/longctx.toml 的 checkpoint 形状一致（689.5M 参数）
+[model]                  # Same shape as the checkpoint of configs/main/longctx.toml (689.5M parameters)
 vocab_size = 65536
 dim = 1280
 n_layers = 28
@@ -11,15 +11,15 @@ n_heads = 16
 n_kv_heads = 8
 head_dim = 128
 ffn_dim = 3584
-rope_theta = 1000000.0   # 长上下文阶段调大后的底数
+rope_theta = 1000000.0   # The larger base from the long-context stage
 max_seq_len = 32768
 tie_embeddings = true
 
 [train]
 seed = 1337
 max_steps = 1000
-micro_batch_size = 8     # 8 对 = 16 条序列
-grad_accum_steps = 8     # 每步 64 对
+micro_batch_size = 8     # 8 pairs = 16 sequences
+grad_accum_steps = 8     # 64 pairs per step
 device = "auto"
 dtype = "auto"
 out_dir = "out/main/dpo"
@@ -31,7 +31,7 @@ tokenizer = "data/tokenizer/tokenizer.json"
 seq_len = 8192
 
 [dpo]
-train_jsonl = "data/dpo/prefs.jsonl"   # 在线造偏好对：generate_pairs > 0 且文件不存在时用当前策略 + tool_env
+train_jsonl = "data/dpo/prefs.jsonl"   # Online preference pairs: if generate_pairs > 0 and the file does not exist, use the current policy + tool_env
 beta = 0.1
 ref_mode = "precompute"
 generate_pairs = 0
@@ -40,7 +40,7 @@ gen_temperature = 1.0
 max_new_tokens = 512
 
 [optim]
-lr = 5e-7                # DPO 常用 5e-7 ~ 1e-6，待调
+lr = 5e-7                # DPO usually uses 5e-7 ~ 1e-6; tune it later
 weight_decay = 0.0
 grad_clip = 1.0
 

@@ -1,52 +1,56 @@
-# 第 24 章：混合专家（MoE）—— 参数翻几十倍，每个 token 的算力不变
+# Chapter 24: Mixture of experts (MoE) — Many more parameters, the same compute for each token
 
-> **一句话目标**：读完这一章，你能按一个模型的 `config.json` 算出它的总参数和激活参数；能写出 MoE 层的路由（打分 → top-k → 归一化 → 加权求和）并和逐 token 的朴素实现对拍；能说清楚路由为什么会坍缩，辅助损失和 DeepSeek-V3 的"无辅助损失偏置"各自怎么把负载拉平；还能用显存和算力两笔账解释为什么几百亿以上的大模型几乎都是 MoE，而 1B 以内的小模型几乎都是稠密的。
+**English** · [中文](README.zh.md)
 
-📺 **本章视频**：待发布（本地渲染：`bash chapters/24-mixture-of-experts/video/build.sh`）
-🧪 **本章自检**：学完后在 Claude Code 里输入 `/ch24-moe`
+> **Goal**: After this chapter, you can calculate the total parameters and the active parameters of a model from its `config.json`. You can write the routing of an MoE layer (score → top-k → normalize → weighted sum) and do a parity check against a naive token-by-token version. You can explain why routing collapses, and how the auxiliary loss and the "auxiliary-loss-free bias" of DeepSeek-V3 balance the load. You can also use two ledgers, memory and compute, to explain two facts. Almost all large models above some tens of billions of parameters are MoE. Almost all small models below 1B are dense.
+
+📺 **Video**: Not published yet. To render it on your computer, run `bash chapters/24-mixture-of-experts/video/build.sh`.
+🧪 **Self-check**: After the chapter, type `/ch24-moe` in Claude Code.
 
 ---
 
-前三章我们一直在给**注意力**省钱：GQA、MLA 让每个位置少存一点，滑动窗口让一些层只看附近，线性注意力把全部历史压进一个固定大小的状态。这一章要解决的是另一半问题：**模型想要更多参数（更多知识），可每个 token 的算力不想跟着涨，怎么办？** 答案在 Transformer 的另一个子层——前馈网络（FFN）。把一个大 FFN 拆成许多个小 FFN（**专家，expert**），再让一个小小的**路由器（router）**给每个 token 只挑其中几个。这就是**混合专家（Mixture of Experts, MoE）**：DeepSeek-V3 有 6710 亿参数，每个 token 只用 370 亿；Kimi K2 有一万亿参数，每个 token 只用 326 亿。
+In the last three chapters, we reduced the cost of **attention**. GQA and MLA store less at each position. A sliding window lets some layers look only at nearby positions. Linear attention compresses the full history into a state of fixed size. This chapter solves the other half of the problem: **the model needs more parameters (more knowledge), but the compute for each token must not increase. What can we do?**
 
-MoE 听上去很简单，真正的难点在"挑"上：路由器是训练出来的，它会偏心——**负载均衡（load balancing）**是这一章的主角。我们会从零写一个 MoE 层，在 CPU 上训练几个小语言模型，亲眼看路由坍缩是什么样子，再看两种均衡办法怎么把它拉回来。
+The answer is in the other sublayer of the Transformer, the feed-forward network (FFN). Split one large FFN into many small FFNs (**experts**). Then let a small **router** select only a few of them for each token. This is a **mixture of experts (MoE)**. DeepSeek-V3 has 671 billion parameters, but each token uses only 37 billion. Kimi K2 has 1 trillion parameters, but each token uses only 32.6 billion.
 
-本章代码（都在 CPU 上跑）：
+The idea of MoE sounds simple. The difficult part is the selection. We train the router with the model, and the router can prefer some experts. Thus **load balancing** is the main topic of this chapter. We write an MoE layer from zero and train some small language models on a CPU. We see what routing collapse looks like. Then we see how two balancing methods correct it.
+
+The code of this chapter (all of it runs on a CPU):
 
 ```bash
-uv run python chapters/24-mixture-of-experts/code/01_param_ledger.py    # 参数账：FFN 占多少；9 个 MoE 模型的总参数/激活参数（几秒）
-uv run python chapters/24-mixture-of-experts/code/02_moe_layer.py       # 从零写 MoE 层：对拍、辅助损失手算、偏置均衡（几秒）
-uv run python chapters/24-mixture-of-experts/code/03_train_compare.py   # 稠密 vs MoE、三种均衡的小语言模型（首次训练较慢，之后读缓存）
-uv run python chapters/24-mixture-of-experts/code/04_small_vs_large.py  # 为什么小模型少用 MoE：产品线、同数据对照、显存与读取量（几秒）
+uv run python chapters/24-mixture-of-experts/code/01_param_ledger.py    # parameter ledger: the FFN share; total/active parameters of 9 MoE models (seconds)
+uv run python chapters/24-mixture-of-experts/code/02_moe_layer.py       # MoE layer from zero: parity check, auxiliary loss by hand, bias balancing (seconds)
+uv run python chapters/24-mixture-of-experts/code/03_train_compare.py   # dense vs MoE, small language models with three balancing setups (slow the first time, then reads the cache)
+uv run python chapters/24-mixture-of-experts/code/04_small_vs_large.py  # why small models seldom use MoE: lineups, same-data comparison, memory and reads (seconds)
 ```
 
-## 1. 直觉：参数都在 FFN 里
+## 1. Intuition: the parameters are in the FFN
 
-第 9 章讲过，每个 Transformer Block 有两个子层：注意力负责在位置之间搬运信息，FFN（SwiGLU）负责在每个位置内部加工。先数一数两者各占多少参数（[`code/01_param_ledger.py`](code/01_param_ledger.py) 第 1 部分）：
+Chapter 9 showed that each Transformer block has two sublayers. Attention moves information between positions. The FFN (SwiGLU) processes the information inside each position. First, count the parameters of each sublayer ([`code/01_param_ledger.py`](code/01_param_ledger.py), part 1):
 
-| 模型 | 每层注意力 | 每层 FFN | FFN 占比 |
+| Model | Attention per layer | FFN per layer | FFN share |
 |---|---:|---:|---:|
-| Qwen3-8B（d = 4096，FFN 宽 12288） | 41.9M | 151.0M | **78.3%** |
-| 主线模型（d = 1280，FFN 宽 3584） | 7.9M | 13.8M | 63.6% |
+| Qwen3-8B (d = 4096, FFN width 12288) | 41.9M | 151.0M | **78.3%** |
+| Main-line model (d = 1280, FFN width 3584) | 7.9M | 13.8M | 63.6% |
 
-每个参数在前向时大约贡献 2 次浮点运算（一次乘、一次加），所以这张表也是"每个 token 的矩阵乘算力花在哪"的账：**大头在 FFN**。
+In the forward pass, each parameter gives about 2 floating-point operations (one multiplication and one addition). Thus this table also shows where the matrix-multiplication compute for each token goes: **most of it goes to the FFN**.
 
-这就引出一个矛盾。Scaling law（第 12 章）告诉我们，参数越多、模型越强；可在稠密模型里，参数多一倍，每个 token 的算力也多一倍——训练贵一倍，推理也慢一倍。能不能**让参数和算力脱钩**？
+This causes a conflict. Scaling laws (Chapter 12) tell us that more parameters make a stronger model. But in a dense model, twice the parameters also means twice the compute for each token. Training costs twice as much, and inference is twice as slow. Can we **separate the parameters from the compute**?
 
-MoE 的回答：把一个宽 FFN 换成 N 个窄一些的 FFN（专家），每个 token 只经过其中 K 个。
+The MoE answer: replace one wide FFN with N narrower FFNs (experts). Each token goes through only K of them.
 
-- **总参数（total parameters）**：N 个专家全算上，决定模型"装了多少知识"，也决定**显存要装多少权重**；
-- **激活参数（active / activated parameters）**：每个 token 实际用到的那部分（K 个专家 + 注意力 + embedding 等），决定**每个 token 的算力**。
+- **Total parameters**: the count includes all N experts. They set how much "knowledge" the model can hold. They also set **how many weights the memory must hold**.
+- **Active (activated) parameters**: the part that each token really uses (K experts + attention + embedding, and so on). They set **the compute for each token**.
 
-名字里就写着这两个数：Qwen3-235B-A22B 是"总 235B、激活（Activated）22B"，Qwen3.5-35B-A3B 是"总 35B、激活 3B"。
+The model names contain these two numbers. Qwen3-235B-A22B means "235B total, 22B activated". Qwen3.5-35B-A3B means "35B total, 3B activated".
 
-## 2. 真实模型的账本
+## 2. The ledger of real models
 
-把几个 MoE 模型的 `config.json` 拿来，按"embedding + 每层注意力 + 每层 MoE（路由器 + 全部专家 + 共享专家）+ lm_head"数一遍（[`code/01_param_ledger.py`](code/01_param_ledger.py) 第 2 部分）：
+Take the `config.json` of some MoE models. Count the parameters as "embedding + attention in each layer + MoE in each layer (router + all experts + shared experts) + lm_head" ([`code/01_param_ledger.py`](code/01_param_ledger.py), part 2):
 
-| 模型 | 专家数 | 每 token 选 | 共享专家 | 专家宽度 | 总参数（算 / 官方） | 激活参数（算 / 官方） | 激活比 |
+| Model | Experts | Selected per token | Shared experts | Expert width | Total (calc / official) | Active (calc / official) | Active ratio |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Mixtral-8x7B（2023.12） | 8 | 2 | 0 | 14336 | 46.7B / 47B | 12.9B / 13B | 27.6% |
+| Mixtral-8x7B (2023.12) | 8 | 2 | 0 | 14336 | 46.7B / 47B | 12.9B / 13B | 27.6% |
 | Llama-4-Scout | 16 | 1 | 1 | 8192 | 107.8B / 109B | 17.2B / 17B | 15.9% |
 | Qwen3-30B-A3B | 128 | 8 | 0 | 768 | 30.5B / 30.5B | 3.35B / 3.3B | 11.0% |
 | Qwen3-235B-A22B | 128 | 8 | 0 | 1536 | 235.1B / 235B | 22.2B / 22B | 9.4% |
@@ -55,122 +59,126 @@ MoE 的回答：把一个宽 FFN 换成 N 个窄一些的 FFN（专家），每�
 | gpt-oss-120b | 128 | 4 | 0 | 2880 | 116.8B / 116.83B | 5.71B / 5.13B | 4.9% |
 | Kimi K2 | 384 | 8 | 1 | 2048 | 1026.4B / 1.04T | 32.9B / 32.6B | 3.2% |
 
-我们自己数出来的数和官方公布的几乎都对得上；差的那一点是口径不同（脚本最后逐条列出）：GLM-4.5 的官方数不含 embedding 和输出层、但含 1 个 MTP 层（去掉 embedding 后我们得到 351.2B / 32.1B）；gpt-oss 的"激活"不含输入 embedding（去掉后正好 5.13B / 3.61B）；Llama 4 的 109B 含视觉编码器。Kimi K2 我们少算了约 14B（1.3%），原因**待核实**。
+Our counts agree with the official numbers in almost all cases. The small differences come from different counting methods (the script lists them one by one at the end).
 
-读这张表，有三个规律：
+The official GLM-4.5 numbers do not include the embedding and the output layer, but they include 1 MTP layer. Without the embedding and the output layer, we get 351.2B / 32.1B. The "active" count of gpt-oss does not include the input embedding. Without it, we get exactly 5.13B / 3.61B. The 109B of Llama 4 includes the vision encoder. For Kimi K2, our count is about 14B (1.3%) lower; the cause is **to be verified**.
 
-1. **路由专家占了总参数的 90%–99%**。注意力、embedding 这些"每个 token 都要用"的部分反而是零头。
-2. **激活比越来越低**：Mixtral 选 8 个里的 2 个（28%），到 Kimi K2 已是 384 选 8（3%）。Kimi K2 报告里的"稀疏度 scaling law"说的就是这件事：固定激活参数（也就是固定算力），专家总数越多、验证 loss 越低（他们选了稀疏度 48 = 384/8，作为性能和基础设施复杂度的折中）。
-3. **专家越来越"细"**：Mixtral 一个专家宽 14336，比稠密模型的 FFN 还宽；DeepSeek-V3 一个专家只有 2048，Qwen3-30B-A3B 只有 768。第 7 节会讲为什么。
+The table shows three patterns:
 
-## 3. 路由：打分、选 K 个、加权求和
+1. **The routed experts have 90%–99% of the total parameters.** The parts that every token uses, such as attention and embedding, are only a small remainder.
+2. **The active ratio becomes lower and lower.** Mixtral selects 2 of 8 experts (28%). Kimi K2 selects 8 of 384 (3%). The "sparsity scaling law" in the Kimi K2 report describes this trend. At fixed active parameters (thus at fixed compute), more experts in total give a lower validation loss. Kimi chose a sparsity of 48 = 384/8 as a trade-off between performance and infrastructure complexity.
+3. **The experts become "finer".** One Mixtral expert has width 14336, which is wider than the FFN of a dense model. One DeepSeek-V3 expert has width 2048 only, and one Qwen3-30B-A3B expert has width 768 only. Section 7 explains why.
 
-### 3.1 公式
+## 3. Routing: score, select K, weighted sum
 
-一个 MoE 层（对单个 token 的向量 x）：
+### 3.1 Formula
+
+An MoE layer (for the vector x of one token):
 
 ```
-s_i = sigmoid(x · e_i)    或    s = softmax(x · W_r)          # 1. 打分：每个专家一个分数
-S   = TopK(s + b, K)                                          # 2. 选 K 个专家（b 是偏置，第 5 节再讲，先当它是 0）
-g_i = s_i / Σ_{j∈S} s_j        (i ∈ S)                        # 3. 门控权重：被选中专家的分数，归一化到和为 1
-y   = Σ_共享 FFN_s(x)  +  Σ_{i∈S} g_i · FFN_i(x)               # 4. 只算被选中的专家，加权求和
+s_i = sigmoid(x · e_i)    or    s = softmax(x · W_r)          # 1. score: one score for each expert
+S   = TopK(s + b, K)                                          # 2. select K experts (b is a bias, see Section 5; for now, b = 0)
+g_i = s_i / Σ_{j∈S} s_j        (i ∈ S)                        # 3. gate weights: scores of the selected experts, normalized to a sum of 1
+y   = Σ_shared FFN_s(x)  +  Σ_{i∈S} g_i · FFN_i(x)             # 4. calculate only the selected experts, weighted sum
 ```
 
-- **路由器**就是一个 `d → N` 的线性层（DeepSeek 叫它每个专家的"质心向量" e_i），参数少到可以忽略（DeepSeek-V3 每层 7168 × 256 ≈ 1.8M）。
-- **打分函数**有两派。softmax：Mixtral、Qwen3-MoE、gpt-oss；sigmoid：DeepSeek-V3、GLM-4.5、Kimi K2、MiniMax-M2、Nemotron 3、Llama 4（Llama 4 在 HF 实现里是对 top-1 的 logit 取 sigmoid）。softmax 让专家之间互相竞争（加起来等于 1），sigmoid 让每个专家独立打分，再在选中的几个里归一化。
-- **"先 softmax 再挑 K 个归一化"和"先挑 K 个 logit 再 softmax"是一回事**：Mixtral 论文写的是 `Softmax(TopK(x·W_g))`，Qwen3-MoE 的配置是 softmax 后 `norm_topk_prob: true`，两者算出的 g 完全相同（因为 e^{l_i}/Σ_{j∈S} e^{l_j} 在两种写法下相同）。
-- 有的模型还乘一个常数 `routed_scaling_factor`（DeepSeek-V3、GLM-4.5 是 2.5），只是调整路由部分输出的尺度。
+- The **router** is a linear layer `d → N`. DeepSeek calls its rows the "centroid vectors" e_i of the experts. The router has very few parameters (DeepSeek-V3: 7168 × 256 ≈ 1.8M in each layer).
+- There are two kinds of **score functions**. Softmax: Mixtral, Qwen3-MoE, gpt-oss. Sigmoid: DeepSeek-V3, GLM-4.5, Kimi K2, MiniMax-M2, Nemotron 3, Llama 4 (the HF implementation of Llama 4 applies a sigmoid to the top-1 logit). With softmax, the experts compete with each other (the scores add up to 1). With sigmoid, each expert gets an independent score, and the layer normalizes only the scores of the selected experts.
+- **"Softmax first, then select K and normalize" and "select K logits first, then softmax" give the same result.** The Mixtral paper writes `Softmax(TopK(x·W_g))`. The Qwen3-MoE configuration uses softmax and then `norm_topk_prob: true`. Both give exactly the same g, because e^{l_i}/Σ_{j∈S} e^{l_j} is the same in both forms.
+- Some models also multiply by a constant `routed_scaling_factor` (2.5 in DeepSeek-V3 and GLM-4.5). It only changes the scale of the output of the routed part.
 
-### 3.2 极简代码
+### 3.2 Minimal code
 
-[`code/02_moe_layer.py`](code/02_moe_layer.py) 的核心就是公式的直译：
+The core of [`code/02_moe_layer.py`](code/02_moe_layer.py) is a direct translation of the formula:
 
 ```python
 logits = self.router(x)                                      # (T, E)
 s = logits.sigmoid() if self.score == "sigmoid" else logits.softmax(-1)
-idx = (s + self.bias).topk(self.K, dim=-1).indices           # (T, K) 选专家：偏置只管选
-g = s.gather(-1, idx)                                        # (T, K) 门控：原始分数
-g = g / g.sum(-1, keepdim=True)                              # 归一化到和为 1
+idx = (s + self.bias).topk(self.K, dim=-1).indices           # (T, K) select experts: the bias only selects
+g = s.gather(-1, idx)                                        # (T, K) gates: the original scores
+g = g / g.sum(-1, keepdim=True)                              # normalize to a sum of 1
 
 out = self.shared(x) if self.shared is not None else torch.zeros_like(x)
 for e, expert in enumerate(self.experts):
-    tok, slot = (idx == e).nonzero(as_tuple=True)            # 哪些 token 选了专家 e
+    tok, slot = (idx == e).nonzero(as_tuple=True)            # the tokens that selected expert e
     if tok.numel():
-        out.index_add_(0, tok, g[tok, slot, None] * expert(x[tok]))   # 加权合并
+        out.index_add_(0, tok, g[tok, slot, None] * expert(x[tok]))   # weighted combination
 ```
 
-注意循环是**按专家**而不是按 token：每个专家把选了它的 token 收集起来，一次矩阵乘算完，再用 `index_add_` 按权重加回各自的位置。这就是 MoE 实现里的**分发（dispatch）**和**合并（combine）**两步。脚本把它和逐 token 的朴素写法对拍：
+Look at the loop: it goes **over the experts**, not over the tokens. Each expert collects the tokens that selected it and calculates them with one matrix multiplication. Then `index_add_` adds the weighted results back to their positions. These are the two steps of an MoE implementation: **dispatch** and **combine**. The script does a parity check against a naive token-by-token version:
 
 ```
-2) 按专家分组的写法 vs 逐 token 朴素写法
-  softmax 最大差异 2.2e-16
-  sigmoid 最大差异 1.4e-16
+2) Grouped by expert vs naive token by token
+  softmax max difference 2.2e-16
+  sigmoid max difference 1.4e-16
 ```
 
-参数账（d = 128，这些正是第 6 节小实验里用的配置）：
+The parameter ledger (d = 128; these are the configurations of the small experiment in Section 6):
 
-| FFN | 总参数 | 激活参数 |
+| FFN | Total parameters | Active parameters |
 |---|---:|---:|
-| 稠密 SwiGLU，宽 384 | 147,456 | 147,456 |
-| MoE：8 专家 × 宽 192，选 2 | 590,848 | 148,480 |
-| 细粒度：16 专家 × 宽 96，选 3 + 1 个共享 | 628,736 | 149,504 |
+| Dense SwiGLU, width 384 | 147,456 | 147,456 |
+| MoE: 8 experts × width 192, select 2 | 590,848 | 148,480 |
+| Fine-grained: 16 experts × width 96, select 3 + 1 shared | 628,736 | 149,504 |
 
-激活参数几乎相同（多出的一千来个是路由器），总参数是稠密的 4 倍多。
+The active parameters are almost the same (the extra thousand or so are the router). The total parameters are more than 4 times those of the dense FFN.
 
-## 4. 问题：路由坍缩
+## 4. The problem: routing collapse
 
-路由器是和模型一起训练的，这带来一个"富者愈富"的循环：某个专家一开始分到的 token 稍微多一点 → 它得到的梯度更多、学得更好 → 路由器更倾向于选它 → 它分到的 token 更多……最后少数几个专家包揽大部分 token，其余专家几乎闲置。这叫**路由坍缩（routing collapse）**（Shazeer 等 2017 年就指出了这个问题）。
+The router trains together with the model. This causes a positive feedback loop. At the start, one expert gets a few more tokens. → It gets more gradient and learns better. → The router selects it more often. → It gets even more tokens… At the end, a few experts get most of the tokens, and the other experts are almost idle. This is **routing collapse** (Shazeer et al. described this problem in 2017).
 
-坍缩有两个代价：
+Routing collapse has two costs:
 
-- **浪费参数**：闲置专家的参数白占显存，模型实际上退化成了一个更小的模型；
-- **拖慢训练和推理**：大模型的专家分布在不同 GPU 上（**专家并行，expert parallelism**，第 8 节），最忙的那个专家所在的卡决定了整层的耗时；如果设了容量上限，还会丢 token（第 5.3 节）。
+- **Wasted parameters**: the parameters of idle experts use memory for nothing. The model becomes, in effect, a smaller model.
+- **Slower training and inference**: in a large model, the experts are on different GPUs (**expert parallelism**, Section 9). The GPU with the busiest expert sets the time of the full layer. With a capacity limit, the layer also drops tokens (Section 5.3).
 
-> 关于数字：本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同机器、不同版本的底层数学库，浮点运算的顺序略有不同，训练几百步后会把这些微小差异放大，你本机跑出的数字可能从小数点后第二三位开始就不一样；请以下文不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-24-26.md](../../runs/2026-10-01-gpu0-check/chapters-24-26.md)。
+> **Note:** About the numbers: the numbers of the training experiments in this chapter come from one CPU run on the course build machine. Different machines and different versions of the low-level math libraries use a slightly different order of floating-point operations. After some hundred training steps, these small differences become larger. Your numbers can differ from the second or third decimal place. Trust the conclusions below that do not depend on exact values. For a rerun on another server in 2026-10, see [runs/2026-10-01-gpu0-check/chapters-24-26.md](../../runs/2026-10-01-gpu0-check/chapters-24-26.md).
 
-在本章的小实验里（第 6 节），不加任何均衡的 MoE，第 1 层的负载随训练是这样变化的：
+In the small experiment of this chapter (Section 6), an MoE without any balancing has this load in layer 1 during training:
 
-| step | 第 1 层（从 0 数）8 个专家的负载占比（均匀是 0.125） | 最大 / 平均 |
+| Step | Load share of the 8 experts in layer 1 (counted from 0; uniform is 0.125) | Max / mean |
 |---:|---|---:|
 | 0 | 0.30 0.00 0.02 0.19 0.11 0.03 0.35 0.01 | 2.76 |
 | 100 | 0.27 0.09 **0.42** 0.06 0.03 0.01 0.01 0.12 | 3.34 |
 | 300 | 0.24 0.08 **0.45** 0.05 0.05 **0.00** 0.02 0.12 | 3.61 |
 | 800 | 0.22 0.08 **0.45** 0.06 0.05 **0.00** 0.02 0.11 | 3.63 |
 
-（8 选 2 时"最大/平均"的上限是 8/2 = 4。）第 3 个专家从 2% 涨到 45%，第 6 个专家从 3% 跌到 0——它在训练结束时基本不被选中。要如实说明两点：一是**随机初始化的路由器一开始就不均衡**（step 0 已经是 2.76，因为同一层的 token 向量方向相近，某几个专家的分数系统性偏高）；二是在这个 800 步的小实验里并不是每一层都越来越坏（4 层的"最大/平均"从 3.24、2.76、2.59、2.14 变成 2.25、3.63、2.46、2.79），但**没有任何一层自己回到均衡**。
+(With 2 of 8 experts selected, the upper limit of "max/mean" is 8/2 = 4.) The third expert grows from 2% to 45%. The sixth expert falls from 3% to 0: at the end of training, the router almost never selects it.
 
-## 5. 负载均衡
+We must state two facts honestly. First, **a router with random initialization is not balanced at the start** (step 0 already has 2.76). The token vectors in one layer point in similar directions, so some experts always get higher scores. Second, in this small experiment of 800 steps, not every layer becomes worse. The "max/mean" values of the 4 layers change from 3.24, 2.76, 2.59, 2.14 to 2.25, 3.63, 2.46, 2.79. But **no layer returns to a balance by itself**.
 
-### 5.1 办法一：辅助损失（Switch / GShard）
+## 5. Load balancing
 
-最经典的做法是在语言模型的损失上再加一项**辅助损失（auxiliary loss）**，惩罚不均衡（GShard 2020、Switch Transformer 2021）。本章用 DeepSeek-V3 报告式 17–20 的写法（Switch 原文是它 K = 1 的特例）：
+### 5.1 Method 1: auxiliary loss (Switch / GShard)
+
+The classic method adds an **auxiliary loss** to the language-model loss. The auxiliary loss penalizes an unbalanced load (GShard 2020, Switch Transformer 2021). This chapter uses the form of equations 17–20 in the DeepSeek-V3 report. The original Switch form is the special case K = 1.
 
 ```
-f_i = N / (K·T) · (这 T 个 token 里选了专家 i 的个数)       # 实际负载（均衡时 = 1）
-P_i = (1/T) · Σ_t s'_{i,t}                                 # 路由器给专家 i 的平均概率（s' 每行归一化）
-L_aux = α · Σ_i f_i · P_i                                  # 完全均衡时 = α
+f_i = N / (K·T) · (number of tokens in these T tokens that selected expert i)   # actual load (= 1 when balanced)
+P_i = (1/T) · Σ_t s'_{i,t}                                                     # mean router probability of expert i (s' normalized per row)
+L_aux = α · Σ_i f_i · P_i                                                       # = α with a perfect balance
 ```
 
-f 是离散的计数、不可导，只当"权重"；梯度只经过 P：哪个专家的 f 大（过载），就更用力地压低它的路由概率。代码只有三行：
+f is a discrete count, so it has no gradient. It acts only as a "weight". The gradient goes only through P: if the f of an expert is large (the expert is overloaded), the gradient pushes its routing probability down harder. The code has only three lines:
 
 ```python
-p = s / s.sum(-1, keepdim=True)                          # 每行归一化的路由概率
-f = self.load * self.E / (self.K * x.shape[0])           # f_i（均衡时 = 1）
+p = s / s.sum(-1, keepdim=True)                          # routing probabilities, normalized per row
+f = self.load * self.E / (self.K * x.shape[0])           # f_i (= 1 when balanced)
 self.aux = self.aux_coef * (f * p.mean(0)).sum()         # L_aux = α · Σ f_i · P_i
 ```
 
-手算一个例子：4 个 token、2 个专家、top-1，路由概率 [0.9, 0.1]、[0.8, 0.2]、[0.7, 0.3]、[0.4, 0.6]。前 3 个 token 选专家 1，最后一个选专家 2，所以 f = 2/4 × [3, 1] = [1.5, 0.5]，P = 列平均 = [0.7, 0.3]，L = α × (1.5 × 0.7 + 0.5 × 0.3) = **1.2α**，比均衡时的 α 大。脚本算出来是 0.0120（α = 0.01）。
+An example by hand: 4 tokens, 2 experts, top-1. The routing probabilities are [0.9, 0.1], [0.8, 0.2], [0.7, 0.3], and [0.4, 0.6]. The first 3 tokens select expert 1, and the last token selects expert 2. Thus f = 2/4 × [3, 1] = [1.5, 0.5], and P = the column means = [0.7, 0.3]. L = α × (1.5 × 0.7 + 0.5 × 0.3) = **1.2α**, which is larger than the α of a balanced load. The script gives 0.0120 (α = 0.01).
 
-辅助损失的毛病在于：它的梯度和语言模型本身的梯度会互相拉扯。α 太小管不住坍缩，α 太大又会损害模型质量——DeepSeek-V3 报告引用 Wang 等人（2024）的实验，正是拿这一点作为改进的动机。
+The problem of the auxiliary loss: its gradient works against the gradient of the language model. If α is too small, it cannot stop the collapse. If α is too large, it decreases the model quality. The DeepSeek-V3 report cites the experiments of Wang et al. (2024) on this problem as the reason for its new method.
 
-> **系数不能照搬**：不同实现的常数不一样。Hugging Face 的 Mixtral / Qwen3-MoE 实现里 f 没有除以 K，算出来是本章写法的 K 倍；配置里的 `router_aux_loss_coef`（Mixtral 0.02、Qwen3 0.001、Llama 4 0.001、OLMoE 0.01）要配合各自的实现来读。
+> **Note:** Do not copy the coefficients from one implementation to another. Different implementations use different constants. In the Hugging Face implementations of Mixtral and Qwen3-MoE, f is not divided by K, so the result is K times the result of this chapter. Read each `router_aux_loss_coef` in a configuration (Mixtral 0.02, Qwen3 0.001, Llama 4 0.001, OLMoE 0.01) together with its own implementation.
 
-### 5.2 办法二：无辅助损失的偏置（DeepSeek-V3）
+### 5.2 Method 2: the auxiliary-loss-free bias (DeepSeek-V3)
 
-DeepSeek-V3 换了个思路：**不改损失，直接改"选谁"**。给每个专家一个偏置 b_i，只在挑 top-K 时加到分数上（第 3.1 节公式第 2 行），门控权重 g 仍然用原始分数 s。偏置不是参数、不吃梯度，每个训练步结束后按这一步整批的负载更新：
+DeepSeek-V3 uses a different idea: **do not change the loss; change the selection directly**. Each expert gets a bias b_i. The router adds the bias to the scores only when it selects the top-K (line 2 of the formula in Section 3.1). The gate weights g still use the original scores s. The bias is not a parameter and gets no gradient. After each training step, the code updates the bias from the load of the full batch of that step:
 
 ```
-b_i ← b_i + γ · sign(平均负载 − 负载_i)       # 过载的专家减 γ，欠载的加 γ
+b_i ← b_i + γ · sign(mean load − load_i)       # subtract γ for an overloaded expert, add γ for an underloaded expert
 ```
 
 ```python
@@ -180,171 +188,197 @@ def update_bias(self, load=None):
     self.bias += self.bias_speed * torch.sign(load.mean() - load)
 ```
 
-因为偏置只影响"选谁"、不影响"输出多少"，它不会给语言模型的梯度添乱；过载的专家会慢慢被"挤"出一部分 token，欠载的专家会被"推"进来一些。
+The bias changes only "which experts the router selects", not "how large the output is". Thus it does not disturb the gradient of the language model. An overloaded expert slowly loses some tokens, and an underloaded expert slowly gets more tokens.
 
-[`code/02_moe_layer.py`](code/02_moe_layer.py) 第 4 部分做了一个最干净的演示：固定一个严重偏心的路由器（8 专家选 2，专家 1、2 的权重被人为调高，输入全是正数），**不训练任何权重，只更新偏置**（γ = 0.01）：
+Part 4 of [`code/02_moe_layer.py`](code/02_moe_layer.py) gives the cleanest demonstration. It fixes a router with a strong preference. The router has 8 experts and selects 2. We increase the router weights of experts 1 and 2 by hand (indices 0 and 1 in the code), and all inputs are positive. The demonstration **trains no weights and only updates the bias** (γ = 0.01):
 
-| 偏置更新次数 | 各专家负载占比 | 最大 / 平均 | 容量因子 1.25 时丢弃 |
+| Bias updates | Load share of each expert | Max / mean | Dropped at capacity factor 1.25 |
 |---:|---|---:|---:|
 | 0 | 0.50 0.10 0.00 0.32 0.00 0.08 0.00 0.00 | 4.00 | 50.3% |
 | 10 | 0.48 0.12 0.04 0.12 0.06 0.12 0.01 0.04 | 3.87 | 32.8% |
 | 30 | 0.13 0.12 0.12 0.13 0.13 0.12 0.13 0.13 | 1.05 | 0.0% |
 | 300 | 0.13 0.12 0.12 0.13 0.13 0.12 0.13 0.13 | 1.05 | 0.0% |
 
-（8 专家选 2，均匀负载是每个 0.125；"最大/平均"的上限是 E/K = 4，第 0 步已经顶格。）
+(8 experts, select 2: a uniform load is 0.125 for each expert. The upper limit of "max/mean" is E/K = 4, and step 0 is already at the limit.)
 
-DeepSeek-V3 的实际设置（报告 4.2 节）：γ = 0.001（最后 500B token 设为 0，但已学到的偏置继续使用）；**另外保留一个极小的序列级辅助损失** α = 0.0001，"只为防止单条序列内的极端不均衡"。所以"无辅助损失"并不是完全没有辅助损失，而是**主要靠偏置**。GLM-4.5（偏置更新率 0.001 + 序列级损失 0.0001）和 NVIDIA Nemotron 3 Nano（更新率 1e-3 + 标准负载均衡损失 1e-4）的配方几乎一样。
+The actual settings of DeepSeek-V3 (report Section 4.2): γ = 0.001. For the last 500B tokens, γ = 0, but the model continues to use the learned bias. **DeepSeek-V3 also keeps a very small sequence-level auxiliary loss**, α = 0.0001, "only to prevent an extreme imbalance inside a single sequence". Thus "auxiliary-loss-free" does not mean "no auxiliary loss at all". It means **mainly the bias**. GLM-4.5 (bias update rate 0.001 + sequence-level loss 0.0001) and NVIDIA Nemotron 3 Nano (update rate 1e-3 + standard load-balancing loss 1e-4) use almost the same recipe.
 
-**它为什么更好？** DeepSeek-V3 报告表 5 的对照（同数据、同结构，都用 sigmoid + top-K 归一化）：Pile 测试集 BPB 在 15.7B 总参数的模型上 0.727 → 0.724，在 228.7B 上 0.656 → 0.652，多数下游基准也更好。更有意思的是报告 4.5.3 节的分析：关键不在"有没有损失"，而在**均衡的范围**。序列级的辅助损失要求每条序列内部都均衡，逼得专家不能按领域分工；偏置法只要求整个 batch 均衡。他们又试了一个"batch 级的辅助损失"，在 1B 的 MoE 上验证 loss 是 2.258（序列级）、2.253（偏置法）、2.253（batch 级损失），后两者打平。千问 Qwen3 用的"全局 batch 负载均衡损失"（Qiu 等 2025）走的就是这条路：仍用辅助损失，但在全局 batch 上统计。
+**Why is it better?** Table 5 of the DeepSeek-V3 report compares the two methods with the same data and the same architecture (both with sigmoid + top-K normalization). For the model with 15.7B total parameters, the Pile test-set BPB changes from 0.727 to 0.724. For the model with 228.7B, it changes from 0.656 to 0.652. Most downstream benchmarks are also better.
 
-### 5.3 容量因子与"不丢 token"
+Section 4.5.3 of the report gives a more interesting analysis. The key is not "a loss or no loss", but **the scope of the balance**. A sequence-level auxiliary loss requires a balance inside each sequence, so the experts cannot specialize by domain. The bias method requires a balance only over the full batch. The authors also tried a "batch-level auxiliary loss". On a 1B MoE, the validation losses were 2.258 (sequence-level), 2.253 (bias method), and 2.253 (batch-level loss), so the last two are equal.
 
-早期的 MoE（GShard、Switch Transformer）为了让每个专家的计算形状固定，给每个专家设一个**容量（capacity）**：最多处理 `容量因子 × T·K / N` 个 token，超出的 token 直接跳过这个专家（输出记为 0，残差照常往下传），叫 **token dropping**。上表最后一列就是这个效应：偏心时容量因子 1.25 会丢掉一半的分配，均衡之后一个都不丢。
+The "global-batch load-balancing loss" of Qwen3 (Qiu et al. 2025) follows this path. It still uses an auxiliary loss, but it calculates the statistics over the global batch.
 
-今天的主流是**不丢 token（dropless）**：MegaBlocks（Gale 等 2022）把 MoE 写成块稀疏矩阵乘，专家分到多少 token 就算多少；DeepSeek-V3 报告明确写了"训练和推理都不丢 token"，前提正是负载足够均衡。本章的生产级代码两种都支持（`capacity_factor=None` 为 dropless）。
+### 5.3 The capacity factor and "no dropped tokens"
 
-## 6. 小实验：同一个小模型，稠密 vs MoE，三种均衡
+Early MoE models (GShard, Switch Transformer) used a fixed shape for the calculation of each expert. Thus each expert has a **capacity**: it processes at most `capacity factor × T·K / N` tokens. A token above the capacity skips this expert. Its output from this expert is 0, and the residual connection passes the token on as usual. This is **token dropping**. The last column of the table above shows this effect. With a skewed load, a capacity factor of 1.25 drops half of the assignments. After the balance, it drops none.
 
-[`code/03_train_compare.py`](code/03_train_compare.py) 用第 10 章的字符级莎士比亚小模型（4 层、宽 128、4 个头，Pre-Norm RMSNorm + RoPE），只换 FFN：
+Today, most models **do not drop tokens (dropless)**. MegaBlocks (Gale et al. 2022) writes the MoE as a block-sparse matrix multiplication, so each expert calculates all the tokens that it gets. The DeepSeek-V3 report states that it drops no tokens "in training and inference". The condition is a load that is balanced enough. The production code of this chapter supports both methods (`capacity_factor=None` means dropless).
 
-| 方案 | FFN 结构 | 说明 |
+## 6. Small experiment: the same small model, dense vs MoE, three balancing setups
+
+[`code/03_train_compare.py`](code/03_train_compare.py) uses the character-level Shakespeare model of Chapter 10 (4 layers, width 128, 4 heads, Pre-Norm RMSNorm + RoPE). It changes only the FFN:
+
+| Variant | FFN structure | Notes |
 |---|---|---|
-| 稠密-384 | SwiGLU 宽 384 | 激活参数（≈ 每 token 算力）的基准 |
-| 稠密-1536 | SwiGLU 宽 1536 | 总参数与 MoE 相当 |
-| MoE-无均衡 | 8 专家 × 宽 192，选 2 | 激活宽度 2 × 192 = 384，与稠密-384 同算力 |
-| MoE-辅助损失 | 同上 + L_aux（α = 0.01） | |
-| MoE-无辅助损失 | 同上 + 偏置（γ = 0.01） | |
-| 细粒度+共享 | 16 专家 × 宽 96，选 3，+ 1 个宽 96 的共享专家，偏置 | 激活宽度 4 × 96 = 384 |
+| Dense-384 | SwiGLU, width 384 | The baseline for active parameters (≈ compute for each token) |
+| Dense-1536 | SwiGLU, width 1536 | About the same total parameters as the MoE |
+| MoE-no-balance | 8 experts × width 192, select 2 | Active width 2 × 192 = 384, the same compute as Dense-384 |
+| MoE-aux-loss | The same + L_aux (α = 0.01) | |
+| MoE-aux-free | The same + bias (γ = 0.01) | |
+| Fine-grained+shared | 16 experts × width 96, select 3, + 1 shared expert of width 96, bias | Active width 4 × 96 = 384 |
 
-所有 MoE 都用 sigmoid 打分 + top-K 归一化（和 DeepSeek-V3 报告表 5 的对照设定一致）。同样的数据顺序、800 步、AdamW + warmup + cosine，每种 2 个随机种子。γ 取 0.01（比 DeepSeek-V3 的 0.001 大十倍），因为我们只训练 800 步，偏置需要走得快一些。
+All MoE variants use sigmoid scores + top-K normalization. This is the same setting as the comparison in Table 5 of the DeepSeek-V3 report. All variants use the same data order, 800 steps, and AdamW + warmup + cosine. Each variant runs with 2 random seeds. γ is 0.01, 10 times the 0.001 of DeepSeek-V3. We train only 800 steps, so the bias must move faster.
 
-运行结果（`uv run python chapters/24-mixture-of-experts/code/03_train_compare.py`；FFN 参数为 4 层合计）：
+Results (`uv run python chapters/24-mixture-of-experts/code/03_train_compare.py`; the FFN parameters are the sum over the 4 layers):
 
-| 方案 | FFN 总参数 | FFN 激活参数 | 验证 loss 均值 [种子 0, 1] | 负载 最大/平均（4 层 × 2 种子的均值, 最坏） | 负载 < 1% 的专家（单层最多） |
+| Variant | FFN total parameters | FFN active parameters | Validation loss mean [seed 0, 1] | Load max/mean (mean over 4 layers × 2 seeds, worst) | Experts with load < 1% (max in one layer) |
 |---|---:|---:|---|---:|---:|
-| 稠密-384 | 589,824 | 589,824 | 1.793 [1.800, 1.787] | — | — |
-| 稠密-1536 | 2,359,296 | 2,359,296 | 1.815 [1.815, 1.816] | — | — |
-| MoE-无均衡 | 2,363,392 | 593,920 | 1.780 [1.760, 1.799] | 2.61, 3.63 | 1 |
-| MoE-辅助损失 | 2,363,392 | 593,920 | 1.786 [1.772, 1.799] | 1.14, 1.26 | 0 |
-| MoE-无辅助损失 | 2,363,392 | 593,920 | 1.786 [1.774, 1.797] | 1.12, 1.20 | 0 |
-| 细粒度+共享 | 2,514,944 | 598,016 | 1.777 [1.778, 1.776] | 1.15, 1.22 | 0 |
+| Dense-384 | 589,824 | 589,824 | 1.793 [1.800, 1.787] | — | — |
+| Dense-1536 | 2,359,296 | 2,359,296 | 1.815 [1.815, 1.816] | — | — |
+| MoE-no-balance | 2,363,392 | 593,920 | 1.780 [1.760, 1.799] | 2.61, 3.63 | 1 |
+| MoE-aux-loss | 2,363,392 | 593,920 | 1.786 [1.772, 1.799] | 1.14, 1.26 | 0 |
+| MoE-aux-free | 2,363,392 | 593,920 | 1.786 [1.774, 1.797] | 1.12, 1.20 | 0 |
+| Fine-grained+shared | 2,514,944 | 598,016 | 1.777 [1.778, 1.776] | 1.15, 1.22 | 0 |
 
-同一方案换种子，验证 loss 最多相差 0.039。第 1 层的负载随训练的变化（种子 0）：
+For the same variant, a different seed changes the validation loss by up to 0.039. The load of layer 1 during training (seed 0):
 
-| step | 无均衡 | 辅助损失（α = 0.01） | 偏置（γ = 0.01） |
+| Step | No balancing | Auxiliary loss (α = 0.01) | Bias (γ = 0.01) |
 |---:|---:|---:|---:|
 | 0 | 2.76 | 2.76 | 2.76 |
 | 100 | 3.34 | 1.76 | 1.08 |
 | 300 | 3.61 | 1.34 | 1.18 |
 | 800 | 3.63 | 1.05 | 1.20 |
 
-能读出的结论（和不能读出的）：
+What we can conclude (and what we cannot):
 
-- **负载均衡两种办法都有效**：训练结束时两者的"最大/平均"都在 1.05–1.26 之间，没有闲置专家；不加均衡的最坏一层是 3.63，有专家完全闲置。在这个设置下偏置法拉平得更快（第 1 层 100 步就到 1.08，辅助损失要到 300–800 步），这与偏置每步都直接作用在选择上一致；但速度取决于 γ 和 α 的取值，不能一般化。
-- **验证 loss 的差别都在噪声内**：五个同激活算力的方案（稠密-384 和四种 MoE）落在 1.777–1.793 之间，差距小于种子间的 0.039。我们**不能**据此说 MoE 更好，也不能说负载均衡提高了质量——在 800 步、字符级数据上，不均衡带来的"浪费参数"还来不及体现为 loss 差距。
-- **"同总参数"的稠密-1536 反而最差**（1.815，两个种子都是）。宽 4 倍的稠密 FFN 每个 token 的算力也是 4 倍，但在同样的 800 步、同样的学习率下没有训练得更好——这个规模下数据量和步数才是瓶颈。这提醒我们：MoE 的"同算力更多参数"只有在数据足够多、训练足够久时才会兑现成质量（DeepSeekMoE、Qwen3 报告里都是上万亿 token）。
+- **Both load-balancing methods work.** At the end of training, "max/mean" is between 1.05 and 1.26 for both methods, and no expert is idle. Without balancing, the worst layer has 3.63, and one expert is fully idle. In this setup, the bias method balances the load faster: layer 1 reaches 1.08 at step 100, but the auxiliary loss needs 300–800 steps. This agrees with the fact that the bias acts directly on the selection at each step. But the speed depends on the values of γ and α, so we cannot make a general conclusion.
+- **All differences in validation loss are within the noise.** The five variants with the same active compute (Dense-384 and the four MoE variants) are between 1.777 and 1.793. The differences are smaller than the 0.039 between seeds. Thus we **cannot** say that MoE is better. We also cannot say that load balancing improves the quality. With 800 steps on character-level data, the "wasted parameters" of an unbalanced load do not yet cause a difference in loss.
+- **Dense-1536, with "the same total parameters", is the worst** (1.815, with both seeds). A dense FFN that is 4 times wider also uses 4 times the compute for each token. But with the same 800 steps and the same learning rate, it does not train better. At this scale, the amount of data and the number of steps are the bottleneck. Remember this: "more parameters at the same compute" improves the quality of an MoE only with enough data and long enough training. (The DeepSeekMoE and Qwen3 reports use trillions of tokens.)
 
-**这是百万参数、几分钟训练的极小实验**，只能说明"代码对、现象大致如何"，不能外推到大模型。认真的对比要看 DeepSeek-V3 报告表 5（两种均衡）、DeepSeekMoE 论文（粗粒度 vs 细粒度、有无共享专家）和 Kimi K2 报告图 5（稀疏度）。
+**This is a tiny experiment with a million parameters and a few minutes of training.** It only shows that the code is correct and approximately what the effects look like. Do not extrapolate it to large models. For serious comparisons, see three sources. Table 5 of the DeepSeek-V3 report compares the two balancing methods. The DeepSeekMoE paper compares coarse and fine-grained experts, with and without shared experts. Figure 5 of the Kimi K2 report shows the effect of sparsity.
 
-## 7. 细粒度专家 + 共享专家（DeepSeekMoE）
+## 7. Fine-grained experts + shared experts (DeepSeekMoE)
 
-表 2 里今天的大模型和 Mixtral 最大的结构差别有两个，都来自 DeepSeekMoE（Dai 等 2024）：
+The table in Section 2 shows two main structural differences between the large models of today and Mixtral. Both come from DeepSeekMoE (Dai et al. 2024).
 
-**细粒度专家（fine-grained experts）**：把每个专家切成 m 份（宽度变成 1/m），同时每个 token 选 m 倍个专家——总参数、激活参数都不变，但**组合的可能性爆炸式增长**。论文里的例子：16 个专家选 2 个，只有 C(16,2) = 120 种组合；每个切成 4 份、64 个选 8 个，有 C(64,8) ≈ 44 亿种。组合越多，每个 token 就越能"凑"出最合适的一组专家，每个专家也能更专一（论文图 3：同参数、同激活下，切得越细效果越好）。代价是专家太小以后矩阵乘效率变低、路由和通信开销变大，所以不会无限细下去（DeepSeekMoE 16B 就因为效率没有再切细）。
+**Fine-grained experts**: split each expert into m parts (the width becomes 1/m), and let each token select m times as many experts. The total parameters and the active parameters do not change, but **the number of possible combinations becomes much larger**. The example in the paper: 16 experts with 2 selected give only C(16,2) = 120 combinations. Split each expert into 4 parts and select 8 of 64: this gives C(64,8) ≈ 4.4 billion combinations. With more combinations, each token can build a better set of experts, and each expert can specialize more. (Figure 3 of the paper: with the same parameters and the same active parameters, finer experts give better results.)
 
-**共享专家（shared experts）**：留出一两个专家让**每个 token 都经过**，不参与路由。论文的动机是：不同的专家都需要一些通用知识（语法、常见词），如果没有共享专家，这些知识会在很多路由专家里重复学一遍；有了共享专家，路由专家就可以更专心地分工。论文里一个很说明问题的消融：把 2B 模型的共享专家去掉、换成多激活一个路由专家（算力不变），Pile loss 从 1.808 升到 2.414。
+The cost: when the experts become too small, the matrix multiplications become less efficient, and the routing and communication overhead becomes larger. Thus the experts do not become finer without a limit. (DeepSeekMoE 16B did not split its experts further, because of efficiency.)
 
-但**共享专家不是所有人都用**，这是一条光谱（2026-09 核实）：
+**Shared experts**: keep one or two experts that **every token goes through**, without routing. The motivation in the paper: different experts all need some common knowledge (grammar, frequent words). Without shared experts, many routed experts learn this knowledge again and again. With shared experts, the routed experts can specialize more.
 
-| 有共享专家 | 没有共享专家 |
+An ablation in the paper shows this well. Remove the shared expert of a 2B model, and activate one more routed expert instead (the compute does not change). The Pile loss increases from 1.808 to 2.414.
+
+But **not all model families use shared experts**. Their use is a spectrum (verified in 2026-09):
+
+| With shared experts | Without shared experts |
 |---|---|
-| DeepSeek-V3 / V3.2（1 个）、Kimi K2（1 个）、Kimi K3（2 个）、GLM-4.5 / GLM-5（1 个）、Llama 4（1 个）、Qwen3.5-MoE（1 个，外加一个 sigmoid 门）、Mistral Large 3（1 个）、Nemotron 3 Nano（报告写 2 个；配置里是 1 个宽度加倍的共享专家，等价） | Qwen3-MoE（报告原文："Unlike Qwen2.5-MoE, the Qwen3-MoE design excludes shared experts"）、gpt-oss、Mixtral、MiniMax-M2（`shared_intermediate_size: 0`）、小米 MiMo-V2-Flash（`n_shared_experts: null`）、OLMoE |
+| DeepSeek-V3 / V3.2 (1), Kimi K2 (1), Kimi K3 (2), GLM-4.5 / GLM-5 (1), Llama 4 (1), Qwen3.5-MoE (1, plus a sigmoid gate), Mistral Large 3 (1), Nemotron 3 Nano (the report gives 2; the configuration has 1 shared expert of double width, which is equivalent) | Qwen3-MoE (the report: "Unlike Qwen2.5-MoE, the Qwen3-MoE design excludes shared experts"), gpt-oss, Mixtral, MiniMax-M2 (`shared_intermediate_size: 0`), Xiaomi MiMo-V2-Flash (`n_shared_experts: null`), OLMoE |
 
-有意思的是千问自己在摇摆：Qwen2.5-MoE 有、Qwen3-MoE 去掉了、Qwen3.5 又加回来了（模型卡："8 Routed + 1 Shared"）。所以更准确的说法是：**细粒度专家是共识，共享专家是大多数家族的选择，但不是必需品**。
+Qwen itself changed its choice more than once. Qwen2.5-MoE had shared experts, Qwen3-MoE removed them, and Qwen3.5 added them again (model card: "8 Routed + 1 Shared"). Thus a more accurate statement is: **fine-grained experts are a consensus; shared experts are the choice of most families, but they are not necessary**.
 
-本章小实验里的"细粒度+共享"方案（16 选 3 + 1 共享）验证 loss 1.777，与其他同算力方案的差距同样在噪声内。它两个种子的差距也随机器而变：第 6 节表里是 1.778、1.776，几乎一样；另一台服务器上复跑是 1.757、1.778，相差 0.021。仅凭两个种子，既说明不了它更稳定，也说明不了它更不稳定。
+In the small experiment of this chapter, the Fine-grained+shared variant (select 3 of 16 + 1 shared) has a validation loss of 1.777. Its difference from the other variants with the same compute is also within the noise. The difference between its two seeds also changes with the machine. In the table of Section 6, the values are 1.778 and 1.776, almost the same. A rerun on another server gave 1.757 and 1.778, a difference of 0.021. With only two seeds, we cannot say that it is more stable or less stable.
 
-## 8. 为什么大模型都用，小模型很少用
+## 8. Why all large models use MoE, but small models seldom use it
 
-先看产品线（[`code/04_small_vs_large.py`](code/04_small_vs_large.py) 第 1 部分，官方仓库名，2026-09）：
+First, look at the lineups ([`code/04_small_vs_large.py`](code/04_small_vs_large.py), part 1; official repository names, 2026-09):
 
-| 家族 | 稠密 | MoE（总 / 激活） |
+| Family | Dense | MoE (total / active) |
 |---|---|---|
-| Qwen3 | 0.6B、1.7B、4B、8B、14B、32B | 30B-A3B（30.5 / 3.3）、235B-A22B |
-| Qwen3.5 | 0.8B、2B、4B、9B、27B | 35B-A3B、122B-A10B、397B-A17B |
-| gpt-oss | — | 20b（20.9 / 3.6）、120b（116.8 / 5.1） |
-| Llama 4 | — | Scout（109 / 17）、Maverick（400 / 17） |
-| Nemotron 3 | — | Nano 30B-A3B（31.6 / 3.2） |
+| Qwen3 | 0.6B, 1.7B, 4B, 8B, 14B, 32B | 30B-A3B (30.5 / 3.3), 235B-A22B |
+| Qwen3.5 | 0.8B, 2B, 4B, 9B, 27B | 35B-A3B, 122B-A10B, 397B-A17B |
+| gpt-oss | — | 20b (20.9 / 3.6), 120b (116.8 / 5.1) |
+| Llama 4 | — | Scout (109 / 17), Maverick (400 / 17) |
+| Nemotron 3 | — | Nano 30B-A3B (31.6 / 3.2) |
 
-同一家族里，几十 B 以下几乎全是稠密，MoE 最小也在 20B 总参数以上。为什么？三笔账：
+In one family, almost all models below some tens of B are dense. The smallest MoE has more than 20B total parameters. Why? There are three ledgers.
 
-**第一笔：MoE 该和谁比？** Qwen3 技术报告表 5 用同样的预训练数据训了 Qwen3-30B-A3B 和稠密的 Qwen3-14B：
+**Ledger 1: what should we compare an MoE with?** For Table 5 of the Qwen3 technical report, the Qwen team trained Qwen3-30B-A3B and the dense Qwen3-14B on the same pretraining data:
 
-| Base 模型 | MMLU | MMLU-Pro | GSM8K | MATH | EvalPlus | MGSM | 总 / 激活 |
+| Base model | MMLU | MMLU-Pro | GSM8K | MATH | EvalPlus | MGSM | Total / active |
 |---|---:|---:|---:|---:|---:|---:|---|
-| Qwen3-14B（稠密） | 81.05 | 61.03 | 92.49 | 62.02 | 72.23 | 79.20 | 14B / 14B |
-| Qwen3-30B-A3B（MoE） | 81.38 | 61.49 | 91.81 | 59.04 | 71.45 | 79.11 | 30B / 3B |
+| Qwen3-14B (dense) | 81.05 | 61.03 | 92.49 | 62.02 | 72.23 | 79.20 | 14B / 14B |
+| Qwen3-30B-A3B (MoE) | 81.38 | 61.49 | 91.81 | 59.04 | 71.45 | 79.11 | 30B / 3B |
 
-成绩相当：MoE 的**激活参数只有稠密的约五分之一**（每个 token 的算力省了四倍多），但**总参数是它的两倍多**。换句话说，MoE 是"用显存换算力"。
+The scores are similar. The MoE has **only about one fifth of the active parameters of the dense model** (the compute for each token is more than 4 times smaller). But **it has more than twice the total parameters**. In other words, an MoE "trades memory for compute".
 
-**第二笔：显存装的是总参数。** 权重必须全部驻留在内存里，哪怕某个专家这一步没被选中：
+**Ledger 2: the memory holds the total parameters.** All weights must stay in memory, including the weights of an expert that no token selects in this step:
 
-| 模型 | 激活 | BF16 权重 | 4-bit 权重 |
+| Model | Active | BF16 weights | 4-bit weights |
 |---|---:|---:|---:|
-| Qwen3.5-0.8B（稠密） | 0.8B | 1.6 GB | 0.4 GB |
-| Qwen3.5-9B（稠密） | 9.0B | 18.0 GB | 4.5 GB |
+| Qwen3.5-0.8B (dense) | 0.8B | 1.6 GB | 0.4 GB |
+| Qwen3.5-9B (dense) | 9.0B | 18.0 GB | 4.5 GB |
 | Qwen3-30B-A3B | 3.3B | 61.0 GB | 15.2 GB |
 
-一台 8 GB 内存的手机，4-bit 量化也装不下 30B 级的 MoE。**在端侧，内存是最紧的约束，同样的内存放一个稠密模型更划算**；而在几千张卡的集群上，显存可以靠堆卡解决，最贵的是算力和时间，MoE 就非常划算。
+A phone with 8 GB of memory cannot hold a 30B-class MoE, even with 4-bit quantization. **On a device, memory is the tightest limit, so a dense model makes better use of the same memory.** On a cluster with thousands of GPUs, more GPUs give more memory, and compute and time are the most expensive parts. There, an MoE is a very good choice.
 
-**第三笔：读多少权重，取决于 batch。** 解码是显存带宽瓶颈（第 21 章）。MoE 每一步要读的，是这一批 token 选中的那些专家（按均匀路由估计，一层里被至少一个 token 选中的专家比例 = 1 − (1 − K/N)^B）：
+**Ledger 3: the number of weights to read depends on the batch.** Decoding is limited by memory bandwidth (Chapter 21). In each step, an MoE must read the experts that the tokens of this batch selected. With uniform routing, the fraction of experts in one layer that at least one token selects = 1 − (1 − K/N)^B:
 
-| 模型 | batch 1 | batch 4 | batch 16 | batch 64 | batch 256 |
+| Model | batch 1 | batch 4 | batch 16 | batch 64 | batch 256 |
 |---|---:|---:|---:|---:|---:|
-| Qwen3-30B-A3B（128 选 8） | 6.2% | 22.8% | 64.4% | 98.4% | 100.0% |
-| DeepSeek-V3（256 选 8） | 3.1% | 11.9% | 39.8% | 86.9% | 100.0% |
-| Mixtral（8 选 2） | 25.0% | 68.4% | 99.0% | 100.0% | 100.0% |
+| Qwen3-30B-A3B (8 of 128) | 6.2% | 22.8% | 64.4% | 98.4% | 100.0% |
+| DeepSeek-V3 (8 of 256) | 3.1% | 11.9% | 39.8% | 86.9% | 100.0% |
+| Mixtral (2 of 8) | 25.0% | 68.4% | 99.0% | 100.0% | 100.0% |
 
-单用户（batch 1）只读激活的那一小部分，所以**只要内存装得下**，本地跑 30B-A3B 这类模型解码速度接近 3B 的稠密模型；服务端大 batch 时几乎每个专家都要读，MoE 省下的是每个 token 的算力，不是显存带宽。
+One user (batch 1) reads only the small active part. Thus, **if the memory can hold the model**, a local model such as 30B-A3B decodes at about the speed of a 3B dense model. On a server with a large batch, almost every expert must be read. The MoE saves compute for each token, not memory bandwidth.
 
-再加上几条小模型特有的劣势：每个 token 的 FFN 本来就小，再切成几十个专家，每个专家的矩阵乘小到 GPU 跑不满；路由、分发、合并的额外开销占比变大；**同尺寸比较按总参数算**（本课第 3.2 节的对手清单就是这样定的），一个 0.8B 总参数的 MoE 激活只有一两亿，质量更接近一个一两亿的稠密模型。这就是主线模型保持稠密的原因（GOAL.md 3.3）。
+Small models also have some special disadvantages. The FFN of each token is already small. If we split it into tens of experts, the matrix multiplication of each expert is too small to use the GPU fully. The overhead of routing, dispatch, and combine becomes a larger part of the time.
 
-> 反例也有：AllenAI 的 OLMoE-1B-7B（总 7B、激活 1B，64 专家选 8）是一个完全开放的小 MoE，常被当作研究基线。但本章核实过的主力小模型（Qwen3 的 0.6–14B、Qwen3.5 的 0.8–27B）都是稠密的。
+Also, **a comparison at the same size uses the total parameters** (the list of competitors in Section 3.2 of GOAL.md uses this rule). An MoE with 0.8B total parameters has only one or two hundred million active parameters. Its quality is closer to a dense model with one or two hundred million parameters. This is why the main-line model stays dense (GOAL.md 3.3).
 
-## 9. 专家并行（简述）
+> **Note:** There are exceptions. OLMoE-1B-7B from AllenAI (7B total, 1B active, select 8 of 64 experts) is a fully open small MoE. Researchers often use it as a baseline. But the main small models that this chapter verified (Qwen3 0.6–14B, Qwen3.5 0.8–27B) are all dense.
 
-大 MoE 的专家放不进一张卡，于是把不同的专家放在不同的 GPU 上，叫**专家并行（EP）**。每一层 MoE 的前向变成三步：**dispatch**（把每个 token 通过 all-to-all 通信发到它选中的专家所在的卡）→ 各卡计算自己的专家 → **combine**（再 all-to-all 发回来加权合并）。这带来两个新问题：
+## 9. Expert parallelism (short overview)
 
-- **通信**：DeepSeek-V3 的 256 个路由专家分布在 8 个节点的 64 张卡上，它用"节点受限路由"让每个 token 最多发往 4 个节点（先按节点内最高分之和选节点，再在这些节点里选专家），并专门写了 all-to-all kernel 与计算重叠；Kimi K2 为了让通信能被计算完全遮住，用了尽量小的 EP = 16。
-- **负载**：同一层的所有卡要互相等，最忙的专家决定整层耗时。所以负载均衡不只是"别浪费参数"，更是吞吐问题。DeepSeek-V3 推理时还把高负载的专家复制几份（"冗余专家"），每 10 分钟按线上统计调整一次。
+The experts of a large MoE do not fit on one GPU. Thus we put different experts on different GPUs. This is **expert parallelism (EP)**.
 
-单卡上的对应问题是：不同专家分到的 token 数不同，没法写成一个规整的大矩阵乘。GPU 上的做法是 **grouped GEMM**（概念上是一次调用算完一组形状不同的矩阵乘；底层是否真的融合成一个 kernel，取决于实现和硬件——本章"GPU 实测"一节用 profiler 看到，PyTorch 的 `F.grouped_mm` 在 RTX 3090 上实际是逐专家发了 128 个 cuBLAS GEMM）或 MegaBlocks 式的块稀疏矩阵乘；本章的 CPU 代码用 Python 循环代替。
+The forward pass of each MoE layer then has three steps:
 
-## 10. 小结
+1. **Dispatch**: all-to-all communication sends each token to the GPUs of the experts that it selected.
+2. Each GPU calculates its own experts.
+3. **Combine**: another all-to-all sends the results back for the weighted combination.
 
-- **FFN 是参数和算力的大头**（Qwen3-8B 每层 78%）。MoE 把它拆成 N 个专家、每个 token 只用 K 个，让**总参数（显存、知识容量）和激活参数（每 token 算力）脱钩**。DeepSeek-V3 激活 5.6%，Kimi K2 只有 3.2%。
-- **路由**：线性层打分（softmax 或 sigmoid）→ 按分数加偏置选 top-K → 选中的分数归一化作门控 → 加权求和；实现上按专家分组做 dispatch / combine。
-- **负载均衡**：不管会坍缩。辅助损失 α·Σf_i·P_i 靠梯度压低过载专家，但会干扰主损失；DeepSeek-V3 的偏置法只改"选谁"，每步按 batch 负载 ±γ 更新；关键在于按整个 batch 而不是每条序列均衡。今天主流不丢 token。
-- **细粒度专家**（更多、更小的专家）是共识；**共享专家**被多数家族采用，但 Qwen3-MoE、gpt-oss、Mixtral、MiniMax-M2 没有，是一条光谱。
-- **MoE 用显存换算力**：在集群上训练和服务几百 B 以上的模型时非常划算；在内存最紧的端侧，同样的内存放稠密模型更好，所以 1B 级的主流小模型都是稠密的，主线模型也是。
+Expert parallelism causes two new problems:
+
+- **Communication**: DeepSeek-V3 puts its 256 routed experts on 64 GPUs in 8 nodes. It uses "node-limited routing", so each token goes to at most 4 nodes. First, it selects the nodes by the sum of the highest scores in each node. Then it selects the experts in these nodes. DeepSeek also wrote its own all-to-all kernels, which overlap with the calculation. Kimi K2 uses the smallest possible EP = 16, so that the calculation can fully hide the communication.
+- **Load**: all GPUs of one layer must wait for each other, and the busiest expert sets the time of the full layer. Thus load balancing is not only about "do not waste parameters". It is also a throughput problem. For inference, DeepSeek-V3 also makes several copies of the experts with a high load ("redundant experts"). It adjusts the copies every 10 minutes from statistics of the live service.
+
+On one GPU, the matching problem is this: different experts get different numbers of tokens, so we cannot write one regular large matrix multiplication. GPUs use a **grouped GEMM** or a block-sparse matrix multiplication in the MegaBlocks style. The CPU code of this chapter uses a Python loop instead.
+
+In concept, a grouped GEMM calculates a group of matrix multiplications with different shapes in one call. Whether it really becomes one fused kernel depends on the implementation and the hardware. The section "GPU measurements" of this chapter used a profiler: on an RTX 3090, the PyTorch `F.grouped_mm` actually launches 128 cuBLAS GEMMs, one for each expert.
+
+## 10. Summary
+
+- **The FFN has most of the parameters and the compute** (78% of each layer in Qwen3-8B). MoE splits the FFN into N experts, and each token uses only K. This **separates the total parameters (memory, knowledge capacity) from the active parameters (compute for each token)**. DeepSeek-V3 activates 5.6%, and Kimi K2 only 3.2%.
+- **Routing**: a linear layer gives scores (softmax or sigmoid) → add the bias to the scores and select the top-K → normalize the selected scores to get the gate weights → weighted sum. The implementation groups the tokens by expert for dispatch and combine.
+- **Load balancing**: without it, routing collapses. The auxiliary loss α·Σf_i·P_i uses the gradient to push down overloaded experts, but it disturbs the main loss. The bias method of DeepSeek-V3 changes only the selection, and updates the bias by ±γ from the batch load after each step. The key is to balance over the full batch, not over each sequence. Today, most models do not drop tokens.
+- **Fine-grained experts** (more and smaller experts) are a consensus. Most families use **shared experts**, but Qwen3-MoE, gpt-oss, Mixtral, and MiniMax-M2 do not. Their use is a spectrum.
+- **An MoE trades memory for compute.** It is a very good choice to train and serve models with hundreds of B parameters on a cluster. On a device, memory is the tightest limit, and a dense model uses the same memory better. Thus the main small models at the 1B scale are all dense, and so is the main-line model.
 
 ---
 
-## GPU 实测（单张 RTX 3090）
+## GPU measurements (one RTX 3090)
 
-> 上面正文里的数字都来自 CPU 运行。本节换到一张 NVIDIA GeForce RTX 3090（24 GB 显存，Ampere 架构；规格表：BF16 张量核稠密峰值约 71 TFLOPS，FP32 约 35.6 TFLOPS，显存带宽约 936 GB/s）上实测，环境：PyTorch 2.11.0+cu128、CUDA 12.8，2026 年 10 月。这张卡的功耗上限被服务器设成了 240 W（出厂默认 350 W），持续满载时会降频，所以算力、带宽的绝对值比满功耗的 3090 偏低，看相对关系更可靠。没有 GPU 可以跳过本节。
+> **Note:** All numbers in the main text above come from CPU runs. This section uses one NVIDIA GeForce RTX 3090: 24 GB of memory, Ampere architecture. Spec sheet: dense BF16 tensor-core peak about 71 TFLOPS, FP32 about 35.6 TFLOPS, memory bandwidth about 936 GB/s. Environment: PyTorch 2.11.0+cu128, CUDA 12.8, October 2026.
+>
+> The server sets the power limit of this card to 240 W (the factory default is 350 W). Under a continuous full load, the card decreases its clock speed. Thus the absolute compute and bandwidth are lower than on a 3090 at full power, and the relative values are more reliable. If you have no GPU, skip this section.
 
-运行：
+Run:
 
 ```bash
 uv run python chapters/24-mixture-of-experts/code/05_gpu_moe.py
 ```
 
-一个 MoE 层，一次喂 8192 个 token（相当于训练或 prefill 时的一个批次），d = 1024，每个专家宽 2048，每个 token 选 2 个——激活宽度 4096，和一个宽 4096 的稠密 SwiGLU 同算力。专家数 E 从 8 加到 128，比两种写法：第 3.2 节的**按专家循环**（`02_moe_layer.py` 的 `MoE.forward` 原样搬上 GPU），和**排序分段 + `F.grouped_mm`**（token 按专家排好序，每个矩阵一次调用算完所有专家，整个前向不用停下来等 GPU）。权重随机初始化、BF16，CUDA event 计时取 30 次中位数；每个 E 都先对拍，两种写法输出的最大差异小于最大输出的 2%（BF16 舍入的量级）。
+One MoE layer gets 8192 tokens at a time (the size of one batch in training or prefill). It has d = 1024 and an expert width of 2048, and each token selects 2 experts. The active width is 4096, which is the same compute as one dense SwiGLU of width 4096. The number of experts E grows from 8 to 128.
 
-同算力的稠密 SwiGLU（宽 4096，13M 参数）：4.27 ms，48.3 TFLOPS。
+We compare two versions. The first is the **loop over experts** of Section 3.2 (`MoE.forward` of `02_moe_layer.py`, moved to the GPU without changes). The second is **sort into segments + `F.grouped_mm`**. It sorts the tokens by expert and calculates all experts with one call for each matrix. Thus the full forward pass never stops to wait for the GPU.
 
-| 专家数 E | 总参数 | 每 token GFLOP | 每个专家平均分到的 token | 按专家循环 ms | 排序 + grouped_mm ms | 循环 ÷ grouped | grouped 实测 TFLOPS |
+The weights have random initialization in BF16. CUDA events measure the time, and we take the median of 30 runs. For each E, a parity check runs first. The max difference between the outputs of the two versions is less than 2% of the max output (the size of BF16 rounding errors).
+
+The dense SwiGLU with the same compute (width 4096, 13M parameters): 4.27 ms, 48.3 TFLOPS.
+
+| Experts E | Total parameters | GFLOP per token | Mean tokens per expert | Loop over experts, ms | Sort + grouped_mm, ms | Loop ÷ grouped | Measured grouped TFLOPS |
 |---:|---:|---:|---:|---:|---:|---:|---:|
 | 8 | 50M | 0.0252 | 2048 | 6.45 | 6.03 | 1.1× | 34.2 |
 | 16 | 101M | 0.0252 | 1024 | 7.15 | 6.32 | 1.1× | 32.7 |
@@ -352,134 +386,140 @@ uv run python chapters/24-mixture-of-experts/code/05_gpu_moe.py
 | 64 | 403M | 0.0253 | 256 | 15.45 | 8.74 | 1.8× | 23.7 |
 | 128 | 805M | 0.0254 | 128 | 28.79 | 10.05 | 2.9× | 20.7 |
 
-第 1 节"让参数和算力脱钩"在这里看得很直观：总参数翻了 16 倍，每个 token 的 FLOPs 纹丝不动（多出来的零头是路由器），分组写法的耗时也只从 6.03 ms 涨到 10.05 ms。但"FLOPs 不变"不等于"时间不变"：E = 8 时 MoE 就比同算力的稠密慢四成（路由、排序、分发、合并都要时间）；E = 128 时每个专家平均只分到 128 个 token，矩阵乘小到喂不饱 GPU，实测算力从 48.3 掉到 20.7 TFLOPS——这就是第 7 节说的"专家太小以后矩阵乘效率变低"。按专家写 Python 循环则是专家越多越吃亏，E = 128 时慢 2.9 倍：每个专家都要 `nonzero` 一次、停下来等 GPU 告诉它有哪些 token（这台机器上 Python 每下发一个算子还要约 6.4 µs），这部分耗时花在 CPU 上，会随机器负载浮动。一个出乎意料的细节：用 profiler 看，`F.grouped_mm` 在这张 3090 上发出的是 129 个 kernel，其中 128 个是逐专家的 cuBLAS 矩阵乘，并没有融合成一个 kernel（第 9 节说的"取决于实现和硬件"，这里就是一例）；它快在循环写在 C++ 里、不用等 GPU。真正把一组矩阵乘合成一个 kernel 的，是 MegaBlocks、vLLM / SGLang 的 fused MoE 这类专门实现。
+Here you can see "separate the parameters from the compute" (Section 1) directly. The total parameters grow 16 times, but the FLOPs per token do not change (the small extra part is the router). The time of the grouped version grows only from 6.03 ms to 10.05 ms.
 
-## 从极简到生产级
+But "the same FLOPs" does not mean "the same time". At E = 8, the MoE is already 40% slower than the dense FFN with the same compute, because routing, sorting, dispatch, and combine all take time. At E = 128, each expert gets only 128 tokens on average. The matrix multiplications are then too small to keep the GPU busy, and the measured compute falls from 48.3 to 20.7 TFLOPS. This is the effect of Section 7: "the matrix multiplications become less efficient when the experts become too small".
 
-| 极简版（`code/`） | 生产级（`zero/arch/moe.py`） | 多做了什么、为什么 |
+The Python loop over experts becomes worse as the number of experts grows: at E = 128, it is 2.9 times slower. Each expert must call `nonzero` once and stop to wait for the GPU to tell it which tokens it has. (On this machine, Python also needs about 6.4 µs to launch each operation.) This time is spent on the CPU, so it changes with the machine load.
+
+One unexpected detail: the profiler shows that `F.grouped_mm` launches 129 kernels on this 3090. 128 of them are cuBLAS matrix multiplications, one for each expert, and they are not fused into one kernel. (Section 9 said "it depends on the implementation and the hardware". This is an example.) `F.grouped_mm` is fast because its loop is in C++ and does not wait for the GPU. Special implementations, such as MegaBlocks and the fused MoE of vLLM / SGLang, really combine a group of matrix multiplications into one kernel.
+
+## From minimal code to production code
+
+| Minimal code (`code/`) | Production code (`zero/arch/moe.py`) | What it adds, and why |
 |---|---|---|
-| `02_moe_layer.py` 的 `MoE`：`nn.ModuleList` 装专家，按专家循环 | `MoEFFN`：专家权重按专家**堆叠**成 `(E, d, h)` 三维张量；token 按专家**稳定排序**后分段计算 | 堆叠权重是 grouped GEMM / 专家并行分片的前提（按第 0 维切给不同的卡）；排序后每个专家的 token 连续，方便换成 GPU kernel（CUDA + BF16 的前向反向已在 RTX 3090 上验证，顺带修了 autocast 下 `index_add_` 的精度 bug，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 12 节；grouped GEMM kernel 尚未接入） |
-| 固定 sigmoid 或 softmax、top-k 归一化 | `MoEConfig`：`score_func`、`norm_topk_prob`、`routed_scaling_factor`、`n_shared_experts` / `shared_expert_dim`，字段名对齐 HF 配置 | 能表达 DeepSeek-V3（sigmoid、归一化、×2.5、1 个共享）、Qwen3-MoE（softmax、归一化、无共享）、Mixtral 等不同配方 |
-| 偏置用这一步的负载更新 | `load_accum` 累计自上次 `update_bias()` 以来的负载；分布式下先 `all_reduce` | 梯度累积时要按整个全局 batch 的负载更新（DeepSeek-V3 "monitoring the expert load on the whole batch"）；多卡路径**尚未在 GPU 上验证** |
-| 偏置只在 `balance="free"` 时参与 | 偏置总是参与选择（不更新时保持为 0），并作为 buffer 进 `state_dict` | DeepSeek-V3 最后 500B token 把 γ 设为 0 但继续用已学到的偏置；续训必须恢复偏置 |
-| 无 | `capacity_factor`：可选容量上限、统计 `last_dropped`；默认 `None` = dropless | 对照 Switch / GShard 的丢 token 做法 |
-| 在训练循环里手动加 `m.aux`、调 `update_bias` | `MoETransformer`（`moe_transformer(model_cfg, moe_cfg, first_dense)`）：前 `first_dense` 层保留稠密 FFN（DeepSeek-V3 为 3、Kimi K2 为 1）；`loss()` 自动加上各层辅助损失；`after_step()` 更新偏置；`load_stats()`、`param_counts()` | 直接复用主线的注意力、RMSNorm、初始化规则；主线的 `Trainer` 尚未接入 `after_step`（第二步如需用它训练 MoE 再接） |
-| 无 | 行业实现：HF transformers 的 `Qwen3MoeSparseMoeBlock`、`DeepseekV3MoE`（含 `e_score_correction_bias`、分组 top-k）；MegaBlocks、DeepSeek 开源的 DeepEP（专家并行通信库）、vLLM / SGLang 的 fused MoE kernel | 本课的 MoE 只追求可读和正确；真正训练和上线要用这些实现 |
+| `MoE` in `02_moe_layer.py`: an `nn.ModuleList` holds the experts; a loop over the experts | `MoEFFN`: the expert weights are **stacked** by expert into 3D tensors `(E, d, h)`; the tokens are **stably sorted** by expert and calculated segment by segment | Stacked weights are necessary for grouped GEMM and for the shards of expert parallelism (split along dimension 0 to different GPUs). After the sort, the tokens of each expert are contiguous, so a GPU kernel can replace the loop. (The forward and backward passes with CUDA + BF16 are verified on an RTX 3090. This check also fixed a precision bug of `index_add_` under autocast; see Section 12 of [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md). The grouped GEMM kernel is not connected yet.) |
+| Fixed sigmoid or softmax, top-k normalization | `MoEConfig`: `score_func`, `norm_topk_prob`, `routed_scaling_factor`, `n_shared_experts` / `shared_expert_dim`; the field names match the HF configurations | It can express different recipes: DeepSeek-V3 (sigmoid, normalization, ×2.5, 1 shared expert), Qwen3-MoE (softmax, normalization, no shared expert), Mixtral, and others |
+| The bias update uses the load of this step | `load_accum` adds up the load since the last `update_bias()`; with distributed training, it first does an `all_reduce` | With gradient accumulation, the update must use the load of the full global batch (DeepSeek-V3: "monitoring the expert load on the whole batch"). The multi-GPU path is **not verified on a GPU yet** |
+| The bias takes part only when `balance="free"` | The bias always takes part in the selection (it stays 0 when there are no updates), and it is a buffer in the `state_dict` | DeepSeek-V3 sets γ to 0 for the last 500B tokens, but continues to use the learned bias. To resume training, you must restore the bias |
+| None | `capacity_factor`: an optional capacity limit, which records `last_dropped`; the default `None` = dropless | For comparison with the token dropping of Switch / GShard |
+| Add `m.aux` and call `update_bias` by hand in the training loop | `MoETransformer` (`moe_transformer(model_cfg, moe_cfg, first_dense)`): the first `first_dense` layers keep a dense FFN (3 for DeepSeek-V3, 1 for Kimi K2); `loss()` adds the auxiliary losses of all layers automatically; `after_step()` updates the biases; `load_stats()`, `param_counts()` | It reuses the attention, RMSNorm, and initialization rules of the main line directly. The main-line `Trainer` does not call `after_step` yet (we connect it in Step 2, if we use the `Trainer` to train an MoE) |
+| None | Industry implementations: `Qwen3MoeSparseMoeBlock` and `DeepseekV3MoE` in HF transformers (with `e_score_correction_bias` and group top-k); MegaBlocks; DeepEP from DeepSeek (an open expert-parallel communication library); the fused MoE kernels of vLLM / SGLang | The MoE of this course aims only to be readable and correct. For real training and deployment, use these implementations |
 
-**对拍**（`uv run pytest tests/test_arch_moe.py`，本机 12 项全部通过，约 5 秒）：
+**Parity checks** (`uv run pytest tests/test_arch_moe.py`; all 12 tests passed on this machine, in about 5 seconds):
 
-- 1 个专家 + top-1 时，`MoEFFN` 与 `zero.model.SwiGLU` 在 float64 下差异 < 1e-12；
-- 排序分段的实现与逐 token 朴素循环完全一致（softmax / sigmoid、有无归一化、`routed_scaling_factor`、共享专家、非零偏置，4 种组合）；
-- 偏置改变选择但不改变门控权重；辅助损失与手算一致（1.2α；均衡时 = α），梯度方向压低过载专家；
-- 偏置更新方向正确；只靠偏置更新就能把一个固定偏斜路由器的负载从"最大/平均 > 2"拉到 < 1.2；
-- 容量因子：丢弃数与手算一致，容量足够大时与 dropless 输出相同；
-- `MoETransformer` 能训练、辅助损失有梯度、偏置进 `state_dict`、激活参数计数正确。
-
----
-
-## 前沿观察
-
-> **稀疏度还在往上走。** Kimi K2 报告的"稀疏度 scaling law"（固定激活参数，专家越多 loss 越低）给出了继续加专家的理由：Kimi K3 的配置是 896 个专家选 16 个外加 2 个共享专家，Qwen3.5-397B-A17B 是 512 选 10。但专家越多，路由、通信和负载均衡越难，Kimi K2 报告也明确说稀疏度 48 是"性能与基础设施复杂度的折中"。最优稀疏度会停在哪里，目前没有共识。
-
-> **均衡的"范围"比"手段"更重要？** DeepSeek-V3 报告 4.5.3 节发现 batch 级辅助损失和偏置法效果打平，千问用全局 batch 的辅助损失、DeepSeek 系用偏置，两条路都在大模型上成功了。它们在工程上各有利弊（偏置法不干扰梯度；辅助损失不需要额外状态），哪个更好还没有定论。
+- With 1 expert and top-1, `MoEFFN` and `zero.model.SwiGLU` differ by < 1e-12 in float64.
+- The sort-and-segment version gives exactly the same result as a naive token-by-token loop (softmax / sigmoid, with and without normalization, `routed_scaling_factor`, shared experts, nonzero bias; 4 combinations).
+- The bias changes the selection but not the gate weights. The auxiliary loss agrees with the calculation by hand (1.2α; = α when balanced), and its gradient pushes down overloaded experts.
+- The bias update has the correct direction. Bias updates alone bring the load of a fixed skewed router from "max/mean > 2" to < 1.2.
+- Capacity factor: the number of dropped tokens agrees with the calculation by hand. With a sufficiently large capacity, the output is the same as dropless.
+- `MoETransformer` trains, the auxiliary loss has a gradient, the bias is in the `state_dict`, and the count of active parameters is correct.
 
 ---
 
-## 采用方与来源
+## Frontier notes
 
-| 技术 | 采用方（主力版本） | 来源 |
+> **Sparsity continues to increase.** The "sparsity scaling law" of the Kimi K2 report (at fixed active parameters, more experts give a lower loss) is a reason to add more experts. The Kimi K3 configuration selects 16 of 896 experts, plus 2 shared experts. Qwen3.5-397B-A17B selects 10 of 512. But with more experts, routing, communication, and load balancing become more difficult. The Kimi K2 report also states that a sparsity of 48 is a trade-off between performance and infrastructure complexity. There is no consensus yet about where the optimal sparsity will stop.
+
+> **Is the "scope" of the balance more important than the "method"?** Section 4.5.3 of the DeepSeek-V3 report found that a batch-level auxiliary loss and the bias method give equal results. Qwen uses an auxiliary loss over the global batch, and the DeepSeek family uses the bias. Both paths were successful in large models. Each has engineering advantages and disadvantages (the bias method does not disturb the gradient; the auxiliary loss needs no extra state). It is not decided yet which one is better.
+
+---
+
+## Adopters and sources
+
+| Technique | Adopters (main versions) | Sources |
 |---|---|---|
-| MoE（细粒度，数十到数百个专家） | DeepSeek（V3：256 选 8）、Qwen（Qwen3：128 选 8；Qwen3.5：512 选 10）、Kimi（K2：384 选 8）、GLM（4.5：160 选 8）、gpt-oss（120b：128 选 4）、Llama 4、MiniMax（M2：256 选 8）、Mistral（Large 3：128 选 4）、NVIDIA Nemotron 3（128 选 6） | 各技术报告与 `config.json`（下方链接） |
-| 共享专家 | DeepSeek-V3、Kimi K2/K3、GLM-4.5/5、Llama 4、Qwen3.5、Mistral Large 3、Nemotron 3；**不用**：Qwen3-MoE、gpt-oss、Mixtral、MiniMax-M2、MiMo-V2-Flash | DeepSeekMoE arXiv:2401.06066；Qwen3 报告第 2 节；各配置 |
-| 辅助损失（Switch / GShard 式） | Mixtral（`router_aux_loss_coef` 0.02）、Qwen3（全局 batch 负载均衡损失，0.001）、Llama 4（0.001）、OLMoE（0.01） | Switch Transformer arXiv:2101.03961；GShard arXiv:2006.16668；Qwen3 报告；各配置 |
-| **无辅助损失的偏置均衡** | **报告明确写出**：DeepSeek-V3（2.1.2、4.2 节，γ = 0.001）、GLM-4.5（2.1、2.4 节："loss-free balance routing"，更新率 0.001）、NVIDIA Nemotron 3 Nano（2.4 节："DeepSeek's aux-loss-free load balancing strategy"，更新率 1e-3）；**配置可见**：Kimi K2 与 K3（`topk_method: noaux_tc`）、GLM-5（`noaux_tc`）、DeepSeek-V3.2（`noaux_tc`）、MiniMax-M2（`use_routing_bias: true`、`e_score_correction_bias`）、小米 MiMo-V2-Flash（`noaux_tc`） | DeepSeek-V3 arXiv:2412.19437；GLM-4.5 arXiv:2508.06471；Nemotron 3 Nano arXiv:2512.20848；Wang 等 arXiv:2408.15664；各配置 |
-| 不丢 token（dropless） | DeepSeek-V3（报告 2.1.2 节"No Token-Dropping"）；Mixtral 发布时向 vLLM 提交了集成 MegaBlocks kernel 的实现（Mixtral 论文第 1 节） | arXiv:2412.19437；MegaBlocks arXiv:2211.15841 |
+| MoE (fine-grained, tens to hundreds of experts) | DeepSeek (V3: 8 of 256), Qwen (Qwen3: 8 of 128; Qwen3.5: 10 of 512), Kimi (K2: 8 of 384), GLM (4.5: 8 of 160), gpt-oss (120b: 4 of 128), Llama 4, MiniMax (M2: 8 of 256), Mistral (Large 3: 4 of 128), NVIDIA Nemotron 3 (6 of 128) | The technical reports and the `config.json` of each model (links below) |
+| Shared experts | DeepSeek-V3, Kimi K2/K3, GLM-4.5/5, Llama 4, Qwen3.5, Mistral Large 3, Nemotron 3; **not used by**: Qwen3-MoE, gpt-oss, Mixtral, MiniMax-M2, MiMo-V2-Flash | DeepSeekMoE arXiv:2401.06066; Qwen3 report, Section 2; the configurations |
+| Auxiliary loss (Switch / GShard style) | Mixtral (`router_aux_loss_coef` 0.02), Qwen3 (global-batch load-balancing loss, 0.001), Llama 4 (0.001), OLMoE (0.01) | Switch Transformer arXiv:2101.03961; GShard arXiv:2006.16668; Qwen3 report; the configurations |
+| **Auxiliary-loss-free bias balancing** | **Stated in the reports**: DeepSeek-V3 (Sections 2.1.2 and 4.2, γ = 0.001), GLM-4.5 (Sections 2.1 and 2.4: "loss-free balance routing", update rate 0.001), NVIDIA Nemotron 3 Nano (Section 2.4: "DeepSeek's aux-loss-free load balancing strategy", update rate 1e-3); **visible in the configurations**: Kimi K2 and K3 (`topk_method: noaux_tc`), GLM-5 (`noaux_tc`), DeepSeek-V3.2 (`noaux_tc`), MiniMax-M2 (`use_routing_bias: true`, `e_score_correction_bias`), Xiaomi MiMo-V2-Flash (`noaux_tc`) | DeepSeek-V3 arXiv:2412.19437; GLM-4.5 arXiv:2508.06471; Nemotron 3 Nano arXiv:2512.20848; Wang et al. arXiv:2408.15664; the configurations |
+| No dropped tokens (dropless) | DeepSeek-V3 (report Section 2.1.2, "No Token-Dropping"); at the release of Mixtral, the Mixtral team sent vLLM an implementation with MegaBlocks kernels (Mixtral paper, Section 1) | arXiv:2412.19437; MegaBlocks arXiv:2211.15841 |
 
-**共识判断（GOAL.md 2.1）**：
+**Consensus decision (GOAL.md 2.1)**:
 
-- **MoE（细粒度专家）**：DeepSeek、Qwen、Kimi、GLM、gpt-oss、Llama、MiniMax、Mistral、Nemotron 九个家族的旗舰都是 MoE，满足规则 A，进正文。
-- **共享专家**：DeepSeek、Kimi、GLM、Llama、Qwen3.5、Mistral、Nemotron 等 7 个家族采用，满足规则 A，进正文；但 Qwen3-MoE、gpt-oss、MiniMax-M2 等不用，正文按"光谱"讲，不说成必需。
-- **无辅助损失的负载均衡**（GOAL.md 表中列为"待核实"）：在技术报告里明确写出的有 DeepSeek、GLM（智谱）、NVIDIA 三个彼此独立的家族，另有 Kimi、MiniMax、小米三家的官方配置显示同样的机制（Kimi K2 沿用 DeepSeek-V3 架构，独立性稍弱，但 Kimi K3 仍在用）。**满足规则 A，本章放进正文**。同时如实说明：它不是唯一答案——Qwen、Llama、Mixtral、OLMoE 仍用辅助损失（Qwen3 用全局 batch 版本），而且"无辅助损失"的采用者都还保留一个极小的序列级辅助损失。
+- **MoE (fine-grained experts)**: the flagship models of nine families (DeepSeek, Qwen, Kimi, GLM, gpt-oss, Llama, MiniMax, Mistral, Nemotron) are all MoE. This meets rule A, so the topic is in the main text.
+- **Shared experts**: 7 families use them (DeepSeek, Kimi, GLM, Llama, Qwen3.5, Mistral, Nemotron). This meets rule A, so the topic is in the main text. But Qwen3-MoE, gpt-oss, MiniMax-M2, and others do not use them. Thus the main text describes a "spectrum" and does not call shared experts necessary.
+- **Auxiliary-loss-free load balancing** (marked "to be verified" in the table in GOAL.md): three independent families state it in their technical reports: DeepSeek, GLM (Zhipu), and NVIDIA. The official configurations of three more families show the same mechanism: Kimi, MiniMax, and Xiaomi. (Kimi K2 reuses the DeepSeek-V3 architecture, so it is less independent, but Kimi K3 still uses the mechanism.) **This meets rule A, so this chapter puts it in the main text.** We also state honestly that it is not the only answer. Qwen, Llama, Mixtral, and OLMoE still use an auxiliary loss (Qwen3 uses the global-batch version). Also, all adopters of "auxiliary-loss-free" balancing still keep a very small sequence-level auxiliary loss.
 
-**模型配置**（2026-09 通过 Hugging Face 读取）：
-[DeepSeek-V3](https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/config.json)、
-[DeepSeek-V3.2](https://huggingface.co/deepseek-ai/DeepSeek-V3.2/blob/main/config.json)、
-[Kimi-K2-Instruct](https://huggingface.co/moonshotai/Kimi-K2-Instruct/blob/main/config.json)、
-[Kimi-K3](https://huggingface.co/moonshotai/Kimi-K3/blob/main/config.json)、
-[Qwen3-235B-A22B](https://huggingface.co/Qwen/Qwen3-235B-A22B/blob/main/config.json)、
-[Qwen3-30B-A3B](https://huggingface.co/Qwen/Qwen3-30B-A3B/blob/main/config.json)（模型卡：30.5B / 3.3B）、
-[Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B/blob/main/config.json)、
-[Qwen3.5-35B-A3B](https://huggingface.co/Qwen/Qwen3.5-35B-A3B/blob/main/config.json)（模型卡："8 Routed + 1 Shared"）、
-[Qwen3.5-397B-A17B（读自 FP8 版）](https://huggingface.co/Qwen/Qwen3.5-397B-A17B-FP8/blob/main/config.json)、
-[GLM-4.5](https://huggingface.co/zai-org/GLM-4.5/blob/main/config.json)、
-[GLM-5](https://huggingface.co/zai-org/GLM-5/blob/main/config.json)、
-[gpt-oss-120b](https://huggingface.co/openai/gpt-oss-120b/blob/main/config.json)、
-[gpt-oss-20b](https://huggingface.co/openai/gpt-oss-20b/blob/main/config.json)、
-[Mixtral-8x7B-v0.1](https://huggingface.co/mistralai/Mixtral-8x7B-v0.1/blob/main/config.json)、
-[Llama-4-Scout（unsloth 镜像）](https://huggingface.co/unsloth/Llama-4-Scout-17B-16E-Instruct/blob/main/config.json)、
-[MiniMax-M2](https://huggingface.co/MiniMaxAI/MiniMax-M2/blob/main/config.json)、
-[MiMo-V2-Flash](https://huggingface.co/XiaomiMiMo/MiMo-V2-Flash/blob/main/config.json)、
-[NVIDIA-Nemotron-3-Nano-30B-A3B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16/blob/main/config.json)、
-[Mistral-Large-3 的 params.json](https://huggingface.co/mistralai/Mistral-Large-3-675B-Instruct-2512/blob/main/params.json)、
-[OLMoE-1B-7B](https://huggingface.co/allenai/OLMoE-1B-7B-0924/blob/main/config.json)。
+**Model configurations** (read through Hugging Face in 2026-09):
+[DeepSeek-V3](https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/config.json),
+[DeepSeek-V3.2](https://huggingface.co/deepseek-ai/DeepSeek-V3.2/blob/main/config.json),
+[Kimi-K2-Instruct](https://huggingface.co/moonshotai/Kimi-K2-Instruct/blob/main/config.json),
+[Kimi-K3](https://huggingface.co/moonshotai/Kimi-K3/blob/main/config.json),
+[Qwen3-235B-A22B](https://huggingface.co/Qwen/Qwen3-235B-A22B/blob/main/config.json),
+[Qwen3-30B-A3B](https://huggingface.co/Qwen/Qwen3-30B-A3B/blob/main/config.json) (model card: 30.5B / 3.3B),
+[Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B/blob/main/config.json),
+[Qwen3.5-35B-A3B](https://huggingface.co/Qwen/Qwen3.5-35B-A3B/blob/main/config.json) (model card: "8 Routed + 1 Shared"),
+[Qwen3.5-397B-A17B (read from the FP8 version)](https://huggingface.co/Qwen/Qwen3.5-397B-A17B-FP8/blob/main/config.json),
+[GLM-4.5](https://huggingface.co/zai-org/GLM-4.5/blob/main/config.json),
+[GLM-5](https://huggingface.co/zai-org/GLM-5/blob/main/config.json),
+[gpt-oss-120b](https://huggingface.co/openai/gpt-oss-120b/blob/main/config.json),
+[gpt-oss-20b](https://huggingface.co/openai/gpt-oss-20b/blob/main/config.json),
+[Mixtral-8x7B-v0.1](https://huggingface.co/mistralai/Mixtral-8x7B-v0.1/blob/main/config.json),
+[Llama-4-Scout (unsloth mirror)](https://huggingface.co/unsloth/Llama-4-Scout-17B-16E-Instruct/blob/main/config.json),
+[MiniMax-M2](https://huggingface.co/MiniMaxAI/MiniMax-M2/blob/main/config.json),
+[MiMo-V2-Flash](https://huggingface.co/XiaomiMiMo/MiMo-V2-Flash/blob/main/config.json),
+[NVIDIA-Nemotron-3-Nano-30B-A3B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16/blob/main/config.json),
+[params.json of Mistral-Large-3](https://huggingface.co/mistralai/Mistral-Large-3-675B-Instruct-2512/blob/main/params.json),
+[OLMoE-1B-7B](https://huggingface.co/allenai/OLMoE-1B-7B-0924/blob/main/config.json).
 
-说明：Meta 官方的 Llama 4 仓库需要申请权限，本章读取的是 unsloth 镜像（`base_model` 指向官方仓库）；Llama 4 的共享专家见 HF transformers 的 `Llama4TextMoe.shared_expert`（Meta 博客在本构建环境无法访问）。MiniMax-M2 的总参数 / 激活参数没有在本章核实，只引用了它的路由配置。Kimi K2 按配置数出的总参数比报告少约 14B，**待核实**。
-
----
-
-## 引导问题
-
-带着这些问题去问 Claude Code，直到你能用自己的话讲清楚：
-
-1. DeepSeek-V3 的门控权重用原始分数 s，而选专家用 s + b。如果门控权重也用 s + b，会出什么问题？（提示：偏置会怎样混进语言模型的梯度？）
-2. softmax 打分和 sigmoid 打分，在专家数从 8 增加到 256 时各自会遇到什么问题？为什么 sigmoid + 选中后归一化更适合细粒度专家？
-3. 辅助损失里 f_i 是不可导的计数。那梯度到底是怎么让过载专家"变少"的？试着对第 5.1 节的手算例子求 ∂L/∂(logit)，看符号。
-4. 本章第 8 节的表说 batch 64 时 Qwen3-30B-A3B 几乎每个专家都要读。那 MoE 在服务端到底省了什么？如果 batch 很大，它和一个 3B 稠密模型比，解码每步的时间主要差在哪里？
-5. 细粒度把专家切得越来越小，为什么不切到每个专家只有一行（宽度 1）？从矩阵乘效率、路由器参数和通信三方面想一想。
-6. 本章小实验里 MoE 和两个稠密基线的差距，和种子之间的波动相比如何？如果要认真比较，你会怎样设计实验（数据量、步数、指标）？参考 DeepSeekMoE 论文第 4 节的做法。
-
-## 动手任务
-
-每个任务都要真的运行代码、看到结果。
-
-**任务 1（基础）**：在 Hugging Face 上挑一个本章没算过的 MoE 模型（例如 Qwen3.5-122B-A10B 的文本部分、GLM-4.5-Air、OLMoE-1B-7B），读它的 `config.json`，把字段加进 `01_param_ledger.py` 的 `MOE`，算出总参数和激活参数，和模型卡对照；说清楚差异来自哪种口径。
-
-**任务 2（核心）**：在 `03_train_compare.py` 里加两个方案：(a) 辅助损失 α = 0.1；(b) 偏置 γ = 0.001（DeepSeek-V3 的值）。各训练一次（可以只跑种子 0），比较训练结束时的"最大/平均"负载和验证 loss。α 太大时 loss 有没有变差？γ 太小时 800 步够不够把负载拉平？
-
-**任务 3（挑战）**：用 `zero/arch/moe.py` 的 `moe_transformer` 搭一个和主线结构相同的小 MoE（`configs/tiny` 的尺寸），写一个训练循环（每步 `loss()` → `backward` → `step` → `after_step()`），在 `assets/tiny_corpus` 上训练几百步，每 50 步打印 `load_stats()`。再把 `capacity_factor` 设成 1.0，记录 `last_dropped` 随训练的变化：负载均衡之后丢弃率是不是趋近于 0？
+Notes: the official Meta repository of Llama 4 requires an access request. Thus this chapter reads the unsloth mirror (its `base_model` points to the official repository). For the shared expert of Llama 4, see `Llama4TextMoe.shared_expert` in HF transformers (the Meta blog was not accessible from this build environment). This chapter did not verify the total / active parameters of MiniMax-M2; it cites only its routing configuration. Our count of the total parameters of Kimi K2 from the configuration is about 14B lower than the report: **to be verified**.
 
 ---
 
-## 想深入：CS336
+## Guided questions
 
-本章对应斯坦福 CS336（Spring 2026）<https://cs336.stanford.edu/>：
+Ask Claude Code these questions. Continue until you can explain the answers in your own words:
 
-- **第 4 讲：注意力的替代方案与 MoE**。讲义与录像见课程页（本构建环境访问不了课程页，这一讲具体覆盖了哪些 MoE 细节以讲义为准）。本章的路由、top-k、负载均衡和细粒度 / 共享专家是这一讲 MoE 部分的核心内容，`02_moe_layer.py`、`03_train_compare.py` 可以当作它的最小可运行版本。
-- **CS336 未深入**：本章第 2 节按官方配置逐项核对总参数 / 激活参数、第 8 节"为什么小模型少用"的三笔账，是本课结合主线模型决策补充的内容。专家并行的工程细节（all-to-all、节点受限路由、冗余专家）可以接着看 CS336 第 7、8 讲（并行）和 DeepSeek-V3 报告第 3 节。
+1. DeepSeek-V3 uses the original scores s for the gate weights, but s + b to select the experts. What problem occurs if the gate weights also use s + b? (Hint: how does the bias then enter the gradient of the language model?)
+2. With softmax scores and with sigmoid scores, what problem occurs in each case when the number of experts grows from 8 to 256? Why is sigmoid + normalization after the selection a better fit for fine-grained experts?
+3. In the auxiliary loss, f_i is a count that has no gradient. Then how does the gradient make an overloaded expert get "fewer" tokens? Calculate ∂L/∂(logit) for the example by hand in Section 5.1, and look at the sign.
+4. The table in Section 8 shows that at batch 64, Qwen3-30B-A3B reads almost every expert. Then what does an MoE save on a server? With a very large batch, compare it with a 3B dense model: what causes most of the difference in the time of each decode step?
+5. Fine-grained experts become smaller and smaller. Why do we not split them until each expert has only one row (width 1)? Think about three things: the efficiency of matrix multiplication, the router parameters, and the communication.
+6. In the small experiment of this chapter, compare the difference between the MoE and the two dense baselines with the variation between seeds. Which one is larger? For a serious comparison, how would you design the experiment (amount of data, steps, metrics)? Use Section 4 of the DeepSeekMoE paper as a reference.
+
+## Hands-on tasks
+
+For each task, run the code and look at the result.
+
+**Task 1 (basic)**: On Hugging Face, select an MoE model that this chapter did not count (for example, the text part of Qwen3.5-122B-A10B, GLM-4.5-Air, or OLMoE-1B-7B). Read its `config.json` and add its fields to `MOE` in `01_param_ledger.py`. Calculate the total and active parameters, and compare them with the model card. Explain which counting method causes the difference.
+
+**Task 2 (core)**: Add two variants to `03_train_compare.py`: (a) auxiliary loss with α = 0.1; (b) bias with γ = 0.001 (the DeepSeek-V3 value). Train each one once (seed 0 only is enough). Compare the "max/mean" load at the end of training and the validation loss. Does the loss become worse when α is too large? When γ is too small, are 800 steps enough to balance the load?
+
+**Task 3 (challenge)**: Use `moe_transformer` from `zero/arch/moe.py` to build a small MoE with the same structure as the main-line model (the sizes of `configs/tiny`). Write a training loop (each step: `loss()` → `backward` → `step` → `after_step()`). Train it for a few hundred steps on `assets/tiny_corpus`, and print `load_stats()` every 50 steps. Then set `capacity_factor` to 1.0 and record how `last_dropped` changes during training. After the load is balanced, does the drop rate go to 0?
 
 ---
 
-## 本章参考文献
+## Go deeper: CS336
 
-- Shazeer et al. *Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer*（MoE 层与路由坍缩问题），2017：<https://arxiv.org/abs/1701.06538>
-- Lepikhin et al. *GShard: Scaling Giant Models with Conditional Computation and Automatic Sharding*（top-2 路由、容量、辅助损失、专家并行），2020：<https://arxiv.org/abs/2006.16668>
-- Fedus, Zoph, Shazeer. *Switch Transformers*（top-1 路由、负载均衡损失、容量因子），2021：<https://arxiv.org/abs/2101.03961>
-- Gale et al. *MegaBlocks: Efficient Sparse Training with Mixture-of-Experts*（dropless、块稀疏矩阵乘），2022：<https://arxiv.org/abs/2211.15841>
-- Jiang et al. *Mixtral of Experts*，2024：<https://arxiv.org/abs/2401.04088>
-- Dai et al. *DeepSeekMoE: Towards Ultimate Expert Specialization in Mixture-of-Experts Language Models*（细粒度专家、共享专家），2024：<https://arxiv.org/abs/2401.06066>
-- Wang et al. *Auxiliary-Loss-Free Load Balancing Strategy for Mixture-of-Experts*，2024：<https://arxiv.org/abs/2408.15664>
-- DeepSeek-AI. *DeepSeek-V3 Technical Report*（2.1.2 节 DeepSeekMoE 与无辅助损失均衡；3.2、3.4 节专家并行与部署；4.5.2–4.5.3 节消融），2024：<https://arxiv.org/abs/2412.19437>
-- Qwen Team. *Qwen3 Technical Report*（第 2 节 MoE 结构：去掉共享专家、全局 batch 负载均衡；表 5 MoE 与稠密对照），2025：<https://arxiv.org/abs/2505.09388>
-- Kimi Team. *Kimi K2: Open Agentic Intelligence*（2.3 节架构与稀疏度 scaling law；2.4 节专家并行），2025：<https://arxiv.org/abs/2507.20534>
-- GLM-4.5 Team. *GLM-4.5: Agentic, Reasoning, and Coding (ARC) Foundation Models*（2.1、2.4 节），2025：<https://arxiv.org/abs/2508.06471>
-- OpenAI. *gpt-oss-120b & gpt-oss-20b Model Card*（表 1 参数分解；2.2 节 MoE），2025：<https://arxiv.org/abs/2508.10925>
-- NVIDIA. *Nemotron 3 Nano: Open, Efficient Mixture-of-Experts Hybrid Mamba-Transformer Model for Agentic Reasoning*（2.1、2.4 节），2025：<https://arxiv.org/abs/2512.20848>
-- Muennighoff et al. *OLMoE: Open Mixture-of-Experts Language Models*，2024：<https://arxiv.org/abs/2409.02060>
-- Hugging Face transformers 的 MoE 实现（`models/qwen3_moe`、`models/deepseek_v3`、`models/llama4`）：<https://github.com/huggingface/transformers/tree/main/src/transformers/models>
-- DeepSeek. DeepEP（专家并行通信库）：<https://github.com/deepseek-ai/DeepEP>
-- [CS336](https://cs336.stanford.edu/) 第 4 讲（注意力的替代方案与 MoE）
-- [1.5 万字速通 LLM 主流模型结构（Llama、Qwen、GLM、DeepSeek…）](https://zhuanlan.zhihu.com/p/2060741715095560795)：各家 MoE 结构的横向对比（`references.md` 已收录）
-- [Marin 535B-A23B 训练直播](https://wandb.ai/marin-community/marin_moe/reports/535B-A23B-18T-Token-Hero-Run-Scaling-Ladder--VmlldzoxNzc2MDM5Ng)：一个完全公开的大 MoE 训练过程与阶梯实验（`references.md` 已收录）
-- 模型配置链接见上方"采用方与来源"。
+This chapter matches Stanford CS336 (Spring 2026) <https://cs336.stanford.edu/>:
 
-**下一章**：DeepSeek-V3、GLM-4.5 的配置里都有一个 `num_nextn_predict_layers: 1`——它们在训练时不只预测下一个 token，还多预测一个。第 25 章讲多 token 预测（MTP），以及它怎么和推测解码结合，让生成快将近一倍而不损失质量。
+- **Lecture 4: alternatives to attention, and MoE.** The slides and the recording are on the course page. (This build environment could not access the course page. For the exact MoE details of this lecture, use the slides.) The routing, top-k, load balancing, and fine-grained / shared experts of this chapter are the core of the MoE part of this lecture. You can use `02_moe_layer.py` and `03_train_compare.py` as its smallest runnable version.
+- **Not covered in depth by CS336**: two parts of this chapter. Section 2 checks the total / active parameters item by item against the official configurations. Section 8 gives the three ledgers of "why small models seldom use MoE". This course adds them for the decisions about the main-line model. For the engineering details of expert parallelism (all-to-all, node-limited routing, redundant experts), continue with CS336 Lectures 7 and 8 (parallelism) and Section 3 of the DeepSeek-V3 report.
+
+---
+
+## References
+
+- Shazeer et al. *Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer* (the MoE layer and the routing-collapse problem), 2017: <https://arxiv.org/abs/1701.06538>
+- Lepikhin et al. *GShard: Scaling Giant Models with Conditional Computation and Automatic Sharding* (top-2 routing, capacity, auxiliary loss, expert parallelism), 2020: <https://arxiv.org/abs/2006.16668>
+- Fedus, Zoph, Shazeer. *Switch Transformers* (top-1 routing, load-balancing loss, capacity factor), 2021: <https://arxiv.org/abs/2101.03961>
+- Gale et al. *MegaBlocks: Efficient Sparse Training with Mixture-of-Experts* (dropless, block-sparse matrix multiplication), 2022: <https://arxiv.org/abs/2211.15841>
+- Jiang et al. *Mixtral of Experts*, 2024: <https://arxiv.org/abs/2401.04088>
+- Dai et al. *DeepSeekMoE: Towards Ultimate Expert Specialization in Mixture-of-Experts Language Models* (fine-grained experts, shared experts), 2024: <https://arxiv.org/abs/2401.06066>
+- Wang et al. *Auxiliary-Loss-Free Load Balancing Strategy for Mixture-of-Experts*, 2024: <https://arxiv.org/abs/2408.15664>
+- DeepSeek-AI. *DeepSeek-V3 Technical Report* (Section 2.1.2: DeepSeekMoE and auxiliary-loss-free balancing; Sections 3.2 and 3.4: expert parallelism and deployment; Sections 4.5.2–4.5.3: ablations), 2024: <https://arxiv.org/abs/2412.19437>
+- Qwen Team. *Qwen3 Technical Report* (Section 2: the MoE structure, no shared experts, global-batch load balancing; Table 5: MoE vs dense), 2025: <https://arxiv.org/abs/2505.09388>
+- Kimi Team. *Kimi K2: Open Agentic Intelligence* (Section 2.3: architecture and the sparsity scaling law; Section 2.4: expert parallelism), 2025: <https://arxiv.org/abs/2507.20534>
+- GLM-4.5 Team. *GLM-4.5: Agentic, Reasoning, and Coding (ARC) Foundation Models* (Sections 2.1 and 2.4), 2025: <https://arxiv.org/abs/2508.06471>
+- OpenAI. *gpt-oss-120b & gpt-oss-20b Model Card* (Table 1: parameter breakdown; Section 2.2: MoE), 2025: <https://arxiv.org/abs/2508.10925>
+- NVIDIA. *Nemotron 3 Nano: Open, Efficient Mixture-of-Experts Hybrid Mamba-Transformer Model for Agentic Reasoning* (Sections 2.1 and 2.4), 2025: <https://arxiv.org/abs/2512.20848>
+- Muennighoff et al. *OLMoE: Open Mixture-of-Experts Language Models*, 2024: <https://arxiv.org/abs/2409.02060>
+- The MoE implementations in Hugging Face transformers (`models/qwen3_moe`, `models/deepseek_v3`, `models/llama4`): <https://github.com/huggingface/transformers/tree/main/src/transformers/models>
+- DeepSeek. DeepEP (expert-parallel communication library): <https://github.com/deepseek-ai/DeepEP>
+- [CS336](https://cs336.stanford.edu/) Lecture 4 (alternatives to attention, and MoE)
+- [The main LLM architectures in 15,000 characters (Llama, Qwen, GLM, DeepSeek…)](https://zhuanlan.zhihu.com/p/2060741715095560795) (in Chinese): a side-by-side comparison of the MoE structures of each family (already in `references.md`)
+- [Marin 535B-A23B training livestream](https://wandb.ai/marin-community/marin_moe/reports/535B-A23B-18T-Token-Hero-Run-Scaling-Ladder--VmlldzoxNzc2MDM5Ng): the fully public training process of a large MoE, with ladder experiments (already in `references.md`)
+- For the model-configuration links, see "Adopters and sources" above.
+
+**Next chapter**: The configurations of DeepSeek-V3 and GLM-4.5 both contain `num_nextn_predict_layers: 1`. In training, these models predict not only the next token, but also one more token. Chapter 25 explains multi-token prediction (MTP). It also shows how MTP works together with speculative decoding to make generation almost twice as fast without a loss of quality.

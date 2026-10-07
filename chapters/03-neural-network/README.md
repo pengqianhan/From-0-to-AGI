@@ -1,54 +1,56 @@
-# 第 3 章：非线性与神经网络 —— 用折线拼出曲线
+# Chapter 3: Nonlinearity and neural networks — Build a curve from line segments
 
-> **一句话目标**：读完这一章，你能说清楚"为什么线性层叠多少层还是线性"，能画出一个 ReLU 隐藏单元对应的那条折线，并且亲手用梯度下降训练一个两层 MLP，把 `y = sin(2x)` 这条曲线拟合出来。
+**English** · [中文](README.zh.md)
 
-📺 **本章视频**：待发布（本地渲染：`bash chapters/03-neural-network/video/build.sh`）
-🧪 **本章自检**：学完后在 Claude Code 里输入 `/ch03-neural-network`
+> **Goal**: After this chapter, you can explain why a stack of linear layers is still linear, for any number of layers. You can draw the hinge line of one ReLU hidden unit. You can also train a two-layer MLP with gradient descent and fit the curve `y = sin(2x)`.
+
+📺 **Video**: Not published yet. To render it on your computer, run `bash chapters/03-neural-network/video/build.sh`.
+🧪 **Self-check**: After the chapter, type `/ch03-neural-network` in Claude Code.
 
 ---
 
-上一章我们把输入从一个数扩展成一组数，把模型写成了 `Ŷ = XW + b`，还弄清了矩阵相乘的形状规则。但不管 W 多大，这个模型仍然是**线性**的：输入翻倍，输出的变化也跟着翻倍；画成图，永远是直线、平面。这一章要解决的问题是：**数据是弯的，直线拟合不了，怎么办？**
+In the last chapter, we changed the input from one number to a set of numbers. We wrote the model as `Ŷ = XW + b`, and we learned the shape rules of matrix multiplication. But for any size of W, this model is still **linear**. When the change in the input doubles, the change in the output also doubles. On a plot, the model is always a straight line or a flat plane. This chapter answers one question: **the data is curved and a straight line cannot fit it, so what do we do?**
 
-答案就是神经网络。它的关键只有一个小动作：在两个线性层之间，插一个非线性的"激活函数"。这一章我们会看到，这个小动作为什么足够，以及它在图上到底长什么样——**很多段直线拼成的一条曲线**。
+The answer is the neural network. Its key part is one small change: put a nonlinear "activation function" between two linear layers. In this chapter, we see why this small change is sufficient. We also see what the network looks like on a plot: **a curve made from many straight-line segments**.
 
-## 1. 直觉：直线拟合不了曲线
+## 1. Intuition: a straight line cannot fit a curve
 
-第 1 章的动手任务 3 留了一个问题：如果数据是一条复杂的曲线，难道要一个个去猜公式吗？这一章就用一条具体的曲线来回答它。
+Task 3 of Chapter 1 asked a question: if the data follows a complex curve, must we guess the formula each time? This chapter answers the question with one specific curve.
 
-本章的数据：x 在 [−3, 3] 上均匀取 100 个点，`y = sin(2x)`，一条上下起伏、有四个弯的波浪线。为了让注意力集中在"模型能不能弯"上，我们没加噪声。
+The data of this chapter is 100 evenly spaced points for x in [−3, 3], with `y = sin(2x)`. This curve is a wave that goes up and down and has four bends. We did not add noise, because we want to look at only one question: can the model bend?
 
-先用第 1 章的办法：在所有直线里，找均方误差最小的那一条（最小二乘解析解）。运行：
+First, use the method from Chapter 1. Among all straight lines, find the line with the smallest mean squared error (the closed-form least-squares solution). Run:
 
 ```bash
 uv run python chapters/03-neural-network/code/01_linear_is_not_enough.py
 ```
 
 ```
-1) 用直线拟合 y = sin(2x)
-   最好的直线：y = -0.165·x + 0.000，MSE = 0.4341
-   对照：y 的方差 = 0.5178（直接猜平均值的 MSE）
+1) Fit y = sin(2x) with a straight line
+   Best straight line: y = -0.165·x + 0.000, MSE = 0.4341
+   Reference: variance of y = 0.5178 (the MSE if we always predict the mean)
 ```
 
-最好的直线几乎是躺平的，MSE 是 0.4341；而"什么都不学、直接猜平均值"也不过 0.5178。**这不是训练得不够，也不是学习率没调好**——这已经是所有直线里最好的一条了。问题出在模型本身：直线弯不过来。
+The best straight line is almost flat, and its MSE is 0.4341. A model that learns nothing and always predicts the mean gets 0.5178, which is not much worse. **The cause is not too little training, and it is not a bad learning rate.** This line is already the best of all straight lines. The problem is the model itself: a straight line cannot bend.
 
-## 2. 多叠几层线性层？没用
+## 2. Stack more linear layers? This does not help
 
-一个很自然的想法：一层不够，那就叠两层。按第 2 章的写法（每一行是一个样本，`h ← h·W + b`），两层线性层是：
+A natural idea is: if one layer is not sufficient, stack two layers. In the notation of Chapter 2 (each row is one sample, `h ← h·W + b`), two linear layers are:
 
 ```
 Ŷ = (X·W1 + b1)·W2 + b2
 ```
 
-把括号乘开：
+Multiply out the parentheses:
 
 ```
 Ŷ = X·(W1·W2) + (b1·W2 + b2)
-  = X·W + b        其中 W = W1·W2，b = b1·W2 + b2
+  = X·W + b        where W = W1·W2, b = b1·W2 + b2
 ```
 
-`W1·W2` 还是一个矩阵，`b1·W2 + b2` 还是一个向量。**两层线性层，等于一层线性层**；再往后叠多少层都一样，一层层合并下去，最后还是 `X·W + b`。线性函数的复合还是线性函数。
+`W1·W2` is still a matrix, and `b1·W2 + b2` is still a vector. **Two linear layers are equal to one linear layer.** The same is true for any number of layers. Merge them one at a time, and the result is still `X·W + b`. A composition of linear functions is still a linear function.
 
-代码里 `collapse` 就是在做这件事（完整代码见 [`code/01_linear_is_not_enough.py`](code/01_linear_is_not_enough.py)）：
+The function `collapse` in the code does this merge (the full code is in [`code/01_linear_is_not_enough.py`](code/01_linear_is_not_enough.py)):
 
 ```python
 def collapse(layers):
@@ -58,39 +60,39 @@ def collapse(layers):
     return W, b
 ```
 
-随机造两个纯线性网络，逐层老老实实算一遍，再用合并后的一层算一遍，对比：
+Make two random networks that have only linear layers. Calculate the output layer by layer, with no shortcut. Then calculate it again with the merged single layer, and compare:
 
 ```
-2) 线性层叠起来，还是一层线性层
-   两层 1→8→1：25 个参数，合并后 y = 0.375·x +2.045，逐层算 vs 合并算 最大差 = 8.9e-16
-   三层 1→8→8→1：97 个参数，合并后 y = -0.145·x -3.210，逐层算 vs 合并算 最大差 = 4.4e-15
+2) Stacked linear layers are still one linear layer
+   2 layers 1→8→1: 25 parameters, merged y = 0.375·x +2.045, max difference layer-by-layer vs merged = 8.9e-16
+   3 layers 1→8→8→1: 97 parameters, merged y = -0.145·x -3.210, max difference layer-by-layer vs merged = 4.4e-15
 ```
 
-差是 10⁻¹⁵ 这个量级，就是浮点数的舍入误差——两者在数学上完全相等。25 个参数也好，97 个参数也好，画出来都只是一条直线。
+The difference is of the order of 10⁻¹⁵. This difference is only floating-point rounding error: mathematically, the two results are equal. With 25 parameters or with 97 parameters, the plot is only a straight line.
 
-更直接的证据：真的用梯度下降去训练一个"两层线性、中间宽 8"的网络（第 4 节的代码，把激活函数去掉），损失 1000 步就降到 0.4341，然后**纹丝不动**，和那条最好的直线分毫不差（见第 7 节表格第一行）。参数再多，也逃不出直线。
+Here is more direct evidence. Use gradient descent to train a network with two linear layers and a width of 8 in the middle. This is the code from Section 4, without the activation function. After 1000 steps, the loss decreases to 0.4341. Then the loss **does not move at all**. It is exactly the loss of the best straight line (see the first row of the table in Section 7). More parameters cannot make the model more than a straight line.
 
-## 3. 激活函数：在两层之间加一道弯
+## 3. Activation function: add a bend between the two layers
 
-问题出在"全是线性"。解决办法出奇地简单：在两层之间，给每一个数都过一遍一个**非线性**的函数，叫**激活函数（activation function）**。最常用的一个是 **ReLU（Rectified Linear Unit，修正线性单元）**：
+The problem is that every part is linear. The solution needs only one small change. Between the two layers, apply a **nonlinear** function to each number. This function is the **activation function**. The most common activation function is **ReLU (Rectified Linear Unit)**:
 
 ```
 ReLU(z) = max(0, z)
 ```
 
-小于 0 的数变成 0，大于 0 的数原样保留。画出来就是一条在 0 处折了一下的线。两点要注意：
+ReLU changes a number less than 0 to 0, and it keeps a number greater than 0 as it is. Its graph is a line with one **kink** (a sharp bend) at 0. Two points are important:
 
-- 它是**逐个元素**作用的：对矩阵里的每个数各管各地算，不会把不同的数混在一起。所以它不改变形状，`(N, H)` 进，`(N, H)` 出。
-- 就这么一个折角，前面"乘开括号、合并成一层"的推导就走不通了：`ReLU(X·W1 + b1)·W2` 没法写成 `X·(某个矩阵)`，因为折角没法用矩阵乘法表示。
+- ReLU operates **element by element**. It calculates each number in the matrix separately, and it does not mix different numbers. Thus it does not change the shape: `(N, H)` goes in, and `(N, H)` comes out.
+- This one kink stops the derivation of Section 2 (multiply out the parentheses and merge into one layer). You cannot write `ReLU(X·W1 + b1)·W2` as `X·(some matrix)`, because a matrix product cannot make a kink.
 
-激活函数不止一种。运行：
+There is more than one activation function. Run:
 
 ```bash
 uv run python chapters/03-neural-network/code/02_activations.py
 ```
 
 ```
-1) 激活函数在几个点上的取值
+1) Values of the activation functions at some points
    z            -3.0    -1.0     0.0     1.0     3.0
    ReLU        0.000   0.000   0.000   1.000   3.000
    sigmoid     0.047   0.269   0.500   0.731   0.953
@@ -99,30 +101,30 @@ uv run python chapters/03-neural-network/code/02_activations.py
    GELU       -0.004  -0.159   0.000   0.841   2.996
 ```
 
-| 激活函数 | 公式 | 说明 |
+| Activation function | Formula | Notes |
 |---|---|---|
-| sigmoid | `σ(z) = 1 / (1 + e^(−z))` | 早期神经网络常用。S 形，把输入压到 (0, 1)；两头太平，z 稍大一点梯度就接近 0，深层网络很难训练 |
-| tanh | `tanh(z)` | 同样是 S 形，压到 (−1, 1)，以 0 为中心，但两头同样太平 |
-| ReLU | `max(0, z)` | 2010 年前后流行起来（Nair & Hinton 2010；Glorot 等 2011）。简单，正半边梯度恒为 1 |
-| SiLU（也叫 Swish） | `z · σ(z)` | ReLU 的平滑版：大正数时约等于 z，大负数时约等于 0，0 附近是一段光滑的弯 |
-| GELU | `z · Φ(z)`，Φ 是标准正态分布的累积分布函数 | 另一个平滑版，形状和 SiLU 很接近 |
+| sigmoid | `σ(z) = 1 / (1 + e^(−z))` | Common in early neural networks. S-shaped; it squeezes the input into (0, 1). Both ends are too flat: when z moves a little away from 0, the gradient is almost 0. Deep networks with sigmoid are difficult to train |
+| tanh | `tanh(z)` | Also S-shaped. It squeezes the input into (−1, 1) and is centered at 0. But both ends are also too flat |
+| ReLU | `max(0, z)` | Became popular around 2010 (Nair & Hinton 2010; Glorot et al. 2011). A simple function. On the positive side, the gradient is always 1 |
+| SiLU (also called Swish) | `z · σ(z)` | A smooth version of ReLU. For a large positive z, it is about z. For a large negative z, it is about 0. Near 0, it has a smooth bend |
+| GELU | `z · Φ(z)`, where Φ is the cumulative distribution function of the standard normal distribution | Another smooth version. Its shape is almost the same as SiLU |
 
-今天的大模型用的是后两个。千问（Qwen）、DeepSeek、Llama 的前馈层用 **SwiGLU**，Gemma 用 **GeGLU**：它们是"门控（gated）"结构，一路过 SiLU（或 GELU），和另一路逐元素相乘。门控的细节第 9 章再讲；这一章只要知道：**SiLU、GELU 就是平滑版的 ReLU，扮演的角色一模一样——提供非线性**。下文都用 ReLU，因为它的折点最容易看清。
+Large models today use the last two. The feed-forward layers of Qwen, DeepSeek, and Llama use **SwiGLU**, and Gemma uses **GeGLU**. These are "gated" structures: one path goes through SiLU (or GELU), and the result is multiplied element by element with a second path. Chapter 9 gives the details of gating. In this chapter, know only this: **SiLU and GELU are smooth versions of ReLU, and they have the same function: they add nonlinearity.** The rest of this chapter uses ReLU, because its kink is the easiest to see.
 
-## 4. 两层 MLP：线性 → ReLU → 线性
+## 4. Two-layer MLP: linear → ReLU → linear
 
-把线性层、激活函数、线性层串起来，就是最简单的神经网络：两层的**多层感知机（Multi-Layer Perceptron, MLP）**。
+Connect a linear layer, an activation function, and a linear layer in sequence. The result is the simplest neural network: a two-layer **multi-layer perceptron (MLP)**.
 
 ```
-Z = X·W1 + b1        (N, 1) → (N, H)     第 1 层：线性
-A = ReLU(Z)          (N, H)              激活：逐元素
-Ŷ = A·W2 + b2        (N, H) → (N, 1)     第 2 层：线性
-L = mean((Ŷ − Y)²)                       损失：还是第 1 章的均方误差
+Z = X·W1 + b1        (N, 1) → (N, H)     layer 1: linear
+A = ReLU(Z)          (N, H)              activation: element by element
+Ŷ = A·W2 + b2        (N, H) → (N, 1)     layer 2: linear
+L = mean((Ŷ − Y)²)                       loss: the same mean squared error as in Chapter 1
 ```
 
-形状用第 2 章的规则就能核对：`X` 是 `(N, 1)`，`W1` 是 `(1, H)`，`b1` 是 `(H,)`；`W2` 是 `(H, 1)`，`b2` 是 `(1,)`。中间这 H 个数叫**隐藏单元（hidden unit）**，也常叫神经元；H 叫网络的**宽度（width）**。参数一共 `H + H + H + 1 = 3H + 1` 个。
+You can check the shapes with the rules from Chapter 2. `X` is `(N, 1)`, `W1` is `(1, H)`, and `b1` is `(H,)`. `W2` is `(H, 1)`, and `b2` is `(1,)`. The H numbers in the middle are the **hidden units**. People also often call them neurons. H is the **width** of the network. The total number of parameters is `H + H + H + 1 = 3H + 1`.
 
-代码里对应的三行（完整代码见 [`code/03_mlp_numpy.py`](code/03_mlp_numpy.py)）：
+These are the three matching lines in the code (the full code is in [`code/03_mlp_numpy.py`](code/03_mlp_numpy.py)):
 
 ```python
 def forward(p, x, act="relu"):
@@ -132,56 +134,60 @@ def forward(p, x, act="relu"):
     return y_hat, (z, a)
 ```
 
-`act="linear"` 时 `act_fn` 原样返回，这就是第 2 节里那个"两层线性"的网络——同一份代码，只差一个激活函数。
+With `act="linear"`, `act_fn` returns its input without change. This setting gives the "two linear layers" network from Section 2. The code is the same; the only difference is the activation function.
 
-## 5. 一个 ReLU 隐藏单元 = 一个折点
+## 5. One ReLU hidden unit = one kink
 
-MLP 为什么能弯？只看第 j 个隐藏单元对输出的贡献。输入是一个数 x 时，它先算 `w·x + b`（w、b 是 W1、b1 的第 j 个数），过 ReLU，再乘上第二层的权重 v（W2 的第 j 个数）：
+Why can an MLP bend? Look only at the contribution of hidden unit j to the output. When the input is one number x, the unit first calculates `w·x + b` (w and b are entry j of W1 and b1). Then the unit applies ReLU. Then it multiplies the result by the second-layer weight v (entry j of W2):
 
 ```
 v · ReLU(w·x + b)
 ```
 
-画出来是一条**折线**：一边是平的（ReLU 输出 0 的那一侧），一边是斜的。折点在 `w·x + b = 0`，也就是 **`x = −b/w`**。
+The graph of this contribution is a **hinge line**: a line with one kink. One side is flat (the side where ReLU gives 0), and the other side is sloped. The kink is where `w·x + b = 0`, that is, at **`x = −b/w`**.
 
-- 改 b：折点左右滑动；
-- 改 w：斜的那一边变陡或变缓，w 的正负决定斜的一边朝右还是朝左；
-- 改 v：整体缩放，v 取负数时整条折线翻下去。
+Each parameter changes the hinge line in a different way:
 
-网络的输出就是 H 条这样的折线加起来，再加上 b2：
+- Change b: the kink moves to the left or to the right.
+- Change w: the sloped side becomes steeper or less steep. The sign of w sets if the sloped side is on the right or on the left.
+- Change v: the whole line scales. When v is negative, the whole hinge line turns upside down.
+
+The output of the network is the sum of H such hinge lines, plus b2:
 
 ```
 ŷ(x) = Σⱼ vⱼ · ReLU(wⱼ·x + bⱼ) + b2
 ```
 
-折线相加还是折线，只是折点变多了。`02_activations.py` 的第二部分用几个 ReLU 手工拼形状：
+A sum of hinge lines is still a line made of straight segments (a piecewise-linear function), but with more kinks. Part 2 of `02_activations.py` builds shapes from some ReLUs by hand:
 
 ```
-2) 用 ReLU 拼形状（x 从 −2 到 2）
+2) Build shapes from ReLUs (x from −2 to 2)
    x
         -2.0  -1.5  -1.0  -0.5   0.0   0.5   1.0   1.5   2.0
    |x| = ReLU(x)+ReLU(−x)
          2.0   1.5   1.0   0.5   0.0   0.5   1.0   1.5   2.0
-   帐篷 = ReLU(x+1)−2ReLU(x)+ReLU(x−1)
+   tent = ReLU(x+1)−2ReLU(x)+ReLU(x−1)
          0.0   0.0   0.0   0.5   1.0   0.5   0.0   0.0   0.0
 ```
 
-两个 ReLU 拼出绝对值 |x|（一个 V 字）；三个 ReLU（折点在 −1、0、1，中间那个乘 −2）拼出一个"帐篷"：只在 [−1, 1] 中间鼓起一个包，别处都是 0。有了帐篷，就能在任何位置、堆出任何高度的包；包足够多、足够窄，就能贴着任何一条连续曲线走。这就是**万能近似定理（universal approximation theorem）**想说的事：只要隐藏单元足够多，一个隐藏层的网络可以把连续函数逼近到任意精度（Cybenko 1989；Hornik 1991；Leshno 等 1993 证明了对 ReLU 这类非多项式激活也成立）。
+Two ReLUs make the absolute value |x| (a V shape). Three ReLUs (kinks at −1, 0, and 1; the middle one is multiplied by −2) make a "tent". The tent is a bump only in [−1, 1], and it is 0 at all other points. With tents, you can put a bump of any height at any position. With sufficient bumps that are sufficiently narrow, the sum can follow any continuous curve closely.
 
-注意它只保证"存在这样一组参数"，没说梯度下降一定找得到，也没说要多少个隐藏单元。下面就用实验看看。
+This is the idea of the **universal approximation theorem**. With sufficient hidden units, a network with one hidden layer can approximate a continuous function to any accuracy (Cybenko 1989; Hornik 1991; Leshno et al. 1993 proved that it is also true for nonpolynomial activations such as ReLU).
 
-## 6. 训练：手推梯度 + 梯度下降
+Note that the theorem only guarantees that such a set of parameters exists. It does not say that gradient descent can find it. It also does not say how many hidden units are necessary. The next sections test this with experiments.
 
-训练的四步和第 1 章一模一样：模型、损失、梯度、更新。唯一的新问题是梯度：参数分成了两层，损失对 W1 的梯度要"穿过"第二层和 ReLU 才能算出来。
+## 6. Training: manual gradients + gradient descent
 
-做法是从损失往回，一层一层用链式法则：
+The four steps of training are the same as in Chapter 1: model, loss, gradient, and update. The only new problem is the gradient. The parameters are now in two layers. To calculate the gradient of the loss for W1, we must go "through" the second layer and the ReLU.
+
+The method is to start at the loss and go back, one layer at a time, with the chain rule:
 
 ```python
 def gradients(p, x, y, act="relu"):
     n = len(x)
     y_hat, (z, a) = forward(p, x, act)
     loss = float(np.mean((y_hat - y) ** 2))
-    d_yhat = 2 * (y_hat - y) / n          # ∂L/∂Ŷ：和第 1 章的 2/N·(ŷ − y) 一样
+    d_yhat = 2 * (y_hat - y) / n          # ∂L/∂Ŷ: the same as 2/N·(ŷ − y) in Chapter 1
     d_W2 = a.T @ d_yhat                   # ∂L/∂W2 = Aᵀ · ∂L/∂Ŷ
     d_b2 = d_yhat.sum(axis=0)             # ∂L/∂b2 = Σ ∂L/∂Ŷ
     d_a = d_yhat @ p["W2"].T              # ∂L/∂A  = ∂L/∂Ŷ · W2ᵀ
@@ -191,93 +197,93 @@ def gradients(p, x, y, act="relu"):
     return loss, {"W1": d_W1, "b1": d_b1, "W2": d_W2, "b2": d_b2}
 ```
 
-读一下这几行：
+Read these lines:
 
-- 第二层 `Ŷ = A·W2 + b2` 就是一个线性回归，只是输入从 X 换成了 A。所以 `∂L/∂W2 = Aᵀ·∂L/∂Ŷ`，和第 1 章"残差乘输入"是同一个形状的式子。
-- 误差要传回隐藏层，就乘上 `W2ᵀ`：每个隐藏单元分到的"责任"，和它连到输出的权重成正比。
-- 过 ReLU 时乘 `ReLU′(Z)`：z > 0 时导数是 1，z < 0 时是 0。**没被激活的单元，梯度直接变成 0**，这一步它的参数不动。（z 恰好等于 0 时导数没有定义，按惯例取 0；实际中几乎碰不到。）
-- 第一层再是一个"线性回归"，输入是 X，误差是 `∂L/∂Z`。
+- The second layer `Ŷ = A·W2 + b2` is a linear regression. The only difference is that the input is A, not X. Thus `∂L/∂W2 = Aᵀ·∂L/∂Ŷ`. This formula has the same form as "residual times input" in Chapter 1.
+- To send the error back to the hidden layer, multiply by `W2ᵀ`. The "responsibility" of each hidden unit is proportional to the weight that connects it to the output.
+- To go through the ReLU, multiply by `ReLU′(Z)`. The derivative is 1 when z > 0 and 0 when z < 0. **A unit that is not active gets a gradient of 0**, so its parameters do not move in this step. (At exactly z = 0, the derivative is not defined. By convention, we use 0. In practice, this case almost never occurs.)
+- The first layer is again a "linear regression". Its input is X, and its error is `∂L/∂Z`.
 
-这套"从后往前、逐层乘链式法则"的算法叫**反向传播（backpropagation）**，第 4 章会系统地讲它，并让计算机自动完成。这里我们先手推，然后用第 1 章任务 2 的**数值梯度**检查有没有推错：
+This algorithm goes from the end back to the start and applies the chain rule layer by layer. Its name is **backpropagation**. Chapter 4 explains it in full and lets the computer do it automatically. Here, we first derive the gradients by hand. Then we use the **numerical gradient** from Task 2 of Chapter 1 to look for derivation errors:
 
 ```
-1) 梯度检验（宽度 8）：手推 vs 数值梯度，最大差 = 1.1e-10
+1) Gradient check (width 8): manual vs numerical gradients, max difference = 1.1e-10
 ```
 
-误差 10⁻¹⁰，手推的公式是对的。更新规则和第 1 章完全相同：
+The difference is 10⁻¹⁰, so the manual formulas are correct. The update rule is exactly the same as in Chapter 1:
 
 ```python
 for k in p:
-    p[k] -= lr * g[k]             # θ ← θ − η · ∂L/∂θ，和第 1 章一模一样
+    p[k] -= lr * g[k]             # θ ← θ − η · ∂L/∂θ, the same as in Chapter 1
 ```
 
-初始化值得提一句：W1 从标准正态分布抽，b1 的抽法让每个隐藏单元的折点 `−b1/W1` 一开始就散落在 [−3, 3] 里，W2 的尺度按 `1/√H` 缩小。初始化有很多讲究，第 6 章再系统讲。
+A note about initialization: W1 comes from a standard normal distribution. We choose b1 so that the kink `−b1/W1` of each hidden unit starts at a random point in [−3, 3]. We scale W2 down by `1/√H`. Initialization has many details. Chapter 6 explains them in full.
 
-## 7. 实验：宽度 2、8、64
+## 7. Experiment: width 2, 8, and 64
 
-运行：
+Run:
 
 ```bash
 uv run python chapters/03-neural-network/code/03_mlp_numpy.py
 ```
 
-学习率 0.01，全量梯度下降 20000 步，随机种子 0（约 25 秒）：
+The settings are learning rate 0.01, full-batch gradient descent for 20000 steps, and random seed 0 (about 25 s):
 
-| 模型 | 参数量 | 第 0 步 | 第 1000 步 | 第 5000 步 | 第 20000 步 |
+| Model | Parameters | Step 0 | Step 1000 | Step 5000 | Step 20000 |
 |---|---:|---:|---:|---:|---:|
-| 两层线性（无激活），宽 8 | 25 | 2.0895 | 0.4341 | 0.4341 | **0.4341** |
-| ReLU，宽 2 | 7 | 0.5175 | 0.3245 | 0.3155 | **0.3155** |
-| ReLU，宽 8 | 25 | 0.6509 | 0.2731 | 0.0350 | **0.0152** |
-| ReLU，宽 64 | 193 | 2.7760 | 0.1169 | 0.0133 | **0.0009** |
-| 对照：最好的直线 | 2 | | | | 0.4341 |
+| Two linear layers (no activation), width 8 | 25 | 2.0895 | 0.4341 | 0.4341 | **0.4341** |
+| ReLU, width 2 | 7 | 0.5175 | 0.3245 | 0.3155 | **0.3155** |
+| ReLU, width 8 | 25 | 0.6509 | 0.2731 | 0.0350 | **0.0152** |
+| ReLU, width 64 | 193 | 2.7760 | 0.1169 | 0.0133 | **0.0009** |
+| Reference: the best straight line | 2 | | | | 0.4341 |
 
-几个值得注意的现象：
+Look at these results:
 
-- **同样 25 个参数，有没有 ReLU 天差地别**：两层线性卡在 0.4341（就是直线），加了 ReLU 降到 0.0152，差了将近 30 倍。区别只在中间那一个 `max(0, z)`。
-- **宽度 2 只比直线好一点**：两个隐藏单元最多两个折点、三段直线，而 sin(2x) 在 [−3, 3] 上有四个弯，怎么拼都拼不出来。
-- **宽度 8 有了大致形状，宽度 64 几乎完美**：折点越多，拐角越圆滑，损失从 0.0152 降到 0.0009。
+- **With the same 25 parameters, the ReLU makes a very large difference.** The two linear layers stop at 0.4341 (a straight line). With ReLU, the loss decreases to 0.0152, almost 30 times smaller. The only difference is the one `max(0, z)` in the middle.
+- **Width 2 is only a little better than a straight line.** Two hidden units give at most two kinks and three straight segments. But sin(2x) has four bends in [−3, 3], so no combination of three segments can fit it.
+- **Width 8 gets the approximate shape, and width 64 is almost perfect.** More kinks make the bends smoother. The loss decreases from 0.0152 to 0.0009.
 
-一次实验可能是运气，换 5 个随机种子（0–4）再跑：
-
-```
-3) 换 5 个随机种子（0–4），20000 步后的损失
-   宽  2：0.3155  0.4337  0.3866  0.3874  0.3866   中位数 0.3866
-   宽  8：0.0152  0.0628  0.0064  0.0146  0.0333   中位数 0.0152
-   宽 64：0.0009  0.0005  0.0003  0.0009  0.0002   中位数 0.0005
-```
-
-规律是稳定的：越宽越好。但也看得出宽度 8 对种子很敏感（0.0064 到 0.0628，差近 10 倍）：折点从哪里出发、会不会有单元"死掉"（z 在所有数据上都小于 0，梯度恒为 0，再也不动），都会影响结果。宽度 64 有大量冗余的折点，结果就稳得多。这也是现代大模型"宁宽勿窄"的一个朴素直觉。
-
-最后，把宽度 8 的网络拆开看：
+One experiment can be luck. Run it again with 5 random seeds (0–4):
 
 ```
-4) 宽度 8 的网络：每个隐藏单元是一个折点
-   折点位置 x = −b1/W1：-2.00  -0.79  0.45  0.86  2.20  2.21  2.53  2.99
-   单条折线在数据范围内的最大幅度 = 12.17（网络输出的幅度只有 1.20：各片互相抵消）
-   各片之和 + b2 与网络输出的最大差 = 2.2e-15
+3) 5 random seeds (0–4), loss after 20000 steps
+   width  2: 0.3155  0.4337  0.3866  0.3874  0.3866   median 0.3866
+   width  8: 0.0152  0.0628  0.0064  0.0146  0.0333   median 0.0152
+   width 64: 0.0009  0.0005  0.0003  0.0009  0.0002   median 0.0005
 ```
 
-- 8 条折线加起来就是网络的输出，误差只有浮点舍入——第 5 节的公式 `ŷ = Σ vⱼ·ReLU(wⱼx + bⱼ) + b2` 不是比喻，而是恒等式。
-- 折点的位置是梯度下降自己找出来的，我们没有告诉它任何关于正弦的事。有几个折点挤在右边 2.2–3.0 一带，说明这 8 个单元并没有被"均匀地"用好——这正是宽度 8 不够稳的原因之一。
-- 单条折线的幅度能到 12，而输出只有 1.2：各条折线在互相抵消。网络学到的不是"每个单元负责一小段"这种整齐的分工，而是一组加起来恰好对的数。
+The pattern is stable: wider is better. But width 8 is sensitive to the seed (from 0.0064 to 0.0628, almost 10 times different). Two things affect the result: where the kinks start, and if a unit "dies". A dead unit has z < 0 on all data, so its gradient is always 0 and it never moves again. Width 64 has many extra kinks, so its result is much more stable. This result gives a basic intuition for why modern large models prefer to be wide rather than narrow.
 
-## 8. 小结
+Finally, take the width-8 network apart:
 
-- **线性叠加还是线性**：`(X·W1 + b1)·W2 + b2 = X·(W1·W2) + (b1·W2 + b2)`，参数再多也只是一条直线。
-- **激活函数**提供非线性，逐元素作用。ReLU = `max(0, z)`；sigmoid、tanh 是早期的选择；现代大模型用它的平滑版 SiLU、GELU（放在 SwiGLU / GeGLU 里，第 9 章讲）。
-- **一个 ReLU 隐藏单元 = 一个折点**，折点在 `x = −b/w`；两层 MLP 的输出 = H 条折线之和 + b2。
-- **宽度**决定能拼出多少个折：sin(2x) 上，宽 2 → 0.3155，宽 8 → 0.0152，宽 64 → 0.0009。
-- **训练方法没变**：还是模型、损失、梯度、更新四步；梯度用链式法则从后往前推（反向传播，第 4 章细讲）。
+```
+4) The width-8 network: each hidden unit is one kink
+   Kink positions x = −b1/W1: -2.00  -0.79  0.45  0.86  2.20  2.21  2.53  2.99
+   Max amplitude of one hinge piece in the data range = 12.17 (the network output has an amplitude of only 1.20: the pieces cancel each other)
+   Max difference between (sum of pieces + b2) and the network output = 2.2e-15
+```
+
+- The sum of the 8 hinge lines is the network output. The only error is floating-point rounding. The formula from Section 5, `ŷ = Σ vⱼ·ReLU(wⱼx + bⱼ) + b2`, is not an analogy. It is an identity.
+- Gradient descent found the kink positions by itself. We did not tell it anything about the sine function. Some kinks are close together on the right, in the range 2.2–3.0. Thus the 8 units are not used "evenly". This is one reason why width 8 is not stable.
+- One hinge line can reach an amplitude of 12, but the output reaches only 1.2. The hinge lines cancel each other. The network does not learn a neat division of work, such as "each unit controls one small segment". It learns a set of numbers whose sum is correct.
+
+## 8. Summary
+
+- **Stacked linear layers are still linear**: `(X·W1 + b1)·W2 + b2 = X·(W1·W2) + (b1·W2 + b2)`. More parameters still give only a straight line.
+- **The activation function** adds nonlinearity and operates element by element. ReLU = `max(0, z)`. Sigmoid and tanh were the early choices. Modern large models use the smooth versions of ReLU, SiLU and GELU (inside SwiGLU / GeGLU, see Chapter 9).
+- **One ReLU hidden unit = one kink**, at `x = −b/w`. The output of a two-layer MLP = the sum of H hinge lines + b2.
+- **The width** sets how many kinks the network can make. On sin(2x): width 2 → 0.3155, width 8 → 0.0152, width 64 → 0.0009.
+- **The training method did not change**: it still has the four steps model, loss, gradient, and update. The chain rule gives the gradient, from the end back to the start (backpropagation; Chapter 4 explains it in detail).
 
 ---
 
-## 从极简到生产级
+## From minimal code to production code
 
-极简版里，网络的前向、梯度都是我们手写的矩阵运算。第 1–6 章的生产级写法就是 PyTorch 的标准写法，在 [`code/04_pytorch_version.py`](code/04_pytorch_version.py)：
+In the minimal code, we wrote the forward pass and the gradients by hand as matrix operations. In Chapters 1–6, the production code is the standard PyTorch code. It is in [`code/04_pytorch_version.py`](code/04_pytorch_version.py):
 
 ```python
 model = nn.Sequential(
-    nn.Linear(1, 64),    # Z = X·W1ᵀ + b1（PyTorch 的 weight 形状是 (输出, 输入)）
+    nn.Linear(1, 64),    # Z = X·W1ᵀ + b1 (the PyTorch weight has the shape (out, in))
     nn.ReLU(),           # A = ReLU(Z)
     nn.Linear(64, 1),    # Ŷ = A·W2ᵀ + b2
 )
@@ -285,95 +291,97 @@ optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 loss_fn = nn.MSELoss()
 
 for step in range(20001):
-    y_hat = model(x)              # 1. 前向
-    loss = loss_fn(y_hat, y)      # 2. 损失
-    optimizer.zero_grad()         # 3. 清梯度
-    loss.backward()               # 4. 反向：autograd 自动求所有参数的梯度
-    optimizer.step()              # 5. 更新
+    y_hat = model(x)              # 1. forward pass
+    loss = loss_fn(y_hat, y)      # 2. loss
+    optimizer.zero_grad()         # 3. set the gradients to zero
+    loss.backward()               # 4. backward pass: autograd calculates the gradients of all parameters
+    optimizer.step()              # 5. update
 ```
 
-训练循环的五行和第 1 章**一个字都没改**，变的只是 `model`。运行：
+The five lines of the training loop are **exactly the same** as in Chapter 1. Only `model` changed. Run:
 
 ```bash
 uv run python chapters/03-neural-network/code/04_pytorch_version.py
 ```
 
 ```
-1) 对拍：NumPy 的初始参数拷进 PyTorch（float64），宽 64，SGD 学习率 0.01
-   第     0 步：损失 = 2.7760
-   第  1000 步：损失 = 0.1169
-   第  5000 步：损失 = 0.0133
-   第 20000 步：损失 = 0.0009
-   PyTorch 0.0009144016  vs  手推梯度 NumPy 0.0009144016，差 = 6.2e-18
+1) Parity check: NumPy initial parameters copied into PyTorch (float64), width 64, SGD learning rate 0.01
+   step     0: loss = 2.7760
+   step  1000: loss = 0.1169
+   step  5000: loss = 0.0133
+   step 20000: loss = 0.0009
+   PyTorch 0.0009144016  vs  NumPy with manual gradients 0.0009144016, difference = 6.2e-18
 
-2) PyTorch 默认初始化 + float32，宽 64，同样训练 20000 步
-   第     0 步：损失 = 0.4166
-   第  1000 步：损失 = 0.0927
-   第  5000 步：损失 = 0.0320
-   第 20000 步：损失 = 0.0019
-   参数量 193（W1: 64，b1: 64，W2: 64，b2: 1）
+2) Default PyTorch initialization + float32, width 64, same training for 20000 steps
+   step     0: loss = 0.4166
+   step  1000: loss = 0.0927
+   step  5000: loss = 0.0320
+   step 20000: loss = 0.0019
+   193 parameters (W1: 64, b1: 64, W2: 64, b2: 1)
 ```
 
-- **对拍**：把 NumPy 版的初始参数原样拷进 PyTorch（注意转置），都用 float64，两万步之后损失差 6.2 × 10⁻¹⁸。这说明手推的梯度和 autograd 求的梯度逐步一致。
-- **默认初始化也能到差不多的效果**：换成 PyTorch 自带的初始化和 float32，两万步后损失 0.0019，和手工初始化的 0.0009 同一个量级。
+- **Parity check**: copy the initial parameters of the NumPy code into PyTorch without change (note the transpose). Both use float64. After 20000 steps, the losses differ by 6.2 × 10⁻¹⁸. Thus the manual gradients and the autograd gradients agree at each step.
+- **The default initialization gives a similar result**: with the PyTorch default initialization and float32, the loss after 20000 steps is 0.0019. This loss is of the same order as the 0.0009 from the manual initialization.
 
-| 极简版 | 生产级写法 | 为什么 |
+The table shows what the production code changes and why:
+
+| Minimal code | Production code | Why |
 |---|---|---|
-| `x @ W1 + b1` | `nn.Linear(1, 64)` | 参数的创建、初始化、登记都由模块管理；`model.parameters()` 一次拿到所有参数交给优化器 |
-| `np.maximum(0, z)` | `nn.ReLU()` | 激活函数也是一个模块，换成 `nn.SiLU()`、`nn.GELU()` 只改一行 |
-| 手写三行串起来 | `nn.Sequential(...)` | 按顺序串联子模块；层数多了以后写成自定义 `nn.Module`（第 9 章的 Transformer 就是这样） |
-| 手推 6 行梯度公式 | `loss.backward()` | 两层已经要推 6 行，几十层、上百种运算时手推不现实；第 4 章亲手实现 autograd |
-| 自己的初始化规则 | `nn.Linear` 默认初始化（Kaiming 均匀分布一类） | 默认值对多数网络够用；为什么要按输入维度缩放，第 6 章讲 |
-| `p[k] -= lr * g[k]` | `optimizer.step()` | 第 6 章换成 AdamW 时，训练循环一行都不用改 |
+| `x @ W1 + b1` | `nn.Linear(1, 64)` | The module creates, initializes, and registers the parameters. `model.parameters()` gets all parameters in one call and gives them to the optimizer |
+| `np.maximum(0, z)` | `nn.ReLU()` | The activation function is also a module. To change to `nn.SiLU()` or `nn.GELU()`, change only one line |
+| Three lines that we wrote and connected by hand | `nn.Sequential(...)` | It connects submodules in sequence. When there are more layers, write a custom `nn.Module` (the Transformer in Chapter 9 does this) |
+| 6 lines of gradient formulas that we derived by hand | `loss.backward()` | Two layers already need 6 lines. For tens of layers and hundreds of types of operations, manual derivation is not practical. In Chapter 4, you write autograd yourself |
+| Our own initialization rule | The default initialization of `nn.Linear` (a type of Kaiming uniform distribution) | The default is sufficient for most networks. Chapter 6 explains why the scale must depend on the input dimension |
+| `p[k] -= lr * g[k]` | `optimizer.step()` | In Chapter 6, we change to AdamW, and no line of the training loop changes |
 
-## 采用方与来源
+## Adopters and sources
 
-本章的主流技术只有一项需要核实"谁在用"：现代大模型前馈层里的激活函数。ReLU、sigmoid、tanh 作为历史铺垫讲（共识规则 C）。
+In this chapter, only one mainstream technique needs a check of "who uses it": the activation function in the feed-forward layers of modern large models. We show ReLU, sigmoid, and tanh only as history (consensus rule C: necessary background).
 
-| 技术 | 采用方（头部开源模型家族） | 来源 |
+| Technique | Adopters (leading open model families) | Source |
 |---|---|---|
-| SwiGLU（门控 + SiLU） | Llama | LLaMA 论文 2.2 节"SwiGLU activation function"：<https://arxiv.org/abs/2302.13971> |
-| | Qwen | Qwen3 技术报告，模型架构一节（GQA、SwiGLU、RoPE、RMSNorm）：<https://arxiv.org/abs/2505.09388> |
-| | DeepSeek | DeepSeek LLM 技术报告，架构一节（RMSNorm、SwiGLU）：<https://arxiv.org/abs/2401.02954> |
-| GeGLU（门控 + GELU） | Gemma | Gemma 技术报告，模型架构一节（GeGLU activations）：<https://arxiv.org/abs/2403.08295> |
+| SwiGLU (gating + SiLU) | Llama | LLaMA paper, Section 2.2, "SwiGLU activation function": <https://arxiv.org/abs/2302.13971> |
+| | Qwen | Qwen3 technical report, section on the model architecture (GQA, SwiGLU, RoPE, RMSNorm): <https://arxiv.org/abs/2505.09388> |
+| | DeepSeek | DeepSeek LLM technical report, section on the architecture (RMSNorm, SwiGLU): <https://arxiv.org/abs/2401.02954> |
+| GeGLU (gating + GELU) | Gemma | Gemma technical report, section on the model architecture (GeGLU activations): <https://arxiv.org/abs/2403.08295> |
 
-SwiGLU 本身来自 Shazeer 2020 *GLU Variants Improve Transformer*（<https://arxiv.org/abs/2002.05202>），第 9 章会逐项核实并展开。
+SwiGLU itself comes from Shazeer 2020, *GLU Variants Improve Transformer* (<https://arxiv.org/abs/2002.05202>). Chapter 9 checks each item and gives the details.
 
-## 引导问题
+## Guided questions
 
-带着这些问题去问 Claude Code，直到你能用自己的话讲清楚：
+Ask Claude Code these questions. Continue until you can explain the answers in your own words:
 
-1. 如果把 ReLU 换成 `f(z) = 2z + 1`，网络还能拟合 sin(2x) 吗？换成 `f(z) = z²` 呢？什么样的函数能当激活函数？（提示：搜索"万能近似定理"对激活函数的要求。）
-2. 一个隐藏单元在所有 100 个数据点上都有 `z < 0`，它的梯度是多少？训练会怎样？这叫"死 ReLU（dying ReLU）"，SiLU、GELU 为什么能缓解它？
-3. 两层 MLP 的输出是折线。这意味着在 x = 10（训练数据范围之外）时，网络的预测会是什么样子？它会继续"正弦"吗？
-4. 宽度 64 的网络有 193 个参数，数据只有 100 个点。参数比数据还多，为什么没出问题？如果数据有噪声会怎样？
-5. 输入从 1 维变成 d 维时，一个 ReLU 隐藏单元对应的"折点"变成了什么几何形状？（提示：`w·x + b = 0` 在二维里是一条直线。）
+1. Replace ReLU with `f(z) = 2z + 1`. Can the network still fit sin(2x)? What about `f(z) = z²`? Which functions can be activation functions? (Hint: search for the conditions that the "universal approximation theorem" puts on the activation function.)
+2. A hidden unit has `z < 0` on all 100 data points. What is its gradient? What happens in training? This problem is the "dying ReLU". Why do SiLU and GELU make it less severe?
+3. The output of a two-layer MLP is piecewise linear. What does this fact tell you about the prediction at x = 10 (outside the range of the training data)? Does the prediction continue as a sine wave?
+4. The width-64 network has 193 parameters, but the data has only 100 points. There are more parameters than data points. Why did no problem occur? What happens if the data has noise?
+5. The input changes from 1 dimension to d dimensions. What geometric shape does the "kink" of one ReLU hidden unit become? (Hint: in 2D, `w·x + b = 0` is a straight line.)
 
-## 动手任务
+## Hands-on tasks
 
-每个任务都要真的运行代码、看到结果。
+For each task, run the code and look at the result.
 
-**任务 1（基础）**：在 `03_mlp_numpy.py` 里把学习率从 0.01 改成 0.03，重新训练宽 8 和宽 64 的网络。和原来对比，损失怎么变？如果出现 `nan`，说明发生了什么？（回想第 1 章的临界学习率。）
+**Task 1 (basic)**: In `03_mlp_numpy.py`, change the learning rate from 0.01 to 0.03. Train the width-8 and width-64 networks again. Compare with the original results: how does the loss change? If you see `nan`, what happened? (Remember the critical learning rate from Chapter 1.)
 
-**任务 2（核心）**：把 `act_fn` 和 `act_grad` 改成 tanh（导数是 `1 − tanh²(z)`），先用 `numerical_gradients` 做梯度检验，再训练宽 8 和宽 64 的网络，和 ReLU 的结果比较。tanh 网络的输出还是折线吗？
+**Task 2 (core)**: Change `act_fn` and `act_grad` to tanh (the derivative is `1 − tanh²(z)`). First, do a gradient check with `numerical_gradients`. Then train the width-8 and width-64 networks, and compare with the ReLU results. Is the output of the tanh network still piecewise linear?
 
-**任务 3（挑战）**：不用梯度下降，**手工**设计一个宽度不超过 12 的 ReLU 网络去逼近 sin(2x)：在 [−3, 3] 上取 12 个等距的点，让网络的折线正好穿过这些点上的 sin(2x) 值。（提示：从左往右，每到一个折点，斜率要改变多少？那就是这个单元的 v·|w|。）算出它的 MSE，和梯度下降训练出的宽 8、宽 64 对比。
+**Task 3 (challenge)**: Do not use gradient descent. Design **by hand** a ReLU network with a width of 12 or less that approximates sin(2x). Take 12 evenly spaced points in [−3, 3]. Make the piecewise-linear output of the network go exactly through the values of sin(2x) at these points. (Hint: go from left to right. At each kink, how much must the slope change? That change is v·|w| of this unit.) Calculate the MSE of your network. Compare it with the width-8 and width-64 networks from gradient descent.
 
 ---
 
-## 本章参考文献
+## References
 
-- Goodfellow, Bengio, Courville. *Deep Learning*, 第 6 章"深度前馈网络"（6.1 节用 XOR 讲"线性模型为什么不够"，6.3 节讲隐藏单元与 ReLU）：<https://www.deeplearningbook.org/contents/mlp.html>
-- Michael Nielsen. *Neural Networks and Deep Learning*, 第 4 章"神经网络可以计算任何函数的可视化证明"：<http://neuralnetworksanddeeplearning.com/chap4.html>
-- 3Blue1Brown. *But what is a neural network?*（有中文字幕版）：<https://www.3blue1brown.com/lessons/neural-networks>
-- Cybenko (1989). *Approximation by superpositions of a sigmoidal function*：<https://doi.org/10.1007/BF02551274>
-- Leshno, Lin, Pinkus, Schocken (1993). *Multilayer feedforward networks with a nonpolynomial activation function can approximate any function*：<https://doi.org/10.1016/S0893-6080(05)80131-5>
-- Nair & Hinton (2010). *Rectified Linear Units Improve Restricted Boltzmann Machines*：<https://www.cs.toronto.edu/~hinton/absps/reluICML.pdf>
-- Glorot, Bordes, Bengio (2011). *Deep Sparse Rectifier Neural Networks*：<https://proceedings.mlr.press/v15/glorot11a.html>
-- Hendrycks & Gimpel (2016). *Gaussian Error Linear Units (GELUs)*：<https://arxiv.org/abs/1606.08415>
-- Elfwing, Uchibe, Doya (2017). *Sigmoid-Weighted Linear Units for Neural Network Function Approximation in Reinforcement Learning*（SiLU）：<https://arxiv.org/abs/1702.03118>
-- Shazeer (2020). *GLU Variants Improve Transformer*（SwiGLU、GeGLU）：<https://arxiv.org/abs/2002.05202>
-- PyTorch 官方教程 *Build the Neural Network*（`nn.Sequential`、`nn.Linear`、`nn.ReLU`）：<https://pytorch.org/tutorials/beginner/basics/buildmodel_tutorial.html>
-- [Mathematical theory of deep learning](https://arxiv.org/abs/2407.18384)（`references.md` 已收录；其中万能近似的章节适合想看严格证明的读者）
+- Goodfellow, Bengio, Courville. *Deep Learning*, Chapter 6, "Deep Feedforward Networks" (Section 6.1 uses XOR to show why linear models are not sufficient; Section 6.3 is about hidden units and ReLU): <https://www.deeplearningbook.org/contents/mlp.html>
+- Michael Nielsen. *Neural Networks and Deep Learning*, Chapter 4, "A visual proof that neural nets can compute any function": <http://neuralnetworksanddeeplearning.com/chap4.html>
+- 3Blue1Brown. *But what is a neural network?*: <https://www.3blue1brown.com/lessons/neural-networks>
+- Cybenko (1989). *Approximation by superpositions of a sigmoidal function*: <https://doi.org/10.1007/BF02551274>
+- Leshno, Lin, Pinkus, Schocken (1993). *Multilayer feedforward networks with a nonpolynomial activation function can approximate any function*: <https://doi.org/10.1016/S0893-6080(05)80131-5>
+- Nair & Hinton (2010). *Rectified Linear Units Improve Restricted Boltzmann Machines*: <https://www.cs.toronto.edu/~hinton/absps/reluICML.pdf>
+- Glorot, Bordes, Bengio (2011). *Deep Sparse Rectifier Neural Networks*: <https://proceedings.mlr.press/v15/glorot11a.html>
+- Hendrycks & Gimpel (2016). *Gaussian Error Linear Units (GELUs)*: <https://arxiv.org/abs/1606.08415>
+- Elfwing, Uchibe, Doya (2017). *Sigmoid-Weighted Linear Units for Neural Network Function Approximation in Reinforcement Learning* (SiLU): <https://arxiv.org/abs/1702.03118>
+- Shazeer (2020). *GLU Variants Improve Transformer* (SwiGLU, GeGLU): <https://arxiv.org/abs/2002.05202>
+- PyTorch tutorial *Build the Neural Network* (`nn.Sequential`, `nn.Linear`, `nn.ReLU`): <https://pytorch.org/tutorials/beginner/basics/buildmodel_tutorial.html>
+- [Mathematical theory of deep learning](https://arxiv.org/abs/2407.18384) (already in `references.md`; its chapters on universal approximation are good for readers who want the rigorous proofs)
 
-**下一章**：这一章的两层网络，梯度我们已经要手推 6 行，还得用数值梯度检查一遍才放心。几十层、上百种运算的网络呢？手推梯度既累又容易错。第 4 章，我们从链式法则出发，亲手写一个一百多行的自动微分（autograd）小工具，用它重新训练今天这个 MLP——然后你就知道 `loss.backward()` 里面到底发生了什么。
+**Next chapter**: For the two-layer network in this chapter, we already had to derive 6 lines of gradients by hand. We also had to check them with numerical gradients. What about a network with tens of layers and hundreds of types of operations? Manual gradients take much work and cause errors. In Chapter 4, we start from the chain rule and write a small automatic differentiation (autograd) tool of a little more than 100 lines. We use it to train the MLP from this chapter again. Then you know what occurs inside `loss.backward()`.

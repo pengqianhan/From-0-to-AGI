@@ -1,17 +1,21 @@
-"""第 26 章 · 极简代码 2：整门课的架构演化树
+"""Chapter 26 · minimal code 2: the architecture evolution tree of the whole course.
 
-树上每个节点是一项技术：出处（论文 + 年份）、在本课哪一章讲、现在是"共识"还是"前沿"。
-"谁在用"不手写：用 01_panorama.py 的 features() 从 models.json 里 6 个最新旗舰的 config 读出来，
-再加上前面章节核实过的采用方（01_panorama.EARLIER）。
+Each node of the tree is one technique: its source (paper + year), the chapter of this course
+that explains it, and its status now ("consensus" or "frontier").
+We do not write "who uses it" by hand. The features() function of 01_panorama.py reads it from
+the configs of the 6 newest flagships in models.json. The adopters that earlier chapters verified
+(01_panorama.EARLIER) are added.
 
-打印一棵文字树；视频（video/scenes.py）也调用这里的 build_tree() 画同一棵树。
+The script prints a text tree. The video (video/scenes.py) also calls build_tree() here to draw
+the same tree.
 
-运行：uv run python chapters/26-open-model-panorama/code/02_evolution_tree.py
+Run: uv run python chapters/26-open-model-panorama/code/02_evolution_tree.py
 """
 
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -26,14 +30,17 @@ def _panorama():
     return mod
 
 
-# (id, 父节点, 名称, 出处与年份, 本课章节, 状态, 对应 features() 里的键)
-# 状态：base = 起点 / 共识块的组成；consensus = 按 GOAL 2.1 已是共识；frontier = 前沿观察
+# (id, parent node, name, source and year, chapter in this course, status, key in features())
+# Status: base = start / part of the consensus block; consensus = consensus per GOAL 2.1;
+# new = new consensus; frontier = frontier note.
+# The chapter labels stay in Chinese because the Chinese video shows them. chapter_en() gives the
+# English form for the printed output.
 NODES = [
-    ("gpt2", None, "GPT-2", "Radford 等 2019", "第 8 章", "base", None),
+    ("gpt2", None, "GPT-2", "Radford et al. 2019", "第 8 章", "base", None),
     (
         "llama",
         "gpt2",
-        "现代稠密块（Llama 式）",
+        "Modern dense block (Llama style)",
         "Llama, arXiv:2302.13971, 2023",
         "第 9 章",
         "base",
@@ -51,8 +58,8 @@ NODES = [
     (
         "rope",
         "llama",
-        "RoPE（+ YaRN 扩长）",
-        "arXiv:2104.09864, 2021；YaRN arXiv:2309.00071",
+        "RoPE (+ YaRN to extend)",
+        "arXiv:2104.09864, 2021; YaRN arXiv:2309.00071",
         "第 9、15 章",
         "consensus",
         "RoPE",
@@ -63,17 +70,17 @@ NODES = [
     (
         "tie",
         "llama",
-        "共享输入输出 embedding（小模型）",
+        "Tied input and output embedding (small models)",
         "arXiv:1608.05859, 2017",
         "第 9 章",
         "consensus",
-        "共享 embedding",
+        "Tied embedding",
     ),
-    # 分支 1：前馈层变稀疏
+    # Branch 1: the feed-forward layer becomes sparse
     (
         "moe",
         "llama",
-        "MoE：细粒度 + 共享专家",
+        "MoE: fine-grained + shared experts",
         "DeepSeekMoE, arXiv:2401.06066, 2024",
         "第 24 章",
         "consensus",
@@ -82,7 +89,7 @@ NODES = [
     (
         "auxfree",
         "moe",
-        "无辅助损失均衡",
+        "Auxiliary-loss-free balancing",
         "arXiv:2408.15664, 2024",
         "第 24 章",
         "consensus",
@@ -91,17 +98,17 @@ NODES = [
     (
         "latentmoe",
         "moe",
-        "Latent MoE（专家在潜空间里算）",
-        "Kimi K3 模型卡, 2026",
+        "Latent MoE (experts compute in a latent space)",
+        "Kimi K3 model card, 2026",
         "本章",
         "frontier",
         None,
     ),
-    # 分支 2：KV 压缩
+    # Branch 2: KV compression
     (
         "mla",
         "gqa",
-        "MLA：K/V 压成潜向量",
+        "MLA: K/V compressed into a latent vector",
         "DeepSeek-V2, arXiv:2405.04434, 2024",
         "第 21 章",
         "consensus",
@@ -110,18 +117,18 @@ NODES = [
     (
         "csa",
         "mla",
-        "CSA/HCA：按 token 压缩的共享 KV",
+        "CSA/HCA: shared KV compressed along the tokens",
         "DeepSeek-V4, arXiv:2606.19348, 2026",
         "本章",
         "frontier",
-        "压缩注意力（CSA/HCA）",
+        "CSA/HCA compression",
     ),
-    # 分支 3：只看一部分
+    # Branch 3: look at only a part
     (
         "swa",
         "llama",
-        "滑动窗口 / 局部-全局交替",
-        "Mistral 7B arXiv:2310.06825；Gemma 2 arXiv:2408.00118",
+        "Sliding window / local-global interleaving",
+        "Mistral 7B arXiv:2310.06825; Gemma 2 arXiv:2408.00118",
         "第 22 章",
         "consensus",
         "滑动窗口",
@@ -129,18 +136,18 @@ NODES = [
     (
         "sparse",
         "swa",
-        "稀疏注意力（按内容挑 top-k）",
+        "Sparse attention (select top-k by content)",
         "DeepSeek-V3.2 DSA, 2025",
         "第 22 章、本章",
         "new",
         "稀疏注意力",
     ),
-    # 分支 4：线性注意力混合
+    # Branch 4: hybrid with linear attention
     (
         "hybrid",
         "llama",
-        "混合线性注意力（约 3:1）",
-        "Gated DeltaNet arXiv:2412.06464；Qwen3-Next 2025",
+        "Hybrid linear attention (about 3:1)",
+        "Gated DeltaNet arXiv:2412.06464; Qwen3-Next 2025",
         "第 23 章",
         "consensus",
         "混合线性注意力",
@@ -148,49 +155,55 @@ NODES = [
     (
         "kda",
         "hybrid",
-        "KDA（逐通道门控）",
+        "KDA (per-channel gate)",
         "Kimi Linear, arXiv:2510.26692, 2025",
         "第 23 章",
         "frontier",
         None,
     ),
-    # 分支 5：训练目标
+    # Branch 5: training objective
     (
         "mtp",
         "llama",
-        "MTP（多预测一个 token）",
+        "MTP (predict one more token)",
         "DeepSeek-V3, arXiv:2412.19437, 2024",
         "第 25 章",
         "consensus",
         "MTP",
     ),
-    # 分支 6：残差流本身（2026 年才出现的新方向）
+    # Branch 6: the residual stream itself (a new direction that started only in 2026)
     (
         "mhc",
         "llama",
-        "残差流改造：mHC / AttnRes",
-        "DeepSeek-V4 2026；Kimi K3 2026",
+        "Residual-stream changes: mHC / AttnRes",
+        "DeepSeek-V4 2026; Kimi K3 2026",
         "本章",
         "frontier",
-        "超连接 mHC",
+        "Hyper-connection mHC",
     ),
 ]
 
 STATUS_ZH = {
-    "base": "起点",
-    "consensus": "共识",
-    "new": "新晋共识（2026 年才达到规则 A）",
-    "frontier": "前沿观察",
+    "base": "start",
+    "consensus": "consensus",
+    "new": "new consensus (reached rule A only in 2026)",
+    "frontier": "frontier note",
 }
 
 
+def chapter_en(ch: str) -> str:
+    """English display form of a chapter label: "第 6、9 章" → "Ch. 6, 9", "本章" → "this chapter"."""
+    ch = re.sub(r"第 ([\d、]+) 章", lambda m: "Ch. " + m.group(1), ch)
+    return ch.replace("本章", "this chapter").replace("、", ", ")
+
+
 def build_tree() -> dict:
-    """返回 {nodes: [...], flagships: [...]}，每个节点带上"最新旗舰里谁在用"。"""
+    """Return {nodes: [...], flagships: [...]}. Each node also lists the newest flagships that use it."""
     pan = _panorama()
     ms = pan.load_models()
-    shown = pan.FLAGSHIPS + ["qwen3-0.6b", "qwen3.5-0.8b"]  # 共享 embedding 只在小模型里出现
+    shown = pan.FLAGSHIPS + ["qwen3-0.6b", "qwen3.5-0.8b"]  # tied embedding occurs only in small models
     feats = {mid: pan.features(ms[mid]) for mid in shown}
-    extra_users = {  # config 看不出来、需要额外说明的节点
+    extra_users = {  # nodes that the config does not show; we add the users by hand
         "latentmoe": ["Kimi-K3"],
         "kda": ["Kimi-K3"],
         "mhc": ["DeepSeek-V4-Pro", "Kimi-K3"],
@@ -227,9 +240,9 @@ def print_tree(tree: dict) -> None:
 
     def walk(node: dict, prefix: str, last: bool) -> None:
         branch = "" if node["parent"] is None else ("└─ " if last else "├─ ")
-        users = f"｜在用：{'、'.join(node['users'])}" if node["users"] else ""
+        users = f" | used by: {', '.join(node['users'])}" if node["users"] else ""
         print(
-            f"{prefix}{branch}{node['name']}  [{STATUS_ZH[node['status']]}，{node['chapter']}]{users}"
+            f"{prefix}{branch}{node['name']}  [{STATUS_ZH[node['status']]}, {chapter_en(node['chapter'])}]{users}"
         )
         ch = kids.get(node["id"], [])
         for i, c in enumerate(ch):
@@ -246,15 +259,15 @@ def print_tree(tree: dict) -> None:
 def main() -> None:
     tree = build_tree()
     print(
-        "架构演化树（状态按 GOAL.md 2.1 判定；'在用'只列本章表里的 6 个最新旗舰 + 2 个千问小模型：\n  "
-        + "、".join(tree["flagships"])
-        + "、Qwen3-0.6B、Qwen3.5-0.8B）\n"
+        "Architecture evolution tree (status per GOAL.md 2.1; 'used by' lists only the 6 newest flagships in the table of this chapter + 2 small Qwen models:\n  "
+        + ", ".join(tree["flagships"])
+        + ", Qwen3-0.6B, Qwen3.5-0.8B)\n"
     )
     print_tree(tree)
-    print("\n出处：")
+    print("\nSources:")
     for n in tree["nodes"]:
-        print(f"  {n['name']}：{n['source']}")
-    print("\n主线模型用了：" + "、".join(tree["main_uses"]))
+        print(f"  {n['name']}: {n['source']}")
+    print("\nThe main-line model uses: " + ", ".join(_panorama().en(k) for k in tree["main_uses"]))
 
 
 if __name__ == "__main__":

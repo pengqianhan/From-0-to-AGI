@@ -1,457 +1,463 @@
-# GOAL：From 0 to AGI —— 从 y = ax + b 到最先进的开源模型（文字版 + 每章视频 + 一个真正可用的模型）
+# GOAL: From 0 to AGI — from y = ax + b to state-of-the-art open models (text + a video for each chapter + a model that really works)
 
-> 这份文件是交给 Claude（Claude Code）执行的任务说明。执行者请先完整读完本文件、`README.md`、`references.md`、`build_notes.md`、`chapter01-matrix-basics/` 和 `small-llms-under-5b-2026-08-30/inventory.md`，再开始动手。
+**English** · [中文](GOAL.zh.md)
+
+> This file is the task description for Claude (Claude Code), the executor. Before you start, read these files completely: this file, `README.md`, `references.md`, `build_notes.md`, `chapter01-matrix-basics/`, and `small-llms-under-5b-2026-08-30/inventory.md`.
 
 ---
 
-## 1. 目标
+## 1. Goal
 
-把这个仓库做成一门**中文**课程，从 `y = ax + b` 一路讲到当前最先进的开源模型，**只讲已经形成共识的主流技术**。课程有三样交付物：
+Make this repository into a course **in English first, with a Chinese version**. The course goes from `y = ax + b` to the current state-of-the-art open models. **The course teaches only mainstream methods that the field agrees on (consensus methods).** The course has three deliverables:
 
-1. **文字速读版**：每章 15–30 分钟读完。
-2. **每章一段讲解视频**：5–10 分钟。
-3. **一个真正可用的主线模型**：用约 1 万美元算力，从零训练一个中英双语的小模型。它要在**工具调用（function calling）**上超过同尺寸的所有公开模型（包括千问 Qwen3.5），通用基准的成绩如实报告。模型、数据配方、代码、中间 checkpoint 全部公开。
+1. **A quick-read text**: a reader can read each chapter in 15–30 minutes.
+2. **A video for each chapter**: 5–10 minutes.
+3. **A main-line model that really works**: with about 10,000 US dollars of compute, train a small bilingual (Chinese and English) model from zero. The model must be better at **tool calling (function calling)** than all public models of the same size, Qwen3.5 included. Report the general benchmark scores honestly. Publish everything: the model, the data recipe, the code, and the intermediate checkpoints.
 
-**分两步走**：
-- **第一步：先完成课程，不需要 GPU。** 26 章的文字、视频、极简代码全部写完；主线模型的生产级代码也全部写好，并在 CPU 上用极小配置跑通、测试通过。
-- **第二步：我提供 GPU 之后再训练主线模型。** 按第 3 节的闸门流程真实训练，再把真实结果补回第三、四部分（见 2.3）。
+**The work has two steps**:
+- **Step 1: finish the course first. No GPU is necessary.** Write all text, videos, and minimal code of the 26 chapters. Also write all production code of the main-line model. Run the production code on a CPU with a tiny configuration, and make sure that the tests pass.
+- **Step 2: train the main-line model after I supply the GPUs.** Do the real training with the gate process of Section 3. Then put the real results back into Parts 3 and 4 (see 2.3).
 
-### 1.1 每章两层代码：先极简，再生产级
+### 1.1 Two levels of code in each chapter: minimal code first, then production code
 
-- **第一层：极简代码**（`chapters/NN-*/code/`）。只讲这一章的一个核心想法：单文件、几十行到一两百行、只依赖 NumPy 或 PyTorch、CPU 上几秒到几分钟跑完、跑完能看到结果。读者先读懂这一层。
-- **第二层：生产级代码**（`zero/`）。同一个想法在主线模型里的真实写法：配置驱动、支持单机多卡、断点续训、日志、测试齐全，能直接拿去训练 0.6–0.8B 的主线模型。
-- **两层要对得上**：每章正文末尾有一节"从极简到生产级"，逐条说明生产级代码比极简版多做了什么、为什么要多做，并指向 `zero/` 里对应的文件和函数。
-- **第一部分（第 1–6 章）** 的生产级写法就是 PyTorch 的标准写法，如 `torch.autograd`、`nn.Linear`、`torch.optim.AdamW`。从第 7 章起，生产级代码进入 `zero/`。
+- **Level 1: minimal code** (`chapters/NN-*/code/`). It teaches only the one core idea of the chapter. Each program is one file with tens of lines to one or two hundred lines. It depends only on NumPy or PyTorch. It finishes on a CPU in seconds to minutes, and it shows a result at the end. The reader first understands this level.
+- **Level 2: production code** (`zero/`). This code is the real implementation of the same idea in the main-line model. It reads all settings from configuration files. It supports multiple GPUs on one machine, resume from a checkpoint, logs, and a full set of tests. You can use it directly to train the main-line model with 0.6–0.8B parameters.
+- **The two levels must match**: each chapter has a section "From minimal code to production code" at the end of its text. This section tells, item by item, what the production code does in addition to the minimal code, and why. It points to the related files and functions in `zero/`.
+- **Part 1 (Chapters 1–6)**: the production version is the standard PyTorch code, for example `torch.autograd`, `nn.Linear`, and `torch.optim.AdamW`. From Chapter 7, the production code goes into `zero/`.
 
-## 2. 课程原则
+## 2. Course principles
 
-### 2.1 只讲共识技术
+### 2.1 Teach only consensus methods
 
-一项技术满足下面任意一条，才进正文：
+A method goes into the main text only if it satisfies at least one of these rules:
 
-- **A. 多家采用**：至少 3 个彼此独立的头部开源模型家族（Qwen、DeepSeek、Llama、Gemma、Kimi、GLM、MiniMax、Mistral、gpt-oss、OLMo、SmolLM、NVIDIA Nemotron 等）在主力版本的技术报告或模型卡里明确采用。
-- **B. 行业标准**：已经是事实标准的工具或流程，如 FlashAttention、vLLM、lm-evaluation-harness。
-- **C. 必要铺垫**：理解 A、B 所必需的基础，只作铺垫讲。例如 RNN 之于"为什么需要注意力"、PPO 之于 GRPO、MHA 之于 GQA。
+- **A. Many adopters**: at least 3 independent leading open model families (Qwen, DeepSeek, Llama, Gemma, Kimi, GLM, MiniMax, Mistral, gpt-oss, OLMo, SmolLM, NVIDIA Nemotron, and others) state clearly that they use the method. The statement must be in the technical report or the model card of their main version.
+- **B. Industry standard**: the method is a tool or a process that is already the de facto standard, for example FlashAttention, vLLM, and lm-evaluation-harness.
+- **C. Necessary background**: the method is a basic idea that is necessary to understand A or B. Teach it only as background. Examples: RNN for "why we need attention", PPO for GRPO, MHA for GQA.
 
-不满足的技术，要么放进章末的"前沿观察"方框，用一段话说明它是什么、谁在用、为什么还不算共识；要么干脆不讲。每章写作时逐项核实，章末列出"采用方 + 来源链接"。
+A method that does not satisfy these rules gets one of two treatments. Either put it in a "Frontier notes" box at the end of the chapter: one paragraph that tells what it is, who uses it, and why it is not a consensus yet. Or do not teach it. When you write each chapter, verify each item. At the end of the chapter, list "adopters + source links".
 
-初步分类如下。本表按 2026 年 9 月的认知整理，**执行者写作时必须逐项重新核实**。
+The first classification is below. This table uses what we knew in September 2026. **When you write, you must verify each item again.**
 
-| 类别 | 进正文 | 待核实（可能已达共识） | 不讲，或只在"前沿观察"一句带过 |
+| Category | In the main text | To be verified (possibly a consensus now) | Not taught, or only one sentence in "Frontier notes" |
 |---|---|---|---|
-| 架构 | Pre-Norm + RMSNorm、SwiGLU、RoPE、GQA、QK-Norm、小模型共享输入输出 embedding、MoE（细粒度专家 + 共享专家）、MLA、MTP、滑动窗口/局部-全局交替注意力、混合线性注意力（少量全注意力层 + 大量线性注意力或状态空间层；Qwen3.5 连 0.8B 都用了 3:1 的 Gated DeltaNet 混合结构） | 稀疏注意力（DeepSeek DSA/NSA 一类）、无辅助损失的 MoE 负载均衡 | RWKV、纯 Mamba/纯 SSM 模型、RetNet、ALiBi 等非主流位置编码 |
-| 训练 | AdamW、warmup + cosine/WSD 学习率、BF16 混合精度、梯度裁剪、FlashAttention、数据并行/FSDP、去重 + 基于模型的质量过滤、合成数据改写、退火/中期训练、RoPE 基频调整 + YaRN 长上下文扩展、用小实验拟合 scaling law 来定超参 | Muon 优化器、FP8 训练 | μP 的细节、NTK-aware 插值的细节 |
-| 后训练 | SFT（chat template、loss mask）、蒸馏（教师数据 SFT、logits 蒸馏）、DPO、RLHF（奖励模型 + PPO，作铺垫）、GRPO 系可验证奖励强化学习（RLVR） | 在线策略蒸馏（on-policy distillation）、GRPO 的各种改进（DAPO、GSPO 等） | IPO、KTO、SimPO、ORPO 等 DPO 变体 |
-| 推理 | KV cache、推测解码、PagedAttention（vLLM）、权重量化（GGUF / INT4 等） | — | — |
+| Architecture | Pre-Norm + RMSNorm, SwiGLU, RoPE, GQA, QK-Norm, tied input and output embeddings for small models, MoE (fine-grained experts + shared experts), MLA, MTP, sliding-window / alternating local-global attention, hybrid linear attention (a few full-attention layers + many linear-attention or state-space layers; Qwen3.5 uses a 3:1 Gated DeltaNet hybrid structure even at 0.8B) | Sparse attention (the DeepSeek DSA/NSA type), auxiliary-loss-free MoE load balancing | RWKV, pure Mamba/pure SSM models, RetNet, ALiBi and other positional encodings that are not mainstream |
+| Training | AdamW, warmup + cosine/WSD learning-rate schedule, BF16 mixed precision, gradient clipping, FlashAttention, data parallelism/FSDP, deduplication + model-based quality filtering, synthetic rephrased data, annealing/mid-training, RoPE base-frequency adjustment + YaRN long-context extension, fit a scaling law with small experiments to set the hyperparameters | Muon optimizer, FP8 training | The details of μP, the details of NTK-aware interpolation |
+| Post-training | SFT (chat template, loss mask), distillation (SFT on teacher data, logits distillation), DPO, RLHF (reward model + PPO, as background), reinforcement learning with verifiable rewards (RLVR) of the GRPO family | On-policy distillation, improvements to GRPO (DAPO, GSPO, and others) | IPO, KTO, SimPO, ORPO, and other DPO variants |
+| Inference | KV cache, speculative decoding, PagedAttention (vLLM), weight quantization (GGUF / INT4, and others) | — | — |
 
-> 注：最初需求里写的"GPO"按 **GRPO** 理解。
+> **Note:** "GPO" in the first requirements means **GRPO**.
 
-**第一步写作中的核实结果（2026 年 9 月，详见各章"采用方与来源"）**：
+**Verification results during the writing of Step 1 (September 2026; the details are in "Adopters and sources" of each chapter)**:
 
-| 技术 | 结论 | 章节 |
+| Method | Conclusion | Chapters |
 |---|---|---|
-| Muon 优化器、FP8 训练 | 满足规则 A，进正文；主线模型的 Muon 与 AdamW 对比放进阶梯实验 | 12、14 |
-| MLA | 满足规则 A（DeepSeek、Kimi、GLM-5、Mistral Large 3），但都是大 MoE；主线模型保持 GQA | 21 |
-| 学出来的稀疏注意力 | 大方向满足规则 A（DeepSeek、GLM-5、MiniMax-M3、美团 LongCat），进正文并写明局限；DSA / MSA / LSA 等具体变体没有收敛，放前沿观察 | 22、26 |
-| 混合线性注意力 | 进正文（Qwen、Kimi、NVIDIA）；Gated DeltaNet 这个具体算子只有 Qwen 在用 | 23 |
-| 无辅助损失的 MoE 负载均衡 | 满足规则 A（DeepSeek-V3、GLM-4.5、Nemotron 3），进正文 | 24 |
-| MTP | 满足规则 A，进正文；Medusa / EAGLE 类草稿头放前沿观察 | 25 |
-| 在线策略蒸馏 | 满足规则 A（Qwen3、Gemma 2、GLM-5、MiMo、DeepSeek-V4），进正文；主线模型因词表不同用不上 | 17 |
-| GRPO 改进 | GRPO 本身是共识；clip-higher 待核实；Dr. GRPO、GSPO 放前沿观察 | 19 |
+| Muon optimizer, FP8 training | They satisfy rule A, so they go into the main text. The ladder experiments compare Muon and AdamW for the main-line model | 12, 14 |
+| MLA | It satisfies rule A (DeepSeek, Kimi, GLM-5, Mistral Large 3), but all these models are large MoE models. The main-line model keeps GQA | 21 |
+| Learned sparse attention | The general direction satisfies rule A (DeepSeek, GLM-5, MiniMax-M3, Meituan LongCat). It goes into the main text, with its limits. The specific variants (DSA / MSA / LSA, and others) have not converged, so they go into Frontier notes | 22, 26 |
+| Hybrid linear attention | In the main text (Qwen, Kimi, NVIDIA). Only Qwen uses the specific operator Gated DeltaNet | 23 |
+| Auxiliary-loss-free MoE load balancing | It satisfies rule A (DeepSeek-V3, GLM-4.5, Nemotron 3), so it goes into the main text | 24 |
+| MTP | It satisfies rule A, so it goes into the main text. Draft heads of the Medusa / EAGLE type go into Frontier notes | 25 |
+| On-policy distillation | It satisfies rule A (Qwen3, Gemma 2, GLM-5, MiMo, DeepSeek-V4), so it goes into the main text. The main-line model cannot use it, because its vocabulary is different | 17 |
+| GRPO improvements | GRPO itself is a consensus. Clip-higher is to be verified. Dr. GRPO and GSPO go into Frontier notes | 19 |
 
-### 2.2 一个问题引出下一个方法
+### 2.2 Each problem leads to the next method
 
-整门课的主线是"上一个方法遇到了什么问题，所以有了下一个方法"：
+The main thread of the course is: "The previous method has a problem. The next method solves that problem."
 
-- 直线拟合不了曲线 → 神经网络
-- 手算梯度太累 → 自动微分
-- 序列太长记不住 → 注意力
-- 推理太慢 → KV cache
-- KV cache 太大 → GQA、MLA
-- 上下文还要更长 → 滑动窗口、线性注意力混合
-- 模型会说话但不听话 → SFT、DPO
-- 会模仿但不会解题 → 强化学习
+- A straight line cannot fit a curve → neural networks
+- Gradients by hand are too much work → automatic differentiation
+- A long sequence is too long to remember → attention
+- Inference is too slow → KV cache
+- The KV cache is too large → GQA, MLA
+- The context must be even longer → sliding window, hybrid linear attention
+- The model can talk but does not follow instructions → SFT, DPO
+- The model can imitate but cannot solve problems → reinforcement learning
 
-每章开头用一句话衔接："上一章我们……，这一章要解决的问题是……"。
+Start each chapter with one linking sentence: "In the last chapter, we … . In this chapter, the problem to solve is … ."
 
-### 2.3 主线模型贯穿后半程
+### 2.3 The main-line model in the second half of the course
 
-从第 11 章起，每一章对应主线模型的一个训练阶段（见第 4 节的"主线产物"列）。
+From Chapter 11, each chapter is one training stage of the main-line model (see the column "Main-line output" in Section 4).
 
-- **第一步（课程阶段）**：每章写好这个阶段的生产级代码，并用极小配置在 CPU 上真实跑一遍。正文和视频里的曲线、表格来自这次小跑，并明确标注"极小配置演示"。章末的"主线进度"一节先写"待 GPU 训练后补充"。
-- **第二步（训练阶段）**：真实训练完成后，把"主线进度"补上真实的训练曲线、评测表、花费、失败与修正；需要时重新渲染视频里用到真实数据的镜头。
-- 任何时候都不编造结果：没跑过的就写"待训练"。
+- **Step 1 (course phase)**: In each chapter, write the production code for the stage. Run it for real on a CPU with a tiny configuration. The curves and tables in the text and in the video come from this small run. Label them clearly as "Tiny-configuration demo". In the section "Main-line progress" at the end of the chapter, first write "To be added after GPU training".
+- **Step 2 (training phase)**: After the real training, add the real data to "Main-line progress": the training curves, the evaluation table, the cost, and the failures and fixes. If necessary, render again the video shots that use real data.
+- Never make up results. If you did not run something, write "Not trained yet".
 
-## 3. 主线模型
+## 3. The main-line model
 
-### 3.1 为什么目标这样定义
+### 3.1 Why we define the goal this way
 
-"在所有基准上超过同尺寸当前最好的模型"，在课程预算内不现实。几个参照点：
+"Better than the current best model of the same size on all benchmarks" is not realistic with the course budget. Some reference points:
 
-| 参照 | 投入 | 结果 |
+| Reference | Investment | Result |
 |---|---|---|
-| [nanochat](https://github.com/karpathy/nanochat)（2026） | 8×H100 约 2 小时，约 $48 | GPT-2（2019）水平 |
-| [Puro-2B](https://www.alphaxiv.org/abs/2608.27370)（清华，2026-08） | 2B、约 1.4T token、约 $4.4K–6.9K（RTX 5090 集群 + FP8 + 大量工程优化） | 通用能力约等于 Qwen2-1.5B（2024 年） |
-| [MobileLLM-R1-950M](https://arxiv.org/abs/2509.24945)（Meta，2025） | 0.95B、4.2T token、128 张 GPU 约两周 | 只在推理专项上追平或超过 Qwen3-0.6B（对方只有它六成大），GSM8K 仍落后 |
-| Qwen3.5-0.8B（2026，要超过的标杆） | Qwen3 小模型预训练用了 36T token，加上旗舰模型蒸馏和大规模 RL；Qwen3.5 是原生多模态、262K 上下文 | — |
+| [nanochat](https://github.com/karpathy/nanochat) (2026) | 8×H100 for about 2 hours, about $48 | GPT-2 (2019) level |
+| [Puro-2B](https://www.alphaxiv.org/abs/2608.27370) (Tsinghua, 2026-08) | 2B, about 1.4T tokens, about $4.4K–6.9K (RTX 5090 cluster + FP8 + much engineering optimization) | General ability about equal to Qwen2-1.5B (2024) |
+| [MobileLLM-R1-950M](https://arxiv.org/abs/2509.24945) (Meta, 2025) | 0.95B, 4.2T tokens, 128 GPUs for about two weeks | Equal to or better than Qwen3-0.6B (which has only 60% of its size) only on reasoning tasks. Still behind on GSM8K |
+| Qwen3.5-0.8B (2026, the benchmark model that we must beat) | The pretraining of the Qwen3 small models used 36T tokens, plus distillation from the flagship model and large-scale RL. Qwen3.5 is natively multimodal, with a 262K context | — |
 
-所以目标定义为两层（判定方法见 3.2）：
+Thus the goal has two levels (3.2 gives the decision method):
 
-- **硬目标（专项）**：在预先声明的工具调用基准组上，超过所有同尺寸的公开权重模型，包括 Qwen3.5-0.8B。
-- **软目标（通用）**：在通用基准上，力争成为同尺寸"完全开放配方"（数据和代码都公开）模型里的第一；和千问这类只开放权重的模型之间的差距，如实报告。
+- **Hard goal (specific)**: on a preregistered group of tool-calling benchmarks, be ahead of all public-weight models of the same size, Qwen3.5-0.8B included.
+- **Soft goal (general)**: on general benchmarks, try to be first among the "fully open recipe" models of the same size (data and code are both public). Report the gap to open-weight-only models such as Qwen honestly.
 
-选工具调用作为专项，有三个理由：
+We chose tool calling as the specific area for three reasons:
 
-1. 这是小模型最实用的场景（端侧智能体）。
-2. 调用对不对能自动判分，正好用第 19 章的 GRPO。
-3. 这项能力主要取决于后训练，而不是预训练堆出来的知识量，是有限预算最有机会赢的地方。
+1. Tool calling is the most useful use case for small models (on-device agents).
+2. A program can score automatically if a call is correct. This fits GRPO in Chapter 19.
+3. This ability depends mainly on post-training, not on the amount of knowledge from pretraining. Thus it is the area where a limited budget has the best chance to win.
 
-### 3.2 预注册与公平评测
+### 3.2 Preregistration and fair evaluation
 
-"超过"必须是事先说清楚、事后可复查的主张。
+A claim of "ahead" must be clear before the evaluation, and it must be possible to check it after the evaluation.
 
-1. **预注册**：第一步先写好 `eval/PREREGISTRATION.md` 的草案。第二步开始、主线预训练之前，确定对手清单和冻结日期，经我确认后定稿提交，commit 时间即登记时间。文件写明：
-   - 目标基准及版本
-   - 评测框架及版本号
-   - 提示词和模板、解码参数
-   - 对手清单与冻结日期
-   - "超过"的判定标准
+1. **Preregistration**: In Step 1, write a draft of `eval/PREREGISTRATION.md`. In Step 2, before the main-line pretraining starts, fix the opponent list and the freeze date. After I confirm, finalize and commit the file. The commit time is the registration time. The file states:
+   - the target benchmarks and their versions
+   - the evaluation framework and its version number
+   - the prompts and templates, and the decoding parameters
+   - the opponent list and the freeze date
+   - the criterion for "ahead"
 
-   之后任何修改只能以带日期和理由的"修订"追加，不能静默改写。
-2. **基准**：
-   - 专项（硬目标）：以 BFCL（冻结时的最新版）为主，外加一个含中文的工具调用基准（如 ACEBench，需核实它的现状）。τ²-bench 等智能体基准只报告，不设为硬目标。
-   - 通用（如实报告）：知识（MMLU-Redux / MMLU-Pro）、中文（C-Eval / CMMLU）、数学（GSM8K / MATH-500）、代码（HumanEval+ / MBPP+）、指令遵循（IFEval）。Base 模型另用常见的少样本基准。具体清单在第 11 章确定，并写入预注册。
-3. **对手清单**：
-   - 范围：官方参数量在我们模型的 0.7–1.3 倍之间的全部公开权重模型，冻结日期之前发布的都算。参数量含 embedding，按发布方口径；多模态模型按语言模型部分的参数量计。清单以 `small-llms-under-5b-2026-08-30/inventory.md` 为起点。
-   - 标杆：不管最终尺寸落在哪一档，Qwen3.5-0.8B 都必须比较。
-   - 发布时再查冻结日之后出的新模型，放进"发布后新增对手"一节如实报告，即使它们比我们强。
-4. **同一把尺子**：
-   - 所有对手都由我们重跑：同一套评测框架，各自官方的对话/工具调用模板，相同的解码参数。官方公布的分数并列展示，但不作为比较依据。
-   - 对手有思考、非思考两种模式时，两种都测。宣称"超过"时，以对手两种模式中的**较高分**为准。
-5. **判定标准**：领先幅度要超出 bootstrap 95% 置信区间才算"超过"，否则只能说"持平"。
-6. **去污染**：所有训练数据（包括教师模型生成的合成数据）都要和全部评测集做 n-gram（如 13-gram）重叠检查。工具调用数据还要检查函数名和 schema 有没有和 BFCL 等评测集重合。检查方法和结果写进模型卡。
+   After that, you can make a change only as an "amendment" that you add with a date and a reason. Do not rewrite the file silently.
+2. **Benchmarks**:
+   - Specific (hard goal): mainly BFCL (the latest version at the freeze date), plus one tool-calling benchmark that includes Chinese (for example ACEBench; verify its current status). Only report agent benchmarks such as τ²-bench. Do not make them a hard goal.
+   - General (report honestly): knowledge (MMLU-Redux / MMLU-Pro), Chinese (C-Eval / CMMLU), math (GSM8K / MATH-500), code (HumanEval+ / MBPP+), instruction following (IFEval). For the Base model, also use the common few-shot benchmarks. Chapter 11 fixes the exact list and writes it into the preregistration.
+3. **Opponent list**:
+   - Scope: all public-weight models with an official parameter count between 0.7 and 1.3 times the size of our model. All models released before the freeze date count. The parameter count includes the embedding, and it uses the count of the publisher. For a multimodal model, use the parameter count of the language-model part. Start the list from `small-llms-under-5b-2026-08-30/inventory.md`.
+   - Benchmark model: Qwen3.5-0.8B is always in the comparison, whatever the final size of our model.
+   - At release, check again for new models released after the freeze date. Report them honestly in a section "Opponents added after release", even if they are better than our model.
+4. **The same ruler for all models**:
+   - We run all opponents again ourselves: the same evaluation framework, the official chat/tool-calling template of each model, and the same decoding parameters. Show the official published scores next to our scores, but do not use them for the comparison.
+   - If an opponent has a thinking mode and a non-thinking mode, test both modes. For a claim of "ahead", use the **higher score** of the two modes of the opponent.
+5. **Decision criterion**: the lead must be larger than the bootstrap 95% confidence interval to count as "ahead". If it is not, we can only say "tie".
+6. **Decontamination**: check all training data (including synthetic data from teacher models) against all evaluation sets for n-gram overlap (for example 13-gram). For tool-calling data, also check if function names and schemas overlap with evaluation sets such as BFCL. Write the check method and the results into the model card.
 
-### 3.3 默认技术路线（最终由第 12 章的实验确定）
+### 3.3 Default technical plan (the experiments of Chapter 12 make the final decision)
 
-- **尺寸**：约 0.6–0.8B 的稠密模型，不超过 0.8B，确保标杆 Qwen3.5-0.8B 不比我们小。
-- **架构**：只用共识组件，即 Pre-Norm RMSNorm、SwiGLU、RoPE、GQA、QK-Norm、共享 embedding、无 bias。**主线模型不冒架构风险**：在这个规模和上下文长度下，架构带来的差异远小于数据和后训练带来的差异。混合线性注意力、MoE、MLA 在第五部分用小规模实验讲透，不上主线。
-- **分词器**：自训 byte-level BPE（中文 + 英文 + 代码），词表大小由第 13 章实测决定。小模型要注意词表的参数代价：Qwen3.5-0.8B 用了 24.8 万词表，光 embedding 就约 2.5 亿参数。
-- **数据**：只用许可证允许的公开数据，每个数据集都记录来源和许可证。
-  - 预训练候选：FineWeb-Edu、DCLM、FineWeb-2（中文）、Ultra-FineWeb、Stack-Edu、FineMath，以及合成改写数据。
-  - 中期训练：加入高质量数据、指令数据和工具调用格式数据。
-- **训练阶段**：
-  1. 预训练，约 0.5–1T token，具体取决于最终尺寸、GPU 单价和 MFU
-  2. 中期训练 / 退火
-  3. 长上下文扩展到 32K（工具说明加多轮对话需要长上下文）
+- **Size**: a dense model with about 0.6–0.8B parameters, not more than 0.8B. This makes sure that the benchmark model Qwen3.5-0.8B is not smaller than our model.
+- **Architecture**: only consensus components: Pre-Norm RMSNorm, SwiGLU, RoPE, GQA, QK-Norm, tied embeddings, no bias. **The main-line model takes no architecture risk**: at this scale and context length, the differences from the architecture are much smaller than the differences from the data and the post-training. Part 5 explains hybrid linear attention, MoE, and MLA fully with small experiments. They do not go into the main-line model.
+- **Tokenizer**: a byte-level BPE that we train ourselves (Chinese + English + code). Chapter 13 measures and decides the vocabulary size. For a small model, watch the parameter cost of the vocabulary: Qwen3.5-0.8B has a vocabulary of 248K tokens, and its embedding alone has about 250M parameters.
+- **Data**: use only public data with a license that allows this use. Record the source and the license of each data set.
+  - Pretraining candidates: FineWeb-Edu, DCLM, FineWeb-2 (Chinese), Ultra-FineWeb, Stack-Edu, FineMath, and synthetic rephrased data.
+  - Mid-training: add high-quality data, instruction data, and data in tool-calling format.
+- **Training stages**:
+  1. Pretraining, about 0.5–1T tokens. The exact number depends on the final size, the GPU price, and the MFU
+  2. Mid-training / annealing
+  3. Long-context extension to 32K (tool descriptions and multi-turn dialogs need a long context)
   4. SFT
-  5. 蒸馏
+  5. Distillation
   6. DPO
-  7. 在工具调用环境里做 GRPO
-- **优化器与精度**：默认 AdamW + BF16。Muon、FP8 如果经核实满足共识规则，可以在第 12 章做小规模对比后采用。
-- **教师模型**：蒸馏只用许可证允许"用输出训练其他模型"的开放权重模型，如 Apache-2.0、MIT 许可的模型。记录教师的名称、版本和许可证。
-- **代码**：
-  - 主线训练代码放在 `zero/`（暂名），从第 7 章起由各章逐步长出来，设计参考 nanochat（单节点、可读）。
-  - 训练代码不把大型框架当黑盒依赖；评测使用官方或标准的评测代码。
-  - 强化学习的参考与备选：[verl](https://github.com/verl-project/verl) 及小米的 [XiaomiMiMo/verl](https://github.com/XiaomiMiMo/verl)（开源了 MiMo-V2.6 的五类 RL 环境与判分器）。`zero/` 里的 GRPO 保持可读的自有实现；第二步如果自有实现的吞吐不够，可以改用 verl 做实际 RL 训练，但先用同一个小任务与 `zero` 的实现对拍，确认两者结果一致。
-  - 这个预算下单台 8×H100 就够，不需要多机。
+  7. GRPO in a tool-calling environment
+- **Optimizer and precision**: AdamW + BF16 by default. If verification shows that Muon and FP8 satisfy the consensus rule, we can use them after a small comparison in Chapter 12.
+- **Teacher models**: for distillation, use only open-weight models whose license allows "use of the outputs to train other models", for example models with an Apache-2.0 or MIT license. Record the name, the version, and the license of each teacher.
+- **Code**:
+  - The main-line training code is in `zero/` (working name). It grows chapter by chapter from Chapter 7. Its design follows nanochat (one node, readable).
+  - The training code does not depend on large frameworks as black boxes. The evaluation uses the official or standard evaluation code.
+  - Reference and alternative for reinforcement learning: [verl](https://github.com/verl-project/verl) and the Xiaomi version [XiaomiMiMo/verl](https://github.com/XiaomiMiMo/verl) (it publishes the five types of RL environments and graders of MiMo-V2.6). The GRPO in `zero/` stays a readable implementation of our own. In Step 2, if the throughput of our implementation is not sufficient, we can use verl for the real RL training. But first, run the same small task with verl and with `zero`, and make sure that the two give the same result (a parity check).
+  - For this budget, one machine with 8×H100 is sufficient. We do not need multiple machines.
 
-### 3.4 预算与闸门
+### 3.4 Budget and gates
 
-总预算约 **1 万美元**，按 H100 约 $2.5/卡时估算，约合 4000 卡时；实际以租用价格为准。
+The total budget is about **10,000 US dollars**. At about $2.5 for each H100 GPU-hour, this is about 4000 GPU-hours. The real rental price decides the final number.
 
-| 用途 | 预算 |
+| Use | Budget |
 |---|---|
-| 第 11 章：对手模型重跑评测 | ~$200 |
-| 第 12–13 章：小规模实验、数据消融、配方验证 | ~$1,200 |
-| 第 14 章：预训练 | ~$5,000 |
-| 第 15 章：中期训练 + 长上下文扩展 | ~$700 |
-| 第 16–19 章：后训练（含教师数据生成） | ~$1,500 |
-| 第 20 章：最终评测与发布 | ~$200 |
-| 第五部分：小规模架构实验 | ~$400 |
-| 预留（重跑、事故） | ~$800 |
+| Chapter 11: evaluate the opponent models again | ~$200 |
+| Chapters 12–13: small experiments, data ablations, recipe validation | ~$1,200 |
+| Chapter 14: pretraining | ~$5,000 |
+| Chapter 15: mid-training + long-context extension | ~$700 |
+| Chapters 16–19: post-training (including teacher data generation) | ~$1,500 |
+| Chapter 20: final evaluation and release | ~$200 |
+| Part 5: small architecture experiments | ~$400 |
+| Reserve (reruns, incidents) | ~$800 |
 
-- **所有花钱的步骤都在第二步**：第一步（课程阶段）不花 GPU 钱。包括第 11 章的对手重跑、闸门 1 的阶梯实验在内，全部等我提供 GPU 后再做。第一步要把这些实验的脚本、配置和成本估算都准备好，到时直接能跑。
-- **花钱需要批准**：执行者负责写脚本、估算成本、监控和分析。任何单次预计超过 $100 的运行，先把成本估算发给我，我批准后才开跑。所有花费记在 `runs/ledger.md`，包括日期、用途、卡时、金额和结果链接。
-- **闸门 1（花大钱之前）**：
-  1. **外推预测**：用小规模阶梯实验（scaling ladder）外推，看按当前配方、在预算内，主线 Base 模型的 loss 和基准分数能到多少。
-  2. **配方验证**，分两路：
-     - (a) 把后训练配方先套在阶梯实验里的几个小 Base 上，拟合"Base 质量 → 工具调用得分"的关系并外推；
-     - (b) 再套在一个现成的同尺寸开源 Base 上，看后训练配方本身的上限。(b) 只用于验证，不作为成果发布。
-  3. **交给我决定**：把预测结果交给我。预测能达到硬目标，才开始预训练；达不到，就先调整配方或目标，不硬烧钱。
-- **闸门 2（预训练结束）**：Base 模型的实际评测结果和闸门 1 的预测对比。明显偏低时，先诊断，再进后训练。
-- **闸门 3（发布前）**：按预注册协议做最终评测。没达到硬目标就不宣称"超过"，如实发布结果；差距分析本身写成课程内容。
+- **All steps that cost money are in Step 2**: Step 1 (course phase) spends no money on GPUs. This includes the opponent reruns of Chapter 11 and the ladder experiments of Gate 1. Do all of them after I supply the GPUs. In Step 1, prepare the scripts, configurations, and cost estimates of these experiments, so that they are ready to run.
+- **Spending needs approval**: the executor writes the scripts, estimates the cost, monitors the runs, and analyzes the results. Before any single run with an expected cost of more than $100, send me the cost estimate. Start the run only after I approve it. Record all costs in `runs/ledger.md`: the date, the purpose, the GPU-hours, the amount, and a link to the results.
+- **Gate 1 (before the large spending)**:
+  1. **Extrapolated prediction**: extrapolate from small scaling-ladder experiments. Predict the loss and the benchmark scores that the main-line Base model can reach with the current recipe and within the budget.
+  2. **Recipe validation**, in two paths:
+     - (a) Apply the post-training recipe to several small Base models from the ladder experiments. Fit the relation "Base quality → tool-calling score" and extrapolate it.
+     - (b) Also apply the recipe to an existing open Base model of the same size. This shows the upper limit of the post-training recipe itself. Use (b) only for validation. Do not publish it as a result.
+  3. **I decide**: give me the predictions. Start pretraining only if the prediction reaches the hard goal. If it does not, adjust the recipe or the goal first. Do not force the spending.
+- **Gate 2 (end of pretraining)**: compare the real evaluation results of the Base model with the prediction of Gate 1. If the results are clearly lower, find the cause first. Then start post-training.
+- **Gate 3 (before release)**: do the final evaluation with the preregistered protocol. If the model does not reach the hard goal, do not claim "ahead". Publish the results honestly. The gap analysis itself becomes course content.
 
-### 3.5 发布物
+### 3.5 Release items
 
-- **模型**：发布到 Hugging Face，包括 Base、SFT、最终版，以及关键的中间 checkpoint。没有算力的读者可以直接从我们的 Base 开始做第 16–19 章的实验。
-- **量化版本**：GGUF / INT4，能在普通笔记本上用 llama.cpp 或 Ollama 跑。
-- **本地 demo**：一个能在本地运行的工具调用 demo，例如能调用计算器、日历、文件搜索等本地工具的命令行助手。这是"真正可用"的直接证明。
-- **模型卡**：训练数据与许可证、每个阶段的配方与花费、预注册协议、全部评测结果（包括落后的项）、去污染检查、已知局限。
-- **完整可复现的配方**：数据处理脚本、训练配置、日志。
+- **Models**: publish on Hugging Face: the Base model, the SFT model, the final version, and the important intermediate checkpoints. Readers without compute can start the experiments of Chapters 16–19 directly from our Base model.
+- **Quantized versions**: GGUF / INT4. They run with llama.cpp or Ollama on a normal laptop.
+- **Local demo**: a tool-calling demo that runs locally, for example a command-line assistant that can call local tools such as a calculator, a calendar, and file search. This demo is the direct proof that the model "really works".
+- **Model card**: the training data and the licenses, the recipe and the cost of each stage, the preregistration protocol, all evaluation results (including the items where we are behind), the decontamination checks, and the known limits.
+- **A complete, reproducible recipe**: data-processing scripts, training configurations, and logs.
 
-## 4. 课程大纲（执行者可以微调拆分，但不要删减主题）
+## 4. Course outline (the executor can change the split of the chapters a little, but must not remove topics)
 
-> 每章写明：一句话目标、前置章节、核心公式、极简代码、对应的生产级代码、视频要可视化的关键画面。第三、四部分每章还要写明本章给主线模型带来了什么（"主线产物"）。表中的"代码产出"指第一层极简代码；"主线产物"在第一步是写好并在 CPU 上跑通的生产级代码，在第二步是真实训练的结果。
+> For each chapter, write: the goal (one sentence), the prerequisite chapters, the core formulas, the minimal code, the related production code, and the key images for the video. For each chapter of Parts 3 and 4, also write what the chapter gives to the main-line model ("Main-line output"). In the tables, "Code output" means the level-1 minimal code. "Main-line output" means production code that is written and runs on a CPU in Step 1, and the real training result in Step 2.
 
-### 第一部分：从一条直线开始（CPU 即可运行，只用 NumPy）
+### Part 1: Start from a straight line (runs on a CPU, NumPy only)
 
-| # | 章节 | 核心内容 | 代码产出 |
+| # | Chapter | Core content | Code output |
 |---|---|---|---|
-| 1 | y = ax + b | 数据、模型、损失（MSE）、手算梯度、梯度下降、学习率太大/太小 | 拟合一条直线，画出损失曲线和参数轨迹 |
-| 2 | 从标量到矩阵 | 多元线性回归、向量化、`y = XW + b`、形状规则（整合现有 `chapter01-matrix-basics`） | 向量化版本，和循环版本对比速度 |
-| 3 | 非线性与神经网络 | 为什么线性叠加还是线性、激活函数、MLP | 两层 MLP 拟合非线性函数 |
-| 4 | 反向传播与自动微分 | 链式法则、计算图、手写 micrograd 式 autograd | 约 150 行的标量 autograd，并用它训练 MLP |
-| 5 | 分类与概率 | softmax、交叉熵、最大似然、为什么分类不用 MSE | 玩具数据或 MNIST 分类 |
-| 6 | 让训练稳定 | 初始化、归一化（LayerNorm → RMSNorm）、残差连接、AdamW、warmup + 衰减 | 同一个网络开关这些技巧的对比实验 |
+| 1 | y = ax + b | Data, model, loss (MSE), gradients by hand, gradient descent, a learning rate that is too large/too small | Fit a straight line; plot the loss curve and the parameter path |
+| 2 | From scalars to matrices | Multivariate linear regression, vectorization, `y = XW + b`, the shape rule (merge the existing `chapter01-matrix-basics`) | A vectorized version; compare its speed with the loop version |
+| 3 | Nonlinearity and neural networks | Why stacked linear layers are still linear, activation functions, MLP | A two-layer MLP fits a nonlinear function |
+| 4 | Backpropagation and automatic differentiation | Chain rule, computational graph, a micrograd-style autograd written by hand | A scalar autograd of about 150 lines, and an MLP trained with it |
+| 5 | Classification and probability | softmax, cross-entropy, maximum likelihood, why classification does not use MSE | Classification on toy data or MNIST |
+| 6 | Stable training | Initialization, normalization (LayerNorm → RMSNorm), residual connections, AdamW, warmup + decay | A comparison experiment: the same network with each of these methods on and off |
 
-### 第二部分：构建现代 Transformer（切到 PyTorch，单卡或 CPU）
+### Part 2: Build a modern Transformer (change to PyTorch; one GPU or a CPU)
 
-| # | 章节 | 核心内容 | 代码产出 |
+| # | Chapter | Core content | Code output |
 |---|---|---|---|
-| 7 | 语言建模与分词 | 字符级 → byte-level BPE、next-token prediction、bits-per-byte | 手写 BPE + bigram 语言模型 |
-| 8 | 注意力 | 从"加权平均"推出注意力、Q/K/V、缩放点积、因果 mask、多头；RNN 只作为动机 | 从零实现注意力，并可视化注意力矩阵 |
-| 9 | 现代 Transformer | Pre-Norm RMSNorm、SwiGLU、RoPE、QK-Norm、共享 embedding；GPT-2 结构只作历史对照；完整的张量形状数据流 | 训练出能生成文字的小模型（TinyStories 或 FineWeb-Edu 小样本） |
-| 10 | 推理 | 采样（temperature、top-p）、KV cache、GQA（KV cache 太大 → 让多个查询头共享 KV 头） | 给第 9 章的模型加上 KV cache 和 GQA，测速度和显存 |
+| 7 | Language modeling and tokenization | Character level → byte-level BPE, next-token prediction, bits-per-byte | A BPE written by hand + a bigram language model |
+| 8 | Attention | Derive attention from "weighted average", Q/K/V, scaled dot product, causal mask, multiple heads; RNN only as motivation | Attention from zero, and a visualization of the attention matrix |
+| 9 | The modern Transformer | Pre-Norm RMSNorm, SwiGLU, RoPE, QK-Norm, tied embeddings; the GPT-2 structure only as a historical comparison; the full data flow of tensor shapes | Train a small model that generates text (TinyStories or a small sample of FineWeb-Edu) |
+| 10 | Inference | Sampling (temperature, top-p), KV cache, GQA (the KV cache is too large → several query heads share one KV head) | Add a KV cache and GQA to the model of Chapter 9; measure the speed and the GPU memory |
 
-### 第三部分：训练一个真正的模型（主线模型开始）
+### Part 3: Train a real model (the main-line model starts)
 
-| # | 章节 | 核心内容 | 主线产物 |
+| # | Chapter | Core content | Main-line output |
 |---|---|---|---|
-| 11 | 评测：先定考卷 | 各基准测的是什么、公平对比规则、数据污染、置信区间、预注册 | `eval/PREREGISTRATION.md` + 对手模型的重跑成绩 |
-| 12 | Scaling Law 与实验设计 | `C ≈ 6ND`、Chinchilla、为什么小模型要"过训练"、用小实验拟合 loss 和超参、外推预测最终成绩（结合 references 里 Delphi 和"小规模实验"两篇） | 主线模型的尺寸、token 数、超参决策 + 闸门 1 预测报告 |
-| 13 | 数据 | 开放数据集、去重、基于模型的质量过滤、合成改写、配比消融、去污染、训练主线分词器 | 预训练数据集 + 分词器 |
-| 14 | 预训练工程 | 混合精度、FlashAttention 的原理（tiling + online softmax）与使用、数据并行/FSDP、MFU、loss spike 与训练稳定性、断点续训 | 主线预训练本身 |
-| 15 | 中期训练与长上下文 | 退火（WSD 的衰减阶段 + 高质量数据）、RoPE 基频调整 + YaRN 扩展到 32K | 主线 Base 模型（闸门 2） |
+| 11 | Evaluation: set the exam first | What each benchmark tests, rules for a fair comparison, data contamination, confidence intervals, preregistration | `eval/PREREGISTRATION.md` + the rerun scores of the opponent models |
+| 12 | Scaling laws and experiment design | `C ≈ 6ND`, Chinchilla, why small models are "overtrained", fit the loss and the hyperparameters with small experiments, extrapolate to predict the final scores (use the two papers in the references: Delphi and "small-scale experiments") | The decision on the size, the token count, and the hyperparameters of the main-line model + the Gate 1 prediction report |
+| 13 | Data | Open data sets, deduplication, model-based quality filtering, synthetic rephrasing, mixture ablations, decontamination, training of the main-line tokenizer | The pretraining data set + the tokenizer |
+| 14 | Pretraining engineering | Mixed precision, FlashAttention (how it works: tiling + online softmax; how to use it), data parallelism/FSDP, MFU, loss spikes and training stability, resume from a checkpoint | The main-line pretraining itself |
+| 15 | Mid-training and long context | Annealing (the decay phase of WSD + high-quality data), RoPE base-frequency adjustment + YaRN extension to 32K | The main-line Base model (Gate 2) |
 
-### 第四部分：后训练——把底座变成可用的工具调用模型
+### Part 4: Post-training — make the base model a useful tool-calling model
 
-| # | 章节 | 核心内容 | 主线产物 |
+| # | Chapter | Core content | Main-line output |
 |---|---|---|---|
-| 16 | SFT | chat template（含工具调用格式）、loss mask、指令数据 | SFT 模型 |
-| 17 | 蒸馏 | 为什么小模型靠蒸馏变强（Llama 3.2、Gemma、Qwen3 小模型、DeepSeek-R1-Distill 都这么做）；教师数据 SFT、logits 蒸馏、在线策略蒸馏（待核实）；教师许可证 | 经执行验证的工具调用蒸馏数据 + 蒸馏后的模型 |
-| 18 | 偏好对齐 | 先讲 RLHF（奖励模型 + PPO，作铺垫），再从同一个目标推导出 DPO | DPO 模型（提升通用对话质量） |
-| 19 | 强化学习 | GRPO 与可验证奖励；工具调用环境（沙箱、模拟 API）、奖励设计、防止 reward hacking；环境与判分器的设计参考 XiaomiMiMo/verl | 最终模型 |
-| 20 | 发布 | 按预注册协议做最终评测、量化、本地部署、模型卡、如实报告 | Hugging Face 上的模型 + 评测报告 + 本地 demo（闸门 3） |
+| 16 | SFT | Chat template (including the tool-calling format), loss mask, instruction data | The SFT model |
+| 17 | Distillation | Why small models become stronger through distillation (Llama 3.2, Gemma, the Qwen3 small models, and DeepSeek-R1-Distill all do this); SFT on teacher data, logits distillation, on-policy distillation (to be verified); teacher licenses | Tool-calling distillation data verified by execution + the distilled model |
+| 18 | Preference alignment | First RLHF (reward model + PPO, as background), then derive DPO from the same objective | The DPO model (better general chat quality) |
+| 19 | Reinforcement learning | GRPO and verifiable rewards; tool-calling environment (sandbox, simulated APIs), reward design, prevention of reward hacking; the design of the environments and graders follows XiaomiMiMo/verl | The final model |
+| 20 | Release | Final evaluation with the preregistered protocol, quantization, local deployment, model card, honest report | The model on Hugging Face + the evaluation report + the local demo (Gate 3) |
 
-### 第五部分：架构演进——为了更长的上下文、更小的 KV cache
+### Part 5: Architecture changes — for longer context and a smaller KV cache
 
-> 这一部分在课程代码上做对比实验，不改主线模型：第一步在 CPU 上用百万参数级的极小模型做，第二步可选用约 1 亿参数级重跑。
+> This part does comparison experiments on the course code. It does not change the main-line model. In Step 1, use tiny models with millions of parameters on a CPU. In Step 2, you can optionally run them again with about 100M parameters.
 
-| # | 章节 | 核心内容 | 代码产出 |
+| # | Chapter | Core content | Code output |
 |---|---|---|---|
-| 21 | KV cache 的账本 | 显存公式 `2 × 层数 × KV 头数 × head_dim × 序列长 × 字节数`、prefill 与 decode、MQA → GQA → MLA | KV cache 计算器（算主线模型和几个最新模型）+ MHA/GQA/MLA 对比实验 |
-| 22 | 局部与稀疏注意力 | 滑动窗口、局部-全局交替；稀疏注意力按 2.1 的核实结果决定进正文还是进"前沿观察" | 滑动窗口注意力的实现与对比 |
-| 23 | 线性注意力与混合架构 | softmax 注意力 → 线性注意力的递推形式 → Gated DeltaNet；为什么是"少量全注意力 + 大量线性层"（如 Qwen3.5 的 3:1） | 线性注意力的递推实现 + 混合结构与纯注意力的对比 |
-| 24 | 混合专家（MoE） | 路由、负载均衡、细粒度专家 + 共享专家；为什么大模型都用、小模型较少用 | 一个小 MoE 层，与同算力的稠密层对比 |
-| 25 | 多 token 预测与推测解码 | MTP 训练目标、推测解码为什么不损失质量 | 用一个小草稿模型给主线模型做推测解码，测加速比 |
-| 26 | 当前最先进开源模型全景 | 拆解 3–4 个写作时最新的代表模型（如 DeepSeek、Qwen、Kimi、gpt-oss 的最新版），画出架构演化树；把主线模型放进同一张表 | 架构对比表 + 演化树 |
+| 21 | The KV cache budget | The memory formula `2 × layers × KV heads × head_dim × sequence length × bytes`, prefill and decode, MQA → GQA → MLA | A KV cache calculator (for the main-line model and several new models) + an MHA/GQA/MLA comparison experiment |
+| 22 | Local and sparse attention | Sliding window, alternating local-global attention; the verification result of 2.1 decides if sparse attention goes into the main text or into "Frontier notes" | An implementation and a comparison of sliding-window attention |
+| 23 | Linear attention and hybrid architectures | softmax attention → the recurrent form of linear attention → Gated DeltaNet; why "a few full-attention layers + many linear layers" (for example, 3:1 in Qwen3.5) | A recurrent implementation of linear attention + a comparison of the hybrid structure with pure attention |
+| 24 | Mixture of experts (MoE) | Routing, load balancing, fine-grained experts + shared experts; why all large models use MoE and small models use it less | A small MoE layer, compared with a dense layer of the same compute |
+| 25 | Multi-token prediction and speculative decoding | The MTP training objective; why speculative decoding does not decrease the quality | Speculative decoding for the main-line model with a small draft model; measure the speedup |
+| 26 | The state of open models | Analyze 3–4 representative models that are the newest at the time of writing (for example, the newest versions of DeepSeek, Qwen, Kimi, and gpt-oss); draw an architecture evolution tree; put the main-line model in the same table | An architecture comparison table + an evolution tree |
 
-> 凡是涉及"最新"的地方（第 17、19 章的方法选择，以及第五部分全部），执行者必须在写作时联网核对论文、技术报告和官方模型卡（alphaXiv / Hugging Face / 官方博客），不要凭记忆写模型配置数字。每个具体数字都在章末给出来源链接。
+> All content about "the newest" (the choice of methods in Chapters 17 and 19, and all of Part 5): when you write it, check the papers, technical reports, and official model cards online (alphaXiv / Hugging Face / official blogs). Do not write model configuration numbers from memory. At the end of the chapter, give a source link for each specific number.
 
-## 5. 与斯坦福 CS336 的关系：中文入门 + 导读
+## 5. Relation to Stanford CS336: an introduction and guide
 
-[CS336（Language Modeling from Scratch）](https://cs336.stanford.edu/) 与本课第二到四部分的主题高度重合。本课**不回避这种重合，而是明确定位为 CS336 的中文入门与导读**：
+[CS336 (Language Modeling from Scratch)](https://cs336.stanford.edu/) covers most of the topics of Parts 2 to 4 of this course. This course **does not avoid this overlap. It is clearly an introduction and guide to CS336, in English first, with a Chinese version**:
 
-- **补前置**：CS336 默认读者已熟悉深度学习和 PyTorch，第一讲就从分词开始。本课第 1–6 章（y = ax + b → 反向传播 → 训练技巧）专门补这一段，让零基础读者够得着 CS336。
-- **降门槛**：CS336 每个作业需要几十小时和 GPU 集群。本课同一主题给出 15–30 分钟的速读、消费级显卡能跑的缩小版实验，并公开主线模型的中间 checkpoint。
-- **补两条主线**：
-  - 一是真实训练并发布一个模型的全过程：预注册、闸门、公平评测。
-  - 二是第五部分的架构演进。
+- **Add the prerequisites**: CS336 expects that readers already know deep learning and PyTorch. Its first lecture starts with tokenization. Chapters 1–6 of this course (y = ax + b → backpropagation → training methods) fill this gap. Then readers with no background can reach CS336.
+- **Make the entry easier**: each CS336 assignment needs tens of hours and a GPU cluster. For the same topic, this course gives a 15–30 minute quick read and smaller experiments that run on a consumer GPU. It also publishes the intermediate checkpoints of the main-line model.
+- **Add two main threads**:
+  - First, the full process of training and releasing a real model: preregistration, gates, and fair evaluation.
+  - Second, the architecture changes in Part 5.
 
-  反过来，CS336 在 GPU kernel（Triton）、分布式训练、数据流水线上讲得更深，本课在这些地方直接指向 CS336。
-- **形式不同**：中文、动画讲解视频、引导问题 + Claude Code 自检 Skill。
+  In the other direction, CS336 goes deeper into GPU kernels (Triton), distributed training, and data pipelines. In these areas, this course points directly to CS336.
+- **A different form**: English first, with a Chinese version; animated explanation videos (the narration is in Chinese for now); guided questions + Claude Code self-check skills.
 
-**第 7 章起，每章末尾都有一个"想深入：CS336"小节**，指向对应的讲座和作业，把 CS336 作为进阶路线。对应关系大致如下。执行者写作时必须到 cs336.stanford.edu 核对**当期**课程表，写出具体的讲次标题和链接，不要凭记忆写讲次编号。
+**From Chapter 7, each chapter ends with a section "Go deeper: CS336".** This section points to the matching lectures and assignments, as the advanced path. The approximate mapping is below. When you write, check the schedule of the **current** term on cs336.stanford.edu. Write the specific lecture titles and links. Do not write lecture numbers from memory.
 
-| 本课章节 | CS336 对应内容 |
+| Chapter of this course | Matching CS336 content |
 |---|---|
-| 1–6 | 无直接对应（属于 CS336 的前置知识）。这几章不加该小节，改为在第 6 章末尾说明"读完第一部分即可开始 CS336" |
-| 7 语言建模与分词 / 9 现代 Transformer | 分词、PyTorch 与资源核算、架构讲座；作业 1（Basics：手写 BPE、Transformer、AdamW、训练循环） |
-| 8 注意力 / 10 推理 | 架构讲座、推理讲座；作业 1 |
-| 11 评测 | 评测讲座 |
-| 12 Scaling Law | Scaling Law 讲座；作业 3（Scaling） |
-| 13 数据 | 数据讲座；作业 4（Data） |
-| 14 预训练工程 | GPU、kernel、并行训练讲座；作业 2（Systems，含用 Triton 实现 FlashAttention） |
-| 15 中期训练与长上下文 | 部分覆盖（架构、数据讲座） |
-| 16 SFT / 18 偏好对齐 / 19 强化学习 | 对齐与 RL 讲座；作业 5（Alignment：SFT、专家迭代、GRPO） |
-| 17 蒸馏 | 部分覆盖 |
-| 20 发布 | 推理讲座（量化等） |
-| 21 KV cache / 25 推测解码 | 推理讲座 |
-| 22 局部与稀疏注意力 / 23 线性注意力 / 26 全景 | 架构讲座（部分覆盖）；超出部分注明"CS336 未深入，见本章参考文献" |
-| 24 MoE | MoE 讲座 |
+| 1–6 | No direct match (they are prerequisites of CS336). Do not add the section to these chapters. Instead, at the end of Chapter 6, write "After Part 1, you can start CS336" |
+| 7 Language modeling and tokenization / 9 The modern Transformer | Tokenization, PyTorch and resource accounting, and architecture lectures; Assignment 1 (Basics: BPE, Transformer, AdamW, and training loop by hand) |
+| 8 Attention / 10 Inference | Architecture lecture, inference lecture; Assignment 1 |
+| 11 Evaluation | Evaluation lecture |
+| 12 Scaling laws | Scaling-law lectures; Assignment 3 (Scaling) |
+| 13 Data | Data lectures; Assignment 4 (Data) |
+| 14 Pretraining engineering | GPU, kernel, and parallel-training lectures; Assignment 2 (Systems, including FlashAttention in Triton) |
+| 15 Mid-training and long context | Partly covered (architecture and data lectures) |
+| 16 SFT / 18 Preference alignment / 19 Reinforcement learning | Alignment and RL lectures; Assignment 5 (Alignment: SFT, expert iteration, GRPO) |
+| 17 Distillation | Partly covered |
+| 20 Release | Inference lecture (quantization and other topics) |
+| 21 KV cache / 25 Speculative decoding | Inference lecture |
+| 22 Local and sparse attention / 23 Linear attention / 26 State of open models | Architecture lectures (partly covered); for the rest, write "CS336 does not go deep into this topic; see the references of this chapter" |
+| 24 MoE | MoE lecture |
 
-## 6. 读者与交付形态
+## 6. Readers and delivery format
 
-- **读者**：会一点 Python、高中数学水平，想系统理解 LLM 的人。身边有 Claude Code / Codex 可以随时提问。
-- **文字版的定位是速读**：每章正文 15–30 分钟能读完，读完能说清楚这章讲的东西是什么、为什么、怎么算。直觉优先，公式够用，每个公式配一段能跑的小代码。
-- **保留现有教学法**：现有 `README.md` 的"一句话目标 → 起点代码 → 引导问题 → 动手任务 → `/chXX` Skill 自检"节奏继续保留，作为速读正文之后的"深入"部分。也就是说，每章 = **速读正文**（新增）+ **探索与练习**（沿用现有风格）。
-- **视频的定位**：5–10 分钟的讲解片，和文字版讲同一条主线，但用动画把形状、流动、变化讲清楚，比如矩阵相乘、梯度下降轨迹、注意力权重、KV cache 增长。视频不追求花哨，追求**准确、看得懂**。
-- **没有算力的读者也能跟**：
-  - 第 1–10 章用 CPU 或单卡就能跑。
-  - 第 11–20 章每章提供"几分钟能跑完的缩小版"；也可以直接用我们公开的中间 checkpoint，比如从我们的 Base 开始做 SFT。
-  - 完整的主线训练由作者（执行者 + 我）完成，读者读到的是真实过程。
+- **Readers**: people who know some Python and high-school math, and who want to understand LLMs systematically. They have Claude Code / Codex near them, so they can ask questions at any time.
+- **The text is a quick read**: a reader can read the main text of each chapter in 15–30 minutes. After that, the reader can explain what the chapter teaches, why, and how to calculate it. Intuition comes first. The formulas are sufficient, not more. Each formula comes with a small piece of code that runs.
+- **Keep the current teaching method**: keep the sequence of the current `README.md`: "goal → starting code → guided questions → hands-on tasks → `/chXX` self-check skill". It becomes the "deeper" part after the quick-read text. Thus each chapter = **quick-read text** (new) + **exploration and practice** (the current style).
+- **Purpose of the video**: a 5–10 minute explanation. It follows the same thread as the text. But it uses animation to show shapes, flows, and changes clearly. Examples: matrix multiplication, gradient-descent paths, attention weights, and the growth of the KV cache. The video does not try to look impressive. It must be **correct and understandable**.
+- **Readers without compute can follow the course**:
+  - Chapters 1–10 run on a CPU or one GPU.
+  - Each of Chapters 11–20 gives "a smaller version that finishes in a few minutes". Readers can also use our published intermediate checkpoints, for example to start SFT from our Base model.
+  - The authors (the executor + I) do the full main-line training. The readers read about a real process.
 
-## 7. 仓库结构
+## 7. Repository structure
 
 ```
 From-0-to-AGI/
-├── README.md                  # 新大纲的目录与状态表 + 与 CS336 的关系 + 主线模型进度
-├── GOAL.md                    # 本文件
-├── references.md              # 资料库（只追加，不删改原有条目）
+├── README.md                  # contents and status table of the new outline + relation to CS336 + progress of the main-line model (Chinese: README.zh.md)
+├── GOAL.md                    # this file (Chinese: GOAL.zh.md)
+├── references.md              # reference library (append only; do not delete or change existing entries)
 ├── chapters/
-│   └── NN-slug/               # 例：01-linear-regression
-│       ├── README.md          # 速读正文 + 引导问题 + 动手任务 + 想深入：CS336 + 本章参考
-│       ├── code/              # 第一层：极简代码，uv run 能直接跑，CPU 几秒到几分钟
+│   └── NN-slug/               # example: 01-linear-regression
+│       ├── README.md          # English: quick-read text + guided questions + hands-on tasks + Go deeper: CS336 + references
+│       ├── README.zh.md       # Chinese version of README.md (same headings in the same order)
+│       ├── code/              # level 1: minimal code; runs with uv run, seconds to minutes on a CPU
 │       └── video/
-│           ├── script.md      # 事实清单与来源 → 分镜 → 逐镜旁白（先写这个）
-│           ├── scenes.py      # Manim 场景源码
-│           ├── build.sh       # 一条命令：渲染画面 + 合成旁白 + 生成字幕 + 合并成 MP4
-│           └── subtitles.srt  # 由同一时间轴生成
-├── zero/                      # 第二层：主线模型的生产级代码（暂名），从第 7 章起由各章逐步长出来
-├── configs/                   # tiny（CPU 冒烟测试）、ladder（阶梯实验）、main（主线训练）三档配置
-├── tests/                     # 生产级代码的单元测试、正确性测试和端到端冒烟测试
-├── eval/                      # 预注册文件、对手清单、评测脚本与结果表
-├── runs/                      # 每次真实训练的配置、日志摘要、报告；ledger.md 记账；第二步的运行手册
-├── video_kit/                 # 所有章节共享的视频工具：配色、字体、公式样式、TTS 封装、合成脚本
-└── .claude/commands/chNN-*.md # 每章一个自检 Skill（沿用 ch01-matrix 的写法）
+│           ├── script.md      # fact list and sources → storyboard → narration for each shot (write this first)
+│           ├── scenes.py      # Manim scene source code
+│           ├── build.sh       # one command: render the images + synthesize the narration + make the subtitles + merge into MP4
+│           └── subtitles.srt  # made from the same timeline
+├── zero/                      # level 2: production code of the main-line model (working name); grows chapter by chapter from Chapter 7
+├── configs/                   # three configuration levels: tiny (CPU smoke test), ladder (ladder experiments), main (main-line training)
+├── tests/                     # unit tests, correctness tests, and the end-to-end smoke test of the production code
+├── eval/                      # preregistration file, opponent list, evaluation scripts, and result tables
+├── runs/                      # configuration, log summary, and report of each real training run; ledger.md for costs; runbook for Step 2
+├── video_kit/                 # video tools that all chapters share: colors, fonts, formula style, TTS wrapper, merge script
+└── .claude/commands/chNN-*.md # one self-check skill for each chapter (same style as ch01-matrix); in English, answers in the language of the learner
 ```
 
-- 现有 `chapter01-matrix-basics/` 迁入新结构（对应新第 2 章），`/ch01-matrix` Skill 同步改名，内容保留。
-- 不提交 MP4、模型权重、数据集（写进 `.gitignore`）。视频成片发布到 B 站/YouTube，模型发布到 Hugging Face，链接写回对应章节的 README。
-- 依赖用 `uv` 管理，写进 `pyproject.toml`。视频和 GPU 训练相关的依赖放在可选分组，不影响只读文字的人。
+- Move the existing `chapter01-matrix-basics/` into the new structure (it becomes the new Chapter 2). Rename the `/ch01-matrix` skill to match, and keep its content.
+- Do not commit MP4 files, model weights, or data sets (add them to `.gitignore`). Publish the finished videos on Bilibili/YouTube, and the models on Hugging Face. Write the links back into the README of the related chapter.
+- Manage the dependencies with `uv` and write them into `pyproject.toml`. Put the dependencies for the videos and for GPU training in optional groups, so that they do not affect people who only read the text.
 
-## 8. 视频制作规范
+## 8. Video production rules
 
-参考 `references.md` 中的 [awesome-opus-5-5-videos](https://github.com/athemeroy/awesome-opus-5-5-videos)，尤其是其中"教育讲解片"路径和 `docs/prompt-playbook.zh-CN.md` 的第 2 类模板。"教育讲解片"路径里的几个例子是：Manim + edge-tts 的导数课、Remotion + CosyVoice 的英语课、VAE 数学片。
+Use [awesome-opus-5-5-videos](https://github.com/athemeroy/awesome-opus-5-5-videos) in `references.md` as a reference, especially its "educational explainer" path and template type 2 in `docs/prompt-playbook.zh-CN.md`. Some examples in the "educational explainer" path: a derivatives lesson with Manim + edge-tts, an English lesson with Remotion + CosyVoice, and a VAE math video.
 
-从这些案例得出的结论是**讲解片内容比视觉重要**，所以采用下面这条可复现的代码渲染流水线：
+The conclusion from these cases: **in an explainer video, the content is more important than the visuals**. Thus we use this reproducible code-rendering pipeline:
 
-1. **技术栈**：
-   - 画面用 **Manim Community**，公式、矩阵、坐标系、动画都天然合适。
-   - 旁白用 TTS，默认 `edge-tts` 中文音色，保留替换成 CosyVoice 等本地 TTS 的接口。
-   - 字幕与旁白用同一份时间轴生成，最后用 `ffmpeg` 合成。
-   - 输出 1080p、16:9、30fps。
-2. **每章视频的制作顺序（不能跳步）**：
-   1. **事实清单**：列出视频里的每一个事实主张、公式和数字，以及来源；标出需要作者确认的地方。
-   2. **分镜 + 逐镜旁白**（写在 `script.md`）：每镜写时间、画面主体、动画动作、旁白、屏幕文字。旁白口语化，一镜只讲一件事。
-   3. **低清样片**：先渲染 480p 的前 30–60 秒，自查公式有没有被遮挡、字幕是否越界、动画节奏是否过快；修正后再渲染全片。
-   4. **全片渲染 + 交付检查**：画面与旁白同步、字幕与时间轴一致、音轨存在且不削波。
-3. **统一视觉语言**（放在 `video_kit/`）：全课程共用一套配色（如：输入 = 蓝、参数 = 橙、梯度 = 红、注意力权重 = 紫）、字体、公式样式、片头片尾。同一个概念在不同章节的视频里长得一样。
-4. **诚实标注**：模型无法真正"听"成片，所以每条视频交付时，在 `script.md` 末尾标注 **"旁白发音与语速未经人工试听"**，由我人工听过后再去掉该标注并发布。专有名词（如 Softmax、RoPE、GRPO）要检查 TTS 读法，必要时在旁白稿里写成易读的形式。
-5. **视频与真实数据呼应**：
-   - 视频里演示的数值（例如某次梯度下降的轨迹、某个注意力矩阵）应由本章 `code/` 中的代码真实算出后再画，不要编造。
-   - 第三、四部分的视频在第一步使用极小配置的真实运行数据，画面上标注"极小配置演示"。第二步训练完成后，把这些镜头换成主线模型的真实训练曲线、评测表和失败案例，重新渲染。
+> **Note:** The narration of the videos stays in Chinese for now. The English-first language policy does not change the rules in this section.
 
-## 9. 写作规范
+1. **Technology stack**:
+   - Images: **Manim Community**. It is a natural fit for formulas, matrices, coordinate systems, and animations.
+   - Narration: TTS, by default an `edge-tts` Chinese voice. Keep an interface to change to a local TTS such as CosyVoice.
+   - Make the subtitles and the narration from the same timeline. Merge everything with `ffmpeg` at the end.
+   - Output: 1080p, 16:9, 30fps.
+2. **Production order for each chapter video (do not skip a step)**:
+   1. **Fact list**: list each factual claim, formula, and number in the video, with its source. Mark the items that the author must confirm.
+   2. **Storyboard + narration for each shot** (in `script.md`): for each shot, write the time, the main image, the animation, the narration, and the on-screen text. Write the narration in spoken style. One shot covers one thing.
+   3. **Low-resolution sample**: first render the first 30–60 seconds at 480p. Check that no formula is hidden, that the subtitles stay inside the frame, and that the animation is not too fast. Fix the problems, then render the full video.
+   4. **Full render + delivery check**: the images and the narration are in sync, the subtitles agree with the timeline, and the audio track exists and does not clip.
+3. **One visual language** (in `video_kit/`): all chapters use one set of colors (for example: input = blue, parameter = orange, gradient = red, attention weight = purple), fonts, formula style, and opening and closing sequences. The same concept looks the same in the videos of different chapters.
+4. **Honest labels**: the model cannot really "listen" to the finished video. Thus, when you deliver each video, add the label **"旁白发音与语速未经人工试听"** ("a person has not listened to the pronunciation and the speed of the narration") at the end of `script.md`. I remove the label after I listen to the video, and then I publish it. Check how the TTS reads technical names (for example Softmax, RoPE, GRPO). If necessary, write them in a form that is easier to read in the narration script.
+5. **The videos agree with real data**:
+   - First calculate the values in the video with the code in `code/` of the chapter, and then draw them. Examples of such values: the path of one gradient-descent run, or one attention matrix. Do not make them up.
+   - In Step 1, the videos of Parts 3 and 4 use real data from runs with the tiny configuration. Label these images "极小配置演示" (tiny-configuration demo). After the training of Step 2, replace these shots with the real training curves, evaluation tables, and failure cases of the main-line model, and render them again.
 
-- 全中文；术语第一次出现时给出英文原文，例如"注意力（Attention）"。
-- **每章结构**：一句话目标 → 速读正文（直觉 → 公式 → 极简代码 → 小结）→ 从极简到生产级（见 1.1）→ 引导问题 → 动手任务 → 想深入：CS336（见第 5 节）→ 本章参考文献。
-- **第三、四部分的"主线进度"**：放在"从极简到生产级"之后。第一步写极小配置跑通的结果（标注"极小配置演示"）和"待 GPU 训练后补充"；第二步补上真实训练做了什么、花了多少钱、结果如何（包括失败和返工）。
-- 每个公式都要能在本章极简代码里找到对应的那一行。
-- 每章开头用衔接句（见 2.2）。
-- 遵守 2.1 的共识规则：正文只讲共识技术，章末列出采用方和来源。
-- 引用优先使用 `references.md` 里已有的资料（CS336、nanoGPT、minimind、Hands-On Modern RL、主流架构对比文章、Mini Kimi K3、Puro-2B 等）。新找到的资料按 `CLAUDE.md` 的约定追加到 `references.md`。
-- 所有章节的极简代码都要能在 CPU 上几分钟内跑完，包括预训练、SFT、DPO、GRPO 这些章（用极小模型和玩具任务）。可以额外给一个单卡放大版，但不能以它为主。
+## 9. Writing rules
 
-### 9.1 生产级代码标准（`zero/`）
+- **Language**: English first, with a Chinese version. The English page is `README.md`, and the Chinese page is `README.zh.md` in the same folder. The two pages have the same headings in the same order. Both languages use the rules of ASD-STE100 Simplified Technical English as a guide. Follow [docs/STYLE_GUIDE.md](docs/STYLE_GUIDE.md) and its glossary. In the Chinese page, give the English term in parentheses at its first use, for example "注意力（attention）".
+- **Structure of each chapter**: Goal → quick-read text (intuition → formulas → minimal code → Summary) → From minimal code to production code (see 1.1) → Guided questions → Hands-on tasks → Go deeper: CS336 (see Section 5) → References. The Chinese page uses the Chinese names of these sections (see `docs/CHAPTER_GUIDE.md`).
+- **"Main-line progress" in Parts 3 and 4**: put this section after "From minimal code to production code". In Step 1, write the results of the run with the tiny configuration (labeled "Tiny-configuration demo") and "To be added after GPU training". In Step 2, add what the real training did, how much it cost, and the results (including failures and rework).
+- Each formula must have a matching line in the minimal code of the chapter.
+- Start each chapter with the linking sentence (see 2.2).
+- Obey the consensus rule of 2.1: the main text teaches only consensus methods. List the adopters and sources at the end of the chapter.
+- For references, first use the sources that are already in `references.md` (CS336, nanoGPT, minimind, Hands-On Modern RL, the mainstream architecture comparison article, Mini Kimi K3, Puro-2B, and others). Add new sources to `references.md` as `CLAUDE.md` specifies.
+- The minimal code of all chapters must finish on a CPU in a few minutes. This includes the chapters about pretraining, SFT, DPO, and GRPO (use tiny models and toy tasks). You can also give a larger version for one GPU, but it must not be the main version.
 
-第一步没有 GPU，所以生产级代码的可信度全靠测试。要求：
+### 9.1 Production code standard (`zero/`)
 
-- **正确性测试**（`tests/`，`uv run pytest` 在 CPU 上全部通过）：
-  - 模型：把一个同结构的开源模型（如 Qwen3 小模型这类 GQA + QK-Norm + SwiGLU + RMSNorm + RoPE 的稠密模型）的权重加载进 `zero` 的模型，logits 与 Hugging Face transformers 的官方实现在误差范围内一致。
-  - 推理：用 KV cache 生成和不用 KV cache 生成的结果完全一致。
-  - 分词器：编码再解码能还原原文；在中文、英文、代码样本上统计压缩率。
-  - 损失函数：SFT 的 loss mask、DPO loss、GRPO 的优势和损失，都与手算的小例子一致。
-  - 训练：断点续训后的 loss 与不中断时一致；固定随机种子可复现。
-  - 工具调用：模板渲染与解析互为逆操作；奖励函数在正例、反例、格式错误样例上给出预期的分数。
-- **端到端冒烟测试**：一条命令（如 `uv run python -m zero.smoke`）用 `configs/tiny` 在 CPU 上把整条流水线跑通：数据处理 → 分词器 → 预训练 → 中期训练 → SFT → 蒸馏 → DPO → GRPO → 评测 → 导出 Hugging Face 格式与 GGUF。总时长控制在 30 分钟左右。
-- **可直接放大**：同一份代码只换配置就能跑 `configs/main`。需要支持单机多卡（torchrun、DDP/FSDP）、BF16、FlashAttention、断点续训、日志和 checkpoint 管理。
-- **GPU 相关的路径如实标注**：多卡通信、FlashAttention kernel、FP8 这类在 CPU 上测不了的代码，标注"尚未在 GPU 上验证"。第二步的第一件事就是一次 ≤$50 的 GPU 验证运行（见第 10 节）。
-- **第二步就绪**：
-  - `runs/RUNBOOK.md` 写明每个阶段的环境准备、启动命令、预期吞吐、需要盯的指标、闸门检查清单。
-  - `zero/tools/estimate_cost.py` 根据模型配置、token 数、GPU 型号和单价估算卡时和费用。
-- **代码风格**：可读优先，类型标注，关键处中文注释；用 ruff 做格式和 lint 检查。
+Step 1 has no GPU, so the trust in the production code comes only from the tests. Requirements:
 
-## 10. 执行阶段与验收
+- **Correctness tests** (`tests/`; `uv run pytest` passes completely on a CPU):
+  - Model: load the weights of an open model with the same structure into the `zero` model (for example a Qwen3 small model, a dense model with GQA + QK-Norm + SwiGLU + RMSNorm + RoPE). The logits must agree with the official Hugging Face transformers implementation within the tolerance.
+  - Inference: generation with a KV cache and generation without a KV cache give exactly the same result.
+  - Tokenizer: encode and then decode gives the original text back. Measure the compression ratio on Chinese, English, and code samples.
+  - Loss functions: the SFT loss mask, the DPO loss, and the GRPO advantages and loss all agree with small examples calculated by hand.
+  - Training: the loss after resume from a checkpoint is the same as the loss without interruption. A fixed random seed gives reproducible results.
+  - Tool calling: template rendering and parsing are inverse operations. The reward function gives the expected scores on positive examples, negative examples, and examples with format errors.
+- **End-to-end smoke test**: one command (for example `uv run python -m zero.smoke`) runs the full pipeline on a CPU with `configs/tiny`: data processing → tokenizer → pretraining → mid-training → SFT → distillation → DPO → GRPO → evaluation → export to Hugging Face format and GGUF. The total time is about 30 minutes.
+- **Ready to scale up**: the same code runs `configs/main` with only a change of configuration. The code must support multiple GPUs on one machine (torchrun, DDP/FSDP), BF16, FlashAttention, resume from a checkpoint, logs, and checkpoint management.
+- **Label GPU-only paths honestly**: code that a CPU cannot test, such as multi-GPU communication, FlashAttention kernels, and FP8, must have the label "not verified on GPU yet". The first task of Step 2 is a GPU verification run of ≤$50 (see Section 10).
+- **Ready for Step 2**:
+  - `runs/RUNBOOK.md` gives, for each stage: the environment preparation, the start commands, the expected throughput, the metrics to watch, and the gate checklist.
+  - `zero/tools/estimate_cost.py` estimates the GPU-hours and the cost from the model configuration, the token count, the GPU type, and the price.
+- **Code style**: readability first, type annotations. Write comments at important points, docstrings, and printed output in English (see Section 4 of [docs/STYLE_GUIDE.md](docs/STYLE_GUIDE.md)). Use ruff for format and lint checks.
 
-### 第一步：完成课程（不需要 GPU）
+## 10. Execution stages and acceptance
 
-**阶段 0：试点（做完先停下，等我确认再继续）**
-- 按第 7 节建立目录结构和 `video_kit/`，迁移现有第 1 章。
-- 完整做出**第 1 章（y = ax + b）**：速读正文、代码、自检 Skill、视频全套源码，以及渲染出的 MP4。
-- 两层代码样板：第 1 章给出 NumPy 极简版和 PyTorch 标准写法；另外先做出第 9 章的两层代码（只做代码，不写正文和视频）：极简版的小 Transformer，加上 `zero/` 里的生产级模型和"与官方实现 logits 一致"的正确性测试。让我提前看到两层代码长什么样。
-- 更新 `README.md`：换成新大纲的目录表（状态列标注 ✅/🔜），并在开头写明本课与 CS336 的关系、主线模型的目标。
-- 验收：
-  - `uv run python chapters/01-*/code/*.py` 全部能跑；
-  - `uv run pytest` 在 CPU 上通过；
-  - `bash chapters/01-*/video/build.sh` 能从零生成 MP4；
-  - 我读完正文、看完视频后认可风格。
+### Step 1: finish the course (no GPU necessary)
 
-**阶段 1：第一、二部分（第 1–10 章）**
-- 每章两层代码。`zero/` 里长出模型、分词器、带 KV cache 的推理，并通过与官方实现对拍的正确性测试。
+**Stage 0: pilot (when it is done, stop and wait for my confirmation before you continue)**
+- Make the folder structure of Section 7 and `video_kit/`. Move the existing Chapter 1 into it.
+- Make all of **Chapter 1 (y = ax + b)**: the quick-read text, the code, the self-check skill, all video source code, and the rendered MP4.
+- Two-level code samples: for Chapter 1, give the NumPy minimal version and the standard PyTorch version. Also make the two levels of code for Chapter 9 early (code only, no text and no video): a small minimal Transformer, plus the production model in `zero/` and a correctness test that "the logits agree with the official implementation". Then I can see early what the two levels of code look like.
+- Update `README.md`: replace it with the contents table of the new outline (the status column shows ✅/🔜). At the start, write the relation of this course to CS336 and the goal of the main-line model.
+- Acceptance:
+  - `uv run python chapters/01-*/code/*.py` all run;
+  - `uv run pytest` passes on a CPU;
+  - `bash chapters/01-*/video/build.sh` makes the MP4 from zero;
+  - I read the text and watch the video, and I accept the style.
 
-**阶段 2：第三部分（第 11–15 章）**
-- 评测框架代码 + 预注册草案。
-- 阶梯实验脚本、数据处理流水线（在小样本数据上跑通）、分词器训练、预训练器、中期训练与长上下文扩展。
-- 每章用 `configs/tiny` 在 CPU 上真实跑一遍。
+**Stage 1: Parts 1 and 2 (Chapters 1–10)**
+- Two levels of code for each chapter. `zero/` gets the model, the tokenizer, and inference with a KV cache. They pass the correctness tests that compare them with the official implementations (parity checks).
 
-**阶段 3：第四部分（第 16–20 章）**
-- SFT、蒸馏（教师数据生成脚本，冒烟测试时用一个能在 CPU 上跑的小开源模型临时充当教师）、DPO、GRPO 与工具调用环境、评测、量化导出、本地 demo。
-- 冒烟测试里的 demo 用极小模型，能跑通即可，效果差是正常的，要如实说明。
+**Stage 2: Part 3 (Chapters 11–15)**
+- Evaluation framework code + a preregistration draft.
+- Ladder experiment scripts, the data-processing pipeline (it runs on small sample data), tokenizer training, the pretrainer, mid-training, and long-context extension.
+- For each chapter, do a real run on a CPU with `configs/tiny`.
 
-**阶段 4：第五部分（第 21–26 章）**
-- 对比实验先在 CPU 上用百万参数级的极小模型做。约 1 亿参数级的版本留到第二步，作为可选项。
+**Stage 3: Part 4 (Chapters 16–20)**
+- SFT, distillation (a teacher data generation script; in the smoke test, a small open model that runs on a CPU is a temporary teacher), DPO, GRPO and the tool-calling environment, evaluation, quantized export, and the local demo.
+- The demo in the smoke test uses a tiny model. It only needs to run. Bad quality is normal. Say this honestly.
 
-**阶段 5：第一步收尾**
-- 端到端冒烟测试通过，全部单元测试通过。
-- `runs/RUNBOOK.md` 和成本估算就绪；第三、四部分正文里的"主线进度"都写好"待 GPU 训练后补充"。
-- 给我一份汇报：课程完成情况、生产级代码中哪些部分尚未在 GPU 上验证、第二步各阶段的预计花费。
+**Stage 4: Part 5 (Chapters 21–26)**
+- Do the comparison experiments first on a CPU with tiny models that have millions of parameters. Keep the version with about 100M parameters for Step 2, as an option.
 
-### 第二步：训练主线模型（我提供 GPU 之后）
+**Stage 5: end of Step 1**
+- The end-to-end smoke test passes, and all unit tests pass.
+- `runs/RUNBOOK.md` and the cost estimates are ready. In the text of Parts 3 and 4, each "Main-line progress" section says "To be added after GPU training".
+- Give me a report: the status of the course, the parts of the production code that are not verified on a GPU yet, and the expected cost of each stage of Step 2.
 
-**阶段 6：GPU 环境验证（≤ $50）**
-- 在真实 GPU 上跑一次短训练：验证多卡、FlashAttention、BF16、断点续训；实测吞吐和 MFU，据此更新成本估算。
+### Step 2: train the main-line model (after I supply the GPUs)
 
-**阶段 7：对手重跑与预注册定稿**
-- 确定对手清单和冻结日期，重跑对手成绩。
-- **停下来等我确认预注册内容**，确认后再提交。
+**Stage 6: GPU environment verification (≤ $50)**
+- Do a short training run on real GPUs: verify multiple GPUs, FlashAttention, BF16, and resume from a checkpoint. Measure the throughput and the MFU, and update the cost estimates with these measurements.
 
-**阶段 8：阶梯实验与闸门 1**
-- 小规模实验、数据消融、配方验证，产出闸门 1 报告。
-- **等我批准预训练预算。**
+**Stage 7: opponent reruns and the final preregistration**
+- Fix the opponent list and the freeze date. Run the opponents again.
+- **Stop and wait for my confirmation of the preregistration.** Commit it only after I confirm it.
 
-**阶段 9：预训练、中期训练与闸门 2**
+**Stage 8: ladder experiments and Gate 1**
+- Small experiments, data ablations, and recipe validation. Write the Gate 1 report.
+- **Wait for my approval of the pretraining budget.**
 
-**阶段 10：后训练、闸门 3 与发布**
-- 发布前等我最后确认。
+**Stage 9: pretraining, mid-training, and Gate 2**
 
-**阶段 11：回填课程**
-- 第三、四部分的"主线进度"补上真实结果；视频里用到真实数据的镜头换成真实曲线，重新渲染。
-- 第五部分可选：用约 1 亿参数级重跑对比实验（预算约 $400）。
+**Stage 10: post-training, Gate 3, and release**
+- Before the release, wait for my final confirmation.
 
-每个阶段结束时：提交代码，更新 `README.md` 状态，给我一个简短汇报。汇报内容包括做了哪些章、花了多少钱，以及哪些地方需要我确认（事实存疑、旁白需试听、结果和预期不符）。第一步的阶段 1–4 各结束一次汇报，不需要等我确认就可以继续下一阶段；阶段 0 以及第二步中标明"等我"的地方必须停下。
+**Stage 11: put the results back into the course**
+- Add the real results to "Main-line progress" in Parts 3 and 4. Replace the video shots that use real data with the real curves, and render them again.
+- Part 5, optional: run the comparison experiments again with about 100M parameters (budget about $400).
 
-**每章完成标准（Definition of Done）**
-- [ ] 速读正文完整，读完能达成"一句话目标"
-- [ ] `code/` 下的极简代码都能用 `uv run` 在 CPU 上几分钟内跑完，输出与正文描述一致
-- [ ] 第 7 章起：本章对应的 `zero/` 生产级代码已写好，相关测试在 CPU 上通过，"从极简到生产级"一节已写
-- [ ] 引导问题和动手任务就位，`/chNN-*` 自检 Skill 就位
-- [ ] `video/script.md` 含事实清单与来源、分镜、旁白
-- [ ] `video/build.sh` 能重新渲染出 MP4，时长 5–10 分钟，已自查遮挡、字幕、音轨
-- [ ] 正文用到的技术都满足 2.1 的共识规则，章末列出采用方和来源；不满足的放在"前沿观察"
-- [ ] 涉及"最新"的内容都有可点击的来源链接
-- [ ] 第 7 章起每章有"想深入：CS336"小节，讲次与作业已按当期课程表核对并附链接
-- [ ] 第三、四部分：第一步完成时，极小配置的运行结果已写入并标注"极小配置演示"，"主线进度"写明待补；第二步完成时，已补上真实训练结果，花费已记入 `runs/ledger.md`
-- [ ] `README.md` 目录状态已更新
+At the end of each stage: commit the code, update the status in `README.md`, and give me a short report. The report includes the chapters that you finished and the money that you spent. It also lists the items that I must confirm: doubtful facts, narration that a person must listen to, and results that do not agree with the expectation. In Step 1, give a report at the end of each of Stages 1–4. Then continue to the next stage without waiting for my confirmation. You must stop at Stage 0, and at the points in Step 2 that say "wait for me".
 
-## 11. 不要做的事
+**Definition of Done for each chapter**
+- [ ] The quick-read text is complete. After reading it, the reader can do what the goal says.
+- [ ] All minimal code in `code/` runs on a CPU with `uv run` in a few minutes, and the output agrees with the text.
+- [ ] From Chapter 7: the related production code in `zero/` is written, the related tests pass on a CPU, and the section "From minimal code to production code" is written.
+- [ ] The guided questions and the hands-on tasks are in place, and the `/chNN-*` self-check skill is in place.
+- [ ] `README.md` (English) and `README.zh.md` (Chinese) are both complete, with the same headings in the same order. Both follow `docs/STYLE_GUIDE.md`.
+- [ ] `video/script.md` has the fact list with sources, the storyboard, and the narration.
+- [ ] `video/build.sh` renders the MP4 again. The length is 5–10 minutes. Overlaps, subtitles, and the audio track are checked.
+- [ ] All methods in the text satisfy the consensus rule of 2.1. The adopters and sources are listed at the end of the chapter. Methods that do not satisfy the rule are in "Frontier notes".
+- [ ] All content about "the newest" has clickable source links.
+- [ ] From Chapter 7, each chapter has a section "Go deeper: CS336". Its lectures and assignments are checked against the current schedule, with links.
+- [ ] Parts 3 and 4: at the end of Step 1, the results of the tiny-configuration run are in the text, labeled "Tiny-configuration demo", and "Main-line progress" says that the real results come later. At the end of Step 2, the real training results are in the text, and the costs are in `runs/ledger.md`.
+- [ ] The status in the contents table of `README.md` is updated.
 
-- 不要为了"讲得全"把速读正文写成教科书；讲不下的细节放进引导问题，交给读者和 Claude Code 对话。
-- 不要编造论文结论、模型配置数字或实验结果；拿不准就标"待核实"，并告诉我。
-- 不要未经我批准启动单次预计超过 $100 的运行。
-- 不要把极小配置的运行结果说成主线模型的结果；不要把没在 GPU 上验证过的代码说成"已验证"。
-- 不要用任何评测集的测试数据训练。不要用预注册的测试基准来调超参或挑 checkpoint，这些决策用我们自己的开发集做；测试基准只在闸门和最终评测时跑。
-- 不要使用许可证不允许的数据或教师模型。
-- 没达到预注册标准时，不要宣称"超过"；不要只挑有利的基准报告。
-- 不要提交 MP4、模型权重、数据集等大文件。
-- 不要删除或改写 `references.md` 里已有的条目。
+## 11. What not to do
+
+- Do not write the quick-read text as a textbook to "cover everything". Put the details that do not fit into the guided questions, for the reader to discuss with Claude Code.
+- Do not make up paper conclusions, model configuration numbers, or experiment results. If you are not sure, mark the item "to be verified" and tell me.
+- Do not start any single run with an expected cost of more than $100 without my approval.
+- Do not present results of the tiny configuration as results of the main-line model. Do not call code "verified" if it was not verified on a GPU.
+- Do not train on the test data of any evaluation set. Do not use the preregistered test benchmarks to tune hyperparameters or to pick checkpoints. Make these decisions with our own development set. Run the test benchmarks only at the gates and in the final evaluation.
+- Do not use data or teacher models whose license does not allow this use.
+- If the model does not reach the preregistered criterion, do not claim "ahead". Do not report only the benchmarks that are good for us.
+- Do not commit large files such as MP4 files, model weights, or data sets.
+- Do not delete or rewrite existing entries in `references.md`.

@@ -1,8 +1,10 @@
-"""评测结果 → Markdown 表格（对应第 11、20 章）。
+"""Evaluation results → Markdown tables (Chapters 11 and 20).
 
-- `results_table(results)`：行是模型，列是"任务/指标"；
-- `comparison_table(comparisons)`：每行一个"模型 vs 基线"的配对 bootstrap 结果与判定；
-- `write_report(path, ...)`：两张表写进一个 Markdown 文件（模型卡和课程正文直接引用）。
+- `results_table(results)`: one row for each model, one column for each "task / metric".
+- `comparison_table(comparisons)`: one row for each "model vs. baseline" paired bootstrap result
+  and its decision.
+- `write_report(path, ...)`: writes the two tables into one Markdown file. The model card and the
+  course text use this file directly.
 """
 
 from __future__ import annotations
@@ -26,14 +28,14 @@ def _fmt(v: Any) -> str:
 
 
 def results_table(results: Mapping[str, Mapping[str, Mapping[str, Any]]]) -> str:
-    """results[模型][任务] = {"type": ..., 指标: 值, "n": 题数}。"""
+    """results[model][task] = {"type": ..., metric: value, "n": number of items}."""
     cols: list[tuple[str, str]] = []
     for per_task in results.values():
         for task, r in per_task.items():
             for m in METRICS_BY_TYPE.get(r.get("type", ""), []):
                 if (task, m) not in cols and m in r:
                     cols.append((task, m))
-    header = "| 模型 | " + " | ".join(f"{t} {m}" for t, m in cols) + " |"
+    header = "| Model | " + " | ".join(f"{t} {m}" for t, m in cols) + " |"
     sep = "|---|" + "---:|" * len(cols)
     rows = [header, sep]
     for model, per_task in results.items():
@@ -41,15 +43,15 @@ def results_table(results: Mapping[str, Mapping[str, Mapping[str, Any]]]) -> str
         rows.append(f"| {model} | " + " | ".join(cells) + " |")
     ns = sorted({(t, r.get("n")) for pt in results.values() for t, r in pt.items()})
     rows.append("")
-    rows.append("题数：" + "，".join(f"{t} n={n}" for t, n in ns))
+    rows.append("Number of items: " + ", ".join(f"{t} n={n}" for t, n in ns))
     return "\n".join(rows)
 
 
 def comparison_table(comparisons: Sequence[Mapping[str, Any]]) -> str:
     if not comparisons:
-        return "（没有配对比较）"
+        return "(no paired comparisons)"
     rows = [
-        "| 模型 | 基线 | 任务 | 指标 | 模型得分 | 基线得分 | 差值 | 95% CI | 判定 |",
+        "| Model | Baseline | Task | Metric | Model score | Baseline score | Difference | 95% CI | Decision |",
         "|---|---|---|---|---:|---:|---:|---|---|",
     ]
     for c in comparisons:
@@ -64,7 +66,7 @@ def write_report(
     path: str | os.PathLike,
     results: Mapping[str, Mapping[str, Mapping[str, Any]]],
     comparisons: Sequence[Mapping[str, Any]] = (),
-    title: str = "评测结果",
+    title: str = "Evaluation results",
     notes: Sequence[str] = (),
 ) -> Path:
     p = Path(path)
@@ -72,17 +74,19 @@ def write_report(
     parts = [
         f"# {title}",
         "",
-        "## 得分",
+        "## Scores",
         "",
         results_table(results),
         "",
-        "## 配对 bootstrap 比较",
+        "## Paired bootstrap comparisons",
         "",
     ]
     parts.append(comparison_table(comparisons))
     parts += [
         "",
-        "判定规则：差值的 95% 置信区间整体大于 0 为“超过”，整体小于 0 为“落后”，跨过 0 为“持平”（GOAL.md 3.2）。",
+        "Decision rule: if the full 95% confidence interval of the difference is above 0, the decision is "
+        '"ahead". If the full interval is below 0, the decision is "behind". If the interval contains 0, '
+        'the decision is "tie" (GOAL.md 3.2).',
     ]
     for n in notes:
         parts += ["", f"- {n}"]

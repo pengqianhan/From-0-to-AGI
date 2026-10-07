@@ -1,29 +1,38 @@
-"""第二步的数据下载器：从 Hugging Face 流式读取登记过的数据集，写成带出处的 JSONL 分片（对应第 13 章）。
+"""Data downloader for Step 2: stream registered data sets from Hugging Face and write JSONL shards with provenance (Chapter 13).
 
-    uv sync --extra data                                       # 装 datasets（以及 Stack-Edu 要用的 boto3）
+    uv sync --extra data                                       # install datasets (and boto3, which Stack-Edu needs)
     uv run python -m zero.data.download --config configs/main/data.toml --sources fineweb-edu
-    uv run python -m zero.data.download --config configs/main/data.toml --dry-run   # 只打印计划
+    uv run python -m zero.data.download --config configs/main/data.toml --dry-run   # print the plan only
 
-**验证状态**：第一步的构建环境访问不了 huggingface.co，当时只有纯函数（配置解析、记录构造、分片写入与续传、
-下载量规划、许可证检查）有单元测试（tests/test_download.py 用假数据代替网络）。2026-10-01 第一次真正联网：
-`datasets` 流式读取 + 按 `target_bytes` 停止，在 FineWeb-Edu、DCLM、FineMath、FineWeb-2 中文、Ultra-FineWeb
-中文、UltraData-Code 上各下了几 MB（configs/vocab/download.toml，记录见 runs/2026-10-01-vocab-corpus/），
-字段名和出处都核对过，并修了一个 keep_fields 覆盖出处字段的 bug。**仍未验证**：Stack-Edu 的 Software Heritage
-S3 取正文（需要 AWS 凭证）、大规模下载的吞吐与断点续传。已知问题：datasets 流式读取后，解释器退出时会报
-"PyGILState_Release" 致命错误（退出码 134），数据此前已全部写完——以 `_manifest.json` 为准，别依赖退出码。
-第二步第一次下载时，仍先对每个来源跑 `--max-docs 1000` 核对字段名和内容，再放开。
+**Verification status**: the build environment of Step 1 had no access to huggingface.co. At that
+time, only the pure functions had unit tests (config parsing, record construction, shard writing
+and resume, download planning, license check). tests/test_download.py uses fake data instead of
+the network. On 2026-10-01, the downloader used the network for the first time: `datasets`
+streaming + stop at `target_bytes`. It downloaded a few MB each from FineWeb-Edu, DCLM, FineMath,
+FineWeb-2 Chinese, Ultra-FineWeb Chinese, and UltraData-Code (configs/vocab/download.toml; the
+records are in runs/2026-10-01-vocab-corpus/). We checked the field names and the provenance, and
+we fixed a bug: keep_fields overwrote a provenance field. **Not verified yet**: the Stack-Edu
+content from the Software Heritage S3 (needs AWS credentials), and the throughput and resume of
+large downloads. Known problem: after `datasets` streaming, the interpreter reports the fatal error
+"PyGILState_Release" at exit (exit code 134). All data is already written before this error.
+Trust `_manifest.json`, not the exit code.
+For the first download of Step 2, first run `--max-docs 1000` for each source to check the field
+names and the content. Then remove the limit.
 
-设计要点：
-- **只下登记过的数据**：每个来源必须在 zero/data/sources.py 里登记；许可证还是"待核实"的来源默认拒绝下载
-  （`--allow-unverified` 才放行），对应 GOAL.md 3.3"只用许可证允许的公开数据"。
-- **出处跟着每一条记录走**：每行 JSON 带 source、hf_repo、hf_config、hf_split、hf_revision、行号，
-  以及数据集自带的元数据（url、dump、质量分数……），模型卡里的数据清单从这里汇总。
-- **可续传**：每个来源一个 `_manifest.json`，记录写完的分片（文件名、行数、字节数、sha256）；
-  重跑时跳过已完成的行数，从下一个分片接着写。
-- **下多少由预算决定**：`plan_targets` 按 token 预算 × 配比 × 每 token 字节数 × 过滤损耗余量，
-  算出每个来源要下载的原始字节数。
-- **Stack-Edu 只有文件 id**：内容要按 blob_id 从 Software Heritage 的 S3 桶取（数据集卡给出的方式），
-  需要 AWS 凭证，见 `fetch_swh_content`。
+Design points:
+- **Download only registered data**: each source must be registered in zero/data/sources.py.
+  By default, the downloader refuses a source whose license is still "待核实" (to be verified).
+  `--allow-unverified` lets it through. This follows GOAL.md 3.3: "use only public data whose
+  license allows it".
+- **The provenance goes with each record**: each JSON line has source, hf_repo, hf_config,
+  hf_split, hf_revision, the row number, and the metadata of the data set (url, dump, quality
+  score, ...). The data list of the model card is made from these fields.
+- **Resume**: each source has a `_manifest.json` that lists the completed shards (file name, rows,
+  bytes, sha256). A new run skips the completed rows and continues with the next shard.
+- **The budget decides the download size**: `plan_targets` computes the raw bytes to download for
+  each source: token budget × mixture weight × bytes per token × margin for filter losses.
+- **Stack-Edu has only file ids**: the content comes from the Software Heritage S3 bucket by
+  blob_id (the method of the data set card). This needs AWS credentials. See `fetch_swh_content`.
 """
 
 from __future__ import annotations
@@ -45,28 +54,29 @@ from typing import Any
 from zero.data.sources import SOURCES
 
 # ---------------------------------------------------------------------------
-# 规格
+# Specification
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class DownloadSpec:
-    """一个来源怎么下载。对应 configs/main/data.toml 里每个 [[sources]] 下的 [sources.download]。"""
+    """How to download one source. Corresponds to [sources.download] under each [[sources]] in configs/main/data.toml."""
 
-    name: str  # 输出目录名 / 分片前缀（与流水线的来源名一致）
-    registry: str  # zero/data/sources.py 的登记名
-    repo: str  # Hugging Face 数据集仓库，如 "HuggingFaceFW/fineweb-edu"
-    # 子集（name=），如 "sample-100BT"、"cmn_Hani"；可以是列表（Stack-Edu 每种编程语言一个子集），按顺序读
+    name: str  # output directory name / shard prefix (the same as the source name in the pipeline)
+    registry: str  # registry name in zero/data/sources.py
+    repo: str  # Hugging Face data set repository, for example "HuggingFaceFW/fineweb-edu"
+    # Subset (name=), for example "sample-100BT" or "cmn_Hani". It can be a list (Stack-Edu has one
+    # subset for each programming language); the subsets are read in sequence.
     config: str | list[str] | None = None
     split: str = "train"
-    revision: str | None = None  # 固定到某个 commit，保证可复现（第二步定稿时填）
+    revision: str | None = None  # pin to one commit for reproducibility (fill in when Step 2 is final)
     data_files: str | None = None
     text_field: str = "text"
     id_field: str = "id"
-    keep_fields: list[str] = field(default_factory=list)  # 额外保留的元数据字段
-    swh_content: bool = False  # Stack-Edu：text 需要按 blob_id 从 Software Heritage 取
-    target_bytes: int = 0  # 下载多少原始字节就停（0 = 由 plan_targets 计算或不限）
-    max_docs: int = 0  # 最多下载多少篇（0 = 不限）
+    keep_fields: list[str] = field(default_factory=list)  # more metadata fields to keep
+    swh_content: bool = False  # Stack-Edu: get the text by blob_id from Software Heritage
+    target_bytes: int = 0  # stop after this many raw bytes (0 = computed by plan_targets, or no limit)
+    max_docs: int = 0  # maximum number of documents to download (0 = no limit)
     docs_per_shard: int = 100_000
 
     @classmethod
@@ -74,12 +84,12 @@ class DownloadSpec:
         names = {f.name for f in dataclasses.fields(cls)} - {"name", "registry"}
         unknown = set(d) - names
         if unknown:
-            raise ValueError(f"[{name}.download] 不认识的字段：{sorted(unknown)}")
+            raise ValueError(f"[{name}.download] unknown fields: {sorted(unknown)}")
         return cls(name=name, registry=registry, **d)
 
 
 def specs_from_config(cfg: dict[str, Any]) -> list[DownloadSpec]:
-    """从数据配置（configs/main/data.toml 解析出的字典）里取出所有带 [sources.download] 的来源。"""
+    """Get all sources with [sources.download] from the data config (the dict parsed from configs/main/data.toml)."""
     out = []
     for s in cfg.get("sources", []):
         if "download" in s:
@@ -90,13 +100,17 @@ def specs_from_config(cfg: dict[str, Any]) -> list[DownloadSpec]:
 
 
 def check_license(spec: DownloadSpec, allow_unverified: bool = False) -> str:
-    """返回登记的许可证；来源没登记、或许可证"待核实"且没有显式放行时报错。"""
+    """Return the registered license.
+
+    Raise an error if the source is not registered, or if the license is "待核实" (to be verified)
+    and allow_unverified is not set.
+    """
     if spec.registry not in SOURCES:
-        raise KeyError(f"{spec.name}：{spec.registry!r} 没有在 zero/data/sources.py 登记，不能下载")
+        raise KeyError(f"{spec.name}: {spec.registry!r} is not registered in zero/data/sources.py; cannot download it")
     lic = SOURCES[spec.registry].license
     if "待核实" in lic and not allow_unverified:
         raise PermissionError(
-            f"{spec.name}：许可证{lic}。先人工核实并更新 sources.py，或加 --allow-unverified"
+            f"{spec.name}: the license is not verified (license={lic}). Verify it by hand and update sources.py, or add --allow-unverified"
         )
     return lic
 
@@ -108,10 +122,11 @@ def plan_targets(
     keep_rate: dict[str, float] | None = None,
     margin: float = 1.1,
 ) -> dict[str, int]:
-    """每个来源要下载多少原始字节。
+    """The number of raw bytes to download for each source.
 
-    需要的训练 token = 预算 × 配比；换成字节 = × 每 token 字节数（用主线分词器在该来源样本上测）；
-    再除以流水线的保留率（去重、过滤会删掉一部分），乘一点余量。
+    Training tokens needed = budget × mixture weight. In bytes: × bytes per token (measured with the
+    main-line tokenizer on a sample of the source). Then divide by the keep rate of the pipeline
+    (deduplication and filters remove a part), and multiply by a small margin.
     """
     tot = sum(weights.values())
     keep_rate = keep_rate or {}
@@ -123,12 +138,12 @@ def plan_targets(
 
 
 # ---------------------------------------------------------------------------
-# 记录与分片
+# Records and shards
 # ---------------------------------------------------------------------------
 
 
 def make_record(row: dict[str, Any], spec: DownloadSpec, index: int) -> dict[str, Any] | None:
-    """数据集的一行 → 我们的 JSONL 记录（text + 出处 + 保留的元数据）。text 为空返回 None。"""
+    """One row of the data set → our JSONL record (text + provenance + kept metadata). Return None if the text is empty."""
     text = row.get(spec.text_field)
     if not isinstance(text, str) or not text.strip():
         return None
@@ -147,8 +162,9 @@ def make_record(row: dict[str, Any], spec: DownloadSpec, index: int) -> dict[str
     reserved = set(rec)
     for k in spec.keep_fields:
         if k in row:
-            # 数据集自带的字段和我们的出处字段重名时（Ultra-FineWeb 的 "source" 是上游语料名），
-            # 改名保留，不能覆盖出处。2026-10 第一次真实下载时发现
+            # A field of the data set can have the same name as one of our provenance fields
+            # ("source" in Ultra-FineWeb is the name of the upstream corpus). Keep it with a new name;
+            # do not overwrite the provenance. Found in the first real download in 2026-10.
             rec[f"orig_{k}" if k in reserved else k] = row[k]
     return rec
 
@@ -162,8 +178,11 @@ def _sha256(path: Path) -> str:
 
 
 class ShardWriter:
-    """把记录写成 `<out>/<name>/<name>-00000.jsonl.gz`，每 docs_per_shard 行换一个文件；
-    每写完一个分片就更新 `_manifest.json`（先写临时文件再改名，中途被杀也不会留下半个清单）。"""
+    """Write the records to `<out>/<name>/<name>-00000.jsonl.gz`, with a new file every docs_per_shard rows.
+
+    After each shard, update `_manifest.json`. It writes a temporary file first and then renames it,
+    so a killed process never leaves half a manifest.
+    """
 
     def __init__(self, out_dir: str | os.PathLike, spec: DownloadSpec, license: str) -> None:
         self.dir = Path(out_dir) / spec.name
@@ -187,10 +206,10 @@ class ShardWriter:
         self._rows = 0
         self._bytes = 0
 
-    # ---- 续传信息 ----
+    # ---- resume information ----
     @property
     def rows_done(self) -> int:
-        """已完成分片覆盖的数据集行数（续传时跳过这么多行）。"""
+        """Number of data set rows that the completed shards cover (a resume skips this many rows)."""
         return sum(s["rows"] for s in self.manifest["shards"])
 
     @property
@@ -209,7 +228,10 @@ class ShardWriter:
         self._rows = self._docs = self._bytes = 0
 
     def add(self, rec: dict[str, Any] | None) -> None:
-        """写一条记录；rec 为 None 表示这一行被跳过（仍计入行数，续传时对齐数据集行号）。"""
+        """Write one record. rec = None means that this row is skipped.
+
+        A skipped row still counts as a row, so that a resume stays aligned with the row numbers of the data set.
+        """
         if self._f is None:
             self._open()
         self._rows += 1
@@ -252,16 +274,16 @@ class ShardWriter:
 
 
 # ---------------------------------------------------------------------------
-# 网络部分（HF 流式读取 2026-10 已小规模验证；Software Heritage S3 尚未验证）
+# Network part (HF streaming: verified at small scale in 2026-10; Software Heritage S3: not verified yet)
 # ---------------------------------------------------------------------------
 
 
 def hf_rows(spec: DownloadSpec, skip: int = 0) -> Iterator[dict[str, Any]]:  # pragma: no cover
-    """用 `datasets` 流式读取（不把整个数据集下载到本地）。2026-10 在 6 个数据集的小规模下载上验证过。"""
+    """Stream with `datasets` (do not download the full data set). Verified in 2026-10 with small downloads from 6 data sets."""
     try:
         from datasets import load_dataset
     except ImportError as e:
-        raise ImportError("需要 datasets：uv sync --extra data") from e
+        raise ImportError("datasets is necessary: uv sync --extra data") from e
     import itertools
 
     configs = spec.config if isinstance(spec.config, list) else [spec.config]
@@ -277,17 +299,18 @@ def hf_rows(spec: DownloadSpec, skip: int = 0) -> Iterator[dict[str, Any]]:  # p
         for row in load_dataset(spec.repo, **kw):
             yield {**row, "hf_subset": config} if len(configs) > 1 else row
 
-    # 多个子集首尾相接；续传时跳过前 skip 行（跳过的行也要从网络读一遍，第二步如果太慢再按子集记录进度）
+    # The subsets follow each other in sequence. A resume skips the first `skip` rows. The skipped rows
+    # are still read from the network; if this is too slow in Step 2, record the progress per subset.
     yield from itertools.islice(itertools.chain.from_iterable(map(stream, configs)), skip, None)
 
 
 def fetch_swh_content(blob_id: str, s3: Any = None) -> str | None:  # pragma: no cover
-    """按 blob_id 从 Software Heritage 的 S3 桶取文件内容（Stack-Edu 数据集卡给出的方式）。尚未验证。
+    """Get the file content by blob_id from the Software Heritage S3 bucket (the method of the Stack-Edu data set card). Not verified yet.
 
-    需要 boto3 和 AWS 凭证；取不到（NoSuchKey）返回 None。
+    Needs boto3 and AWS credentials. Returns None if the object does not exist (NoSuchKey).
     """
     if s3 is None:
-        import boto3  # 可选依赖：uv sync --extra data
+        import boto3  # optional dependency: uv sync --extra data
 
         s3 = boto3.client("s3")
     try:
@@ -308,25 +331,27 @@ def download_source(
     fetch: Callable[[str], str | None] | None = None,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
-    """下载一个来源到 out_dir/<name>/。rows 为 None 时从 Hugging Face 流式读取（测试时传假数据）。
+    """Download one source to out_dir/<name>/. If rows is None, stream from Hugging Face (tests give fake data).
 
-    停止条件：数据集读完（complete=True），或达到 target_bytes / max_docs（complete=False，下次续传）。
+    The download stops when the data set ends (complete=True), or at target_bytes / max_docs
+    (complete=False; the next run resumes).
     """
     lic = check_license(spec, allow_unverified)
     w = ShardWriter(out_dir, spec, lic)
     if w.manifest.get("complete"):
-        log(f"[download] {spec.name} 已完成，跳过")
+        log(f"[download] {spec.name} is complete, skipped")
         return w.manifest
-    # 已经下够了（上次按 target_bytes / max_docs 停下）：别再打开数据流——续传要先从网络把已下载的行
-    # 重读一遍才能跳过它们，等于白白重下一遍
+    # The target is already reached (the last run stopped at target_bytes / max_docs). Do not open the
+    # stream again: to skip the downloaded rows, a resume must read them again from the network,
+    # and that is the same as a second download for no purpose.
     if (spec.max_docs and w.docs_done >= spec.max_docs) or (
         spec.target_bytes and w.bytes_done >= spec.target_bytes
     ):
-        log(f"[download] {spec.name} 已达到下载目标，跳过")
+        log(f"[download] {spec.name} reached the download target, skipped")
         return w.manifest
     skip = w.rows_done
     it = iter(rows) if rows is not None else hf_rows(spec, skip=skip)
-    if rows is not None and skip:  # 假数据/本地数据：手动跳过已完成的行
+    if rows is not None and skip:  # fake or local data: skip the completed rows by hand
         for _ in range(skip):
             next(it, None)
     if spec.swh_content and fetch is None:
@@ -349,18 +374,18 @@ def download_source(
             nbytes += len(rec["text"].encode("utf-8"))
         index += 1
     m = w.finish(complete)
-    log(f"[download] {spec.name}: {docs:,} 篇，{nbytes / 1e9:.2f} GB，complete={complete}")
+    log(f"[download] {spec.name}: {docs:,} documents, {nbytes / 1e9:.2f} GB, complete={complete}")
     return m
 
 
 def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover
-    ap = argparse.ArgumentParser(description="第二步：下载预训练数据（大规模下载尚未验证）")
+    ap = argparse.ArgumentParser(description="Step 2: download the pretraining data (large downloads are not verified yet)")
     ap.add_argument("--config", required=True, help="configs/main/data.toml")
     ap.add_argument("--out", default="data/raw")
-    ap.add_argument("--sources", nargs="*", help="只下载这些来源（默认全部）")
-    ap.add_argument("--max-docs", type=int, default=0, help="每个来源最多下载多少篇（试跑用）")
+    ap.add_argument("--sources", nargs="*", help="download only these sources (default: all)")
+    ap.add_argument("--max-docs", type=int, default=0, help="maximum number of documents for each source (for test runs)")
     ap.add_argument("--allow-unverified", action="store_true")
-    ap.add_argument("--dry-run", action="store_true", help="只打印计划，不联网")
+    ap.add_argument("--dry-run", action="store_true", help="print the plan only; do not use the network")
     args = ap.parse_args(argv)
     with open(args.config, "rb") as f:
         cfg = tomllib.load(f)
@@ -370,11 +395,11 @@ def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover
     for s in specs:
         if args.max_docs:
             s.max_docs = args.max_docs
-        lic = SOURCES[s.registry].license if s.registry in SOURCES else "未登记"
+        lic = SOURCES[s.registry].license if s.registry in SOURCES else "unregistered"
         b = s.target_bytes
         target = f"{b / 1e9:.0f} GB" if b >= 1e9 else f"{b / 1e6:.1f} MB"
         print(
-            f"{s.name:>18}  {s.repo}  config={s.config}  split={s.split}  许可证={lic}  目标 {target}"
+            f"{s.name:>18}  {s.repo}  config={s.config}  split={s.split}  license={lic}  target {target}"
         )
         if not args.dry_run:
             download_source(s, args.out, allow_unverified=args.allow_unverified)
@@ -382,9 +407,10 @@ def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover
 
 if __name__ == "__main__":  # pragma: no cover
     main()
-    # 分片和 _manifest.json 都已经写完、落盘。datasets 流式读取留下的后台线程会让解释器在退出阶段
-    # 崩溃（PyGILState_Release，退出码 134）或者卡住不退出（2026-10 并行下载时 8 个进程全卡住，
-    # 占满了并发槽位）。所以直接结束进程，跳过解释器的收尾
+    # The shards and _manifest.json are written and on disk. The background threads of `datasets`
+    # streaming can make the interpreter crash at exit (PyGILState_Release, exit code 134), or hang
+    # (in 2026-10, during parallel downloads, all 8 processes hung and blocked all parallel slots).
+    # So end the process directly and skip the cleanup of the interpreter.
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(0)

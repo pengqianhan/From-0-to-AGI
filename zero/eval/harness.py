@@ -1,21 +1,29 @@
-"""评测框架：少样本对数似然选择题、生成式精确匹配、工具调用评测（对应第 11、20 章）。
+"""Evaluation framework: few-shot log-likelihood multiple choice, generative exact match, tool-call evaluation (Chapters 11 and 20).
 
     uv run python -m zero.eval.harness --config configs/tiny/eval.toml
 
-三类评测（每一类都返回**逐题得分**，供 `bootstrap.py` 做配对 bootstrap）：
+There are three types of evaluation. Each type returns **per-item scores** for the paired bootstrap
+in `bootstrap.py`:
 
-1. **选择题（对数似然）**：提示词 = k 个示例 + 问题，对每个选项算"续写成这个选项"的 log 概率之和，
-   取最大的为答案。与 lm-evaluation-harness 的做法一致：
-   - `acc`：直接比 log 概率之和；
-   - `acc_norm`：除以选项的 UTF-8 字节数再比（长选项天然概率低，归一化后更公平）；
-   - 上下文和续写分开编码再拼接（续写前面的空格归续写），与 lm-eval 的默认做法一致。
-   Base 模型常用这种评测：不需要模型会"按格式作答"。
-2. **生成式精确匹配**：k 个示例 + 提示词，贪心生成到换行为止，去掉首尾空白后与答案逐字比较。
-3. **工具调用**：用对话模板把 tool_env 的 dev 任务喂给模型，走完"生成 → 解析 → 执行 → 喂回 →
-   最终回答"（`run_episode`），记录第一轮调用的奖励、AST 匹配、执行匹配、最终回答是否正确。
+1. **Multiple choice (log-likelihood)**: prompt = k examples + the question. For each choice,
+   compute the sum of the log probabilities of "the continuation is this choice". The choice with
+   the highest value is the answer. This is the method of lm-evaluation-harness:
+   - `acc`: compare the sums of the log probabilities directly.
+   - `acc_norm`: divide by the number of UTF-8 bytes of the choice, then compare. A long choice
+     always has a lower probability, so the normalized comparison is fairer.
+   - Encode the context and the continuation separately, then join them (the space before the
+     continuation belongs to the continuation). This is the default of lm-eval.
+   Base models often use this evaluation, because the model does not need to "answer in a format".
+2. **Generative exact match**: k examples + the prompt. Generate greedily until a line break.
+   Remove the white space at the start and the end, then compare with the answer character by character.
+3. **Tool calls**: the chat template gives the dev tasks of tool_env to the model. The full
+   sequence "generate → parse → execute → feed back → final answer" runs (`run_episode`).
+   Record the reward of the first-turn call, the AST match, the execution match, and if the final
+   answer is correct.
 
-这里的数据都是仓库自带的玩具集（`zero/eval/tasks/`），只用来验证代码。正式基准按
-eval/PREREGISTRATION.md 用官方评测框架跑（lm-evaluation-harness、BFCL 等，见 `bfcl.py`）。
+All data here are toy sets in the repository (`zero/eval/tasks/`), only to verify the code. The real
+benchmarks run with the official evaluation frameworks, as eval/PREREGISTRATION.md specifies
+(lm-evaluation-harness, BFCL, and others; see `bfcl.py`).
 """
 
 from __future__ import annotations
@@ -40,28 +48,28 @@ TASK_DIR = Path(__file__).resolve().parent / "tasks"
 @dataclass
 class EvalModel:
     name: str = ""
-    path: str = ""  # zero checkpoint 目录或 HF 目录
+    path: str = ""  # zero checkpoint directory or HF directory
 
 
 @dataclass
 class EvalConfig:
     models: list[EvalModel] = field(default_factory=list)
-    mc_tasks: list[str] = field(default_factory=list)  # 选择题 JSONL
-    gen_tasks: list[str] = field(default_factory=list)  # 生成式 JSONL
-    tool_tasks: str = ""  # 工具调用 dev 集 JSONL（tool_env.Task 的字典）
+    mc_tasks: list[str] = field(default_factory=list)  # multiple-choice JSONL files
+    gen_tasks: list[str] = field(default_factory=list)  # generative JSONL files
+    tool_tasks: str = ""  # tool-call dev set JSONL (dicts of tool_env.Task)
     fewshot: int = 3
-    max_items: int = 0  # 每个任务最多评多少题；0 = 全部
+    max_items: int = 0  # maximum number of items for each task; 0 = all
     max_new_tokens: int = 96
     max_turns: int = 3
     out_dir: str = "out/eval"
-    baseline: str = ""  # 其余模型都与它做配对 bootstrap 比较
+    baseline: str = ""  # the paired bootstrap compares all other models with this model
     n_boot: int = 2000
     seed: int = 0
     cpu_threads: int = 0
 
 
 # ---------------------------------------------------------------------------
-# 选择题
+# Multiple choice
 # ---------------------------------------------------------------------------
 
 
@@ -73,7 +81,7 @@ def _mc_prompt(item: dict[str, Any]) -> str:
 def continuation_logprob(
     model: Transformer, tok: Tokenizer, context: str, continuation: str
 ) -> tuple[float, int]:
-    """log P(continuation | context) 以及续写的 token 数。上下文过长时从左边截断。"""
+    """log P(continuation | context) and the number of tokens of the continuation. A context that is too long is cut from the left."""
     ctx = tok.encode(context)
     cont = tok.encode(continuation)
     ids = (ctx + cont)[-(model.config.max_seq_len + 1) :]
@@ -91,7 +99,10 @@ def eval_multiple_choice(
     fewshot: int = 3,
     max_items: int = 0,
 ) -> dict[str, Any]:
-    """前 fewshot 题做示例，其余题评测。返回 {"acc", "acc_norm", "n", "items": [...逐题...]}。"""
+    """The first `fewshot` items are the examples; the other items are evaluated.
+
+    Returns {"acc", "acc_norm", "n", "items": [...one entry per item...]}.
+    """
     shots = list(items[:fewshot])
     rest = list(items[fewshot:])
     if max_items > 0:
@@ -126,7 +137,7 @@ def eval_multiple_choice(
 
 
 # ---------------------------------------------------------------------------
-# 生成式精确匹配
+# Generative exact match
 # ---------------------------------------------------------------------------
 
 
@@ -178,7 +189,7 @@ def eval_exact_match(
 
 
 # ---------------------------------------------------------------------------
-# 工具调用
+# Tool calls
 # ---------------------------------------------------------------------------
 
 
@@ -187,7 +198,7 @@ def eval_tool_calls(
     tasks: Sequence[Any],
     max_turns: int = 3,
 ) -> dict[str, Any]:
-    """policy(messages, tools) -> 助手文本。对每个任务跑完整一轮，返回汇总与逐题结果。"""
+    """policy(messages, tools) -> assistant text. Run one full episode for each task, and return the summary and the per-item results."""
     from zero.post.envs.tool_env import run_episode
 
     per = []
@@ -200,12 +211,12 @@ def eval_tool_calls(
                 "kind": t.kind,
                 "call_reward": cr.total,
                 "format_ok": float(cr.format_ok),
-                "call_exact": float(cr.exact),  # 该调的全调对、没有多余调用（不该调的没调、没编造）
+                "call_exact": float(cr.exact),  # all necessary calls are correct and there are no extra calls (no call when none is necessary, no invented call)
                 "ast_match": cr.ast_match,
                 "exec_match": cr.exec_match,
                 "answer_ok": float(
                     ep.answer_reward.answer_ok is not False
-                ),  # 闲聊任务无法核对时不计为错
+                ),  # a chat task that cannot be checked does not count as wrong
                 "success": float(ep.success),
                 "turns": ep.turns,
             }
@@ -224,7 +235,7 @@ def eval_tool_calls(
 
 
 # ---------------------------------------------------------------------------
-# 入口
+# Entry point
 # ---------------------------------------------------------------------------
 
 
@@ -256,7 +267,7 @@ def evaluate_model(
             **eval_multiple_choice(model, tok, read_jsonl(_resolve(p)), ec.fewshot, ec.max_items),
         }
         log(
-            f"  {name}: acc {res[name]['acc']:.3f} acc_norm {res[name]['acc_norm']:.3f}（{time.time() - t0:.1f}s）"
+            f"  {name}: acc {res[name]['acc']:.3f} acc_norm {res[name]['acc_norm']:.3f} ({time.time() - t0:.1f}s)"
         )
     for p in ec.gen_tasks:
         name = Path(p).stem
@@ -265,7 +276,7 @@ def evaluate_model(
             "type": "gen",
             **eval_exact_match(model, tok, read_jsonl(_resolve(p)), ec.fewshot, ec.max_items),
         }
-        log(f"  {name}: em {res[name]['em']:.3f}（{time.time() - t0:.1f}s）")
+        log(f"  {name}: em {res[name]['em']:.3f} ({time.time() - t0:.1f}s)")
     if ec.tool_tasks:
         t0 = time.time()
         tasks = [Task.from_dict(r) for r in read_jsonl(_resolve(ec.tool_tasks))]
@@ -276,7 +287,7 @@ def evaluate_model(
         res["tool_dev"] = {"type": "tool", **r}
         log(
             f"  tool_dev: call_reward {r['call_reward']:+.3f} call_exact {r['call_exact']:.3f} "
-            f"format {r['format_ok']:.3f} answer {r['answer_ok']:.3f}（{time.time() - t0:.1f}s）"
+            f"format {r['format_ok']:.3f} answer {r['answer_ok']:.3f} ({time.time() - t0:.1f}s)"
         )
     return res
 
@@ -305,7 +316,7 @@ def run_eval(ec: EvalConfig, log: Callable[[str], None] = print) -> dict[str, An
     comparisons = []
     if ec.baseline:
         if ec.baseline not in results:
-            raise ValueError(f"[eval] baseline={ec.baseline!r} 不在 models 里")
+            raise ValueError(f"[eval] baseline={ec.baseline!r} is not in models")
         for name in results:
             if name == ec.baseline:
                 continue
@@ -327,13 +338,13 @@ def run_eval(ec: EvalConfig, log: Callable[[str], None] = print) -> dict[str, An
     out.mkdir(parents=True, exist_ok=True)
     payload = {"config": asdict(ec), "results": results, "comparisons": comparisons}
     (out / "results.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2))
-    write_report(out / "report.md", results, comparisons, title="评测结果（玩具集，仅验证代码）")
-    log(f"[eval] 结果：{out / 'results.json'}，报告：{out / 'report.md'}")
+    write_report(out / "report.md", results, comparisons, title="Evaluation results (toy sets, only to verify the code)")
+    log(f"[eval] results: {out / 'results.json'}, report: {out / 'report.md'}")
     return payload
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description="评测（第 11、20 章）")
+    ap = argparse.ArgumentParser(description="Evaluation (Chapters 11 and 20)")
     ap.add_argument("--config", required=True)
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
     args = ap.parse_args(argv)

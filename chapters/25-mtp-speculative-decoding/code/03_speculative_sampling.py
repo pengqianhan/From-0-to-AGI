@@ -1,17 +1,24 @@
-"""第 25 章 · 极简代码 3：采样时的推测解码——拒绝采样为什么一点都不改变分布
+"""Chapter 25 · Minimal code 3: speculative decoding with sampling. Why rejection sampling does
+not change the distribution at all.
 
-目标模型给出分布 p，草稿模型给出分布 q，草稿按 q 抽出一个 token x：
-  - 以概率 min(1, p(x)/q(x)) 接受 x；
-  - 被拒绝时，从"残差分布" p'(x) = max(0, p(x) − q(x)) / Σ max(0, p − q) 重新抽一个。
-结论：最后得到的 token 恰好服从 p。一次接受的概率是 α = Σ_x min(p(x), q(x)) = 1 − TV(p, q)。
+The target model gives a distribution p, and the draft model gives a distribution q.
+The draft samples a token x from q:
+  - Accept x with the probability min(1, p(x)/q(x)).
+  - If x is rejected, sample a new token from the "residual distribution"
+    p'(x) = max(0, p(x) − q(x)) / Σ max(0, p − q).
+Result: the final token follows p exactly. The probability of one acceptance is
+α = Σ_x min(p(x), q(x)) = 1 − TV(p, q).
 
-本脚本做三件事：
-  1. 小词表玩具：一步拒绝采样抽 20 万次，和 p 比（TV 距离 + 卡方检验）；对照"直接用草稿的样本"；
-  2. 完整算法（k 个草稿 + 奖励 token）在一对马尔可夫链"语言模型"上生成长度 3 的序列 6 万次，
-     和目标模型的精确联合分布比（4³ = 64 个格子的卡方检验）；
-  3. 真实小模型（第 10 章目标 + 1 层草稿），温度 1：实测接受率 vs 公式 Σ min(p, q)，以及速度。
+This script does three things:
+  1. A toy with a small vocabulary: sample 200,000 times with one step of rejection sampling and
+     compare with p (TV distance + chi-square test). Reference: "use the draft samples directly".
+  2. The full algorithm (k drafts + bonus token) on a pair of Markov-chain "language models":
+     generate sequences of length 3, 60,000 times, and compare with the exact joint distribution of
+     the target model (a chi-square test on 4³ = 64 cells).
+  3. The real small models (the Chapter 10 target + the 1-layer draft), temperature 1:
+     measured acceptance rate vs the formula Σ min(p, q), and the speed.
 
-运行：uv run python chapters/25-mtp-speculative-decoding/code/03_speculative_sampling.py
+Run: uv run python chapters/25-mtp-speculative-decoding/code/03_speculative_sampling.py
 """
 
 from __future__ import annotations
@@ -36,39 +43,44 @@ def _load(name: str, filename: str):
     return mod
 
 
-# ── 核心：一次"接受或拒绝" ────────────────────────────────────────────────────
+# ── Core: one "accept or reject" ─────────────────────────────────────────────────
 def accept_or_resample(p: torch.Tensor, q: torch.Tensor, x: int, g: torch.Generator):
-    """p, q: (V,) 概率；x ~ q。返回 (是否接受, 最终 token)。"""
-    if torch.rand((), generator=g) < torch.clamp(p[x] / q[x], max=1.0):  # 以 min(1, p/q) 接受
+    """p, q: (V,) probabilities; x ~ q. Returns (accepted or not, final token)."""
+    if torch.rand((), generator=g) < torch.clamp(p[x] / q[x], max=1.0):  # Accept with min(1, p/q)
         return True, x
-    residual = torch.clamp(p - q, min=0)  # 残差分布 max(0, p − q)，再归一化
+    residual = torch.clamp(p - q, min=0)  # Residual distribution max(0, p − q), then normalize
     return False, int(torch.multinomial(residual / residual.sum(), 1, generator=g))
 
 
 def speculative_step(p_rows, q_rows, drafts, g):
-    """一轮验证。p_rows: (k+1, V) 目标在每个位置的分布；q_rows: (k, V) 草稿的分布；drafts: k 个草稿。
-    返回 (接受个数 m, 本轮新增的 token 列表，长度 m+1)。"""
+    """One round of verification.
+
+    p_rows: (k+1, V) distributions of the target at each position; q_rows: (k, V) distributions
+    of the draft; drafts: k drafts.
+    Returns (number accepted m, list of the new tokens of this round, length m+1)."""
     k = len(drafts)
     for i in range(k):
         ok, tok = accept_or_resample(p_rows[i], q_rows[i], drafts[i], g)
         if not ok:
-            return i, drafts[:i] + [tok]  # 第 i 个被拒：前 i 个 + 残差分布里重抽的 1 个
-    bonus = int(torch.multinomial(p_rows[k], 1, generator=g))  # 全部接受：白送 1 个
+            return i, drafts[:i] + [tok]  # Draft i is rejected: the first i drafts + 1 new sample from the residual
+    bonus = int(torch.multinomial(p_rows[k], 1, generator=g))  # All accepted: 1 more token free
     return k, drafts + [bonus]
 
 
-# ── 统计工具（不依赖 scipy）────────────────────────────────────────────────
+# ── Statistics tools (no scipy needed) ─────────────────────────────────────────
 def tv(a: torch.Tensor, b: torch.Tensor) -> float:
     return 0.5 * float((a - b).abs().sum())
 
 
 def chi_square(counts: torch.Tensor, probs: torch.Tensor) -> tuple[float, int, float]:
-    """皮尔逊卡方检验：返回 (统计量, 自由度, p 值)。期望次数太小的格子合并，避免近似失效。"""
+    """Pearson chi-square test: returns (statistic, degrees of freedom, p-value).
+
+    Cells with a very small expected count are merged, because the approximation fails for them."""
     n = counts.sum()
     exp = probs * n
     big = exp >= 5
     obs_b, exp_b = counts[big].double(), exp[big].double()
-    if (~big).any():  # 小格子合并成一个
+    if (~big).any():  # Merge the small cells into one
         obs_b = torch.cat([obs_b, counts[~big].sum().double().view(1)])
         exp_b = torch.cat([exp_b, exp[~big].sum().double().view(1)])
     stat = float(((obs_b - exp_b) ** 2 / exp_b).sum())
@@ -78,7 +90,7 @@ def chi_square(counts: torch.Tensor, probs: torch.Tensor) -> tuple[float, int, f
 
 
 def toy_single_step(V: int = 6, N: int = 200_000):
-    torch.manual_seed(4)  # p、q 由全局随机数生成，固定下来（种子 4：残差落在 3 个 token 上，好画）
+    torch.manual_seed(4)  # p and q come from the global RNG; fix it (seed 4: the residual is on 3 tokens, good for a plot)
     g = torch.Generator().manual_seed(0)
     p = torch.distributions.Dirichlet(torch.ones(V)).sample()
     q = torch.distributions.Dirichlet(torch.ones(V)).sample()
@@ -103,7 +115,9 @@ def toy_single_step(V: int = 6, N: int = 200_000):
 
 
 def toy_markov(V: int = 4, L: int = 3, k: int = 2, N: int = 60_000):
-    """目标 P、草稿 Q 都是 V×V 的转移矩阵（"下一个 token 只看上一个 token"的语言模型）。"""
+    """Target P and draft Q are both V×V transition matrices.
+
+    They are language models in which the next token depends only on the previous token."""
     torch.manual_seed(1)
     P = torch.distributions.Dirichlet(torch.ones(V) * 0.5).sample((V,))
     Q = torch.distributions.Dirichlet(torch.ones(V) * 0.5).sample((V,))
@@ -111,22 +125,22 @@ def toy_markov(V: int = 4, L: int = 3, k: int = 2, N: int = 60_000):
     counts = torch.zeros(V**L)
     rounds = 0
     for _ in range(N):
-        seq = [0]  # 起始 token 固定为 0
+        seq = [0]  # The start token is always 0
         while len(seq) - 1 < L:
             drafts, q_rows = [], []
-            for _ in range(k):  # 草稿自回归地抽 k 个
+            for _ in range(k):  # The draft samples k tokens autoregressively
                 q_rows.append(Q[(drafts or seq)[-1]])
                 drafts.append(int(torch.multinomial(q_rows[-1], 1, generator=g)))
-            ctx = seq + drafts  # 目标"一次前向"：每个位置的分布
+            ctx = seq + drafts  # "One forward pass" of the target: the distribution at each position
             p_rows = torch.stack([P[ctx[len(seq) - 1 + i]] for i in range(k + 1)])
             _, new = speculative_step(p_rows, torch.stack(q_rows), drafts, g)
             seq += new
             rounds += 1
         idx = 0
-        for t in seq[1 : L + 1]:  # 只看前 L 个生成的 token
+        for t in seq[1 : L + 1]:  # Use only the first L generated tokens
             idx = idx * V + t
         counts[idx] += 1
-    # 目标模型的精确联合分布
+    # The exact joint distribution of the target model
     exact = torch.ones(1)
     prev = torch.zeros(1, dtype=torch.long)
     for _ in range(L):
@@ -140,7 +154,7 @@ def toy_markov(V: int = 4, L: int = 3, k: int = 2, N: int = 60_000):
     )
 
 
-# ── 真实小模型上的采样推测解码 ───────────────────────────────────────────────
+# ── Speculative decoding with sampling on the real small models ─────────────────
 m1 = _load("ch25_models", "01_models_and_cost.py")
 KVCache, truncate = m1.KVCache, m1.truncate
 
@@ -173,7 +187,7 @@ def speculative_sample(target, draft, prompt, n_new, k, temperature, g):
         p_logits = target(torch.tensor([seq[len(tc) :] + drafts]), tc)[0, -(k + 1) :]
         p_rows = torch.softmax(p_logits / temperature, -1)
         m, new = speculative_step(p_rows, torch.stack(q_rows), drafts, g)
-        # 理论接受率 Σ min(p, q)：在每个被比较过的位置上累加
+        # Theoretical acceptance rate Σ min(p, q): add it up at each position that was compared
         for i in range(min(m + 1, k)):
             st["alpha_sum"] += float(torch.minimum(p_rows[i], q_rows[i]).sum())
         seq += new
@@ -188,34 +202,34 @@ def speculative_sample(target, draft, prompt, n_new, k, temperature, g):
 if __name__ == "__main__":
     r = toy_single_step()
     fmt = lambda t: "[" + ", ".join(f"{v:.3f}" for v in t.tolist()) + "]"  # noqa: E731
-    print("── 1. 一步拒绝采样（词表 6，抽 200,000 次）──")
-    print(f"目标 p        = {fmt(r['p'])}")
-    print(f"草稿 q        = {fmt(r['q'])}")
-    print(f"残差 max(0,p−q) = {fmt(r['residual'])}（归一化前）")
+    print("── 1. One step of rejection sampling (vocabulary 6, 200,000 samples) ──")
+    print(f"target p        = {fmt(r['p'])}")
+    print(f"draft q         = {fmt(r['q'])}")
+    print(f"residual max(0,p−q) = {fmt(r['residual'])} (before normalization)")
     print(
-        f"推测采样的结果 = {fmt(r['spec'])}  TV(结果, p) = {tv(r['spec'], r['p']):.4f}  "
-        f"卡方 {r['chi'][0]:.1f}（自由度 {r['chi'][1]}），p 值 {r['chi'][2]:.2f}"
+        f"speculative     = {fmt(r['spec'])}  TV(result, p) = {tv(r['spec'], r['p']):.4f}  "
+        f"chi-square {r['chi'][0]:.1f} (df {r['chi'][1]}), p-value {r['chi'][2]:.2f}"
     )
     print(
-        f"直接用草稿样本 = {fmt(r['naive'])}  TV(结果, p) = {tv(r['naive'], r['p']):.4f}  "
-        f"卡方 {r['chi_naive'][0]:.0f}，p 值 {r['chi_naive'][2]:.1e}"
+        f"draft samples   = {fmt(r['naive'])}  TV(result, p) = {tv(r['naive'], r['p']):.4f}  "
+        f"chi-square {r['chi_naive'][0]:.0f}, p-value {r['chi_naive'][2]:.1e}"
     )
     print(
-        f"实测接受率 {r['accept']:.4f}，公式 Σmin(p,q) = {r['alpha']:.4f}，"
+        f"measured acceptance rate {r['accept']:.4f}, formula Σmin(p,q) = {r['alpha']:.4f}, "
         f"1 − TV(p,q) = {1 - tv(r['p'], r['q']):.4f}"
     )
 
     print(
-        "\n── 2. 完整算法（k=2 个草稿 + 奖励 token），马尔可夫链玩具，生成长度 3 的序列 60,000 次 ──"
+        "\n── 2. Full algorithm (k=2 drafts + bonus token), Markov-chain toy, 60,000 sequences of length 3 ──"
     )
     mk = toy_markov()
     print(
-        f"与目标模型精确联合分布（{mk['cells']} 个格子）：TV = {mk['tv']:.4f}，"
-        f"卡方 {mk['chi'][0]:.1f}（自由度 {mk['chi'][1]}），p 值 {mk['chi'][2]:.2f}；"
-        f"平均每轮产出 {mk['tokens_per_round']:.2f} 个 token"
+        f"vs the exact joint distribution of the target ({mk['cells']} cells): TV = {mk['tv']:.4f}, "
+        f"chi-square {mk['chi'][0]:.1f} (df {mk['chi'][1]}), p-value {mk['chi'][2]:.2f}; "
+        f"mean output per round {mk['tokens_per_round']:.2f} tokens"
     )
 
-    print("\n── 3. 真实小模型，温度 1.0（4 段提示词 × 200 个字符）──")
+    print("\n── 3. Real small models, temperature 1.0 (4 prompts × 200 characters) ──")
     target, draft = m1.load_target(), m1.load_draft()
     m2 = _load("ch25_greedy", "02_greedy_speculative.py")
     P, N, T = m2.prompts(), 200, 1.0
@@ -240,8 +254,8 @@ if __name__ == "__main__":
             if rep == 0:
                 sts[k] = agg
     tb = statistics.median(t_base)
-    print(f"普通采样 CPU 时间 {tb:.2f} s（中位数）")
-    print(f"{'k':>2} {'实测接受率':>9} {'公式 Σmin(p,q) 均值':>17} {'每轮产出':>8} {'加速比':>7}")
+    print(f"CPU time of normal sampling {tb:.2f} s (median)")
+    print(f"{'k':>2} {'measured α':>9} {'formula Σ min(p,q)':>17} {'tok/round':>8} {'speedup':>7}")
     for k in ks:
         s = sts[k]
         print(

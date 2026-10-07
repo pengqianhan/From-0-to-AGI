@@ -67,6 +67,24 @@ pos = _load("position", "01_position.py")
 qkn = _load("qk_norm", "05_qk_norm.py")
 shp = _load("shapes", "03_shapes.py")
 
+# 03_shapes.py 的形状标签已改成英文；视频仍显示原来的中文标签
+FLOW_ZH = {
+    "embedding lookup": "embedding 查表",
+    "q = x·Wq → split heads": "q = x·Wq → 拆头",
+    "shape does not change": "形状不变",
+    "attention scores QKᵀ": "注意力分数 QKᵀ",
+    "weights·V → merge → Wo": "加权求和 → 合并头 → Wo",
+    "add to residual": "残差相加",
+    "SwiGLU: gate, up": "SwiGLU: gate、up",
+    "down → add to residual": "down → 残差相加",
+    "final RMSNorm": "最后 RMSNorm",
+}
+
+
+def _flow_zh(s: str) -> str:
+    return FLOW_ZH.get(s, s.replace(" layers  RMSNorm", " 层  RMSNorm"))
+
+
 MONO = "Noto Sans Mono"
 
 
@@ -512,7 +530,7 @@ class ChapterScene(NarratedScene):
         # ── S10 张量形状数据流 ───────────────────────────────────────────
         with self.shot("S10"):
             self.play(*self.set_heading("主线模型一次前向（B = 8, T = 4096）"), run_time=self.fit(0.8))
-            flow = [(a.strip(), b.split("  ←")[0]) for a, b in shp.flow]
+            flow = [(_flow_zh(a.strip()), _flow_zh(b.split("  ←")[0])) for a, b in shp.flow]
             lines = VGroup()
             for a, b in flow:
                 lines.add(VGroup(zh(a, 20, theme.MUTED), mono(b, 20, theme.FG)))

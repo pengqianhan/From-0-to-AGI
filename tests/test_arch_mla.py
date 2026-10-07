@@ -1,4 +1,6 @@
-"""MLA（zero/arch/mla.py，第 21 章）的正确性：吸收路径 = 显式路径；带缓存生成 = 不带缓存生成。"""
+"""Correctness of MLA (zero/arch/mla.py, Chapter 21): absorb path = explicit path;
+generation with cache = generation without cache.
+"""
 
 from __future__ import annotations
 
@@ -65,7 +67,7 @@ def test_cached_generation_identical() -> None:
 def test_cache_bytes_formula() -> None:
     mc, cfg = _cfgs()
     cache = MLACache.from_config(cfg, mc.n_layers, batch_size=3, max_seq_len=50)
-    # 每层每位置 kv_lora_rank + qk_rope_head_dim 个数，FP32 4 字节
+    # kv_lora_rank + qk_rope_head_dim numbers for each layer and position, 4 bytes each in FP32
     assert cache.nbytes() == mc.n_layers * 3 * 50 * (24 + 8) * 4
 
 

@@ -1,4 +1,4 @@
-"""数据流水线：清洗、去重、质量过滤、去污染、分片与加载器、多来源混合。"""
+"""Data pipeline: cleaning, deduplication, quality filters, decontamination, shards and loaders, multi-source mixture."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from zero.data.sources import get_source, list_sources, unverified_licenses
 from zero.tokenizer import train_bpe
 
 # ---------------------------------------------------------------------------
-# 清洗
+# Cleaning
 # ---------------------------------------------------------------------------
 
 
@@ -40,12 +40,12 @@ def test_split_into_documents() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 去重
+# Deduplication
 # ---------------------------------------------------------------------------
 
 
 def _article(seed: int, n: int = 200) -> str:
-    # 随机字母拼成的"词"：不同 seed 的文章几乎没有共同的字符 5-gram
+    # "Words" of random letters: texts with different seeds have almost no common character 5-grams
     rng = np.random.default_rng(seed)
     letters = np.array(list("abcdefghijklmnopqrstuvwxyz"))
     words = ["".join(rng.choice(letters, size=rng.integers(3, 9))) for _ in range(n)]
@@ -55,7 +55,7 @@ def _article(seed: int, n: int = 200) -> str:
 
 def test_exact_dedup() -> None:
     texts = ["a b c", "a b c  ", "x", "a b c"]
-    assert exact_dedup(texts) == [0, 2]  # 规范化后第 2、4 篇与第 1 篇相同
+    assert exact_dedup(texts) == [0, 2]  # after normalization, documents 2 and 4 are the same as document 1
 
 
 def test_minhash_estimates_jaccard() -> None:
@@ -77,7 +77,7 @@ def test_near_dedup_finds_modified_copies() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 质量过滤
+# Quality filters
 # ---------------------------------------------------------------------------
 
 GOOD_EN = (
@@ -120,7 +120,7 @@ def test_classifier_interface() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 去污染
+# Decontamination
 # ---------------------------------------------------------------------------
 
 
@@ -134,7 +134,7 @@ def test_decontamination() -> None:
         "Some unrelated text about cooking pasta and tomatoes for dinner tonight with friends and family.",
         "Forum post: natalia SOLD clips to 48 of her friends in april, and then she sold half as many... cool",
         "唐诗选读：床前明月光，疑是地上霜。举头望明月，低头思故乡。",
-        "Natalia sold clips.",  # 太短，不够 13-gram，也不包含短题目
+        "Natalia sold clips.",  # too short for a 13-gram, and it does not contain the short item
     ]
     report = find_contamination(train, {"gsm8k": [question], "zh": [short_zh]}, n=13)
     assert report.contaminated_docs == [1, 2]
@@ -145,7 +145,7 @@ def test_decontamination() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 分片 + 加载器
+# Shards + loader
 # ---------------------------------------------------------------------------
 
 
@@ -162,7 +162,7 @@ def test_shard_roundtrip(tok, tmp_path: Path) -> None:  # noqa: ANN001
     assert meta["num_documents"] == 300 and meta["tokenizer_hash"] == tok.hash()
     stream = np.concatenate([np.asarray(read_shard(p)) for p in paths])
     assert len(stream) == meta["num_tokens"] == sum(s["num_tokens"] for s in meta["shards"])
-    # 按 <|endoftext|> 切开，逐篇解码必须还原原文
+    # Split at <|endoftext|>: decoding each document must give the original text
     ends = np.flatnonzero(stream == tok.eot_id)
     assert len(ends) == 300
     starts = np.concatenate([[0], ends[:-1] + 1])
@@ -176,19 +176,19 @@ def test_loader_covers_every_chunk_once_per_epoch(tmp_path: Path, random_shards)
     ld = PackedDataLoader(pattern, seq_len=100, batch_size=5, seed=1)
     assert ld.total_chunks == 30
     seen = {ld.locate(g)[1:] for g in range(30)}
-    assert len(seen) == 30  # 一个 epoch 里每个 (分片, 片段) 恰好一次
+    assert len(seen) == 30  # in one epoch, each (shard, chunk) occurs exactly once
     x, y = ld.next_batch()
     assert x.shape == (5, 100) and y.shape == (5, 100)
-    assert (x[:, 1:] == y[:, :-1]).all()  # y 是 x 右移一位
-    assert ld.locate(30)[0] == 1  # 第二个 epoch
-    # 第二个 epoch 的顺序与第一个不同（重新打乱）
+    assert (x[:, 1:] == y[:, :-1]).all()  # y is x shifted by one position
+    assert ld.locate(30)[0] == 1  # second epoch
+    # The order of the second epoch is different from the first (a new shuffle)
     assert [ld.locate(g)[1:] for g in range(30)] != [ld.locate(30 + g)[1:] for g in range(30)]
 
 
 def test_loader_resume_exact(tmp_path: Path, random_shards) -> None:  # noqa: ANN001
     pattern = random_shards(tmp_path, "d", n_shards=4, tokens_per_shard=3000, vocab=100, seed=1)
     ref = PackedDataLoader(pattern, seq_len=64, batch_size=4, seed=7)
-    ref_batches = [ref.next_batch()[0] for _ in range(40)]  # 跨越多个 epoch
+    ref_batches = [ref.next_batch()[0] for _ in range(40)]  # across several epochs
     ld = PackedDataLoader(pattern, seq_len=64, batch_size=4, seed=7)
     for _ in range(13):
         ld.next_batch()
@@ -203,7 +203,7 @@ def test_loader_resume_exact(tmp_path: Path, random_shards) -> None:  # noqa: AN
 
 
 def test_loader_distributed_sharding(tmp_path: Path, random_shards) -> None:  # noqa: ANN001
-    """2 个 rank 各取 B 条 == 1 个 rank 取 2B 条（同一批全局样本），且两个 rank 不重复。"""
+    """2 ranks with B rows each == 1 rank with 2B rows (the same global samples), and the two ranks do not overlap."""
     pattern = random_shards(tmp_path, "d", n_shards=3, tokens_per_shard=2000, vocab=100, seed=2)
     single = PackedDataLoader(pattern, seq_len=50, batch_size=6, seed=3)
     r0 = PackedDataLoader(pattern, seq_len=50, batch_size=3, rank=0, world_size=2, seed=3)
@@ -226,7 +226,7 @@ def test_loader_no_shuffle_is_sequential(tmp_path: Path, random_shards) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 多来源混合
+# Multi-source mixture
 # ---------------------------------------------------------------------------
 
 
@@ -239,7 +239,7 @@ def test_mixture_sampler_deterministic_and_proportional() -> None:
     frac = {k: a.count(k) / len(a) for k in w}
     for k, v in w.items():
         assert abs(frac[k] - v) < 0.02
-    # 分两次抽 == 一次抽完
+    # two draws == one draw of all rows
     s = MixtureSampler(w, seed=5)
     assert s.draw(1500) + s.draw(18500) == a
 
@@ -277,12 +277,12 @@ def test_sources_registry() -> None:
 
 
 def test_near_dedup_parallel_matches_serial() -> None:
-    # 多进程算签名（pipeline 的 [dedup] n_jobs）只是更快：保留的下标和重复簇必须与单进程完全相同
+    # Signatures in multiple processes ([dedup] n_jobs of the pipeline) are only faster: the kept indices and duplicate clusters must be identical to one process
     rng = np.random.default_rng(0)
     words = [f"w{i}" for i in range(500)]
     base = [" ".join(rng.choice(words, 60)) for _ in range(2600)]
-    texts = base + [t + " extra" for t in base[:300]]  # 300 篇近似重复
+    texts = base + [t + " extra" for t in base[:300]]  # 300 near duplicates
     serial = near_dedup(texts, n_jobs=1)
     parallel = near_dedup(texts, n_jobs=4)
     assert serial == parallel
-    assert len(serial[1]) >= 250  # 大部分近似重复被找出来
+    assert len(serial[1]) >= 250  # most near duplicates are found

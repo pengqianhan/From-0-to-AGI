@@ -1,1 +1,1 @@
-"""数据流水线（对应第 13、14 章）：登记来源 → 清洗 → 去重 → 质量过滤 → 去污染 → 分词切片 → 打包加载。"""
+"""Data pipeline (Chapters 13 and 14): register sources → clean → deduplicate → quality filter → decontaminate → tokenize into shards → pack and load."""

@@ -1,41 +1,48 @@
-"""为什么要"先定考卷"：在测试集上挑模型，分数会被系统性地抬高（Goodhart 定律的最小演示）。
+"""Why we "set the exam first": a pick on the test set makes the score too high on average.
 
-设定：K 个"模型"（可以想成 K 个 checkpoint、K 组超参、K 种提示词）真实水平完全一样，
-在一个 n = 200 题的测试集上各考一次。如果我们看着测试分数挑最高的那个并报告它的分数，
-报告值会高于真实水平——哪怕没有任何一个模型真的更好。
+This file is a minimal demo of Goodhart's law.
+
+Setup: K "models" have exactly the same true skill. (Think of K checkpoints, K sets of
+hyperparameters, or K prompts.) Each model takes the same test set of n = 200 questions once.
+We look at the test scores, pick the highest one, and report its score.
+The reported value is higher than the true skill, but no model is really better.
 
     uv run python chapters/11-evaluation/code/01_pick_on_test.py
 
-做法（纯 NumPy，几秒）：
-- 每道题有自己的难度 p_i（从 Beta(2, 2) 抽，平均 0.5）：所有模型在同一道题上答对的概率都是 p_i，
-  所以模型之间的对错是相关的（真实的模型也是如此：难题大家都错）；
-- 每个模型在每道题上独立地按 p_i 抛一次硬币；
-- "在测试集上挑"：报告 K 个里测试分最高的那个；
-- "用开发集挑"：在另一份同分布的开发集上挑，再去测试集上考一次——报告值是无偏的。
+Method (NumPy only, a few seconds):
+- Each question has its own difficulty p_i (drawn from Beta(2, 2), mean 0.5). All models answer
+  the same question correctly with probability p_i. Thus the results of the models are correlated.
+  Real models are the same: all models fail on hard questions.
+- Each model flips one coin per question, with probability p_i.
+- "Pick on the test set": report the highest test score of the K models.
+- "Pick on the dev set": pick on a different dev set from the same distribution, then take the
+  test once. The reported value is unbiased.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-N_TEST = 200  # 测试集题数
-N_TRIALS = 2000  # 重复整个"实验"的次数，取平均
-TRUE_ACC = 0.5  # 所有模型的真实水平（Beta(2,2) 的均值）
+N_TEST = 200  # number of questions in the test set
+N_TRIALS = 2000  # repeat the full "experiment" this many times and take the mean
+TRUE_ACC = 0.5  # true skill of all models (the mean of Beta(2,2))
 
 
 def one_trial(rng: np.random.Generator, k: int) -> tuple[float, float]:
-    """返回 (在测试集上挑出来的报告分, 用开发集挑出来再上测试集的报告分)。"""
-    p_test = rng.beta(2, 2, size=N_TEST)  # 测试题的难度
-    p_dev = rng.beta(2, 2, size=N_TEST)  # 开发集：同分布的另一批题
-    test_scores = (rng.random((k, N_TEST)) < p_test).mean(axis=1)  # K 个模型的测试分
+    """Return (reported score when we pick on the test set,
+    reported score when we pick on the dev set and then take the test once)."""
+    p_test = rng.beta(2, 2, size=N_TEST)  # difficulty of the test questions
+    p_dev = rng.beta(2, 2, size=N_TEST)  # dev set: different questions from the same distribution
+    test_scores = (rng.random((k, N_TEST)) < p_test).mean(axis=1)  # test scores of the K models
     dev_scores = (rng.random((k, N_TEST)) < p_dev).mean(axis=1)
-    picked_on_test = test_scores.max()  # 看着测试分挑：报告的就是最大值
-    picked_on_dev = test_scores[dev_scores.argmax()]  # 开发集上挑，测试集只考一次
+    picked_on_test = test_scores.max()  # pick by the test score: the reported value is the maximum
+    picked_on_dev = test_scores[dev_scores.argmax()]  # pick on the dev set; take the test only once
     return float(picked_on_test), float(picked_on_dev)
 
 
 def pick_table(ks=(1, 3, 10, 30)) -> list[tuple[int, float, float]]:  # noqa: ANN001
-    """[(K, 在测试集上挑的平均报告值, 用开发集挑的平均报告值), ...]（视频也用这个函数）。"""
+    """[(K, mean reported value with the pick on the test set,
+    mean reported value with the pick on the dev set), ...]. The video also uses this function."""
     rng = np.random.default_rng(0)
     rows = []
     for k in ks:
@@ -46,14 +53,17 @@ def pick_table(ks=(1, 3, 10, 30)) -> list[tuple[int, float, float]]:  # noqa: AN
 
 
 def main() -> None:
-    print(f"真实水平：所有模型都是 {TRUE_ACC:.3f}；测试集 {N_TEST} 题；每行重复 {N_TRIALS} 次取平均\n")
-    print("| 候选个数 K | 在测试集上挑（报告值） | 虚高 | 用开发集挑、测试集只考一次 |")
+    print(f"True skill: all models are {TRUE_ACC:.3f}; test set: {N_TEST} questions; "
+          f"each row is the mean of {N_TRIALS} trials\n")
+    print("| Candidates K | Pick on test set (reported) | Inflation | Pick on dev set, test once |")
     print("|---:|---:|---:|---:|")
     for k, on_test, on_dev in pick_table():
         print(f"| {k} | {on_test:.3f} | {on_test - TRUE_ACC:+.3f} | {on_dev:.3f} |")
     print(
-        "\n结论：候选越多，'在测试集上挑出来的最好成绩'越虚高；把挑选挪到开发集上，测试集只考一次，"
-        "报告值就回到真实水平。这就是 GOAL.md 第 11 节'不要用预注册的测试基准调超参或挑 checkpoint'。"
+        "\nConclusion: with more candidates, 'the best score picked on the test set' is more inflated. "
+        "Pick on the dev set and take the test only once: then the reported value goes back to the true skill. "
+        "This is the rule in GOAL.md Section 11: 'Do not use the pre-registered test benchmarks "
+        "to tune hyperparameters or pick checkpoints'."
     )
 
 

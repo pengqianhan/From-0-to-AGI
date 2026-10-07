@@ -1,12 +1,12 @@
-# 主线模型 SFT（第 16 章）。第二步默认值，所有数值待阶梯实验 / 小规模试跑后调整。
+# SFT of the main-line model (Chapter 16). Default values for Step 2. Adjust all values after the ladder experiment / small trial runs.
 #   uv run torchrun --standalone --nproc_per_node=8 -m zero.post.sft --config configs/main/sft.toml
-# 尚未在 GPU 上验证（多卡 DDP 路径与预训练共用 Trainer，SFT 数据加载器 MaskedWindowLoader 在 CPU 上测过）。
+# Not verified on a GPU yet (the multi-GPU DDP path uses the same Trainer as pretraining; the SFT data loader MaskedWindowLoader is tested on a CPU).
 #
-# 估算：每步 token = 4 × 2 × 8 × 8192 = 524,288（打包后约 70% 是真实 token）；2,000 步 ≈ 1.05B token。
+# Estimate: tokens per step = 4 × 2 × 8 × 8192 = 524,288 (after packing, about 70% are real tokens); 2,000 steps ≈ 1.05B tokens.
 #   uv run python -m zero.tools.estimate_cost --config configs/main/pretrain.toml --tokens 1B --seq-len 8192
-#   → 约 6.9 GPU·h、$17（MFU 0.4 的假设）
+#   → about 6.9 GPU·h, $17 (assumes MFU 0.4)
 
-[model]                  # 与 configs/main/longctx.toml 的 checkpoint 形状一致（689.5M 参数）
+[model]                  # Same shape as the checkpoint of configs/main/longctx.toml (689.5M parameters)
 vocab_size = 65536
 dim = 1280
 n_layers = 28
@@ -14,18 +14,18 @@ n_heads = 16
 n_kv_heads = 8
 head_dim = 128
 ffn_dim = 3584
-rope_theta = 1000000.0   # 长上下文阶段调大后的底数
+rope_theta = 1000000.0   # The larger base from the long-context stage
 max_seq_len = 32768
 tie_embeddings = true
 
 [train]
 seed = 1337
-max_steps = 2000         # ≈ 2 个 epoch（假设 SFT 数据约 0.5B token），待定
+max_steps = 2000         # ≈ 2 epochs (assumes about 0.5B tokens of SFT data); not final
 micro_batch_size = 4
 grad_accum_steps = 2
 device = "auto"
 dtype = "auto"           # BF16 autocast
-compile = true           # 尚未在 GPU 上验证
+compile = true           # Not verified on a GPU yet
 parallel = "ddp"
 out_dir = "out/main/sft"
 init_from = "out/main/longctx/ckpt"
@@ -35,15 +35,15 @@ eval_batches = 20
 [data]
 format = "sft"
 tokenizer = "data/tokenizer/tokenizer.json"
-seq_len = 8192           # 工具说明 + 多轮对话；更长的样本丢弃并计数
+seq_len = 8192           # Tool descriptions + multi-turn chat. Drop and count the longer samples
 
 [sft]
-train_jsonl = "data/sft/train.jsonl"   # 来源与许可证见第 16 章；工具调用数据需做 BFCL 函数名 / schema 去污染（GOAL.md 3.2）
+train_jsonl = "data/sft/train.jsonl"   # For sources and licenses, see Chapter 16. Decontaminate the tool-calling data against the BFCL function names / schemas (GOAL.md 3.2)
 val_jsonl = "data/sft/val.jsonl"
 shard_dir = "data/sft/packed"
 
 [optim]
-lr = 5e-5                # 待调：小模型 SFT 常见 1e-5 ~ 1e-4
+lr = 5e-5                # Tune it later. SFT of small models usually uses 1e-5 ~ 1e-4
 weight_decay = 0.0
 grad_clip = 1.0
 

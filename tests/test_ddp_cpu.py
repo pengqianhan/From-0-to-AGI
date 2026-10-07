@@ -1,8 +1,11 @@
-"""在 CPU 上用 gloo 后端跑 2 进程 DDP，与单进程（batch 翻倍）逐步对拍（第 14 章）。
+"""Run 2-process DDP on CPU with the gloo backend. Do a step-by-step parity check against
+one process with a doubled batch (Chapter 14).
 
-数据加载器保证"2 卡各 B 条"与"1 卡 2B 条"看到同一批全局样本；DDP 对梯度求平均，
-所以两种跑法每一步的 loss 和最终参数都应该一致（只差浮点求和顺序带来的舍入误差）。
-同时顺带测试多进程下的 checkpoint 保存（每个 rank 各写一份数据加载器状态）。
+The data loader makes sure that "2 GPUs with B samples each" and "1 GPU with 2B samples" see the
+same global samples. DDP computes the mean of the gradients. Thus the loss at each step and the
+final parameters must be the same for both runs (only the rounding error from a different
+floating-point sum order is different).
+The test also checks the checkpoint save with many processes (each rank writes its own data loader state).
 """
 
 from __future__ import annotations
@@ -57,20 +60,20 @@ def _worker(rank: int, world_size: int, port: int, out_dir: str, src: dict[str, 
 
 
 @pytest.mark.skipif(
-    not dist.is_available() or not dist.is_gloo_available(), reason="没有 gloo 后端"
+    not dist.is_available() or not dist.is_gloo_available(), reason="no gloo backend"
 )
 def test_ddp_two_processes_matches_single(tmp_path: Path) -> None:
     src = {"a": write_random_shards(tmp_path / "data", "a", 2, 4000, 64, 0)}
     ddp_dir = tmp_path / "ddp"
     try:
         mp.spawn(_worker, args=(2, _free_port(), str(ddp_dir), src), nprocs=2, join=True)
-    except Exception as e:  # pragma: no cover - 环境不支持多进程时跳过而不是报错
+    except Exception as e:  # pragma: no cover - skip (not fail) if the environment does not support many processes
         if "Address already in use" in str(e) or "EADDRINUSE" in str(e):
-            pytest.skip(f"无法启动 gloo 进程组：{e}")
+            pytest.skip(f"Cannot start the gloo process group: {e}")
         raise
     ddp = torch.load(ddp_dir / "result.pt", weights_only=True)
 
-    # 单进程参照：micro_batch 翻倍，其余相同
+    # One-process reference: micro_batch doubled, all else the same.
     cfg = small_train_config(
         tmp_path / "single", src, micro_batch_size=4, grad_accum_steps=2, max_steps=6
     )
@@ -83,7 +86,7 @@ def test_ddp_two_processes_matches_single(tmp_path: Path) -> None:
     for k, v in trainer.raw_model.state_dict().items():
         torch.testing.assert_close(ddp["state"][k], v, rtol=1e-4, atol=1e-5)
 
-    # 多进程 checkpoint：每个 rank 一份数据加载器状态
+    # Checkpoint with many processes: one data loader state for each rank.
     last = ddp_dir / "ckpt" / "step_00000006"
     assert (last / "rank0.pt").exists() and (last / "rank1.pt").exists()
     assert json.loads((last / "meta.json").read_text())["world_size"] == 2

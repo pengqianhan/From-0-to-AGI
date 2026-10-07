@@ -1,50 +1,69 @@
-"""工具调用环境：模拟 API + 任务生成 + 可验证奖励（对应第 19 章，第 16–18、20 章也用）。
+"""Tool-calling environment: mock APIs, task generation, and verifiable rewards.
 
-GRPO 需要一个"能自动判对错"的环境。这里的一切都是确定性的，不联网、不依赖真实时钟：
+Chapter 19 uses this module. Chapters 16–18 and 20 also use it.
 
-**模拟 API**（`TOOLS`，JSON schema 与 OpenAI / Qwen 的 function 格式一致）
+GRPO needs an environment that can check answers automatically. Everything here is deterministic.
+The environment does not use the network or the real clock.
 
-| 工具 | 作用 |
+The model sees some strings in this file as input: the system prompt, the tool descriptions, the
+task texts, the city and unit names, and the `ToolError` messages (they go back to the model as tool
+results). These strings are data. They stay in Chinese, because a change would change the training
+data and the results.
+
+**Mock APIs** (`TOOLS`; the JSON schema follows the OpenAI / Qwen function format)
+
+| Tool | What it does |
 |---|---|
-| `calculator(expression)` | 算术表达式求值（只允许数字、+ - * / // % ** 和括号，用 AST 白名单而不是 eval） |
-| `get_weather(city)` | 从固定表里查天气（中英文城市名都认） |
-| `convert_units(value, from_unit, to_unit)` | 长度、质量、温度换算（认常见别名：km / 公里 / kilometer） |
-| `date_add(date, days)` | 日期加减天数 |
-| `days_between(start_date, end_date)` | 两个日期相差几天 |
-| `weekday(date)` | 某天是星期几 |
+| `calculator(expression)` | Evaluates an arithmetic expression. It accepts only numbers, + - * / // % **, and parentheses. It uses an AST allowlist, not eval. |
+| `get_weather(city)` | Looks up the weather in a fixed table. It accepts Chinese and English city names. |
+| `convert_units(value, from_unit, to_unit)` | Converts length, mass, and temperature. It accepts common aliases: km / 公里 / kilometer. |
+| `date_add(date, days)` | Adds a number of days to a date. |
+| `days_between(start_date, end_date)` | Gives the number of days between two dates. |
+| `weekday(date)` | Gives the day of the week of a date. |
 
-**任务**（`Task`）：工具列表（需要的工具 + 干扰工具）、用户问题、标准调用（gold calls）、
-标准答案要点（final answer 里必须出现的字符串）。`make_splits()` 生成互不重叠的 train / dev。
-约 10% 的任务不需要调用工具（例如打招呼），考模型"该不调就不调"（BFCL 里叫 irrelevance）。
+**Task** (`Task`): a tool list (the necessary tools + distractor tools), a user question, the gold
+calls, and the answer facts (strings that the final answer must contain). `make_splits()` makes
+train / dev sets that do not overlap. About 10% of the tasks need no tool call (for example, a
+greeting). These tasks test that the model makes no call when no call is necessary. BFCL calls this
+"irrelevance".
 
-**奖励**（`score_tool_calls`，用于 GRPO 的单步调用；`score_final_answer` 用于完整一轮）
+**Reward** (`score_tool_calls` for the single-step call in GRPO; `score_final_answer` for a full episode)
 
-    格式错误（JSON 坏了、标签不配对、伪造 <tool_response>、超长、调用过多）→ -1
-    不该调工具却调了 → -0.5；该调却没调 → 0
-    否则  0.1（格式分）+ 0.9 × Σ 每个标准调用的得分 / 标准调用数 − 0.25 × 多余调用数 − 0.5 × 不合 schema 的调用数
-          每个标准调用的得分：函数名 + 参数 AST 一致或执行结果一致 → 1；只有函数名对 → 0.2
-    最后裁剪到 [-1, 1]
+    Format error (broken JSON, unpaired tags, forged <tool_response>, too long, too many calls) → -1
+    A tool call when no call is necessary → -0.5; no call when a call is necessary → 0
+    Otherwise  0.1 (format score) + 0.9 × Σ score of each gold call / number of gold calls
+               − 0.25 × number of extra calls − 0.5 × number of calls that do not match the schema
+          Score of each gold call: function name + arguments equal by AST or by execution result → 1;
+          only the function name is correct → 0.2
+    Then clip to [-1, 1]
 
-**防奖励作弊（reward hacking）的设计**，每条都有对应测试（tests/test_tool_env.py）：
+**Design against reward hacking.** Each item has a test in tests/test_tool_env.py:
 
-1. **一对一匹配**：预测调用和标准调用做一对一匹配，重复同一个调用不能多拿分；多出来的调用扣分，
-   所以"把所有可能的调用都喷一遍"是亏的；
-2. **执行匹配要求同样的数字**：calculator 的执行结果一致时，还要求表达式里的数字（多重集合）与标准
-   一致——否则模型可以自己心算出答案、调用 `calculator("42")` 骗到执行分；
-3. **禁止伪造工具结果**：输出里出现 `<tool_response>` 或 `<|im_start|>` 直接判格式错误，
-   防止模型自己编一段工具返回再"根据结果"作答；
-4. **长度和调用数上限**：输出超过 `MAX_OUTPUT_CHARS` 或调用超过 `MAX_CALLS` 判格式错误；
-5. **安全执行**：calculator 只接受 AST 白名单节点，幂指数和数值大小有上限，防止 `9**9**9` 卡死判分器；
-6. **最终答案**：要点必须全部出现，且答案里出现的数字个数有上限（`_too_many_numbers`），
-   防止把一堆候选数字全列出来碰运气；
-7. **schema 校验**：参数缺字段、多字段、类型不对都算不合 schema，不能执行，也不能得分；
-8. **不带标签的调用算格式错误**：标签外面出现 `{"name": ...` / `"arguments":` 这样的 JSON 判 -1。
-   这一条是冒烟测试里**真实观察到**的作弊：最初的奖励只检查 `<tool_call>` 标签里的内容，tiny 模型的
-   调用几乎都是坏 JSON（-1 分），GRPO 十步之内就学会了"去掉标签、照样输出 JSON"——不再有格式错误，
-   得分从 -1 升到 0，平均奖励曲线漂亮地上升，而模型一个调用都不会了。加上这条之后这种输出回到 -1。
-   另外，"不该调用工具"的任务回复为空时得 0 分而不是 1 分。
+1. **One-to-one matching**: the predicted calls and the gold calls are matched one to one. A repeated
+   call cannot get more score. Each extra call loses score, so "spray all possible calls" loses reward.
+2. **An execution match needs the same numbers**: when the calculator results are equal, the numbers in
+   the expression (as a multiset) must also be equal to the gold call. Otherwise the model can
+   calculate the answer itself and call `calculator("42")` to get the execution score.
+3. **No forged tool results**: `<tool_response>` or `<|im_start|>` in the output is a format error.
+   This stops the model from writing a fake tool result and then answering "from the result".
+4. **Limits on length and number of calls**: output longer than `MAX_OUTPUT_CHARS`, or more than
+   `MAX_CALLS` calls, is a format error.
+5. **Safe execution**: calculator accepts only the AST nodes in the allowlist. The exponent and the
+   size of numbers have limits, so `9**9**9` cannot freeze the scorer.
+6. **Final answer**: all facts must be present. The count of numbers in the answer has a limit
+   (`_too_many_numbers`). This stops the model from listing many candidate numbers to guess.
+7. **Schema check**: a missing field, an extra field, or a wrong type means that the call does not
+   match the schema. Such a call is not executed and gets no score.
+8. **A call without tags is a format error**: JSON such as `{"name": ...` / `"arguments":` outside the
+   tags gets -1. We **observed this hack** in the smoke test. The first reward checked only the content
+   in the `<tool_call>` tags. Almost all calls of the tiny model were broken JSON (-1). In 10 GRPO
+   steps, the model learned to "remove the tags and output the JSON as before". The format errors
+   stopped, the score went from -1 to 0, and the mean reward curve went up nicely. But the model could
+   not make a single call. With this rule, such output gets -1 again.
+   Also, on a task that needs no tool, an empty reply gets 0, not 1.
 
-局限：不需要工具的任务只检查"有没有乱调用"，不判断回答内容好不好（需要奖励模型或规则判分）。
+Limit: for tasks that need no tool, the scorer checks only that the model makes no wrong calls. It does
+not judge the quality of the reply. That needs a reward model or rule-based scoring.
 """
 
 from __future__ import annotations
@@ -70,11 +89,15 @@ SYSTEM_PROMPT = "你是一个会使用工具的助手。需要时调用工具，
 
 
 class ToolError(ValueError):
-    """工具参数不对或执行失败。"""
+    """The tool arguments are wrong, or the execution failed.
+
+    The message goes back to the model as the tool result (`execute_safely`). It is data, so the
+    messages of this error stay in Chinese.
+    """
 
 
 # ---------------------------------------------------------------------------
-# 模拟 API
+# Mock APIs
 # ---------------------------------------------------------------------------
 
 
@@ -122,7 +145,7 @@ TOOLS: dict[str, dict[str, Any]] = {
     "weekday": _fn("weekday", "某个日期是星期几", {"date": {"type": "string"}}, ["date"]),
 }
 
-# 固定的天气表（虚构数据，保证确定性）
+# A fixed weather table (invented data, so that the results are deterministic)
 WEATHER: dict[str, dict[str, Any]] = {
     "北京": {"condition": "晴", "temp_c": 25, "humidity": 30},
     "上海": {"condition": "多云", "temp_c": 28, "humidity": 70},
@@ -149,7 +172,7 @@ CITY_ALIASES: dict[str, str] = {
 }
 CITY_EN = {v: k.title() for k, v in CITY_ALIASES.items()}
 
-# 单位：规范名 → (类别, 换算到基准单位的系数)；温度单独处理
+# Units: canonical name → (category, factor to the base unit). Temperature has its own formula.
 _UNITS: dict[str, tuple[str, float]] = {
     "m": ("length", 1.0),
     "km": ("length", 1000.0),
@@ -219,7 +242,10 @@ _MAX_EXPR_CHARS = 200
 
 
 def safe_eval(expr: str) -> float | int:
-    """只允许数字、四则运算、整除、取模、乘方、括号和正负号的求值器（不用 eval）。"""
+    """Evaluate an expression without eval.
+
+    Only numbers, + - * /, floor division, modulo, power, parentheses, and signs are allowed.
+    """
     if not isinstance(expr, str) or not expr.strip():
         raise ToolError("expression 必须是非空字符串")
     if len(expr) > _MAX_EXPR_CHARS:
@@ -255,7 +281,7 @@ def safe_eval(expr: str) -> float | int:
 
 
 def _num(x: float | int) -> float | int:
-    """把结果规整成 JSON 友好的数：整数值用 int，其余保留 6 位小数。"""
+    """Make the result a JSON-friendly number: an int for an integer value, else 6 decimal places."""
     if isinstance(x, float) and x.is_integer() and abs(x) < 1e15:
         return int(x)
     return round(float(x), 6) if isinstance(x, float) else x
@@ -302,7 +328,11 @@ def convert(value: float, from_unit: str, to_unit: str) -> float:
 
 
 def validate_arguments(name: str, args: Any) -> list[str]:
-    """按 JSON schema 检查参数：缺字段、多字段、类型不对。返回错误列表（空表示合法）。"""
+    """Check the arguments against the JSON schema: missing fields, extra fields, wrong types.
+
+    Return a list of errors (empty means valid). The errors also go back to the model through
+    `ToolError`, so they are data.
+    """
     if name not in TOOLS:
         return [f"没有这个工具：{name}"]
     if not isinstance(args, dict):
@@ -327,7 +357,7 @@ def validate_arguments(name: str, args: Any) -> list[str]:
 
 
 def execute_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
-    """执行一次工具调用，返回 JSON 可序列化的结果；参数不对抛 ToolError。"""
+    """Run one tool call and return a JSON-serializable result. Raise ToolError for wrong arguments."""
     errs = validate_arguments(name, args)
     if errs:
         raise ToolError("；".join(errs))
@@ -355,7 +385,7 @@ def execute_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def execute_safely(name: str, args: dict[str, Any]) -> dict[str, Any]:
-    """执行，出错时返回 {"error": ...}（喂回给模型的工具结果）。"""
+    """Run the call. On an error, return {"error": ...} (the tool result that goes back to the model)."""
     try:
         return execute_call(name, args)
     except ToolError as e:
@@ -363,7 +393,7 @@ def execute_safely(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 任务
+# Tasks
 # ---------------------------------------------------------------------------
 
 
@@ -374,9 +404,9 @@ class Task:
     lang: str
     tools: list[dict[str, Any]]
     messages: list[dict[str, Any]]  # system + user
-    gold_calls: list[dict[str, Any]]  # [{"name", "arguments"}]；空表示不该调用工具
-    answer_facts: list[str]  # 最终回答里必须出现的要点
-    gold_answer: str  # 参考的最终回答（SFT 用）
+    gold_calls: list[dict[str, Any]]  # [{"name", "arguments"}]; empty means that no tool call is necessary
+    answer_facts: list[str]  # facts that the final answer must contain
+    gold_answer: str  # the reference final answer (for SFT)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -420,7 +450,7 @@ _NO_TOOL_QUERIES = [
 
 
 def make_task(rng: random.Random, idx: int, split: str) -> Task:
-    """随机生成一个任务。"""
+    """Generate one random task."""
     lang = "zh" if rng.random() < 0.7 else "en"
     r = rng.random()
     calls: list[dict[str, Any]]
@@ -547,9 +577,11 @@ def make_task(rng: random.Random, idx: int, split: str) -> Task:
     )
 
 
-# 固定的 dev 集：种子固定，所有训练任务都排除与它问题文本相同的任务（防止评测集泄漏进训练）。
-# 例外：天气（约 30 种问法）和打招呼（6 种）的问题空间太小，无法与 dev 不重叠——这两类在 dev 里
-# 只考"会不会用对工具 / 该不该调用"，报告里单列。
+# The fixed dev set has a fixed seed. The training tasks exclude each task with the same question
+# text as a dev task, so the evaluation set does not leak into training.
+# Exception: weather (about 30 question forms) and greetings (6) have a question space that is too
+# small to avoid overlap with dev. For these two kinds, dev tests only "uses the correct tool /
+# calls or does not call". The report shows them separately.
 DEV_SEED = 0
 N_DEV_MAX = 300
 SMALL_SPACE_KINDS = frozenset({"weather", "no_tool"})
@@ -563,7 +595,7 @@ def _generate(n: int, seed: int, split: str, exclude: frozenset[str], dedup: boo
     while len(out) < n:
         tries += 1
         if tries > n * 50 + 1000:
-            raise RuntimeError("生成不出足够多的不重复任务")
+            raise RuntimeError("Cannot generate enough unique tasks")
         t = make_task(rng, len(out), split)
         if t.kind not in SMALL_SPACE_KINDS:
             if t.query in exclude or (dedup and t.query in seen):
@@ -574,9 +606,9 @@ def _generate(n: int, seed: int, split: str, exclude: frozenset[str], dedup: boo
 
 
 def dev_tasks(n: int = 200) -> list[Task]:
-    """固定的 dev 集（前 n 个；n 越大，结果是更小 n 的超集）。"""
+    """Return the fixed dev set (the first n tasks; a larger n gives a superset of a smaller n)."""
     if n > N_DEV_MAX:
-        raise ValueError(f"dev 集最多 {N_DEV_MAX} 个任务")
+        raise ValueError(f"The dev set has at most {N_DEV_MAX} tasks")
     return _generate(n, DEV_SEED, "dev", frozenset(), dedup=True)
 
 
@@ -586,19 +618,26 @@ def _dev_queries() -> frozenset[str]:
 
 
 def generate_tasks(n: int, seed: int = 0, split: str = "train") -> list[Task]:
-    """生成 n 个任务。split="train" 时排除所有与固定 dev 集问题相同的任务；split="dev" 返回固定 dev 集。"""
+    """Generate n tasks.
+
+    With split="train", exclude all tasks with the same question as a task in the fixed dev set.
+    With split="dev", return the fixed dev set.
+    """
     if split == "dev":
         return dev_tasks(n)
     return _generate(n, seed, split, _dev_queries(), dedup=False)
 
 
 def make_splits(n_train: int, n_dev: int, seed: int = 0) -> tuple[list[Task], list[Task]]:
-    """(训练任务, 固定 dev 集的前 n_dev 个)。"""
+    """Return (training tasks, the first n_dev tasks of the fixed dev set)."""
     return generate_tasks(n_train, seed, "train"), dev_tasks(n_dev)
 
 
 def reference_messages(task: Task) -> list[dict[str, Any]]:
-    """标准解答的完整对话：user → assistant(tool_calls) → tool 结果 → assistant(最终回答)。"""
+    """The full conversation of the gold solution.
+
+    user → assistant(tool_calls) → tool results → assistant(final answer).
+    """
     msgs = [dict(m) for m in task.messages]
     if task.gold_calls:
         msgs.append({"role": "assistant", "content": "", "tool_calls": task.gold_calls})
@@ -616,7 +655,7 @@ def reference_messages(task: Task) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# 奖励
+# Rewards
 # ---------------------------------------------------------------------------
 
 
@@ -625,15 +664,16 @@ class Reward:
     total: float
     format_ok: bool
     n_calls: int = 0
-    ast_match: float = 0.0  # 标准调用里参数 AST 一致的比例
-    exec_match: float = 0.0  # 标准调用里参数等价（或 AST 一致）的比例；calculator 按执行结果
+    ast_match: float = 0.0  # fraction of gold calls with AST-equal arguments
+    exec_match: float = 0.0  # fraction of gold calls with equivalent (or AST-equal) arguments; calculator: by result
     answer_ok: bool | None = None
     details: list[str] = field(default_factory=list)
-    exact: bool = False  # 调用行为完全正确：该调的全调对且没多余调用；不该调的没调、也没编造
+    exact: bool = False  # correct calls and no extra call; or no call (when none is necessary) and nothing invented
 
 
 _NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
-# 不需要工具的闲聊任务：内容无法自动判分，只因"正确地没调工具"给部分分（满分留给可验证的任务）
+# A chat task that needs no tool: the content cannot be scored automatically. The task gets a
+# partial score only for "correctly made no call". The full score is for verifiable tasks.
 NO_TOOL_REWARD = 0.5
 
 
@@ -652,7 +692,10 @@ def _norm_value(v: Any) -> Any:
 
 
 def ast_equal(pred: dict[str, Any], gold: dict[str, Any]) -> bool:
-    """函数名相同，且参数在规范化后逐项相等（字符串去空白、忽略大小写；数字按数值比）。"""
+    """The function names are equal, and the arguments are equal item by item after normalization.
+
+    Strings: no whitespace, case-insensitive. Numbers: compared by value.
+    """
     return pred["name"] == gold["name"] and _norm_value(pred["arguments"]) == _norm_value(
         gold["arguments"]
     )
@@ -672,7 +715,11 @@ def _results_equal(a: dict[str, Any], b: dict[str, Any]) -> bool:
 
 
 def exec_equal(pred: dict[str, Any], gold: dict[str, Any]) -> bool:
-    """执行结果一致（calculator 另要求数字的多重集合一致，防止心算后直接传答案）。"""
+    """The execution results are equal.
+
+    For calculator, the multisets of numbers must also be equal. Then the model cannot calculate the
+    answer itself and pass only the answer.
+    """
     if pred["name"] != gold["name"]:
         return False
     try:
@@ -688,7 +735,10 @@ def exec_equal(pred: dict[str, Any], gold: dict[str, Any]) -> bool:
 
 
 def canonical_args(name: str, args: dict[str, Any]) -> dict[str, Any] | None:
-    """把参数换成规范形式（日期解析成 ISO、单位和城市换成标准名、数字按数值）；参数非法返回 None。"""
+    """Convert the arguments to a canonical form. Return None if the arguments are not valid.
+
+    Dates become ISO strings, units and cities become standard names, and numbers become values.
+    """
     try:
         if name == "get_weather":
             return {"city": canon_city(args["city"])}
@@ -716,11 +766,13 @@ def canonical_args(name: str, args: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def args_equivalent(pred: dict[str, Any], gold: dict[str, Any]) -> bool:
-    """参数"意思相同"：规范化后逐项相等。
+    """The arguments "mean the same": they are equal item by item after normalization.
 
-    只有 calculator 用执行结果判（外加数字多重集合一致），因为等价的算式写法很多；
-    其余工具必须参数本身等价——只看执行结果会放过"参数错、结果碰巧对"的调用
-    （例如 weekday 的日期差 7 天，星期几一样；第 17、19 章的真实案例）。
+    Only calculator uses the execution result (plus the same multiset of numbers), because one
+    expression has many equivalent forms. For the other tools, the arguments themselves must be
+    equivalent. A check of only the execution result accepts a call with "wrong arguments and a
+    correct result by chance". Example: for weekday, a date that is 7 days off gives the same day of
+    the week. This is a real case from Chapters 17 and 19.
     """
     if pred["name"] != gold["name"]:
         return False
@@ -731,7 +783,10 @@ def args_equivalent(pred: dict[str, Any], gold: dict[str, Any]) -> bool:
 
 
 def _invented_numbers(answer: str, query: str) -> bool:
-    """回答里出现了问题里没有的数字：不需要工具的闲聊任务上，这通常是在编造工具结果。"""
+    """The answer has numbers that are not in the question.
+
+    On a chat task that needs no tool, such numbers usually mean an invented tool result.
+    """
     allowed = set(_NUM_RE.findall(query))
     return any(n not in allowed for n in _NUM_RE.findall(answer))
 
@@ -739,7 +794,7 @@ def _invented_numbers(answer: str, query: str) -> bool:
 def _forged(text: str) -> str | None:
     for tag in ("<tool_response>", "</tool_response>", "<|im_start|>"):
         if tag in text:
-            return f"输出里出现了 {tag}（伪造工具结果或对话轮次）"
+            return f"The output contains {tag} (a forged tool result or conversation turn)"
     return None
 
 
@@ -747,16 +802,19 @@ _BARE_CALL_RE = re.compile(r'\{\s*"(?:name|arguments)\b|"arguments"\s*:')
 
 
 def _bare_call(content: str) -> str | None:
-    """标签外面出现了工具调用样子的 JSON：判格式错误（否则去掉标签就能躲开 -1 的格式分）。"""
+    """Tool-call JSON outside the tags is a format error.
+
+    Without this rule, the model can remove the tags to avoid the -1 format score.
+    """
     if _BARE_CALL_RE.search(content):
-        return "工具调用缺少 <tool_call> 标签（标签外出现了 name / arguments JSON）"
+        return "Tool call without <tool_call> tags (name / arguments JSON outside the tags)"
     return None
 
 
 def score_tool_calls(task: Task, text: str) -> Reward:
-    """给"助手的第一轮输出"打分：该调用哪些工具、参数对不对。"""
+    """Score the first output of the assistant: which tools it calls, and if the arguments are correct."""
     if len(text) > MAX_OUTPUT_CHARS:
-        return Reward(-1.0, False, details=["输出过长"])
+        return Reward(-1.0, False, details=["Output too long"])
     forged = _forged(text)
     if forged:
         return Reward(-1.0, False, details=[forged])
@@ -768,14 +826,14 @@ def score_tool_calls(task: Task, text: str) -> Reward:
         return Reward(-1.0, False, n_calls=len(parsed.tool_calls), details=[bare])
     calls = parsed.tool_calls
     if len(calls) > MAX_CALLS:
-        return Reward(-1.0, False, n_calls=len(calls), details=[f"调用超过 {MAX_CALLS} 个"])
+        return Reward(-1.0, False, n_calls=len(calls), details=[f"More than {MAX_CALLS} calls"])
     offered = {t["function"]["name"] for t in task.tools}
     valid, details = [], []
     n_invalid = 0
     for c in calls:
         errs = validate_arguments(c["name"], c["arguments"])
         if c["name"] not in offered:
-            errs = [f"调用了未提供的工具 {c['name']}", *errs]
+            errs = [f"Called a tool that was not offered: {c['name']}", *errs]
         if errs:
             n_invalid += 1
             details.extend(errs)
@@ -787,16 +845,17 @@ def score_tool_calls(task: Task, text: str) -> Reward:
         if not calls:
             content = parsed.content.strip()
             if not content:
-                return Reward(0.0, True, 0, details=["空回答"])
+                return Reward(0.0, True, 0, details=["Empty answer"])
             if _invented_numbers(content, task.query):
                 return Reward(
                     0.0,
                     True,
                     0,
                     answer_ok=False,
-                    details=["没调工具，但回答里有问题中没有的数字（疑似编造）"],
+                    details=["No tool call, but the answer has numbers that are not in the question (possibly invented)"],
                 )
-            # 没调工具是对的；但闲聊内容本身无法自动核对，只给部分分，answer_ok 记为"未知"
+            # No tool call is correct. But the chat content cannot be checked automatically, so the
+            # score is partial and answer_ok is "unknown".
             return Reward(
                 NO_TOOL_REWARD,
                 True,
@@ -804,14 +863,15 @@ def score_tool_calls(task: Task, text: str) -> Reward:
                 1.0,
                 1.0,
                 answer_ok=None,
-                details=["正确地没有调用工具（回答内容无法自动核对）"],
+                details=["Correctly made no tool call (the answer content cannot be checked automatically)"],
                 exact=True,
             )
-        return Reward(-0.5, format_ok, len(calls), details=["不需要工具却调用了", *details])
+        return Reward(-0.5, format_ok, len(calls), details=["Called a tool when no tool was necessary", *details])
     if not calls:
-        return Reward(0.0, True, 0, details=["需要调用工具但没有调用"])
+        return Reward(0.0, True, 0, details=["A tool call was necessary, but there was no call"])
 
-    # 一对一匹配：先配 AST 一致的，再配执行一致的，最后配只有函数名一致的
+    # One-to-one matching: first the AST-equal calls, then the equivalent calls, then the calls
+    # with only the same function name
     remaining = list(range(len(valid)))
     n_ast = n_exec = 0
     score = 0.0
@@ -839,12 +899,12 @@ def score_tool_calls(task: Task, text: str) -> Reward:
         if hit is not None:
             remaining.remove(hit)
             score += 0.2
-            details.append(f"{g['name']} 参数不对")
+            details.append(f"Wrong arguments for {g['name']}")
         else:
-            details.append(f"缺少调用 {g['name']}")
+            details.append(f"Missing call {g['name']}")
     n_extra = len(remaining)
     if n_extra:
-        details.append(f"多余调用 {n_extra} 个")
+        details.append(f"Extra calls: {n_extra}")
     total = 0.1 + 0.9 * score / len(gold) - 0.25 * n_extra - 0.5 * n_invalid
     total = max(-1.0, min(1.0, total))
     return Reward(
@@ -859,43 +919,46 @@ def score_tool_calls(task: Task, text: str) -> Reward:
 
 
 def _too_many_numbers(answer: str, facts: Sequence[str]) -> bool:
-    allowed = sum(len(_NUM_RE.findall(f)) for f in facts) + 6  # 复述问题里的数字是正常的
+    allowed = sum(len(_NUM_RE.findall(f)) for f in facts) + 6  # numbers repeated from the question are normal
     return len(_NUM_RE.findall(answer)) > allowed
 
 
 def score_final_answer(task: Task, text: str) -> Reward:
-    """给最终回答打分：不能再调用工具；所有要点都出现；不能靠罗列一堆数字碰运气。"""
+    """Score the final answer.
+
+    The answer must not call a tool, and it must contain all facts. It must not list many numbers to guess.
+    """
     if len(text) > MAX_OUTPUT_CHARS:
-        return Reward(-1.0, False, answer_ok=False, details=["输出过长"])
+        return Reward(-1.0, False, answer_ok=False, details=["Output too long"])
     forged = _forged(text)
     parsed = parse_assistant(text)
     if forged or parsed.errors:
         return Reward(-1.0, False, answer_ok=False, details=[forged or "", *parsed.errors])
     if parsed.tool_calls:
         return Reward(
-            0.0, True, len(parsed.tool_calls), answer_ok=False, details=["最终回答里还在调用工具"]
+            0.0, True, len(parsed.tool_calls), answer_ok=False, details=["The final answer still calls a tool"]
         )
     bare = _bare_call(parsed.content)
     if bare:
         return Reward(-1.0, False, answer_ok=False, details=[bare])
     ans = parsed.content.strip()
     if not ans:
-        return Reward(0.0, True, answer_ok=False, details=["空回答"])
+        return Reward(0.0, True, answer_ok=False, details=["Empty answer"])
     if not task.answer_facts:
         if _invented_numbers(ans, task.query):
             return Reward(
-                0.0, True, answer_ok=False, details=["回答里有问题中没有的数字（疑似编造）"]
+                0.0, True, answer_ok=False, details=["The answer has numbers that are not in the question (possibly invented)"]
             )
-        return Reward(NO_TOOL_REWARD, True, answer_ok=None, details=["回答内容无法自动核对"])
+        return Reward(NO_TOOL_REWARD, True, answer_ok=None, details=["The answer content cannot be checked automatically"])
     if _too_many_numbers(ans, task.answer_facts):
-        return Reward(0.0, True, answer_ok=False, details=["回答里数字过多"])
+        return Reward(0.0, True, answer_ok=False, details=["Too many numbers in the answer"])
     norm = ans.replace(" ", "").lower()
     ok = all(f.replace(" ", "").lower() in norm for f in task.answer_facts)
-    return Reward(1.0 if ok else 0.0, True, answer_ok=ok, details=[] if ok else ["缺少要点"])
+    return Reward(1.0 if ok else 0.0, True, answer_ok=ok, details=[] if ok else ["Missing facts"])
 
 
 # ---------------------------------------------------------------------------
-# 完整一轮：生成 → 解析 → 执行 → 喂回 → 最终回答
+# A full episode: generate → parse → execute → feed back → final answer
 # ---------------------------------------------------------------------------
 
 Policy = Callable[[list[dict[str, Any]], list[dict[str, Any]]], str]
@@ -910,19 +973,21 @@ class Episode:
 
     @property
     def success(self) -> bool:
-        # 闲聊任务的回答内容无法核对（answer_ok 为 None），只要调用行为对、没被判为编造就算成功
+        # The content of a chat answer cannot be checked (answer_ok is None). The episode is a success
+        # if the call behavior is correct and the answer is not judged as invented.
         return self.call_reward.exact and self.answer_reward.answer_ok is not False
 
 
 def run_episode(policy: Policy, task: Task, max_turns: int = 3) -> Episode:
-    """让 policy（输入 messages 和 tools，输出助手文本）完成一个任务。
+    """Let the policy (input: messages and tools; output: assistant text) do one task.
 
-    第一轮输出按 `score_tool_calls` 打分；之后执行其中的调用、把结果作为 tool 消息喂回，
-    直到某一轮不再调用工具（即最终回答），按 `score_final_answer` 打分。
+    `score_tool_calls` scores the first output. Then the calls in the output are executed, and the
+    results go back to the model as tool messages. This continues until a turn makes no tool call
+    (the final answer). `score_final_answer` scores that turn.
     """
     msgs = [dict(m) for m in task.messages]
     call_reward: Reward | None = None
-    answer_reward = Reward(0.0, True, answer_ok=False, details=["轮数用完"])
+    answer_reward = Reward(0.0, True, answer_ok=False, details=["No turns left"])
     turns = 0
     while turns < max_turns:
         turns += 1
@@ -932,7 +997,7 @@ def run_episode(policy: Policy, task: Task, max_turns: int = 3) -> Episode:
         parsed = parse_assistant(text)
         if parsed.errors or _forged(text):
             msgs.append({"role": "assistant", "content": text})
-            answer_reward = Reward(-1.0, False, answer_ok=False, details=["格式错误，结束"])
+            answer_reward = Reward(-1.0, False, answer_ok=False, details=["Format error; the episode stops"])
             break
         msgs.append(parsed.to_message())
         if not parsed.tool_calls:

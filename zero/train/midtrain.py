@@ -1,17 +1,23 @@
-"""中期训练 / 退火 / 长上下文扩展入口（对应第 15 章）。
+"""Entry point for mid-training / annealing / long-context extension (Chapter 15).
 
-中期训练在预训练权重的基础上接着训，和预训练共用 `zero/train/trainer.py`，靠配置表达三类变化：
+Mid-training continues from the pretrained weights. It uses the same `zero/train/trainer.py` as
+pretraining. The config gives three types of change:
 
-1. **换数据混合**：`[[data.sources]]` 换一套来源和权重（加大高质量数据、加入指令与工具调用格式数据）；
-2. **学习率衰减段**：`[schedule] kind = "wsd"`、`decay_frac = 1.0` 就是"从峰值线性降到最低"
-   的纯衰减段——配合预训练的 WSD 稳定段，相当于把 WSD 的最后一段单独拿出来做；
-3. **长上下文扩展**：加大 `data.seq_len` 与 `model.max_seq_len`，同时改 RoPE：
-   - 调大 `rope_theta`（ABF，adjusted base frequency），或
-   - 加 `model.rope_scaling = {type = "yarn", factor = ..., original_max_position_embeddings = ...}`。
-   RoPE 的 cos/sin 不是可训练参数，按新配置重新计算即可，其余权重原样加载。
+1. **New data mixture**: `[[data.sources]]` sets a new list of sources and weights
+   (more high-quality data, plus data in the instruction and tool-call formats).
+2. **Learning-rate decay phase**: `[schedule] kind = "wsd"` with `decay_frac = 1.0` is a pure decay
+   phase: a linear decrease from the peak to the minimum. With the WSD stable phase of pretraining,
+   this is the last phase of WSD as a separate run.
+3. **Long-context extension**: increase `data.seq_len` and `model.max_seq_len`, and change RoPE:
+   - increase `rope_theta` (ABF, adjusted base frequency), or
+   - add `model.rope_scaling = {type = "yarn", factor = ..., original_max_position_embeddings = ...}`.
+   The RoPE cos/sin are not trainable parameters. The model computes them again from the new config,
+   and all other weights load unchanged.
 
-必须设置 `train.init_from`（预训练的 checkpoint 目录）。模型形状（层数、维度、词表）必须与之一致，
-只有 RoPE 相关字段和 max_seq_len 可以不同。中断后重跑同一条命令，会从本次运行自己的 checkpoint 续训。
+You must set `train.init_from` (the pretraining checkpoint directory). The model shape (layers,
+dimensions, vocabulary) must be the same as in that checkpoint. Only the RoPE fields and max_seq_len
+can be different. After an interruption, run the same command again. The run resumes from its own
+checkpoint.
 
     uv run python -m zero.train.midtrain --config configs/tiny/midtrain.toml
 """
@@ -25,17 +31,20 @@ from zero.train.checkpoint import find_latest
 from zero.train.pretrain import parse_args
 from zero.train.trainer import run_training
 
-# 中期训练允许改变的模型字段
+# Model fields that mid-training can change.
 _MUTABLE_MODEL_FIELDS = {"rope_theta", "rope_scaling", "max_seq_len"}
 
 
 def check_compatible(cfg: Config) -> list[str]:
-    """检查与 init_from 的模型结构是否兼容，返回"变化了什么"的说明列表。"""
+    """Check that the model structure is compatible with init_from.
+
+    Return a list of descriptions of what changed.
+    """
     if not cfg.train.init_from:
-        raise ConfigError("中期训练需要设置 [train] init_from（预训练 checkpoint 目录）")
+        raise ConfigError("Mid-training needs [train] init_from (the pretraining checkpoint directory)")
     ckpt = find_latest(cfg.train.init_from)
     if ckpt is None:
-        raise ConfigError(f"init_from={cfg.train.init_from} 里找不到 checkpoint，先跑预训练")
+        raise ConfigError(f"No checkpoint found in init_from={cfg.train.init_from}. Run pretraining first")
     with open(ckpt / "meta.json") as f:
         old = json.load(f).get("config", {})
     changes = []
@@ -45,7 +54,8 @@ def check_compatible(cfg: Config) -> list[str]:
         if k in old_model and old_model[k] != v:
             if k not in _MUTABLE_MODEL_FIELDS:
                 raise ConfigError(
-                    f"[model] {k} 与预训练 checkpoint 不同（{old_model[k]} → {v}），中期训练不能改变模型形状"
+                    f"[model] {k} is different from the pretraining checkpoint ({old_model[k]} → {v}). "
+                    f"Mid-training cannot change the model shape"
                 )
             changes.append(f"model.{k}: {old_model[k]} → {v}")
     old_data = old.get("train", {}).get("data", {})
@@ -55,12 +65,12 @@ def check_compatible(cfg: Config) -> list[str]:
     old_mix = {s["name"]: s["weight"] for s in old_data.get("sources", [])}
     new_mix = {s["name"]: s["weight"] for s in new_data["sources"]}
     if old_mix != new_mix:
-        changes.append(f"数据混合: {old_mix} → {new_mix}")
+        changes.append(f"data mixture: {old_mix} → {new_mix}")
     return changes
 
 
 def main(argv: list[str] | None = None) -> None:
-    args = parse_args(argv, description="中期训练 / 长上下文扩展")
+    args = parse_args(argv, description="Mid-training / long-context extension")
     cfg = load_config(args.config, args.set)
     if args.print_config:
         print(json.dumps(cfg.to_dict(), indent=2, ensure_ascii=False))

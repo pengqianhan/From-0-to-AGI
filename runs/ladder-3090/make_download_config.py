@@ -62,9 +62,10 @@ def spread(files: list[str], k: int) -> list[str]:
 def main() -> None:
     api = HfApi()
     out = [
-        "# 阶梯实验（runs/ladder-3090）的训练数据下载配置。由 runs/ladder-3090/make_download_config.py 生成，不要手改。",
-        "# 每个 [[sources]] 是某个数据集里的一个文件，从文件开头读 target_bytes 字节正文；",
-        "# 流水线（configs/ladder3090/data.toml）用通配符 <来源>-*/ 把同一数据集的文件合回一个来源。",
+        "# Download config for the training data of the ladder experiment (runs/ladder-3090).",
+        "# runs/ladder-3090/make_download_config.py writes this file. Do not edit it by hand.",
+        "# Each [[sources]] is one file of a dataset. The download reads target_bytes bytes of text from the start of the file.",
+        "# The pipeline (configs/ladder3090/data.toml) uses the wildcard <source>-*/ to join the files of one dataset into one source again.",
         "",
     ]
     total = 0.0

@@ -1,18 +1,23 @@
-"""主线模型：与 Qwen3 稠密模型结构兼容的 Decoder-only Transformer（对应第 8、9、10、15 章）。
+"""Main-line model: a decoder-only Transformer with the same structure as the Qwen3 dense models
+(Chapters 8, 9, 10, and 15).
 
-组件（都是"共识技术"，见 GOAL.md 3.3）：
+The components (all are "consensus techniques", see GOAL.md 3.3):
 
-- `RMSNorm`：只做缩放不做平移的归一化，Pre-Norm 放在每个子层之前；
-- `RotaryEmbedding`：RoPE 旋转位置编码，含 YaRN 长上下文缩放（第 15 章）；
-- `Attention`：GQA（多个查询头共享一组 K/V）+ QK-Norm（对每个头的 q、k 做 RMSNorm）
-  + PyTorch 的 `scaled_dot_product_attention`（在 GPU 上会自动选 FlashAttention 内核）
-  + 可选 KV cache（第 10 章）；
-- `SwiGLU`：门控前馈网络 down(silu(gate(x)) * up(x))；
-- `Block`：x + attn(norm(x))，再 x + ffn(norm(x))；
-- `Transformer`：embedding → N 个 Block → 最后的 RMSNorm → lm_head（可与 embedding 共享权重）。
+- `RMSNorm`: a normalization that only scales and does not shift. Pre-Norm puts it before each
+  sublayer.
+- `RotaryEmbedding`: RoPE rotary position embedding, with YaRN scaling for long context
+  (Chapter 15).
+- `Attention`: GQA (a group of query heads shares one K/V head) + QK-Norm (RMSNorm on q and k of
+  each head) + PyTorch `scaled_dot_product_attention` (on a GPU, it selects a FlashAttention
+  kernel automatically) + an optional KV cache (Chapter 10).
+- `SwiGLU`: a gated feed-forward network down(silu(gate(x)) * up(x)).
+- `Block`: x + attn(norm(x)), then x + ffn(norm(x)).
+- `Transformer`: embedding → N Blocks → final RMSNorm → lm_head (it can share weights with the
+  embedding).
 
-所有线性层都没有 bias。参数命名与 Hugging Face `Qwen3ForCausalLM` 的对应关系见 `zero/hf.py`，
-`tests/test_model_hf_parity.py` 保证两者的 logits 一致。
+No linear layer has a bias. `zero/hf.py` gives the mapping from these parameter names to the
+names of Hugging Face `Qwen3ForCausalLM`. `tests/test_model_hf_parity.py` makes sure that the two
+models give the same logits.
 """
 
 from __future__ import annotations
@@ -34,9 +39,10 @@ from zero.kv_cache import KVCache
 
 
 class RMSNorm(nn.Module):
-    """y = x / sqrt(mean(x^2) + eps) * weight。
+    """y = x / sqrt(mean(x^2) + eps) * weight.
 
-    与 HF 的 Qwen3RMSNorm 完全一致：先转 float32 算归一化，转回输入精度后再乘权重。
+    The same as Qwen3RMSNorm in HF: normalize in float32, convert back to the input precision,
+    then multiply by the weight.
     """
 
     def __init__(self, dim: int, eps: float = 1e-6) -> None:
@@ -52,22 +58,26 @@ class RMSNorm(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# RoPE（含 YaRN）
+# RoPE (with YaRN)
 # ---------------------------------------------------------------------------
 
 
 def compute_rope_inv_freq(
     head_dim: int, theta: float, scaling: dict[str, Any] | None = None
 ) -> tuple[torch.Tensor, float]:
-    """返回 (inv_freq, attention_scaling)。
+    """Return (inv_freq, attention_scaling).
 
-    默认 RoPE：inv_freq_i = theta^(-2i/d)，i = 0..d/2-1。
+    Default RoPE: inv_freq_i = theta^(-2i/d), i = 0..d/2-1.
 
-    YaRN（Peng et al. 2023, arXiv:2309.00071），实现与 transformers 的 `_compute_yarn_parameters` 一致：
-    - 高频维度（波长远小于原训练长度，转了很多圈）保持原频率 —— "外推"；
-    - 低频维度（波长比原训练长度还长）把频率除以 factor —— "内插"；
-    - 中间用线性斜坡过渡，边界由 beta_fast / beta_slow（单位：圈数）决定；
-    - cos/sin 额外乘 attention_scaling = 0.1 * ln(factor) + 1，补偿内插后注意力分布变"平"。
+    YaRN (Peng et al. 2023, arXiv:2309.00071). The implementation is the same as
+    `_compute_yarn_parameters` in transformers:
+    - High-frequency dimensions (the wavelength is much shorter than the original training length,
+      so they rotate many times) keep the original frequency: "extrapolation".
+    - Low-frequency dimensions (the wavelength is longer than the original training length) divide
+      the frequency by factor: "interpolation".
+    - A linear ramp connects the two ranges. beta_fast / beta_slow (unit: rotations) set the bounds.
+    - cos/sin are also multiplied by attention_scaling = 0.1 * ln(factor) + 1. This compensates
+      for the "flatter" attention distribution after the interpolation.
     """
     dim = head_dim
     pos_freqs = theta ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim)
@@ -83,15 +93,15 @@ def compute_rope_inv_freq(
         attention_factor = 1.0 if factor <= 1 else 0.1 * math.log(factor) + 1.0
 
     def correction_dim(num_rotations: float) -> float:
-        # 在原训练长度内恰好转 num_rotations 圈的维度编号（可以是小数）
+        # index of the dimension that makes exactly num_rotations rotations in the original training length (can be fractional)
         return (dim * math.log(orig_max / (num_rotations * 2 * math.pi))) / (2 * math.log(theta))
 
     low = max(math.floor(correction_dim(beta_fast)), 0)
     high = min(math.ceil(correction_dim(beta_slow)), dim - 1)
     if low == high:
-        high += 0.001  # 防止除零
+        high += 0.001  # prevent division by zero
     ramp = torch.clamp((torch.arange(dim // 2, dtype=torch.float32) - low) / (high - low), 0, 1)
-    extrapolation_weight = 1 - ramp  # 1 = 完全保持原频率（高频），0 = 完全内插（低频）
+    extrapolation_weight = 1 - ramp  # 1 = keep the original frequency (high frequency), 0 = full interpolation (low frequency)
 
     inv_freq_extrapolation = 1.0 / pos_freqs
     inv_freq_interpolation = 1.0 / (factor * pos_freqs)
@@ -103,10 +113,10 @@ def compute_rope_inv_freq(
 
 
 class RotaryEmbedding(nn.Module):
-    """预计算 [0, max_seq_len) 每个位置的 cos/sin，形状 (max_seq_len, head_dim)。
+    """Precompute cos/sin for each position in [0, max_seq_len), shape (max_seq_len, head_dim).
 
-    采用 HF/Qwen 的"前后两半配对"写法：维度 i 与 i + d/2 组成一对旋转（而不是相邻两维），
-    这样才能和官方权重对上。
+    This uses the "first half / second half" pairs of HF/Qwen: dimension i and i + d/2 rotate as
+    a pair (not two adjacent dimensions). Only this layout matches the official weights.
     """
 
     def __init__(
@@ -122,7 +132,8 @@ class RotaryEmbedding(nn.Module):
         self.theta = theta
         self.scaling = scaling
         cos, sin = self._build()
-        # 非持久 buffer：不进 state_dict，改了 theta / YaRN 之后重新构建即可（第 15 章长上下文扩展）
+        # Non-persistent buffers: they are not in the state_dict. After a change of theta / YaRN,
+        # build them again (long-context extension, Chapter 15).
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
 
@@ -134,7 +145,7 @@ class RotaryEmbedding(nn.Module):
         return emb.cos() * attn_scaling, emb.sin() * attn_scaling
 
     def reset_buffers(self, device: torch.device | str) -> None:
-        """在真实设备上重新计算 cos/sin（模型在 meta 设备上构建、to_empty 之后调用）。"""
+        """Compute cos/sin again on the real device (call after a build on the meta device and to_empty)."""
         with torch.device(device):
             cos, sin = self._build()
         self.cos, self.sin = cos, sin
@@ -142,7 +153,7 @@ class RotaryEmbedding(nn.Module):
     def forward(self, start_pos: int, seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
         end = start_pos + seq_len
         if end > self.max_seq_len:
-            raise ValueError(f"位置 {end} 超过了 RoPE 预计算的 max_seq_len={self.max_seq_len}")
+            raise ValueError(f"Position {end} is larger than max_seq_len={self.max_seq_len} that RoPE precomputed")
         return self.cos[start_pos:end], self.sin[start_pos:end]
 
 
@@ -152,7 +163,7 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
 
 
 def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-    """x: (B, H, T, D)；cos/sin: (T, D)。"""
+    """x: (B, H, T, D); cos/sin: (T, D)."""
     cos = cos.to(x.dtype)
     sin = sin.to(x.dtype)
     return x * cos + rotate_half(x) * sin
@@ -164,7 +175,7 @@ def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.T
 
 
 class Attention(nn.Module):
-    """GQA + QK-Norm + SDPA，可选 KV cache。"""
+    """GQA + QK-Norm + SDPA, with an optional KV cache."""
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
@@ -176,7 +187,7 @@ class Attention(nn.Module):
         self.wk = nn.Linear(config.dim, config.kv_dim, bias=False)
         self.wv = nn.Linear(config.dim, config.kv_dim, bias=False)
         self.wo = nn.Linear(config.q_dim, config.dim, bias=False)
-        # QK-Norm：在每个头的 head_dim 上做 RMSNorm（权重各头共享），在 RoPE 之前
+        # QK-Norm: RMSNorm over head_dim of each head (all heads share the weight), before RoPE
         self.q_norm = RMSNorm(self.head_dim, config.norm_eps) if config.qk_norm else nn.Identity()
         self.k_norm = RMSNorm(self.head_dim, config.norm_eps) if config.qk_norm else nn.Identity()
 
@@ -205,18 +216,19 @@ class Attention(nn.Module):
         kv_len = k.shape[2]
         past = kv_len - seqlen
         if past == 0:
-            # 没有历史：标准因果掩码
+            # No history: the standard causal mask
             attn_mask, is_causal = None, seqlen > 1
         elif seqlen == 1:
-            # 只有一个新 token：它可以看见全部历史，不需要掩码
+            # Only one new token: it can see all of the history, so no mask is necessary
             attn_mask, is_causal = None, False
         else:
-            # 有历史又一次喂多个 token（例如分块 prefill）：第 i 个新 token 能看见位置 <= past + i
+            # History and more than one new token (for example chunked prefill):
+            # new token i can see positions <= past + i
             i = torch.arange(seqlen, device=x.device)[:, None]
             j = torch.arange(kv_len, device=x.device)[None, :]
             attn_mask, is_causal = j <= (past + i), False
 
-        # GQA：enable_gqa 让 SDPA 自己广播 K/V 头，不必 repeat_interleave 出多份拷贝
+        # GQA: with enable_gqa, SDPA broadcasts the K/V heads itself; no repeat_interleave copies are necessary
         out = F.scaled_dot_product_attention(
             q,
             k,
@@ -230,7 +242,7 @@ class Attention(nn.Module):
 
 
 class SwiGLU(nn.Module):
-    """FFN(x) = W_down( silu(W_gate x) * (W_up x) )。"""
+    """FFN(x) = W_down( silu(W_gate x) * (W_up x) )."""
 
     def __init__(self, dim: int, ffn_dim: int) -> None:
         super().__init__()
@@ -243,7 +255,7 @@ class SwiGLU(nn.Module):
 
 
 class Block(nn.Module):
-    """Pre-Norm 残差块：x = x + attn(norm(x))；x = x + ffn(norm(x))。"""
+    """Pre-Norm residual block: x = x + attn(norm(x)); x = x + ffn(norm(x))."""
 
     def __init__(self, config: ModelConfig, layer_idx: int) -> None:
         super().__init__()
@@ -286,16 +298,22 @@ class Transformer(nn.Module):
         self.rope = RotaryEmbedding(
             config.head_dim, config.max_seq_len, config.rope_theta, config.rope_scaling
         )
-        # 激活检查点（第 14 章）：训练时每个 Block 只保存输入，反向时重算内部激活，
-        # 用约 1/3 的额外算力换显存。由 Trainer 按 train.activation_checkpointing 打开。
+        # Activation checkpointing (Chapter 14): in training, each Block saves only its input and
+        # computes the internal activations again in the backward pass. This uses about 1/3 more
+        # compute to save memory. The Trainer sets it from train.activation_checkpointing.
         self.activation_checkpointing = False
         self.init_weights()
 
-    # ---- 初始化 ----
+    # ---- Initialization ----
     @torch.no_grad()
     def init_weights(self) -> None:
-        """正态初始化 N(0, init_std)；两个"写回残差流"的投影（wo、w_down）再除以 sqrt(2 * n_layers)，
-        让残差流的方差不随层数增长（GPT-2 / OLMo 等的常见做法）。RMSNorm 权重为 1。"""
+        """Normal initialization N(0, init_std).
+
+        The two projections that "write back to the residual stream" (wo, w_down) are also
+        divided by sqrt(2 * n_layers). Then the variance of the residual stream does not grow
+        with the number of layers (a common method, for example in GPT-2 and OLMo).
+        The RMSNorm weights are 1.
+        """
         std = self.config.init_std
         out_std = std / math.sqrt(2 * self.config.n_layers)
         for name, module in self.named_modules():
@@ -307,13 +325,14 @@ class Transformer(nn.Module):
             elif isinstance(module, RMSNorm):
                 nn.init.ones_(module.weight)
 
-    # ---- 前向 ----
+    # ---- Forward pass ----
     def forward(
         self, tokens: torch.Tensor, kv_cache: KVCache | None = None, start_pos: int = 0
     ) -> torch.Tensor:
-        """tokens: (B, T) int64 → logits: (B, T, vocab_size)。
+        """tokens: (B, T) int64 → logits: (B, T, vocab_size).
 
-        有 kv_cache 时，tokens 是从位置 start_pos 开始的新 token，历史 K/V 从缓存里读。
+        With kv_cache, tokens are the new tokens from position start_pos. The K/V of the history
+        come from the cache.
         """
         _, seqlen = tokens.shape
         cos, sin = self.rope(start_pos, seqlen)
@@ -332,14 +351,20 @@ class Transformer(nn.Module):
     def loss(
         self, tokens: torch.Tensor, targets: torch.Tensor, ignore_index: int = -100
     ) -> torch.Tensor:
-        """语言模型交叉熵（在 float32 上算）。targets 里等于 ignore_index 的位置不计入（SFT 的 loss mask 用）。"""
+        """Language-model cross-entropy (in float32).
+
+        Positions where targets equal ignore_index do not count (for the SFT loss mask).
+        """
         logits = self(tokens)
         return cross_entropy_loss(logits, targets, ignore_index)
 
-    # ---- 统计 ----
+    # ---- Statistics ----
     def num_params(self, non_embedding: bool = False) -> int:
-        """参数量（共享权重只算一次）。non_embedding=True 时去掉 token embedding
-        （以及不共享时的 lm_head），即 Kaplan 等人 scaling law 里的 N。"""
+        """Number of parameters (shared weights count once).
+
+        With non_embedding=True, remove the token embedding (and lm_head if it is not shared).
+        This is N in the scaling law of Kaplan et al.
+        """
         n = sum(p.numel() for p in self.parameters())
         if non_embedding:
             n -= self.tok_emb.weight.numel()
@@ -360,7 +385,10 @@ def cross_entropy_loss(
 
 
 def count_params(config: ModelConfig) -> dict[str, int]:
-    """不分配内存地数参数：返回 total / embedding / non_embedding 以及各部分明细。"""
+    """Count the parameters without allocating memory.
+
+    Return total / embedding / non_embedding and the counts of the parts.
+    """
     assert config.head_dim is not None
     d, L = config.dim, config.n_layers
     attn = d * config.q_dim + 2 * d * config.kv_dim + config.q_dim * d
@@ -382,14 +410,17 @@ def count_params(config: ModelConfig) -> dict[str, int]:
 
 
 def estimate_flops_per_token(config: ModelConfig, seq_len: int) -> float:
-    """训练时每个 token 的浮点运算量（前向 + 反向），用于 MFU 和成本估算。
+    """Floating-point operations per token in training (forward + backward), for MFU and cost estimates.
 
     = 6 * N_matmul + 12 * L * q_dim * T
 
-    - N_matmul：所有参与矩阵乘法的参数，包括 lm_head（即使与 embedding 共享，输出投影的乘法照样要算），
-      不包括 embedding 查表和 RMSNorm；前向每个参数 2 FLOPs、反向 4 FLOPs，合计 6（Kaplan 2020）；
-    - 注意力里 QK^T 和 AV 两次矩阵乘：前向每 token 4 * q_dim * T，乘 3 得前向+反向 12 * q_dim * T
-      （PaLM 附录 B 的写法；这里没有为因果掩码减半，与 PaLM / nanochat 的口径一致）。
+    - N_matmul: all parameters in matrix multiplications, including lm_head (the output
+      projection is a matmul also when it shares weights with the embedding). It does not include
+      the embedding lookup and RMSNorm. Each parameter costs 2 FLOPs in the forward pass and
+      4 FLOPs in the backward pass, 6 in total (Kaplan 2020).
+    - The two matmuls QK^T and AV in attention: 4 * q_dim * T per token in the forward pass.
+      Multiply by 3 for forward + backward: 12 * q_dim * T (as in PaLM Appendix B). There is no
+      halving for the causal mask; this is the same definition as PaLM / nanochat.
     """
     assert config.head_dim is not None
     d, L = config.dim, config.n_layers
