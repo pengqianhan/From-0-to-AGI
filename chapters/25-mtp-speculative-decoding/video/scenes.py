@@ -1,7 +1,10 @@
-"""第 25 章视频：多 token 预测与推测解码 —— 让小模型先猜，大模型一次改完
+"""Video for Chapter 25: multi-token prediction and speculative decoding.
 
-画面里的数字都由 ../code/ 中的代码真实计算（见 script.md 事实清单），结果缓存在 video/out/cache.json。
-渲染：bash chapters/25-mtp-speculative-decoding/video/build.sh
+A small model guesses first. A large model corrects all guesses in one pass.
+
+The code in ../code/ calculates all numbers on screen (see the fact list in script.md).
+The cache video/out/cache.json keeps the results.
+Render: bash chapters/25-mtp-speculative-decoding/video/build.sh
 """
 
 from __future__ import annotations
@@ -49,7 +52,10 @@ def _load(name: str, filename: str):
 
 
 def compute() -> dict:
-    """从 ../code 真实计算视频要用的全部数字（首次较慢，之后读缓存）。"""
+    """Calculate all numbers for the video with the real code in ../code.
+
+    The first run is slow. Later runs read the cache.
+    """
     import statistics
     import time
 
@@ -62,13 +68,14 @@ def compute() -> dict:
     target, draft = m1.load_target(), m1.load_draft()
     data = m1.ch10.CharData()
 
-    # 01：一次前向喂 T 个 token 的耗时（相对 T=1）
+    # 01: time of one forward pass with T tokens (relative to T=1)
     cost = [(T, m1.forward_time(target, 200, T)) for T in (1, 2, 3, 5, 9, 17)]
     d["cost"] = [(T, t / cost[0][1]) for T, t in cost]
     d["c"] = m1.forward_time(draft, 200, 1) / m1.forward_time(target, 200, 1)
     d["params"] = (m1.n_params(target), m1.n_params(draft))
 
-    # 02：一轮真实的"猜—验"（找第一个有拒绝、且接受了至少 2 个的轮次）
+    # 02: one real "draft–verify" round
+    # (the first round that has a rejection and accepted at least 2 tokens)
     P = m2.prompts()
     trace: list = []
     m2.speculative_greedy(target, draft, P[1], 120, 4, trace)
@@ -106,18 +113,18 @@ def compute() -> dict:
         ts.append(time.process_time() - t0)
     d["speed_k3"] = (statistics.median(tb), statistics.median(ts))
 
-    # 03：一步拒绝采样的玩具
+    # 03: toy example of one rejection-sampling step
     r = m3.toy_single_step()
     d["toy"] = {key: [float(x) for x in r[key]] for key in ("p", "q", "spec", "naive")}
     d["toy_alpha"] = (r["accept"], r["alpha"])
     d["toy_tv"] = (m3.tv(r["spec"], r["p"]), m3.tv(r["naive"], r["p"]))
     d["toy_chi_p"] = r["chi"][2]
 
-    # 04：加速比曲线（c = 0.05）
+    # 04: speedup curves (c = 0.05)
     alphas = [0.3 + 0.01 * i for i in range(67)]
     d["curves"] = {str(k): [(a, m4.speedup(a, k, 0.05)) for a in alphas] for k in (1, 3, 6)}
 
-    # 05：MTP
+    # 05: MTP
     lm, head = m5.load_mtp(0)
     base0 = m1.ch10.load_or_train(n_kv_heads=4, steps=600, seed=0, verbose=False)
     d["mtp_eval"] = (m5.evaluate(base0), m5.evaluate(lm, head))
@@ -146,7 +153,7 @@ def mono(text: str, size: float = 24, color: str = theme.FG) -> Text:
 
 
 def tok_box(ch: str, color: str, w: float = 0.62, opacity: float = 0.25) -> VGroup:
-    """一个 token 方块；空格显示成 ␣、换行显示成 ↵。"""
+    """Draw one token box. A space shows as ␣, a newline shows as ↵."""
     shown = {" ": "␣", "\n": "↵"}.get(ch, ch)
     box = RoundedRectangle(
         width=w,
@@ -163,7 +170,7 @@ def tok_box(ch: str, color: str, w: float = 0.62, opacity: float = 0.25) -> VGro
 def bars(
     values: list[float], color: str, width: float = 0.34, scale: float = 4.0, opacity: float = 0.75
 ) -> VGroup:
-    """底边对齐的柱子（左到右），高度 = value × scale。"""
+    """Draw bars with aligned bases (left to right), height = value × scale."""
     g = VGroup()
     for i, v in enumerate(values):
         r = Rectangle(
@@ -206,7 +213,7 @@ class ChapterScene(NarratedScene):
         for i in range(1, 15):
             getattr(self, f"s{i:02d}")()
 
-    # ── S01 片头 ─────────────────────────────────────────────────────────
+    # ── S01 Opening ──────────────────────────────────────────────────────
     def s01(self):
         with self.shot("S01"):
             card = self.chapter_card()
@@ -216,7 +223,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.8))
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-    # ── S02 decode 一次一个 token，算力吃不饱 ─────────────────────────────
+    # ── S02 Decode makes one token at a time; the compute is not used fully ───
     def s02(self):
         with self.shot("S02"):
             self.play(*self.set_heading("decode：一次只出一个 token"), run_time=self.fit(0.8))
@@ -234,7 +241,7 @@ class ChapterScene(NarratedScene):
                 LaggedStart(*[FadeIn(s) for s in steps], lag_ratio=0.3), run_time=self.fit(2.5)
             )
             self.play(FadeIn(lab), run_time=self.fit(0.6))
-            # 右边：一次前向喂 T 个 token 的耗时（相对 T=1）
+            # Right side: time of one forward pass with T tokens (relative to T=1)
             ax = Axes(
                 x_range=[0, 18, 4],
                 y_range=[0, 2, 0.5],
@@ -272,7 +279,7 @@ class ChapterScene(NarratedScene):
                 run_time=self.fit(0.8),
             )
 
-    # ── S03 草稿猜 k 个，目标一次检查 ──────────────────────────────────────
+    # ── S03 The draft guesses k tokens; the target checks them in one pass ───
     def s03(self):
         with self.shot("S03"):
             self.play(*self.set_heading("推测解码：草稿先猜，目标一次检查"), run_time=self.fit(0.8))
@@ -327,7 +334,7 @@ class ChapterScene(NarratedScene):
                 run_time=self.fit(0.8),
             )
 
-    # ── S04 贪心逐字相同 + 回滚 ─────────────────────────────────────────────
+    # ── S04 Greedy output is identical token for token + rollback ───────────
     def s04(self):
         with self.shot("S04"):
             self.play(
@@ -372,7 +379,7 @@ truncate(cache, len(seq) - 1)   # 回滚""",
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(VGroup(code, cache[:6], cl, ok)), run_time=self.fit(0.8))
 
-    # ── S05 采样：p 与 q ──────────────────────────────────────────────────
+    # ── S05 Sampling: p and q ─────────────────────────────────────────────
     def _pq_axes(self):
         base = Line([-6.2, -1.6, 0], [-0.4, -1.6, 0], color=theme.MUTED, stroke_width=2)
         return base
@@ -421,7 +428,7 @@ truncate(cache, len(seq) - 1)   # 回滚""",
             self._s05 = VGroup(base, pb, qb, legend)
             self.play(FadeOut(VGroup(rule, alpha)), run_time=self.fit(0.8))
 
-    # ── S06 残差分布，结果恰好是 p ─────────────────────────────────────────
+    # ── S06 Residual distribution: the result is exactly p ─────────────────
     def s06(self):
         with self.shot("S06"):
             self.play(
@@ -463,7 +470,7 @@ truncate(cache, len(seq) - 1)   # 回滚""",
                 run_time=self.fit(0.8),
             )
 
-    # ── S07 一轮的全貌 ──────────────────────────────────────────────────
+    # ── S07 One full round ──────────────────────────────────────────────
     def s07(self):
         with self.shot("S07"):
             self.play(*self.set_heading("一轮最多 k+1 个，至少 1 个"), run_time=self.fit(0.8))
@@ -522,7 +529,7 @@ truncate(cache, len(seq) - 1)   # 回滚""",
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(VGroup(rows, leg, f)), run_time=self.fit(0.8))
 
-    # ── S08 加速比曲线 ───────────────────────────────────────────────────
+    # ── S08 Speedup curves ───────────────────────────────────────────────
     def s08(self):
         with self.shot("S08"):
             self.play(*self.set_heading("加速比 vs 接受率 α（c = 0.05）"), run_time=self.fit(0.8))
@@ -555,7 +562,7 @@ truncate(cache, len(seq) - 1)   # 回滚""",
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(VGroup(ax, xl, yl, labels, note)), run_time=self.fit(0.8))
 
-    # ── S09 实测 ────────────────────────────────────────────────────────
+    # ── S09 Measurements ────────────────────────────────────────────────
     def s09(self):
         with self.shot("S09"):
             self.play(*self.set_heading("小实验：0.86M 目标 + 0.06M 草稿"), run_time=self.fit(0.8))
@@ -588,7 +595,7 @@ truncate(cache, len(seq) - 1)   # 回滚""",
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(VGroup(t, sp, badge)), run_time=self.fit(0.8))
 
-    # ── S10 草稿从哪来 ──────────────────────────────────────────────────
+    # ── S10 Where the draft comes from ──────────────────────────────────
     def s10(self):
         with self.shot("S10"):
             self.play(*self.set_heading("草稿从哪来"), run_time=self.fit(0.8))
@@ -618,7 +625,7 @@ truncate(cache, len(seq) - 1)   # 回滚""",
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(VGroup(cards, note)), run_time=self.fit(0.8))
 
-    # ── S11 MTP 模块结构 ────────────────────────────────────────────────
+    # ── S11 Structure of the MTP module ─────────────────────────────────
     def s11(self):
         with self.shot("S11"):
             self.play(*self.set_heading("DeepSeek-V3 的 MTP 模块"), run_time=self.fit(0.8))
@@ -678,7 +685,7 @@ truncate(cache, len(seq) - 1)   # 回滚""",
                 run_time=self.fit(0.8),
             )
 
-    # ── S12 MTP 小实验 ─────────────────────────────────────────────────
+    # ── S12 MTP small experiment ───────────────────────────────────────
     def s12(self):
         with self.shot("S12"):
             self.play(
@@ -718,7 +725,7 @@ truncate(cache, len(seq) - 1)   # 回滚""",
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(VGroup(t, sp, badge)), run_time=self.fit(0.8))
 
-    # ── S13 谁在用 ──────────────────────────────────────────────────────
+    # ── S13 Adopters ────────────────────────────────────────────────────
     def s13(self):
         with self.shot("S13"):
             self.play(*self.set_heading("谁在用"), run_time=self.fit(0.8))
@@ -741,7 +748,7 @@ truncate(cache, len(seq) - 1)   # 回滚""",
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(VGroup(t, note)), run_time=self.fit(0.8))
 
-    # ── S14 从极简到生产级 + 下一章 ─────────────────────────────────────
+    # ── S14 From minimal code to production code + next chapter ─────────
     def s14(self):
         with self.shot("S14"):
             self.play(*self.set_heading("从极简到生产级"), run_time=self.fit(0.8))

@@ -1,8 +1,8 @@
-"""第 2 章视频：从标量到矩阵 —— y = XW + b
+"""Chapter 2 video: from scalars to matrices — y = XW + b.
 
-画面里的所有数值都由 ../code/ 中的代码真实计算（见 script.md 事实清单 F1–F17）。
-S11 的计时在渲染时现场运行 05_loop_vs_vectorized.py 得到。
-渲染：bash chapters/02-from-scalar-to-matrix/video/build.sh
+The code in ../code/ calculates all numbers in the frames (see the fact list F1–F17 in script.md).
+The timings in S11 come from a run of 05_loop_vs_vectorized.py during the render.
+Render: bash chapters/02-from-scalar-to-matrix/video/build.sh
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ reg = _load("multivariate_regression", "04_multivariate_regression.py")
 bench = _load("loop_vs_vectorized", "05_loop_vs_vectorized.py")
 pt = _load("pytorch_version", "06_pytorch_version.py")
 
-# ── F1/F2：房子向量与点积 ────────────────────────────────────────────────
+# ── F1/F2: house vectors and the dot product ─────────────────────────────
 HOUSES = lin.HOUSES                         # (4, 3)
 W_DEMO = reg.W_TRUE.ravel()                 # [0.8, 5, -3]
 B_DEMO = reg.B_TRUE                         # 20
@@ -69,28 +69,28 @@ PRODS = X0 * W_DEMO                         # [64, 10, -15]
 DOT0 = float(W_DEMO @ X0)                   # 59
 PREDS = HOUSES @ W_DEMO + B_DEMO            # [79, 125, 49, 104.5]
 
-# ── F3：手写矩阵乘法 ──────────────────────────────────────────────────────
+# ── F3: matrix multiplication by hand ─────────────────────────────────────
 A_MM = [[1, 2, 3], [4, 5, 6]]
 B_MM = [[7, 8], [9, 10], [11, 12]]
 C_MM = mm.matmul(A_MM, B_MM)
 
-# ── F6：广播示例 ──────────────────────────────────────────────────────────
+# ── F6: broadcasting example ──────────────────────────────────────────────
 W1, B1, W2, B2 = lin.init_params()
 XW1 = HOUSES @ W1                           # (4, 2)
 H1 = lin.linear(HOUSES, W1, B1)
 W12 = W1 @ W2
 
-# ── F8–F11：多元线性回归 ──────────────────────────────────────────────────
+# ── F8–F11: multiple linear regression ────────────────────────────────────
 XR, YR = reg.make_data()
 XS, MU, SIGMA = reg.standardize(XR)
 LR_RAW, LR_STD = reg.critical_lr(XR), reg.critical_lr(XS)
 HIST = reg.gradient_descent(XS, YR, lr=0.1, steps=200)
 LOSSES = [h[2] for h in HIST]
 
-# ── F12/F13：现场计时 ─────────────────────────────────────────────────────
+# ── F12/F13: timings measured during the render ───────────────────────────
 BENCH = bench.run_benchmarks()
 
-# ── F16：PyTorch 对拍 ─────────────────────────────────────────────────────
+# ── F16: parity check with PyTorch ────────────────────────────────────────
 import torch  # noqa: E402
 
 _W_N, _B_N, _ = HIST[-1]
@@ -134,7 +134,7 @@ class ChapterScene(NarratedScene):
     chapter_title = "从标量到矩阵"
 
     def construct(self) -> None:
-        # ── S01 片头 ─────────────────────────────────────────────────────
+        # ── S01 Opening ──────────────────────────────────────────────────
         with self.shot("S01"):
             card = self.chapter_card()
             sub = MathTex(r"\hat{y}=ax+b\ \longrightarrow\ Y=XW+b", font_size=44,
@@ -144,7 +144,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.05, self.remaining() - 0.8))
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-        # ── S02 一个输入不够 ─────────────────────────────────────────────
+        # ── S02 One input is not sufficient ──────────────────────────────
         with self.shot("S02"):
             old = MathTex(r"\hat{y}", "=", "a", "x", "+", "b", font_size=56).move_to([-3.6, 1.3, 0])
             old[2].set_color(theme.PARAM)
@@ -179,7 +179,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [old, old_lbl, house, house_t, arrow, new]],
                       run_time=self.fit(0.6))
 
-        # ── S03 向量与点积 ───────────────────────────────────────────────
+        # ── S03 Vectors and the dot product ──────────────────────────────
         with self.shot("S03"):
             xv = mat([[v] for v in X0], theme.INPUT, fs=40, v_buff=0.9).move_to([-5.2, 0.4, 0])
             wv = mat([[v] for v in W_DEMO], theme.PARAM, fs=40, v_buff=0.9).move_to([-3.4, 0.4, 0])
@@ -217,7 +217,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [xv, wv, xl, wl, prods, summ, brace, formula]],
                       run_time=self.fit(0.6))
 
-        # ── S04 一批样本：矩阵 ───────────────────────────────────────────
+        # ── S04 A batch of samples: a matrix ─────────────────────────────
         with self.shot("S04"):
             Xm = mat(HOUSES, theme.INPUT, fs=34, h_buff=1.15, v_buff=0.62)
             at = MathTex("@", font_size=44)
@@ -256,7 +256,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.05, self.remaining() - 0.6))
             self.play(*[FadeOut(m) for m in [row, labels, row_note, note]], run_time=self.fit(0.6))
 
-        # ── S05 矩阵乘法怎么算 ───────────────────────────────────────────
+        # ── S05 How to calculate a matrix multiplication ─────────────────
         with self.shot("S05"):
             Am = mat(A_MM, theme.INPUT, fs=38, h_buff=0.9)
             Bm = mat(B_MM, theme.PARAM, fs=38, h_buff=0.9)
@@ -296,7 +296,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.05, self.remaining() - 0.6))
             self.play(*[FadeOut(m) for m in [grp, names, rule, calc]], run_time=self.fit(0.6))
 
-        # ── S06 形状规则 ─────────────────────────────────────────────────
+        # ── S06 The shape rule ───────────────────────────────────────────
         with self.shot("S06"):
             rule = MathTex("(m,", "k", r")\ @\ (", "k", r",n)\ \to\ (m,n)", font_size=54)
             rule.move_to([0, 2.15, 0])
@@ -310,7 +310,7 @@ class ChapterScene(NarratedScene):
             ops = [MathTex("@", font_size=40), MathTex(r"\to", font_size=40)]
             blocks = VGroup(bA, ops[0], bB, ops[1], bC).arrange(RIGHT, buff=0.6)
             blocks.move_to([-3.2, 0.3, 0])
-            VGroup(bA, ops[0]).shift(LEFT * 0.5)   # 给 B 左侧的大括号和 k 留出位置
+            VGroup(bA, ops[0]).shift(LEFT * 0.5)   # make space for the brace and k on the left of B
             kA = Brace(bA[0], DOWN, color=theme.HIGHLIGHT)
             kA_t = MathTex("k", font_size=32, color=theme.HIGHLIGHT).next_to(kA, DOWN, 0.1)
             kB = Brace(bB[0], LEFT, color=theme.HIGHLIGHT)
@@ -340,7 +340,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [rule, blocks, kA, kA_t, kB, kB_t, same, gone, ex]],
                       run_time=self.fit(0.6))
 
-        # ── S07 y = XW + b 的每个字母 ────────────────────────────────────
+        # ── S07 Each letter in y = XW + b ────────────────────────────────
         with self.shot("S07"):
             f = MathTex("Y", "=", "X", "W", "+", "b", font_size=80).move_to([0, 1.5, 0])
             f[0].set_color(theme.OUTPUT)
@@ -371,7 +371,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(f), FadeOut(shapes), FadeOut(notes), run_time=self.fit(0.6))
 
-        # ── S08 广播 ─────────────────────────────────────────────────────
+        # ── S08 Broadcasting ─────────────────────────────────────────────
         with self.shot("S08"):
             xw = mat(np.round(XW1, 2), theme.INPUT, fs=30, h_buff=1.5, v_buff=0.6)
             bb = mat([B1] * 4, theme.PARAM, fs=30, h_buff=1.0, v_buff=0.6)
@@ -407,7 +407,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [grp, lbls, virt, rule, err, err_t]],
                       run_time=self.fit(0.6))
 
-        # ── S09 梯度也写成矩阵 ───────────────────────────────────────────
+        # ── S09 The gradient is also a matrix ────────────────────────────
         with self.shot("S09"):
             g1 = MathTex(r"\frac{\partial L}{\partial a}=\frac{2}{N}\sum_i(\hat{y}_i-y_i)\,x_i",
                          font_size=40, color=theme.MUTED).move_to([0.8, 1.9, 0])
@@ -442,7 +442,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [g1, g1_l, g2, g2_l, box, shp, same_w, same]],
                       run_time=self.fit(0.6))
 
-        # ── S10 训练多元线性回归 ─────────────────────────────────────────
+        # ── S10 Train a multiple linear regression ───────────────────────
         with self.shot("S10"):
             setup = zh("200 套房子 · 学习率 0.1 · 从全 0 出发", 24, theme.MUTED).move_to([0, 2.5, 0])
             self.play(*self.set_heading("训练：多元线性回归"), FadeIn(setup), run_time=self.fit(1))
@@ -516,7 +516,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [setup, ax, ylabels, xlab, ylab, table, step_lbl,
                                              curve, final]], run_time=self.fit(0.6))
 
-        # ── S11 循环 vs 向量化 ───────────────────────────────────────────
+        # ── S11 Loop vs vectorization ────────────────────────────────────
         with self.shot("S11"):
             fw, tr = BENCH["forward"], BENCH["train"]
             sub = MathTex(r"(1000,100)\ @\ (100,10)", font_size=32, color=theme.MUTED).move_to([0, 2.4, 0])
@@ -555,7 +555,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeOut(sub), FadeOut(bars), FadeOut(train), FadeOut(same),
                       run_time=self.fit(0.6))
 
-        # ── S12 为什么快 ─────────────────────────────────────────────────
+        # ── S12 Why it is fast ───────────────────────────────────────────
         with self.shot("S12"):
             def panel(title, lines, color, x):
                 t = zh(title, 28, color)
@@ -586,7 +586,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.05, self.remaining() - 0.6))
             self.play(*[FadeOut(m) for m in [left, right, gpu, big]], run_time=self.fit(0.6))
 
-        # ── S13 从极简到生产级 ───────────────────────────────────────────
+        # ── S13 From minimal code to production code ─────────────────────
         with self.shot("S13"):
             left_code = VGroup(*[mono(s, 22) for s in [
                 "err = X @ W + b - y",
@@ -631,7 +631,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [lt, rt, left_code, right_code, r0, loop_t, wnote, res]],
                       run_time=self.fit(0.6))
 
-        # ── S14 小结与下一章 ─────────────────────────────────────────────
+        # ── S14 Summary and the next chapter ─────────────────────────────
         with self.shot("S14"):
             summ = VGroup(
                 zh("一组输入 → 向量、点积", 26, theme.FG),

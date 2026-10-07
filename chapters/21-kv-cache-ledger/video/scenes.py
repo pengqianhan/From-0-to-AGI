@@ -1,9 +1,11 @@
-"""第 21 章视频：KV cache 的账本 —— 长上下文贵在哪，每个 token 该存多少
+"""Video for Chapter 21: the KV cache ledger.
 
-画面里的所有数值都由 ../code/ 中的代码真实计算（见 script.md 事实清单）。
-结果缓存在 video/out/cache.json；删掉它会重新计算。S11 读取 code/out/results.pt
-（先运行 code/04_attention_variants.py）。
-渲染：bash chapters/21-kv-cache-ledger/video/build.sh
+Why long context is expensive, and how much to store for each token.
+
+The code in ../code/ calculates all values on screen (see the fact list in script.md).
+The cache video/out/cache.json keeps the results. Delete it to calculate them again.
+S11 reads code/out/results.pt (run code/04_attention_variants.py first).
+Render: bash chapters/21-kv-cache-ledger/video/build.sh
 """
 
 from __future__ import annotations
@@ -56,7 +58,7 @@ def _load(name: str, filename: str):
 
 
 def compute() -> dict:
-    """从 ../code 真实计算视频要用的全部数字。"""
+    """Calculate all numbers for the video with the real code in ../code."""
     import torch
 
     led = _load("kv_ledger", "01_kv_ledger.py")
@@ -130,7 +132,7 @@ class ChapterScene(NarratedScene):
         self.s12()
         self.s13()
 
-    # ── S01 片头 ─────────────────────────────────────────────────────────
+    # ── S01 Opening ──────────────────────────────────────────────────────
     def s01(self) -> None:
         with self.shot("S01"):
             card = self.chapter_card()
@@ -140,7 +142,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-    # ── S02 回顾公式 ─────────────────────────────────────────────────────
+    # ── S02 Review the formula ───────────────────────────────────────────
     def s02(self) -> None:
         with self.shot("S02"):
             self.play(*self.set_heading("回顾：KV cache 的显存公式"), run_time=self.fit(0.8))
@@ -157,7 +159,7 @@ class ChapterScene(NarratedScene):
             sub = zh(f"主线模型：2 × 28 × 8 × 128 × 2 字节 = {per:,} 字节 = {per // 1024} KiB / token",
                      26).move_to([0, 0.5, 0])
             self.play(FadeIn(sub), run_time=self.fit(1))
-            scale = 2.0  # 每 GiB 的宽度
+            scale = 2.0  # Width of 1 GiB
             kv_gib, w_gib = D["main_32k"] / GiB, D["weights"] / GiB
             b1 = hbar(kv_gib * scale, theme.ATTN).move_to([-2.0, -0.6, 0], aligned_edge=LEFT)
             b2 = hbar(w_gib * scale, theme.PARAM).move_to([-2.0, -1.4, 0], aligned_edge=LEFT)
@@ -207,7 +209,7 @@ class ChapterScene(NarratedScene):
         with self.shot("S04"):
             self.play(*self.set_heading("decode：每步都要把权重和 KV cache 读一遍"),
                       run_time=self.fit(0.8))
-            s = 0.14  # 每 GiB 的宽度
+            s = 0.14  # Width of 1 GiB
             x0 = -4.3
             groups = VGroup()
             for i, (T, label) in enumerate(((4096, "4K"), (32768, "32K"))):
@@ -242,7 +244,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(groups, leg, ridge)), run_time=self.fit(0.6))
 
-    # ── S05 并发 ─────────────────────────────────────────────────────────
+    # ── S05 Concurrency ──────────────────────────────────────────────────
     def s05(self) -> None:
         with self.shot("S05"):
             self.play(*self.set_heading("80 GB 能同时服务几条 32K 对话（主线模型）"),
@@ -267,11 +269,11 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(grp, note)), run_time=self.fit(0.6))
 
-    # ── S06 按层记账（示意）───────────────────────────────────────────────
+    # ── S06 Count layer by layer (schematic) ──────────────────────────────
     def s06(self) -> None:
         with self.shot("S06"):
             self.play(*self.set_heading("按层记账：四种层，四种涨法（示意）"), run_time=self.fit(0.8))
-            t = ValueTracker(0.0)  # 上下文长度，0 → 1（代表 0 → 128K）
+            t = ValueTracker(0.0)  # Context length, 0 → 1 (stands for 0 → 128K)
             x0, maxw = -2.4, 8.0
             rows = [("全注意力", theme.INPUT, lambda v: v * maxw),
                     ("MLA", theme.ATTN, lambda v: v * maxw * 576 / 2048),
@@ -298,7 +300,7 @@ class ChapterScene(NarratedScene):
             tl.clear_updaters()
             self.play(FadeOut(VGroup(grp, axis, tl, win, wl)), run_time=self.fit(0.6))
 
-    # ── S07 公开模型 ─────────────────────────────────────────────────────
+    # ── S07 Open models ──────────────────────────────────────────────────
     def s07(self) -> None:
         with self.shot("S07"):
             self.play(*self.set_heading("128K 上下文的 KV cache（BF16，来自各模型 config.json）"),
@@ -362,7 +364,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(cols, key)), run_time=self.fit(0.6))
 
-    # ── S09 MLA 压缩 ─────────────────────────────────────────────────────
+    # ── S09 MLA compression ──────────────────────────────────────────────
     def s09(self) -> None:
         with self.shot("S09"):
             self.play(*self.set_heading("第二条路：MLA 把 K、V 压成一个潜向量"), run_time=self.fit(0.8))
@@ -405,7 +407,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeOut(VGroup(x, xl, xd, c, cl, cd, kr, krl, krd, a1, a1l, a2, cache_box,
                                      cache_l, heads, up, up_l)), run_time=self.fit(0.6))
 
-    # ── S10 吸收与解耦 RoPE ──────────────────────────────────────────────
+    # ── S10 Absorption and decoupled RoPE ────────────────────────────────
     def s10(self) -> None:
         with self.shot("S10"):
             self.play(*self.set_heading("吸收：推理时不用还原 K、V"), run_time=self.fit(0.8))
@@ -437,7 +439,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(e1, e2, n2, rope, cmp, last)), run_time=self.fit(0.6))
 
-    # ── S11 小实验 ───────────────────────────────────────────────────────
+    # ── S11 Small experiment ─────────────────────────────────────────────
     def s11(self) -> None:
         with self.shot("S11"):
             self.play(*self.set_heading("小实验：只换注意力，600 步 × 3 个种子"), run_time=self.fit(0.8))
@@ -445,7 +447,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(badge), run_time=0.3)
             exp = D["exp"]
             cols = [theme.INPUT, theme.INPUT, theme.INPUT, theme.ATTN, theme.ATTN]
-            # 左：每 token 缓存（字节）
+            # Left: cache per token (bytes)
             x0, maxw = -4.6, 2.6
             mx = max(r["per_token"] for r in exp)
             left = VGroup()
@@ -456,7 +458,7 @@ class ChapterScene(NarratedScene):
                 v = zh(f"{r['per_token']} B", 20, cols[i]).next_to(b, RIGHT, 0.12)
                 left.add(VGroup(b, n, v))
             lt = zh("每 token 缓存（FP32，4 层）", 20, theme.MUTED).move_to([-3.6, 2.65, 0])
-            # 右：验证 loss 点图
+            # Right: dot plot of the validation loss
             allv = [x for r in exp for x in r["losses"]]
             lo, hi = min(allv), max(allv)
             pad = (hi - lo) * 0.15 + 1e-3
@@ -486,7 +488,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(left, lt, right, rt, axis, ticks, badge)), run_time=self.fit(0.6))
 
-    # ── S12 采用与代价 ───────────────────────────────────────────────────
+    # ── S12 Adoption and costs ───────────────────────────────────────────
     def s12(self) -> None:
         with self.shot("S12"):
             self.play(*self.set_heading("谁在用 MLA，代价是什么"), run_time=self.fit(0.8))
@@ -511,7 +513,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(fam, ft, cost, ct, concl)), run_time=self.fit(0.6))
 
-    # ── S13 从极简到生产级 ───────────────────────────────────────────────
+    # ── S13 From minimal code to production code ─────────────────────────
     def s13(self) -> None:
         with self.shot("S13"):
             self.play(*self.set_heading("从极简到生产级"), run_time=self.fit(0.8))
@@ -541,5 +543,5 @@ class ChapterScene(NarratedScene):
                       run_time=self.fit(0.6))
 
 
-def AnimFade(m):  # noqa: N802 - 与 Manim 动画类同风格
+def AnimFade(m):  # noqa: N802 - same style as the Manim animation classes
     return FadeIn(m, shift=RIGHT * 0.2)

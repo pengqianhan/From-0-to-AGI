@@ -1,11 +1,15 @@
-"""第 15 章视频：中期训练与长上下文 —— 最后一段怎么训，读不长怎么办
+"""Video for Chapter 15: mid-training and long context.
 
-画面里的数值都由 ../code/ 中的代码真实计算（见 script.md 事实清单）：
-  01_rope_wavelengths.py、02_yarn_from_scratch.py 现算；
-  03_context_extension.py、04_anneal_mixture.py 读它们的缓存 code/out/*.pt（先运行这两个脚本）。
-tiny 配置的 zero 运行日志（S15）来自 README"主线进度"里的两条命令，val 从 out/tiny/ch15/ 的 log.jsonl 现读。
-结果缓存在 video/out/cache.json；删掉它会重新计算。
-渲染：bash chapters/15-midtraining-long-context/video/build.sh
+How to train the last stage, and how to make the model read long text.
+
+The code in ../code/ calculates all values on screen (see the fact list in script.md):
+  01_rope_wavelengths.py and 02_yarn_from_scratch.py run at render time;
+  03_context_extension.py and 04_anneal_mixture.py: we read their cache code/out/*.pt
+  (run these 2 scripts first).
+The zero run logs of the tiny configuration (S15) come from the 2 commands in the README section
+"Main-line progress". We read val from log.jsonl in out/tiny/ch15/ at render time.
+The cache video/out/cache.json keeps the results. Delete it to calculate them again.
+Render: bash chapters/15-midtraining-long-context/video/build.sh
 """
 
 from __future__ import annotations
@@ -54,8 +58,10 @@ MONO = "Noto Sans Mono"
 
 NIAH_LENGTHS, NIAH_DEPTHS = (64, 128, 240), (0.0, 0.5, 1.0)
 
-# tiny 配置的中期训练（README"主线进度"的两条命令；out/tiny/ch15/）：
-# check_compatible 打印的三条变化由配置决定，写在这里；val 由 compute() 从运行日志现读。
+# Mid-training of the tiny configuration (out/tiny/ch15/; the 2 commands in the README section
+# "Main-line progress").
+# The configuration sets the 3 changes that check_compatible prints, so we write them here.
+# compute() reads val from the run logs at render time.
 TINY_RUN = {
     "mid_changes": ["rope_scaling: None → yarn ×2（原长 128）", "seq_len: 128 → 256",
                     "配比：英 0.45 / 中 0.45 / 代码 0.1 → 0.3 / 0.6 / 0.1"],
@@ -64,7 +70,7 @@ TINY_LOGS = {"pre_val": ROOT / "out/tiny/ch15/pretrain/log.jsonl", "mid_val": RO
 
 
 def _last_val(path: Path) -> list:
-    """训练日志 log.jsonl 里最后一次验证：[step, val_loss]。"""
+    """Return the last validation in the training log log.jsonl: [step, val_loss]."""
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     vals = [[r["step"], r["val_loss"]] for r in rows if r.get("val_loss") is not None]
     if not vals:
@@ -124,7 +130,8 @@ def compute() -> dict:
     r4 = torch.load(CODE / "out" / "anneal_mixture.pt", weights_only=False)
     d["anneal"] = {"trunk": r4["trunk"], "branches": r4["branches"],
                    "steps": [r4["trunk_steps"], r4["branch_steps"]]}
-    # 大海捞针：tiny 中期训练的结果（README"主线进度"的命令产生 out/tiny/ch15/midtrain/ckpt）
+    # Needle in a haystack: the result of tiny mid-training
+    # (the commands in the README section "Main-line progress" make out/tiny/ch15/midtrain/ckpt).
     from zero.post.common import load_policy
     from zero.tools.needle import run_grid
 
@@ -177,7 +184,7 @@ class ChapterScene(NarratedScene):
         for i in range(1, 17):
             getattr(self, f"s{i:02d}")()
 
-    # ── S01 片头 ─────────────────────────────────────────────────────────
+    # ── S01 Opening ──────────────────────────────────────────────────────
     def s01(self) -> None:
         with self.shot("S01"):
             card = self.chapter_card()
@@ -187,7 +194,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.05, self.remaining() - 0.8))
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-    # ── S02 两个问题：时间线 ─────────────────────────────────────────────
+    # ── S02 Two questions: the timeline ──────────────────────────────────
     def s02(self) -> None:
         with self.shot("S02"):
             self.play(*self.set_heading("预训练收尾的两个问题"), run_time=self.fit(0.8))
@@ -219,7 +226,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(bars, base, q1, q2, arr1)), run_time=self.fit(0.6))
 
-    # ── S03 WSD 曲线 + 衰减段换数据 ─────────────────────────────────────
+    # ── S03 WSD curve + new data in the decay phase ─────────────────────
     def s03(self) -> None:
         with self.shot("S03"):
             self.play(*self.set_heading("中期训练：衰减段换上最好的数据"), run_time=self.fit(0.8))
@@ -246,7 +253,7 @@ class ChapterScene(NarratedScene):
             band.move_to([(ax.c2p(90, 0)[0] + ax.c2p(100, 0)[0]) / 2, ax.get_center()[1], 0])
             lab = zh("5–10% 的算力", 20, theme.PARAM).next_to(band, UP, 0.08)
             self.play(FadeIn(band), FadeIn(lab), run_time=self.fit(0.6))
-            # 右侧：两个配比条
+            # Right side: 2 data-mixture bars
             def mix(parts, y):
                 g, x0 = VGroup(), 3.3
                 for name, frac, c in parts:
@@ -272,7 +279,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeOut(VGroup(ax, xl, yl, stable, decay, band, lab, m1, m2, t1, t2, who)),
                       run_time=self.fit(0.6))
 
-    # ── S04 为什么有效 + OLMo 2 数字 ────────────────────────────────────
+    # ── S04 Why it works + OLMo 2 numbers ───────────────────────────────
     def s04(self) -> None:
         with self.shot("S04"):
             self.play(*self.set_heading("为什么放在衰减段"), run_time=self.fit(0.8))
@@ -284,7 +291,7 @@ class ChapterScene(NarratedScene):
             for p in pts:
                 self.play(FadeIn(p, shift=RIGHT * 0.2), run_time=self.fit(0.7))
                 self.wait(min(2.5, self.remaining() * 0.18))
-            # OLMo 2 7B：中期训练前后（报告表 9）
+            # OLMo 2 7B: before and after mid-training (Table 9 of the report)
             rows = [("10 项平均", 53.0, 62.9), ("GSM8K", 24.1, 67.5)]
             g = VGroup()
             for k, (name, a, b) in enumerate(rows):
@@ -304,14 +311,14 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(pts, g, leg, src)), run_time=self.fit(0.6))
 
-    # ── S05 小实验：分叉衰减 × 换数据 ───────────────────────────────────
+    # ── S05 Small experiment: branched decay × new data ─────────────────
     def s05(self) -> None:
         with self.shot("S05"):
             self.play(*self.set_heading("小实验：衰减 × 换数据"), run_time=self.fit(0.8))
             badge = self.show_badge()
             A = D["anneal"]
             trunk_steps, br_steps = A["steps"]
-            # 左：分叉示意
+            # Left: schematic of the branches
             o = np.array([-5.6, 0.3, 0])
             fork = np.array([-2.9, 0.3, 0])
             trunk = Line(o, fork, color=theme.MUTED, stroke_width=5)
@@ -327,7 +334,7 @@ class ChapterScene(NarratedScene):
                       ).move_to([-3.4, -2.0, 0])
             self.play(FadeIn(note), run_time=self.fit(0.6))
             self.wait(self.remaining() * 0.12)
-            # 右：代码与平均的 bits-per-byte
+            # Right: bits-per-byte on code and on average
             vals = [A["branches"][n]["代码"] for n in names]
             lo = min(vals) - 0.15
             chart = VGroup()
@@ -348,7 +355,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeOut(VGroup(trunk, tl, brs, bls, note, chart, ttl, tb, best, badge)),
                       run_time=self.fit(0.6))
 
-    # ── S06 RoPE 钟表：没见过的角度 ─────────────────────────────────────
+    # ── S06 RoPE clock: angles that the model did not see ───────────────
     def s06(self) -> None:
         with self.shot("S06"):
             self.play(*self.set_heading("为什么读不长：RoPE 的慢指针"), run_time=self.fit(0.8))
@@ -405,7 +412,7 @@ class ChapterScene(NarratedScene):
             self.remove(seen, unseen, hands, counter)
             self.play(FadeOut(VGroup(clocks, l1, l2)), run_time=self.fit(0.6))
 
-    # ── S07 波长表 ───────────────────────────────────────────────────────
+    # ── S07 Wavelength table ─────────────────────────────────────────────
     def s07(self) -> None:
         with self.shot("S07"):
             self.play(*self.set_heading("主线模型的波长表（head_dim = 128）"), run_time=self.fit(0.8))
@@ -437,7 +444,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(f, table, facts)), run_time=self.fit(0.6))
 
-    # ── S08 调大基频 ─────────────────────────────────────────────────────
+    # ── S08 Larger base frequency ────────────────────────────────────────
     def s08(self) -> None:
         with self.shot("S08"):
             self.play(*self.set_heading("办法一：调大基频（ABF）"), run_time=self.fit(0.8))
@@ -462,7 +469,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(f, g, cap, who)), run_time=self.fit(0.6))
 
-    # ── S09 位置内插 PI ─────────────────────────────────────────────────
+    # ── S09 Position interpolation (PI) ─────────────────────────────────
     def s09(self) -> None:
         with self.shot("S09"):
             self.play(*self.set_heading("铺垫：位置内插（PI）把所有指针一起压慢"), run_time=self.fit(0.8))
@@ -490,7 +497,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(f, groups, sub, note)), run_time=self.fit(0.6))
 
-    # ── S10 YaRN：三段 + 温度 ───────────────────────────────────────────
+    # ── S10 YaRN: three ranges + temperature ────────────────────────────
     def s10(self) -> None:
         with self.shot("S10"):
             self.play(*self.set_heading("办法二：YaRN——快指针不动，慢指针内插"), run_time=self.fit(0.8))
@@ -528,7 +535,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(bars, yl, xl, legend, temp, tv)), run_time=self.fit(0.6))
 
-    # ── S11 从零实现 + 对拍 ─────────────────────────────────────────────
+    # ── S11 Implementation from zero + parity check ─────────────────────
     def s11(self) -> None:
         with self.shot("S11"):
             self.play(*self.set_heading("十几行代码，与官方实现对拍"), run_time=self.fit(0.8))
@@ -552,7 +559,7 @@ mscale = 0.1 * math.log(s) + 1.0"""
             self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(code, frame, chain, diff)), run_time=self.fit(0.6))
 
-    # ── S12 小实验：loss vs 长度 ─────────────────────────────────────────
+    # ── S12 Small experiment: loss vs length ─────────────────────────────
     def s12(self) -> None:
         with self.shot("S12"):
             self.play(*self.set_heading("小实验：只用长度 64 训练，读 128、256"), run_time=self.fit(0.8))
@@ -594,7 +601,7 @@ mscale = 0.1 * math.log(s) + 1.0"""
             self.play(FadeOut(VGroup(ax1, l1, t1, ln1, ylab, leg, ax2, l2, t2, ln2, badge)),
                       run_time=self.fit(0.6))
 
-    # ── S13 代价与数据 ───────────────────────────────────────────────────
+    # ── S13 Cost and data ────────────────────────────────────────────────
     def s13(self) -> None:
         with self.shot("S13"):
             self.play(*self.set_heading("长上下文的代价与数据"), run_time=self.fit(0.8))
@@ -623,7 +630,7 @@ mscale = 0.1 * math.log(s) + 1.0"""
             self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(g, cap, data)), run_time=self.fit(0.6))
 
-    # ── S14 怎么评：大海捞针与 RULER ────────────────────────────────────
+    # ── S14 How to evaluate: needle in a haystack and RULER ─────────────
     def s14(self) -> None:
         with self.shot("S14"):
             self.play(*self.set_heading("怎么评：大海捞针是冒烟测试"), run_time=self.fit(0.8))
@@ -660,7 +667,7 @@ mscale = 0.1 * math.log(s) + 1.0"""
             self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(grid, rl, cl, ttl, hd, note, ruler, badge)), run_time=self.fit(0.6))
 
-    # ── S15 生产级 + 主线进度 ───────────────────────────────────────────
+    # ── S15 Production code + main-line progress ────────────────────────
     def s15(self) -> None:
         with self.shot("S15"):
             self.play(*self.set_heading("主线进度：极小配置跑通，GPU 上待训"), run_time=self.fit(0.8))
@@ -691,7 +698,7 @@ parallel = "fsdp\"""", 18).move_to([-3.8, 1.2, 0])
             self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(cfg, ct, log, gate, frame, badge)), run_time=self.fit(0.6))
 
-    # ── S16 小结 + 下一章 ────────────────────────────────────────────────
+    # ── S16 Summary + next chapter ───────────────────────────────────────
     def s16(self) -> None:
         with self.shot("S16"):
             self.play(*self.set_heading("小结"), run_time=self.fit(0.8))

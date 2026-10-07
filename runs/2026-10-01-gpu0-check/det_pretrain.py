@@ -1,10 +1,15 @@
-"""`zero.train.pretrain` 的确定性版本：先打开 PyTorch 的确定性算法，再调用原入口（不改 zero 的代码）。
+"""Deterministic version of `zero.train.pretrain`.
+
+It turns on the deterministic algorithms of PyTorch, then calls the original entry point.
+The code in zero does not change.
 
     torchrun --standalone --nproc_per_node=1 runs/2026-10-01-gpu0-check/det_pretrain.py --config ... [--set ...]
 
-GPU 上默认有几处非确定性（FlashAttention 反向的 dQ 用原子加、embedding 反向的 index_add 等），
-同一条命令跑两次，loss 从第 2 步起就有 1e-5 级差异，在大学习率的早期阶段会被放大。
-为了把"续训是否精确恢复"和"GPU 本身的非确定性"分开，第 3 项另用这个入口跑一遍。
+On a GPU, some operations are not deterministic by default (the FlashAttention backward pass adds dQ
+with atomic adds, the embedding backward pass uses index_add, and others). If you run the same command
+two times, the loss differs by about 1e-5 from step 2. In the early phase with a large learning rate,
+training makes this difference larger. Item 3 runs one more time with this entry point. This separates
+"resume restores the exact state" from "the GPU itself is not deterministic".
 """
 
 from __future__ import annotations

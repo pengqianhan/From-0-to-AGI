@@ -1,8 +1,11 @@
-"""第 22 章视频：局部与稀疏注意力 —— 只看附近，也不丢掉远处
+"""Video for Chapter 22: local and sparse attention.
 
-画面里的数值都由 ../code/ 中的代码真实计算（见 script.md 事实清单），结果缓存在
-video/out/cache.json；删掉它会重新计算（需要先运行 code/02_swa_model.py 训练好 6 个小模型）。
-渲染：bash chapters/22-local-sparse-attention/video/build.sh
+Look only at near tokens, but do not lose the far tokens.
+
+The code in ../code/ calculates all values on screen (see the fact list in script.md).
+The cache video/out/cache.json keeps the results. Delete it to calculate them again
+(first run code/02_swa_model.py to train the 6 small models).
+Render: bash chapters/22-local-sparse-attention/video/build.sh
 """
 
 from __future__ import annotations
@@ -55,7 +58,7 @@ def _load(name: str, filename: str):
 
 
 def compute() -> dict:
-    """从 ../code 真实计算视频要用的全部数字。"""
+    """Calculate all numbers for the video with the real code in ../code."""
     import torch
 
     torch.set_num_threads(1)
@@ -128,7 +131,10 @@ def cell(size: float, color: str, opacity: float = 0.9) -> Square:
 
 
 def matrix(n: int, size: float, center, visible) -> VGroup:
-    """n×n 的注意力矩阵：visible(i, j) 为 True 的格子画成紫色，其余是暗格。"""
+    """Draw an n×n attention matrix.
+
+    Cells where visible(i, j) is True are purple. The other cells are dark.
+    """
     g = VGroup()
     for i in range(n):
         for j in range(n):
@@ -159,7 +165,7 @@ class ChapterScene(NarratedScene):
         for i in range(1, 14):
             getattr(self, f"s{i:02d}")()
 
-    # ── S01 片头 ─────────────────────────────────────────────────────────
+    # ── S01 Opening ──────────────────────────────────────────────────────
     def s01(self) -> None:
         with self.shot("S01"):
             card = self.chapter_card()
@@ -169,7 +175,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-    # ── S02 全注意力的两笔账 ─────────────────────────────────────────────
+    # ── S02 Two costs of full attention ──────────────────────────────────
     def s02(self) -> None:
         with self.shot("S02"):
             self.play(
@@ -205,7 +211,7 @@ class ChapterScene(NarratedScene):
             )
             self.grid = grid
 
-    # ── S03 滑动窗口 ─────────────────────────────────────────────────────
+    # ── S03 Sliding window ───────────────────────────────────────────────
     def s03(self) -> None:
         with self.shot("S03"):
             self.play(
@@ -229,7 +235,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(f, note, code, self.grid)), run_time=self.fit(0.6))
 
-    # ── S04 省了多少 ─────────────────────────────────────────────────────
+    # ── S04 How much we save ─────────────────────────────────────────────
     def s04(self) -> None:
         with self.shot("S04"):
             self.play(*self.set_heading("数一数：窗口固定，越长省得越多"), run_time=self.fit(0.8))
@@ -253,7 +259,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(rows, foot)), run_time=self.fit(0.6))
 
-    # ── S05 感受野 ───────────────────────────────────────────────────────
+    # ── S05 Receptive field ──────────────────────────────────────────────
     def s05(self) -> None:
         with self.shot("S05"):
             self.play(*self.set_heading("感受野：信息一层层接力"), run_time=self.fit(0.8))
@@ -309,11 +315,11 @@ class ChapterScene(NarratedScene):
                 run_time=self.fit(0.6),
             )
 
-    # ── S06 KV cache 封顶 ────────────────────────────────────────────────
+    # ── S06 The KV cache has a limit ─────────────────────────────────────
     def s06(self) -> None:
         with self.shot("S06"):
             self.play(*self.set_heading("滑动窗口层：KV cache 有上限"), run_time=self.fit(0.8))
-            # 左：环形缓冲区示意（8 个槽位）
+            # Left: schematic of the ring buffer (8 slots)
             ring = VGroup()
             for k in range(8):
                 ang = 1.5708 - k * 6.2832 / 8
@@ -333,7 +339,7 @@ class ChapterScene(NarratedScene):
                     fills.remove(o)
                 fills.add(num)
                 self.play(*anims, run_time=self.fit(0.25, reserve=6))
-            # 右：三种配置的缓存大小
+            # Right: cache size of the 3 configurations
             axes_x, base_y, scale = [0.3, 2.4, 4.5], -1.6, 3.3 / max(D["cache"]["full"]["sizes"])
             bars, labs = VGroup(), VGroup()
             for x, v in zip(axes_x, ("full", "sliding", "interleave")):
@@ -396,7 +402,7 @@ class ChapterScene(NarratedScene):
                 run_time=self.fit(0.6),
             )
 
-    # ── S07 真实模型怎么配 ───────────────────────────────────────────────
+    # ── S07 How real models configure it ─────────────────────────────────
     def s07(self) -> None:
         with self.shot("S07"):
             self.play(*self.set_heading("局部-全局交替：真实模型的配置"), run_time=self.fit(0.8))
@@ -450,7 +456,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(rows, legend)), run_time=self.fit(0.6))
 
-    # ── S08 账本 ─────────────────────────────────────────────────────────
+    # ── S08 Ledger ───────────────────────────────────────────────────────
     def s08(self) -> None:
         with self.shot("S08"):
             self.play(
@@ -499,7 +505,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(items, legend)), run_time=self.fit(0.6))
 
-    # ── S09 实验一：loss ─────────────────────────────────────────────────
+    # ── S09 Experiment 1: loss ───────────────────────────────────────────
     def s09(self) -> None:
         with self.shot("S09"):
             self.play(*self.set_heading("实验一：字符级语言建模"), run_time=self.fit(0.8))
@@ -525,7 +531,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(setup, rows, head, note)), run_time=self.fit(0.6))
 
-    # ── S10 实验二：大海捞针 ─────────────────────────────────────────────
+    # ── S10 Experiment 2: needle in a haystack ───────────────────────────
     def s10(self) -> None:
         with self.shot("S10"):
             self.play(*self.set_heading("实验二：大海捞针"), run_time=self.fit(0.8))
@@ -563,7 +569,8 @@ class ChapterScene(NarratedScene):
             lines = VGroup()
             for v in ("full", "interleave", "sliding"):
                 acc = D["needle"][v]
-                # 每 4 个距离取平均，让曲线平滑一点；全注意力和交替的线稍微错开以免重叠
+                # Average each 4 distances to make the curve smoother. Move the full-attention line and the
+                # interleaved line a little apart, so that they do not overlap.
                 pts = []
                 for e in range(1, 96, 4):
                     seg = acc[e - 1 : e + 3]
@@ -585,7 +592,7 @@ class ChapterScene(NarratedScene):
                 run_time=self.fit(0.6),
             )
 
-    # ── S11 稀疏注意力：按内容挑 ─────────────────────────────────────────
+    # ── S11 Sparse attention: select by content ──────────────────────────
     def s11(self) -> None:
         with self.shot("S11"):
             self.play(
@@ -634,7 +641,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(r1, r2, res, demo)), run_time=self.fit(0.6))
 
-    # ── S12 稀疏注意力的共识与代价 ───────────────────────────────────────
+    # ── S12 Sparse attention: consensus and costs ────────────────────────
     def s12(self) -> None:
         with self.shot("S12"):
             self.play(*self.set_heading("稀疏注意力：已经是大模型的共识"), run_time=self.fit(0.8))
@@ -686,7 +693,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(steps, arrows, fams, tag, warn)), run_time=self.fit(0.6))
 
-    # ── S13 从极简到生产级 ───────────────────────────────────────────────
+    # ── S13 From minimal code to production code ─────────────────────────
     def s13(self) -> None:
         with self.shot("S13"):
             self.play(*self.set_heading("从极简到生产级"), run_time=self.fit(0.8))

@@ -1,9 +1,11 @@
-"""第 24 章视频：混合专家（MoE）—— 参数翻几十倍，每个 token 的算力不变
+"""Video for Chapter 24: mixture of experts (MoE).
 
-画面里的所有数值都由 ../code/ 中的代码真实计算（见 script.md 事实清单）。
-结果缓存在 video/out/cache.json；删掉它会重新计算。S06、S10、S11 读取 code/out/moe_runs/
-（先运行 code/03_train_compare.py）。
-渲染：bash chapters/24-mixture-of-experts/video/build.sh
+Tens of times more parameters, but the same compute for each token.
+
+The code in ../code/ calculates all values on screen (see the fact list in script.md).
+The cache video/out/cache.json keeps the results. Delete it to calculate them again.
+S06, S10, and S11 read code/out/moe_runs/ (run code/03_train_compare.py first).
+Render: bash chapters/24-mixture-of-experts/video/build.sh
 """
 
 from __future__ import annotations
@@ -54,7 +56,7 @@ def _load(name: str, filename: str):
 
 
 def compute() -> dict:
-    """从 ../code 真实计算视频要用的全部数字。"""
+    """Calculate all numbers for the video with the real code in ../code."""
     led = _load("ch24_ledger", "01_param_ledger.py")
     moe = _load("ch24_moe", "02_moe_layer.py")
     exp = _load("ch24_exp", "03_train_compare.py")
@@ -102,7 +104,10 @@ def bar(width: float, color: str, height: float = 0.36, opacity: float = 0.85) -
 
 def histogram(frac: list[float], width: float = 4.0, height: float = 2.2, color=theme.PARAM,
               top: float = 0.6) -> VGroup:
-    """专家负载直方图：底边在 y=0，高度按 top（占比上限）缩放；带一条均匀负载的虚线。"""
+    """Draw a histogram of the expert load. The base is at y=0.
+
+    top (the maximum fraction) sets the height scale. A dashed line shows the uniform load.
+    """
     n = len(frac)
     w = width / n
     bars = VGroup()
@@ -134,7 +139,7 @@ class ChapterScene(NarratedScene):
             getattr(self, f"s{i:02d}")()
 
     def hold(self, reserve: float = 0.5) -> None:
-        """等到本镜只剩 reserve 秒（剩余不足时不等）。"""
+        """Wait until only reserve seconds of this shot are left (no wait if less time is left)."""
         t = self.remaining() - reserve
         if t > 0.05:
             self.wait(t)
@@ -145,7 +150,7 @@ class ChapterScene(NarratedScene):
         if objs:
             self.play(*[FadeOut(m) for m in objs], run_time=0.4)
 
-    # ── S01 片头 ─────────────────────────────────────────────────────────
+    # ── S01 Opening ──────────────────────────────────────────────────────
     def s01(self) -> None:
         with self.shot("S01"):
             card = self.chapter_card()
@@ -155,7 +160,7 @@ class ChapterScene(NarratedScene):
             self.hold(0.6)
             self.play(FadeOut(card), FadeOut(sub), run_time=0.5)
 
-    # ── S02 FFN 是大头 ───────────────────────────────────────────────────
+    # ── S02 The FFN holds most parameters ────────────────────────────────
     def s02(self) -> None:
         with self.shot("S02"):
             self.play(*self.set_heading("参数都去哪了"), run_time=self.fit(0.8))
@@ -181,7 +186,7 @@ class ChapterScene(NarratedScene):
             self.hold(0.5)
             self.clear_all()
 
-    # ── S03 拆成很多专家 ─────────────────────────────────────────────────
+    # ── S03 Split into many experts ──────────────────────────────────────
     def s03(self) -> None:
         with self.shot("S03"):
             self.play(*self.set_heading("拆成很多专家，每次只用几个"), run_time=self.fit(0.8))
@@ -228,7 +233,7 @@ class ChapterScene(NarratedScene):
             self.hold(0.5)
             self.clear_all()
 
-    # ── S04 路由公式 ─────────────────────────────────────────────────────
+    # ── S04 Routing formula ──────────────────────────────────────────────
     def s04(self) -> None:
         with self.shot("S04"):
             self.play(*self.set_heading("路由：打分 → 选 K 个 → 加权求和"), run_time=self.fit(0.8))
@@ -253,7 +258,7 @@ class ChapterScene(NarratedScene):
             self.hold(0.5)
             self.clear_all()
 
-    # ── S05 真实模型 ─────────────────────────────────────────────────────
+    # ── S05 Real models ──────────────────────────────────────────────────
     def s05(self) -> None:
         with self.shot("S05"):
             self.play(*self.set_heading("总参数 vs 激活参数（官方数字，单位 B）"), run_time=self.fit(0.8))
@@ -284,7 +289,7 @@ class ChapterScene(NarratedScene):
             self.hold(0.5)
             self.clear_all()
 
-    # ── S06 坍缩 ─────────────────────────────────────────────────────────
+    # ── S06 Collapse ─────────────────────────────────────────────────────
     def s06(self) -> None:
         with self.shot("S06"):
             self.play(*self.set_heading("问题：路由坍缩"), run_time=self.fit(0.8))
@@ -312,7 +317,7 @@ class ChapterScene(NarratedScene):
             self.hold(0.5)
             self.clear_all()
 
-    # ── S07 辅助损失 ─────────────────────────────────────────────────────
+    # ── S07 Auxiliary loss ───────────────────────────────────────────────
     def s07(self) -> None:
         with self.shot("S07"):
             self.play(*self.set_heading("办法一：辅助损失"), run_time=self.fit(0.8))
@@ -337,7 +342,7 @@ class ChapterScene(NarratedScene):
             self.hold(0.5)
             self.clear_all()
 
-    # ── S08 偏置法 ───────────────────────────────────────────────────────
+    # ── S08 Bias method ──────────────────────────────────────────────────
     def s08(self) -> None:
         with self.shot("S08"):
             self.play(*self.set_heading("办法二：无辅助损失的偏置（DeepSeek-V3）"), run_time=self.fit(0.8))
@@ -366,7 +371,7 @@ class ChapterScene(NarratedScene):
             self.hold(0.5)
             self.clear_all()
 
-    # ── S09 容量因子 ─────────────────────────────────────────────────────
+    # ── S09 Capacity factor ──────────────────────────────────────────────
     def s09(self) -> None:
         with self.shot("S09"):
             self.play(*self.set_heading("容量因子：超出上限的 token 被丢弃"), run_time=self.fit(0.8))
@@ -374,7 +379,7 @@ class ChapterScene(NarratedScene):
 
             def buckets(frac, x_center):
                 n = len(frac)
-                cap = 1.25 / n  # 容量 = 1.25 × 平均
+                cap = 1.25 / n  # Capacity = 1.25 × mean
                 top = 0.55
                 H, W = 3.0, 4.6
                 g = VGroup()
@@ -406,7 +411,7 @@ class ChapterScene(NarratedScene):
             self.hold(0.5)
             self.clear_all()
 
-    # ── S10 小实验：负载 ─────────────────────────────────────────────────
+    # ── S10 Small experiment: load ───────────────────────────────────────
     def s10(self) -> None:
         with self.shot("S10"):
             self.play(*self.set_heading("小实验：三种均衡方式（第 1 层，训练结束）"), run_time=self.fit(0.8))
@@ -429,7 +434,7 @@ class ChapterScene(NarratedScene):
             self.hold(0.5)
             self.clear_all()
 
-    # ── S11 小实验：和稠密比 ─────────────────────────────────────────────
+    # ── S11 Small experiment: compare with dense ─────────────────────────
     def s11(self) -> None:
         with self.shot("S11"):
             self.play(*self.set_heading("小实验：验证 loss（越低越好，2 个种子）"), run_time=self.fit(0.8))
@@ -462,7 +467,7 @@ class ChapterScene(NarratedScene):
             self.hold(0.5)
             self.clear_all()
 
-    # ── S12 细粒度 + 共享 ────────────────────────────────────────────────
+    # ── S12 Fine-grained + shared ────────────────────────────────────────
     def s12(self) -> None:
         with self.shot("S12"):
             self.play(*self.set_heading("细粒度专家 + 共享专家"), run_time=self.fit(0.8))
@@ -503,7 +508,7 @@ class ChapterScene(NarratedScene):
             self.hold(0.5)
             self.clear_all()
 
-    # ── S13 为什么小模型少用 ─────────────────────────────────────────────
+    # ── S13 Why small models seldom use MoE ──────────────────────────────
     def s13(self) -> None:
         with self.shot("S13"):
             self.play(*self.set_heading("为什么小模型很少用 MoE"), run_time=self.fit(0.8))
@@ -535,7 +540,7 @@ class ChapterScene(NarratedScene):
             self.hold(0.5)
             self.clear_all()
 
-    # ── S14 谁在用 + 生产级 ──────────────────────────────────────────────
+    # ── S14 Adopters + production code ───────────────────────────────────
     def s14(self) -> None:
         with self.shot("S14"):
             self.play(*self.set_heading("谁在用 · 从极简到生产级"), run_time=self.fit(0.8))

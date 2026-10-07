@@ -1,14 +1,17 @@
-"""解析章节视频脚本 `video/script.md`，取出每一镜的旁白。
+"""Parse the chapter video script `video/script.md` and get the narration of each shot.
 
-script.md 里每一镜的写法：
+The format of one shot in script.md (the field names are Chinese, because the videos
+are in Chinese; the parser reads only the narration field "旁白"):
 
     ### S01 开场：一条直线
     - 画面：散点图淡入……
     - 屏幕文字：y = ax + b
     - 旁白：我们从最简单的模型开始：{y = ax + b|y 等于 a x 加 b}。
 
-旁白里可以用 `{显示文字|读法}`：字幕显示前半部分，TTS 读后半部分。
-旁白可以跨多行，直到下一个以 "- " 开头的字段或下一个标题为止。
+The narration can contain `{display text|spoken form}`. The subtitle shows the first part,
+and the TTS reads the second part.
+The narration can continue on more lines, until the next field that starts with "- "
+or the next heading.
 """
 
 from __future__ import annotations
@@ -20,21 +23,22 @@ from pathlib import Path
 _SHOT_RE = re.compile(r"^###\s+(S\d+)\b\s*(.*)$")
 _FIELD_RE = re.compile(r"^-\s*([^：:]+)[：:]\s*(.*)$")
 _MARKUP_RE = re.compile(r"\{([^{}|]*)\|([^{}]*)\}")
-# 断句：中文句末标点，以及后面跟空格的英文句号
+# Split sentences at Chinese end-of-sentence punctuation, and at an English period that
+# has a space after it.
 _SENT_SPLIT_RE = re.compile(r"(?<=[。！？；!?;])|(?<=\.)\s")
 
 
 @dataclass
 class Sentence:
-    display: str  # 字幕显示的文字
-    spoken: str   # 送给 TTS 的文字
+    display: str  # text that the subtitle shows
+    spoken: str   # text that goes to the TTS
 
 
 @dataclass
 class Shot:
     shot_id: str
     title: str
-    narration: str  # 原始旁白（含 {显示|读法} 标记）
+    narration: str  # raw narration (with {display|spoken} markup)
 
     @property
     def sentences(self) -> list[Sentence]:
@@ -50,8 +54,8 @@ def to_spoken(text: str) -> str:
 
 
 def split_sentences(narration: str) -> list[Sentence]:
-    """按句切分，保证 `{显示|读法}` 标记不会被切断。"""
-    # 先把标记替换成占位符，切完句再还原
+    """Split into sentences. A `{display|spoken}` markup is never cut into two parts."""
+    # Replace each markup with a placeholder first, and restore it after the split.
     marks: list[str] = []
 
     def _hold(m: re.Match[str]) -> str:
@@ -95,8 +99,8 @@ def parse_script(path: str | Path) -> list[Shot]:
             cur.narration += line.strip()
     ids = [s.shot_id for s in shots]
     if len(ids) != len(set(ids)):
-        raise ValueError(f"{path}: 分镜编号重复：{ids}")
+        raise ValueError(f"{path}: duplicate shot IDs: {ids}")
     missing = [s.shot_id for s in shots if not s.narration]
     if missing:
-        raise ValueError(f"{path}: 这些分镜没有旁白：{missing}")
+        raise ValueError(f"{path}: these shots have no narration: {missing}")
     return shots

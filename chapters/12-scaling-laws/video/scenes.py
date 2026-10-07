@@ -1,10 +1,14 @@
-"""第 12 章视频：Scaling Law 与实验设计 —— 先用小模型算清楚，再花大钱
+"""Chapter 12 video: scaling laws and experiment design.
 
-画面里的数字都由 ../code/ 算出（见 script.md 事实清单）：
-  - Chinchilla 曲线、过训练账：02_chinchilla.py（Epoch AI 复现系数，他人数据，只说明形状）
-  - 每 token FLOPs、预算：05_plan_budget.py
-  - 迷你阶梯（极小配置演示）：03_lr_sweep.py、04_mini_ladder.py、06_muon.py 的缓存 out/ch12/*.json
-渲染：bash chapters/12-scaling-laws/video/build.sh
+Calculate with small models first, then spend the money.
+
+The code in ../code/ calculates all numbers in the frames (see the fact list in script.md):
+  - Chinchilla curve, overtraining ledger: 02_chinchilla.py (coefficients of the Epoch AI
+    replication; data from other people, only to show the shape)
+  - FLOPs per token, budget: 05_plan_budget.py
+  - mini ladder (tiny-configuration demo): the cache out/ch12/*.json of 03_lr_sweep.py,
+    04_mini_ladder.py, and 06_muon.py
+Render: bash chapters/12-scaling-laws/video/build.sh
 """
 
 from __future__ import annotations
@@ -59,13 +63,13 @@ lad = _load("mini_ladder", "04_mini_ladder.py")
 
 FIT = chin.FITS["Epoch 2024 复现"]
 
-# 主线每 token FLOPs（05_plan_budget.py 的同一套公式）
+# FLOPs per token of the main-line model (the same formulas as 05_plan_budget.py)
 N_TOTAL, N_MATMUL, Q_DIM = plan.shape(1280, 28)
 SIX_N = 6 * N_MATMUL
 ATTN = 12 * 28 * Q_DIM * 4096
 FPT = SIX_N + ATTN
 
-# 迷你阶梯（极小配置演示）：读缓存
+# Mini ladder (tiny-configuration demo): read the cache
 SWEEP = sw.run_sweep()
 BEST = sw.best_lrs(SWEEP)
 LADDER = lad.run_ladder()
@@ -76,8 +80,10 @@ SIZE_COLORS = {"s1": theme.INPUT, "s2": theme.OUTPUT, "s3": theme.PARAM, "s4": t
 MUON = json.loads((sw.OUT / "muon.json").read_text()) if (sw.OUT / "muon.json").exists() else []
 
 
-# 课程构建机（README 第 5 节贴出的那次运行）的拟合与留出结论。画面上的数都是本机现算的，
-# 只有这两项是写死的对照：同一套极小阶梯换一台机器，α 能差将近一倍（README 第 5 节）。
+# Fit and held-out results on the course build machine (the run in README section 5).
+# This machine calculates all numbers in the frames. Only these two items are fixed values for
+# comparison: on a different machine, the same tiny ladder can give an α that is almost 2× different
+# (README section 5).
 BUILD_MACHINE = {"alpha": 0.52, "beta": 0.58, "held_inside": 3}
 
 
@@ -108,7 +114,7 @@ def tex(s: str, size: float = 30, color: str = theme.FG) -> MathTex:
 
 
 def log_axes(x_range, y_range, x_len, y_len, center, x_ticks=(), y_ticks=(), x_fmt=None, y_fmt=None):
-    """坐标轴 + 手写刻度标签（对数轴用 10^k 标注）。"""
+    """Axes + tick labels by hand (a log axis has labels of the form 10^k)."""
     ax = Axes(x_range=x_range, y_range=y_range, x_length=x_len, y_length=y_len,
               axis_config={"color": theme.MUTED, "stroke_width": 2}, tips=False).move_to(center)
     labels = VGroup()
@@ -133,7 +139,7 @@ class ChapterScene(NarratedScene):
     chapter_title = "Scaling Law 与实验设计"
 
     def construct(self) -> None:
-        # ── S01 片头 ─────────────────────────────────────────────────────
+        # ── S01 Opening ──────────────────────────────────────────────────
         with self.shot("S01"):
             card = self.chapter_card()
             sub = zh("先用小模型算清楚，再花大钱", 32, theme.HIGHLIGHT).next_to(card, DOWN, 0.6)
@@ -142,7 +148,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-        # ── S02 一次机会 ─────────────────────────────────────────────────
+        # ── S02 One chance ───────────────────────────────────────────────
         with self.shot("S02"):
             self.play(*self.set_heading("大模型没法“试试看”"), run_time=self.fit(0.8))
             big = box("主线预训练  $5,000 · 8 卡 10 天", 5.2, 1.6, theme.GRAD, 26).move_to([3.3, 0.6, 0])
@@ -162,7 +168,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in [big, smalls, cap, arrow, lbl, law]], run_time=self.fit(0.6))
 
-        # ── S03 算账 ────────────────────────────────────────────────────
+        # ── S03 The calculation ─────────────────────────────────────────
         with self.shot("S03"):
             self.play(*self.set_heading("算账：C ≈ 6ND"), run_time=self.fit(0.8))
             eq = tex(r"y = W x", 44).move_to([-3.5, 1.9, 0])
@@ -177,7 +183,7 @@ class ChapterScene(NarratedScene):
                 self.play(FadeIn(r, shift=RIGHT * 0.2), run_time=self.fit(0.9, reserve=6))
             self.play(Write(total), run_time=self.fit(1.2))
             self.wait(self.remaining() * 0.25)
-            # 主线每 token 的 FLOPs：6N 与注意力项
+            # FLOPs per token of the main-line model: 6N and the attention term
             L = 6.4
             bar_y = -2.1
             w1 = L * SIX_N / FPT
@@ -196,7 +202,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in [eq, rows, total, b1, b2, t1, t2, cap, note]], run_time=self.fit(0.6))
 
-        # ── S04 loss 是算力的幂律 ────────────────────────────────────────
+        # ── S04 The loss is a power law of compute ───────────────────────
         with self.shot("S04"):
             self.play(*self.set_heading("loss 随算力平滑下降"), run_time=self.fit(0.8))
             ax, lab = log_axes([18, 25, 1], [1.9, 3.3, 0.2], 7.2, 4.4, [-2.4, 0.15, 0],
@@ -230,7 +236,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [ax, lab, xl, yl, curves, labels, env_line, front, formula, parts, src]],
                       run_time=self.fit(0.6))
 
-        # ── S05 IsoFLOP 抛物线 ──────────────────────────────────────────
+        # ── S05 IsoFLOP parabolas ───────────────────────────────────────
         with self.shot("S05"):
             self.play(*self.set_heading("Chinchilla：每个参数约 20 个 token"), run_time=self.fit(0.8))
             ax, lab = log_axes([7.5, 11, 0.5], [2.0, 3.4, 0.2], 6.6, 4.3, [-2.6, 0.15, 0],
@@ -269,13 +275,13 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in [ax, lab, xl, parabolas, mins, clabels, link, info]], run_time=self.fit(0.6))
 
-        # ── S06 过训练：token/参数 ──────────────────────────────────────
+        # ── S06 Overtraining: tokens per parameter ──────────────────────
         with self.shot("S06"):
             self.play(*self.set_heading("为什么小模型要“过训练”"), run_time=self.fit(0.8))
             models = [("Chinchilla 70B", 20, theme.MUTED), ("本课主线（计划）", 580, theme.HIGHLIGHT),
                       ("Puro-2B", 700, theme.INPUT), ("Llama 3 8B", 1875, theme.INPUT),
                       ("MobileLLM-R1-950M", 4426, theme.INPUT), ("Qwen3-0.6B", 60000, theme.INPUT)]
-            x0, scale = -2.2, 1.55  # 每 10 倍 1.55 个单位
+            x0, scale = -2.2, 1.55  # 1.55 units for each factor of 10
             bars, names, vals = VGroup(), VGroup(), VGroup()
             for i, (name, r, c) in enumerate(models):
                 y = 2.2 - i * 0.6
@@ -299,7 +305,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in [bars, names, vals, ref, ref_l, cap, why]], run_time=self.fit(0.6))
 
-        # ── S07 过训练的价格 ────────────────────────────────────────────
+        # ── S07 The price of overtraining ───────────────────────────────
         with self.shot("S07"):
             self.play(*self.set_heading("过训练的价格"), run_time=self.fit(0.8))
             N_ours, D_ours = 689.5e6, 400e9
@@ -308,7 +314,7 @@ class ChapterScene(NarratedScene):
             n_opt, d_opt = chin.compute_optimal(C, **FIT)
             L_opt = chin.loss(n_opt, d_opt, **FIT)
             C_eq = chin.compute_to_reach(L_ours, FIT)
-            # 推理账（与 02_chinchilla.py ③ 相同的搜索）
+            # Inference ledger (the same search as ③ in 02_chinchilla.py)
             rows = [VGroup(zh("一生要生成的 token", 22, theme.MUTED), zh("最省总算力的模型", 22, theme.MUTED))]
             Ns = np.logspace(8, 11, 3001)
             for D_inf, lbl in [(0, "0"), (1e12, "1 万亿"), (1e13, "10 万亿"), (1e14, "100 万亿")]:
@@ -341,7 +347,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(table), FadeOut(note), FadeOut(price), run_time=self.fit(0.6))
 
-        # ── S08 先调参（极小配置演示）────────────────────────────────────
+        # ── S08 Tune first (tiny-configuration demo) ─────────────────────
         with self.shot("S08"):
             self.play(*self.set_heading("先调参，再拟合"), run_time=self.fit(0.8))
             badge = self.show_badge()
@@ -380,7 +386,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in [ax, lab, xl, yl, ucurves, stars, legend, law, trap]], run_time=self.fit(0.6))
 
-        # ── S09 迷你阶梯（极小配置演示）──────────────────────────────────
+        # ── S09 Mini ladder (tiny-configuration demo) ────────────────────
         with self.shot("S09"):
             self.play(*self.set_heading("迷你阶梯：拟合 L(N, D)"), run_time=self.fit(0.8))
             ax, lab = log_axes([4.7, 6.1, 0.2], [2.7, 3.6, 0.1], 7.0, 4.3, [-2.3, 0.2, 0],
@@ -420,7 +426,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in [ax, lab, xl, yl, dots, fits, wsd, info, fragile]], run_time=self.fit(0.6))
 
-        # ── S10 外推检验（极小配置演示）──────────────────────────────────
+        # ── S10 Extrapolation test (tiny-configuration demo) ─────────────
         with self.shot("S10"):
             self.play(*self.set_heading("留出检验：大一号的模型真的训出来"), run_time=self.fit(0.8))
             ci = held_out_ci()
@@ -467,7 +473,7 @@ class ChapterScene(NarratedScene):
             self.play(*self.set_heading("真实世界：Delphi 外推 300 倍"), run_time=self.fit(0.8))
             axis = Line([-6.0, 0.3, 0], [6.0, 0.3, 0], color=theme.MUTED, stroke_width=2)
 
-            def xc(e):  # 算力 10^e → 画面 x
+            def xc(e):  # compute 10^e → x in the frame
                 return -6.0 + (e - 18) * 12 / 5.5
 
             ticks = VGroup(*[tex(rf"10^{{{e}}}", 22, theme.MUTED).next_to([xc(e), 0.3, 0], DOWN, 0.15) for e in range(18, 24)])
@@ -495,7 +501,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in [axis, ticks, fit_zone, fit_lbl, held, first, fix, second, src]], run_time=self.fit(0.6))
 
-        # ── S12 闸门 1 ────────────────────────────────────────────────
+        # ── S12 Gate 1 ────────────────────────────────────────────────
         with self.shot("S12"):
             self.play(*self.set_heading("闸门 1：外推预测 + 配方验证"), run_time=self.fit(0.8))
             a = box("阶梯实验", 2.2, 0.8, theme.INPUT).move_to([-5.3, 1.5, 0])
@@ -532,7 +538,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in [a, b, c, d, e, f1, f2, g, h, yes, no, arrows, tmpl]], run_time=self.fit(0.6))
 
-        # ── S13 主线决策 ──────────────────────────────────────────────
+        # ── S13 Decisions for the main-line model ─────────────────────
         with self.shot("S13"):
             self.play(*self.set_heading("主线决策：0.69B × 约 400B token"), run_time=self.fit(0.8))
             n_total, n_matmul, q = plan.shape(1280, 28)
@@ -575,7 +581,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in [table, over, wsd, muon_line, fp8, badge]], run_time=self.fit(0.6))
 
-        # ── S14 小结 ──────────────────────────────────────────────────
+        # ── S14 Summary ───────────────────────────────────────────────
         with self.shot("S14"):
             self.play(*self.set_heading("小结"), run_time=self.fit(0.8))
             steps = VGroup(box("算账：C ≈ 6ND", 2.7, 1.0, theme.PARAM), box("每个尺寸先调参", 2.7, 1.0, theme.INPUT),

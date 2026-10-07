@@ -250,7 +250,7 @@ uv run python chapters/09-modern-transformer/code/02_tiny_transformer.py
 |---|---:|---:|---:|---:|---:|---:|---:|
 | val bit/字节 | 8.052 | 2.781 | 2.518 | 2.391 | 2.289 | 2.243 | 2.221 |
 
-> **注意：**本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同的机器、不同版本的底层数学库，浮点运算的顺序略有不同。训练几百步之后，这些微小差异会被放大。所以你本机跑出的数字，可能从小数点后第二、三位开始就不一样。请以下文中不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-07-10.md](../../runs/2026-10-01-gpu0-check/chapters-07-10.md)。
+> **注意：**本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同的机器、不同版本的底层数学库，浮点运算的顺序略有不同。训练几百步之后，这些微小差异会被放大。所以你本机跑出的数字，可能从小数点后第二、三位开始就不一样。请以下文中不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-07-10.md](../../runs/2026-10-01-gpu0-check/chapters-07-10.zh.md)。
 
 训练前（随机初始化，温度 0.8 采样），模型从 `ROMEO:\n` 往后写 200 个字节。这些字节是非法 UTF-8 和控制字符，终端里显示为乱码。训练后，模型写 400 个字节（下面是节选）。换一台机器，采样出的具体句子会不同，但格式和用词的特点不变：
 
@@ -311,7 +311,7 @@ GPT-2 的具体结构可以在两处核对。一处是 transformers 的 `GPT2Con
 |---|---|---|
 | `RMSNorm` | `zero/model.py` 的 `RMSNorm` | 先转 float32 算归一化，再转回原精度（BF16 训练时数值更稳）。与 HF 的 `Qwen3RMSNorm` 逐行一致 |
 | `rope_cos_sin` + `apply_rope` | `compute_rope_inv_freq`、`RotaryEmbedding`、`apply_rope` | cos/sin 预先算好，存成不进 checkpoint 的 buffer；支持 **YaRN** 缩放（第 15 章长上下文）；`reset_buffers` 在换设备后重建 |
-| `Attention`（手写 softmax + mask） | `Attention` | **GQA**（`n_kv_heads < n_heads`，第 10 章）；`F.scaled_dot_product_attention`（GPU 上 BF16 时自动选用 FlashAttention 内核，第 14 章；已在 RTX 3090 上验证，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 1 节）；**KV cache** 与分块 prefill 的 mask（第 10 章）；`head_dim` 可以不等于 `d / n_heads` |
+| `Attention`（手写 softmax + mask） | `Attention` | **GQA**（`n_kv_heads < n_heads`，第 10 章）；`F.scaled_dot_product_attention`（GPU 上 BF16 时自动选用 FlashAttention 内核，第 14 章；已在 RTX 3090 上验证，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.zh.md) 第 1 节）；**KV cache** 与分块 prefill 的 mask（第 10 章）；`head_dim` 可以不等于 `d / n_heads` |
 | `SwiGLU` | `SwiGLU` | 相同（参数名 `w_gate/w_up/w_down` 故意取成一样） |
 | `Block` | `Block` | 多传 `kv_cache`、`start_pos`，其余相同 |
 | `TinyTransformer` | `Transformer` | `tie_embeddings` 可配置；`loss()` 在 float32 上算，并支持 `ignore_index`（第 16 章 SFT 的 loss mask）；`num_params`、`flops_per_token`（第 12、14 章算 MFU 和成本） |

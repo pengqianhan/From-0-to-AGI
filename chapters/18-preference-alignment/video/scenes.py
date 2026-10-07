@@ -1,9 +1,11 @@
-"""第 18 章视频：偏好对齐 —— 从 RLHF 到 DPO
+"""Video for Chapter 18: preference alignment — from RLHF to DPO.
 
-画面里的数值由 ../code/ 中的代码真实计算（见 script.md 事实清单）；04、05 较慢，
-结果缓存在 video/out/cache.json。冒烟测试数字读 video/data/smoke_before_fix.json：修复工具调用判分器之前
-那次冒烟测试 DPO 日志的摘录（极小配置演示），与 README「主线进度」同一次运行；重跑冒烟测试会覆盖 out/smoke。
-渲染：bash chapters/18-preference-alignment/video/build.sh
+The code in ../code/ calculates the values on screen (see the fact list in script.md).
+04 and 05 are slow, so the cache video/out/cache.json keeps their results.
+The smoke-test numbers come from video/data/smoke_before_fix.json: a part of the DPO log of the smoke test
+before the fix of the tool-call grader (tiny-configuration demo). It is the same run as in the README section
+"Main-line progress". A new smoke test overwrites out/smoke.
+Render: bash chapters/18-preference-alignment/video/build.sh
 """
 
 from __future__ import annotations
@@ -55,7 +57,7 @@ def _load(name: str, filename: str):
 
 
 def compute_numbers() -> dict:
-    """跑一遍 code/ 里的实验，收集画面要用的数字。"""
+    """Run the experiments in code/ one time and collect the numbers for the screen."""
     import torch
 
     torch.set_num_threads(1)
@@ -108,7 +110,10 @@ def numbers() -> dict:
 
 
 def smoke_log() -> list[dict]:
-    """修复判分器之前那次冒烟测试的 DPO 日志摘录（冻结在 data/ 里，来源写在 json 里）。"""
+    """Return a part of the DPO log of the smoke test before the grader fix.
+
+    The part is frozen in data/. The json file gives the source.
+    """
     return json.loads((HERE / "data" / "smoke_before_fix.json").read_text(encoding="utf-8"))["log"]
 
 
@@ -131,7 +136,7 @@ class ChapterScene(NarratedScene):
         N = numbers()
         smoke = smoke_log()
 
-        # ── S01 片头 ─────────────────────────────────────────────────────
+        # ── S01 Opening ──────────────────────────────────────────────────
         with self.shot("S01"):
             card = self.chapter_card()
             sub = zh("从 RLHF 到 DPO", 32, theme.HIGHLIGHT).next_to(card, DOWN, 0.6)
@@ -140,7 +145,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-        # ── S02 判断比写容易 ──────────────────────────────────────────────
+        # ── S02 To judge is easier than to write ──────────────────────────
         with self.shot("S02"):
             self.play(*self.set_heading("判断比写容易"), run_time=self.fit(0.8))
             prompt = box("提示词：用一句话解释什么是梯度", 8.0, 0.8, theme.INPUT, 26).move_to([0, 2.1, 0])
@@ -186,7 +191,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(ax, xl, yl, curve, f, marks, note)), run_time=self.fit(0.6))
 
-        # ── S04 奖励模型 ─────────────────────────────────────────────────
+        # ── S04 Reward model ─────────────────────────────────────────────
         with self.shot("S04"):
             self.play(*self.set_heading("奖励模型：一个二分类"), run_time=self.fit(0.8))
             loss = MathTex(r"\mathcal{L}_{RM} = -\log \sigma\big(r(x, y_w) - r(x, y_l)\big)", font_size=44).move_to([0, 1.9, 0])
@@ -210,7 +215,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(loss, note, rows, hl, bias)), run_time=self.fit(0.6))
 
-        # ── S05 RLHF 目标 + S06 reward hacking（共用柱状图）──────────────────
+        # ── S05 RLHF objective + S06 reward hacking (they share the bar chart) ───
         bax = Axes(x_range=[0, 8, 1], y_range=[0, 1, 0.25], x_length=6.2, y_length=3.4,
                    axis_config={"color": theme.MUTED, "include_numbers": False}, tips=False,
                    y_axis_config={"include_numbers": True, "font_size": 18}).move_to([-3.4, 0.2, 0])
@@ -237,7 +242,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(ref_bars), FadeIn(leg1), Write(obj), run_time=self.fit(1.5))
             pol = bars(N["probs"]["100.0"], theme.PARAM, bw * 0.55)
             leg2 = zh("π（优化后）", 20, theme.PARAM).move_to(bax.c2p(5.2, 1.08))
-            # 缰绳：π_ref 与 π 两个点，中间一根虚线
+            # Leash: 2 dots for π_ref and π, with a dashed line between them
             anchor = Dot([1.6, 0.4, 0], radius=0.14, color=theme.MUTED)
             a_lab = zh("π_ref", 22, theme.MUTED).next_to(anchor, DOWN, 0.2)
             kl_pos = lambda k: [1.6 + min(k, 5.5) * 0.85, 0.4, 0]  # noqa: E731
@@ -267,7 +272,7 @@ class ChapterScene(NarratedScene):
                       FadeOut(VGroup(obj, anchor, a_lab, mover, m_lab, rope, beta_t, kl_t, leash)),
                       run_time=self.fit(0.8))
             sw = N["sweep"]
-            # 横轴是 log10(β) + 2（让纵轴落在最左边）
+            # The x-axis is log10(β) + 2, so that the y-axis is at the far left
             cax = Axes(x_range=[0.2, 4, 1], y_range=[-1, 3, 1], x_length=5.6, y_length=3.6,
                        axis_config={"color": theme.MUTED, "font_size": 18}, tips=False,
                        x_axis_config={"include_numbers": False},
@@ -323,7 +328,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(flow, arrows, pax, plab, star, starl, curve, ig, kl)), run_time=self.fit(0.6))
 
-        # ── S08 闭式最优解 ───────────────────────────────────────────────
+        # ── S08 Closed-form optimal solution ─────────────────────────────
         with self.shot("S08"):
             self.play(*self.set_heading("最优策略可以直接写出来"), run_time=self.fit(0.8))
             l1 = MathTex(r"\mathbb{E}_{\pi}[r] - \beta\,\mathrm{KL}(\pi\|\pi_{ref})", font_size=40)
@@ -344,7 +349,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(l1, l2, l3, hb)), run_time=self.fit(0.6))
 
-        # ── S09 反解，Z 消掉 ─────────────────────────────────────────────
+        # ── S09 Solve for the reward; Z cancels ──────────────────────────
         with self.shot("S09"):
             self.play(*self.set_heading("反解奖励，Z 消掉 → DPO"), run_time=self.fit(0.8))
             m1 = MathTex(r"r(y) = \beta \log\frac{\pi^*(y)}{\pi_{ref}(y)}", r"+ \beta\log Z", font_size=40)
@@ -367,7 +372,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(m1, m2, m3, c1, c2, hb, tag)), run_time=self.fit(0.6))
 
-        # ── S10 梯度 ─────────────────────────────────────────────────────
+        # ── S10 Gradient ─────────────────────────────────────────────────
         with self.shot("S10"):
             self.play(*self.set_heading("梯度：错多少，改多少"), run_time=self.fit(0.8))
             base_y = -1.6
@@ -402,7 +407,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(cb_, rb_, cl, rl_, yl, up, dn, gax, gl, hl, g, f, dots)), run_time=self.fit(0.6))
 
-        # ── S11 小模型上跑一次 ───────────────────────────────────────────
+        # ── S11 One run on a small model ─────────────────────────────────
         with self.shot("S11"):
             self.play(*self.set_heading("在两万参数的小模型上跑 DPO"), run_time=self.fit(0.8))
             T = N["toy"]
@@ -416,7 +421,7 @@ class ChapterScene(NarratedScene):
             acur = polyline_in_axes(tax, [(h["step"], h["acc"]) for h in H[1:]], color=theme.OUTPUT, stroke_width=4)
             ml = zh(f"margin → {H[-1]['margin']:.2f}", 20, theme.PARAM).next_to(tax.c2p(150, H[-1]["margin"]), LEFT, 0.1).shift(UP * 0.3)
             al = zh(f"acc {H[-1]['acc']:.2f}", 20, theme.OUTPUT).next_to(tax.c2p(150, 1.0), LEFT, 0.1).shift(DOWN * 0.3)
-            # 右边：log 概率柱（向下画，高度 = −log π）
+            # Right side: bars of the log probability (drawn down, height = −log π)
             zero_y = 1.6
             scale = 0.42
             zline = Line([1.6, zero_y, 0], [5.6, zero_y, 0], color=theme.MUTED)
@@ -450,7 +455,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeOut(VGroup(task, tax, tl, mcur, acur, ml, al, zline, zl, ylab, cbar, rbar, cv, rv, cn, rn, res)),
                       run_time=self.fit(0.6))
 
-        # ── S12 三个坑 ───────────────────────────────────────────────────
+        # ── S12 Three traps ──────────────────────────────────────────────
         with self.shot("S12"):
             self.play(*self.set_heading("三个坑"), run_time=self.fit(0.8))
             L = N["lr_sweep"]
@@ -471,7 +476,7 @@ class ChapterScene(NarratedScene):
             mnote = zh(f"lr=1e-2：margin {L[3]['margin']:.2f}，格式 {L[3]['format']:.2f}", 18, theme.GRAD).move_to([-4.6, -1.8, 0])
             self.play(FadeIn(t1), Create(fax), FadeIn(fbars), FadeIn(flabs), run_time=self.fit(1.5))
             self.play(FadeIn(mnote), run_time=self.fit(0.6))
-            # ③ 冒烟测试（极小配置演示）
+            # ③ Smoke test (tiny-configuration demo)
             badge = self.show_badge()
             smoke_t = VGroup(zh("③ 主线冒烟测试（tiny）", 22, theme.FG),
                              zh("DPO lr = 5e-4：24 步 margin → 4.8", 18, theme.GRAD),
@@ -479,7 +484,7 @@ class ChapterScene(NarratedScene):
                              zh("改成 5e-5 才稳住", 18, theme.OUTPUT)).arrange(DOWN, buff=0.2, aligned_edge=LEFT).move_to([4.7, 0.6, 0])
             self.wait(self.remaining() * 0.2)
             self.play(FadeIn(smoke_t), run_time=self.fit(1))
-            # ② chosen 一起掉
+            # ② chosen goes down too
             nm = N["near"]["hist"]
             t2 = zh("② 错答案只差一点", 22, theme.FG).move_to([0.0, 2.3, 0])
             nax = Axes(x_range=[0, 150, 50], y_range=[-7, 0, 2], x_length=3.6, y_length=2.6,
@@ -498,7 +503,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeOut(VGroup(t1, fax, fbars, flabs, mnote, smoke_t, t2, nax, wc, lc, n2, final, badge)),
                       run_time=self.fit(0.6))
 
-        # ── S13 从极简到生产级 ───────────────────────────────────────────
+        # ── S13 From minimal code to production code ─────────────────────
         with self.shot("S13"):
             self.play(*self.set_heading("从极简到生产级：zero/post/dpo.py"), run_time=self.fit(0.8))
             src = """h = beta * ((pi_w - ref_w)
@@ -526,7 +531,7 @@ loss = -F.logsigmoid(h).mean()"""
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(cl, code, pipe, sm, todo, badge)), run_time=self.fit(0.6))
 
-        # ── S14 谁在用 + 下一章 ──────────────────────────────────────────
+        # ── S14 Adopters + next chapter ──────────────────────────────────
         with self.shot("S14"):
             self.play(*self.set_heading("谁在用 DPO"), run_time=self.fit(0.8))
             fams = ["Llama 3", "Qwen2 / 2.5", "DeepSeek LLM", "Tülu 3 / OLMo 2", "Nemotron-4", "SmolLM3（APO）"]

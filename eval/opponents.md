@@ -1,59 +1,61 @@
-# 对手清单（候选，**未冻结**）
+# Opponent list (candidates, **not frozen**)
 
-> 状态：**草案**。第二步阶段 7 确定冻结日期并经项目负责人确认后定稿（GOAL.md 3.2 第 3 条）。
-> 定稿后任何修改只能以带日期和理由的"修订"追加。
+**English** · [中文](opponents.zh.md)
 
-## 规则（GOAL.md 3.2）
+> Status: **draft**. In Stage 7 of Step 2, set the freeze date. After the project lead confirms it, finalize the list (GOAL.md 3.2, item 3).
+> After the list is final, add each change only as an "amendment" with a date and a reason.
 
-- **范围**：官方参数量在我们模型的 **0.7–1.3 倍**之间的全部公开权重模型，冻结日期之前发布的都算。
-  参数量含 embedding，按发布方口径；多模态模型按语言模型部分的参数量计。
-- 我们的模型：`configs/main/pretrain.toml`，**689.5M**（`uv run python -m zero.tools.count_params configs/main/pretrain.toml`；
-  词表 65,536 暂定，第 13 章若改词表需重算）→ 区间 **[482.7M, 896.4M]**。
-- **标杆**：不管最终尺寸落在哪一档，**Qwen3.5-0.8B 必须比较**。
-- 起点：`small-llms-under-5b-2026-08-30/inventory.md`（2026-08-30 更新）。冻结前还要检查该日期之后的新发布。
-- 对手有思考 / 非思考两种模式时两种都测，以较高分为准；所有对手由我们用同一套框架重跑。
+## Rules (GOAL.md 3.2)
 
-## 候选清单（按 inventory.md 筛出）
+- **Scope**: all public-weight models with an official parameter count between **0.7 and 1.3 times** the size of our model. All models released before the freeze date count.
+  The parameter count includes the embedding and uses the count of the publisher. For a multimodal model, use the parameter count of the language-model part.
+- Our model: `configs/main/pretrain.toml`, **689.5M** (`uv run python -m zero.tools.count_params configs/main/pretrain.toml`;
+  the vocabulary of 65,536 is provisional; if Chapter 13 changes the vocabulary, calculate again) → range **[482.7M, 896.4M]**.
+- **Benchmark model**: whatever size class the final model has, **Qwen3.5-0.8B must be compared**.
+- Starting point: `small-llms-under-5b-2026-08-30/inventory.md` (updated 2026-08-30). Before the freeze, also check for new releases after that date.
+- If an opponent has a thinking mode and a non-thinking mode, test both modes and use the higher score. We run all opponents again ourselves, with the same framework.
 
-"参数量"一栏是 inventory 里的档位名；标"待核实"的是档位名落在区间内、但确切参数量（含 embedding）需要在冻结前按发布方模型卡核对的——尤其是名义上 "0.5B" 的模型，区间下界是 482.7M，确切数字可能落在区间外。
+## Candidate list (selected from inventory.md)
 
-| 组织 | 模型 | 档位 | 与 689.5M 之比（按档位） | 备注 |
+The column "Size class" gives the name of the size class in the inventory. A row marked "to be verified" has a size-class name inside the range. But before the freeze, compare its exact parameter count (embedding included) with the model card of the publisher. This is most important for models with a nominal size of "0.5B": the lower bound of the range is 482.7M, so the exact count can be outside the range.
+
+| Organization | Model | Size class | Ratio to 689.5M (by size class) | Notes |
 |---|---|---:|---:|---|
-| Alibaba / Qwen | **Qwen3.5-0.8B** | 0.8B | 1.16 | **必比标杆**；多模态，按语言模型部分计（模型卡：Language Model 0.8B，词表 248,320，与输出层共享）；思考 / 非思考都测——模型卡写明**默认非思考**，并提示思考模式下容易陷入循环（第 11 章，已核实 2026-09） |
-| Alibaba / Qwen | Qwen3-0.6B | 0.6B | 0.87 | 模型卡：0.6B（不含 embedding 0.44B）；思考 / 非思考都测（已核实 2026-09） |
-| Alibaba / Qwen | Qwen2.5-0.5B(-Instruct) | 0.49B | 0.71 | 模型卡：0.49B（不含 embedding 0.36B）→ 490M，**在区间内**但离下界 482.7M 很近，最终尺寸变了要重算（已核实 2026-09） |
-| Alibaba / Qwen | Qwen2.5-Coder-0.5B | 0.5B | 0.73 | 参数量待核实；代码模型 |
-| Alibaba / Qwen | Qwen2-0.5B | 0.5B | 0.73 | 参数量待核实 |
-| Alibaba / Qwen | Qwen1.5-0.5B | 0.5B | 0.73 | 参数量待核实 |
+| Alibaba / Qwen | **Qwen3.5-0.8B** | 0.8B | 1.16 | **Benchmark model, always compared**. Multimodal, counted by the language-model part (model card: Language Model 0.8B, vocabulary 248,320, tied with the output layer). Test both thinking and non-thinking. The model card states that the **default is non-thinking**, and warns that the model easily gets stuck in loops in thinking mode (Chapter 11, verified 2026-09) |
+| Alibaba / Qwen | Qwen3-0.6B | 0.6B | 0.87 | Model card: 0.6B (0.44B without embedding). Test both thinking and non-thinking (verified 2026-09) |
+| Alibaba / Qwen | Qwen2.5-0.5B(-Instruct) | 0.49B | 0.71 | Model card: 0.49B (0.36B without embedding) → 490M, **inside the range**, but near the lower bound 482.7M. If the final size changes, calculate again (verified 2026-09) |
+| Alibaba / Qwen | Qwen2.5-Coder-0.5B | 0.5B | 0.73 | Parameter count to be verified; code model |
+| Alibaba / Qwen | Qwen2-0.5B | 0.5B | 0.73 | Parameter count to be verified |
+| Alibaba / Qwen | Qwen1.5-0.5B | 0.5B | 0.73 | Parameter count to be verified |
 | Meta research | MobileLLM-600M | 600M | 0.87 | |
-| Liquid AI | LFM2-700M | 700M | 1.02 | 混合结构 |
-| CyberAgent | OpenCALM-medium（830M） | 830M | 1.20 | 日语模型 |
-| BigScience | BLOOM-560M / BLOOMZ-560M | 560M | 0.81 | 多语言；BLOOMZ 为指令版 |
+| Liquid AI | LFM2-700M | 700M | 1.02 | Hybrid architecture |
+| CyberAgent | OpenCALM-medium (830M) | 830M | 1.20 | Japanese model |
+| BigScience | BLOOM-560M / BLOOMZ-560M | 560M | 0.81 | Multilingual; BLOOMZ is the instruction-tuned version |
 | Cerebras | Cerebras-GPT-590M | 590M | 0.86 | |
-| Tencent | Hunyuan-0.5B | 0.5B | 0.73 | 参数量待核实 |
-| OpenBMB | MiniCPM4-0.5B | 0.5B | 0.73 | 参数量待核实 |
-| H2O.ai | H2O-Danube3-500M | 0.5B | 0.73 | 参数量待核实 |
-| TII | Falcon-H1-0.5B | 0.5B | 0.73 | 混合注意力 / SSM；参数量待核实 |
-| MBZUAI | MobiLlama-0.5B | 0.5B | 0.73 | 参数量待核实 |
-| Swiss AI | Apertus-v1.1-0.5B | 0.5B | 0.73 | 完全开放；参数量待核实 |
-| RWKV Foundation | RWKV 4/5/6/7 各版本 | ~169M–2.9B | — | 需逐个版本核实是否有落在区间内的尺寸 |
+| Tencent | Hunyuan-0.5B | 0.5B | 0.73 | Parameter count to be verified |
+| OpenBMB | MiniCPM4-0.5B | 0.5B | 0.73 | Parameter count to be verified |
+| H2O.ai | H2O-Danube3-500M | 0.5B | 0.73 | Parameter count to be verified |
+| TII | Falcon-H1-0.5B | 0.5B | 0.73 | Hybrid attention / SSM; parameter count to be verified |
+| MBZUAI | MobiLlama-0.5B | 0.5B | 0.73 | Parameter count to be verified |
+| Swiss AI | Apertus-v1.1-0.5B | 0.5B | 0.73 | Fully open; parameter count to be verified |
+| RWKV Foundation | RWKV 4/5/6/7, all versions | ~169M–2.9B | — | Verify each version: does a size inside the range exist? |
 
-### 区间外、但接近边界（不作为对手，冻结前复核参数量）
+### Outside the range, but near the bounds (not opponents; check the parameter count again before the freeze)
 
-| 模型 | 档位 | 比值 | 说明 |
+| Model | Size class | Ratio | Notes |
 |---|---:|---:|---|
-| OpenELM-450M | 450M | 0.65 | 低于下界 |
-| Pythia-410M、OpenCALM-small(410M)、InkubaLM-0.4B | ~0.4B | ~0.6 | 低于下界 |
-| SmolLM / SmolLM2-360M | 360M | 0.52 | 低于下界 |
-| Gemma 3 1B、OLMo (2) 1B、Pythia-1B、MobileLLM-1B、MiniCPM5-1B、Falcon3-1B、PLaMo-2-1B 等 1B 档 | 1B | 1.45 | 高于上界（如确切参数量 < 896.4M 则纳入，冻结前核对） |
+| OpenELM-450M | 450M | 0.65 | Below the lower bound |
+| Pythia-410M, OpenCALM-small(410M), InkubaLM-0.4B | ~0.4B | ~0.6 | Below the lower bound |
+| SmolLM / SmolLM2-360M | 360M | 0.52 | Below the lower bound |
+| Gemma 3 1B, OLMo (2) 1B, Pythia-1B, MobileLLM-1B, MiniCPM5-1B, Falcon3-1B, PLaMo-2-1B, and other models of the 1B class | 1B | 1.45 | Above the upper bound (if the exact parameter count is < 896.4M, include the model; check before the freeze) |
 
-## 第二步的重跑计划与成本
+## Rerun plan and cost for Step 2
 
-- 按 `runs/RUNBOOK.md` 阶段 7：先确定冻结日期与清单，钉死框架版本，用 1–2 个对手试跑（核实 `zero/eval/bfcl.py` 的待核实项、ACEBench 在新版 vLLM 上能否运行）；
-- 每个对手：官方模板、两种模式（如有）、相同解码参数，跑 `eval/PREREGISTRATION.md` 第 2 节的全部基准，保存逐题结果；
-- 成本估算（RUNBOOK）：约 25 个模型 × 每个约 1 GPU·时 ≈ $60–200（GOAL.md 3.4 预算约 $200）；单次超过 $100 先报批，花费记入 `runs/ledger.md`。
+- Follow Stage 7 of `runs/RUNBOOK.md`. First, set the freeze date and the list, and pin the framework versions. Then do a trial run with 1–2 opponents (verify the open items of `zero/eval/bfcl.py`, and verify if ACEBench runs on a new version of vLLM).
+- For each opponent, use the official template, both modes (if available), and the same decoding parameters. Run all benchmarks of Section 2 of `eval/PREREGISTRATION.md`, and save the per-question results.
+- Cost estimate (RUNBOOK): about 25 models × about 1 GPU-hour each ≈ $60–200 (the GOAL.md 3.4 budget is about $200). If one run costs more than $100, get approval first. Record the costs in `runs/ledger.md`.
 
-## 冻结时要补的信息
+## Information to add at the freeze
 
-每个对手：确切参数量与出处链接、发布日期、许可证、HF 仓库与 commit、官方对话 / 工具调用模板、是否有思考模式、
-用于 BFCL 的 handler 名称（BFCL 已内置的直接用；没有的写适配层）。
+For each opponent: the exact parameter count with a link to its source, the release date, the license, the HF repository and commit, the official chat / tool-calling template, and whether it has a thinking mode.
+Also give the name of the handler for BFCL (if BFCL has a built-in handler, use it; if not, write an adapter layer).

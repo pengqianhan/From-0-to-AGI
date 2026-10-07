@@ -1,129 +1,150 @@
-# GPU0 验证：第 21–23 章
+# GPU0 verification: Chapters 21–23
 
-日期：2026-10-01。分支 `gpu0-verification`。负责范围：`chapters/21-kv-cache-ledger`、`chapters/22-local-sparse-attention`、`chapters/23-linear-attention-hybrid`。
+**English** · [中文](chapters-21-23.zh.md)
 
-## 环境
+Date: 2026-10-01. Branch `gpu0-verification`. Scope: `chapters/21-kv-cache-ledger`, `chapters/22-local-sparse-attention`, `chapters/23-linear-attention-hybrid`.
 
-- CPU：AMD Ryzen Threadripper PRO 3995WX（Zen 2，AVX2，无 AVX-512），共享服务器，其他 agent 与视频渲染同时在跑。
-- PyTorch 2.11.0+cu128，CUDA 12.8，Triton 3.6.0；没有安装 `flash_attn`、`fla`（flash-linear-attention）、`causal_conv1d`。
-- GPU：只用 GPU0（NVIDIA GeForce RTX 3090，`CUDA_VISIBLE_DEVICES=0`，经 `gpu0.lock` 排队；首次使用前确认 `torch.cuda.device_count() == 1`）。`nvidia-smi` 显示 GPU0 功耗上限 **240 W**（默认 350 W）。同一张卡上把 1 GiB 连续读一遍（求和）实测 873 GB/s（规格 936 GB/s），这个参照已经包含了功耗上限的影响。
-- CPU 复现：`CUDA_VISIBLE_DEVICES= UV_NO_SYNC=1 uv run python ...`，最多 4 个进程并行。
-- 会训练并缓存权重的 4 个脚本（21/04、22/02、23/04、23/05；22/03–05 读 22/02 的缓存）默认写 `code/out/`。为了不往仓库里写东西，我用一个小包装器 `scratchpad/ch21-23/run_redirected.py` 执行：读入脚本源码，只把 `OUT = ...` 那一行换成草稿目录（22/03–05 是在加载 02 之后设 `m.OUT`），再以 `__main__`、原文件名 `exec`。脚本文件本身没有改动。权重在 `scratchpad/ch21-23/out/`。
-- 原始输出：CPU 在 `scratchpad/ch21-23/logs/`，复跑在 `logs2/`，GPU 最终输出在 `final/`（`scratchpad` = `/tmp/claude-1006/-home-phan635-Opensource-From-0-to-AGI/1d40fca9-4469-49a7-88b9-4e96bf8f0051/scratchpad`）。
+## Environment
 
-## 一、CPU 复现表
+- CPU: AMD Ryzen Threadripper PRO 3995WX (Zen 2, AVX2, no AVX-512). This is a shared server. Other agents and video renders ran at the same time.
+- PyTorch 2.11.0+cu128, CUDA 12.8, Triton 3.6.0. `flash_attn`, `fla` (flash-linear-attention), and `causal_conv1d` are not installed.
+- GPU: only GPU0 (NVIDIA GeForce RTX 3090, `CUDA_VISIBLE_DEVICES=0`, in a queue through `gpu0.lock`). Before the first use, I made sure that `torch.cuda.device_count() == 1`. `nvidia-smi` shows a power limit of **240 W** for GPU0 (default 350 W). On the same card, one sequential read (a sum) of 1 GiB measured 873 GB/s (spec 936 GB/s). This reference already includes the effect of the power limit.
+- CPU reproduction: `CUDA_VISIBLE_DEVICES= UV_NO_SYNC=1 uv run python ...`, at most 4 processes in parallel.
+- 4 scripts train models and cache the weights (21/04, 22/02, 23/04, 23/05; 22/03–05 read the cache of 22/02). By default, they write to `code/out/`. To write nothing into the repository, I ran them through a small wrapper, `scratchpad/ch21-23/run_redirected.py`. The wrapper reads the source of the script and replaces only the line `OUT = ...` with a scratch folder. (For 22/03–05, it sets `m.OUT` after it loads 02.) Then it runs the source with `exec`, as `__main__` and with the original file name. The script files did not change. The weights are in `scratchpad/ch21-23/out/`.
+- Raw output: CPU runs in `scratchpad/ch21-23/logs/`, reruns in `logs2/`, final GPU output in `final/` (`scratchpad` = `/tmp/claude-1006/-home-phan635-Opensource-From-0-to-AGI/1d40fca9-4469-49a7-88b9-4e96bf8f0051/scratchpad`).
 
-"CPU 耗时"是 `uv run` 整个进程的墙钟时间（4 个并行、机器繁忙时测得，只作量级参考）。14 个脚本全部 rc=0，**没有报错**。
+## 1. CPU reproduction table
 
-| 章 | 脚本 | CPU 耗时 | 分类 | 说明 |
+"CPU time" is the wall-clock time of the full `uv run` process. I measured it with 4 processes in parallel on a busy machine, so use it only for the order of magnitude. All 14 scripts returned rc=0, with **no errors**.
+
+| Ch. | Script | CPU time | Category | Notes |
 |---|---|---:|---|---|
-| 21 | `01_kv_ledger.py` | 0.1 s | 一致 | 两张账本表逐项一致（脚本对小于 1 GiB 的量打印 MiB，README 换成 GiB：448 MiB = 0.44 GiB、1008 MiB = 0.98 GiB 等）；zero 对拍两项 True |
-| 21 | `02_prefill_decode.py` | 2.4 s | 一致 | prefill 表、decode 表、并发条数表全对（131,072 行脚本打印 2173.9 ms，README 写 2.2 s） |
-| 21 | `03_mla.py` | 2.6 s | 不一致（舍入级） | 吸收 = 显式 4.4e-16 一致；"带缓存逐个喂 = 一次性"README 2.8e-16，实测 3.9e-16（float64）；其余一致 |
-| 21 | `04_attention_variants.py` | 1370 s（训练 15 个模型） | 不一致（FP32 训练漂移，结论不变） | 见细节 1 |
-| 22 | `01_masks_and_ledger.py` | 2.7 s | 一致 | 掩码图、55/34 对、128×/4,096×、感受野两行、128K 账本四行全对 |
-| 22 | `02_swa_model.py` | 735 s（训练 6 个模型） | 仅计时不同 | 只打印参数量（449K / 167K），README 没引用；耗时见细节 4 |
-| 22 | `03_compare.py` | 84 s | 一致 | loss 1.797 / 1.745 / 1.748、KV 位置数、捞针三段与 12 段细分全对 |
-| 22 | `04_bounded_cache.py` | 13 s | 一致 | 三行 True 与缓存字节数全对 |
-| 22 | `05_topk_sparse.py` | 236 s | 一致 | 7 行表逐字一致 |
-| 23 | `01_linear_attention.py` | 4.9 s | 不一致（舍入级）+ 计时 | 并行 vs 递推最大相对误差 README 4.7e-07，实测 4.2e-07；KV/状态表一致；decode 计时见细节 3 |
-| 23 | `02_chunked.py` | 6.1 s | 不一致（舍入级）+ 计时 | 递推 − 并行 README 1.8e-06，实测 2.0e-06；递推 − 分块 6.0e-07 一致；衰减表一致；速度表见细节 3 |
-| 23 | `03_delta_rule.py` | 2.4 s | 不一致（舍入级） | 第 1–3 部分全对；第 4 部分输出差 / 状态差 README 4.8e-07 / 3.6e-07，实测 4.2e-07 / 2.4e-07 |
-| 23 | `04_hybrid_lm.py` | 1320 s（训练 4 个模型） | **不一致**（影响一句正文） | 见细节 2 |
-| 23 | `05_associative_recall.py` | 400 s（训练 4 个模型） | 不一致（±1 个百分点，结论不变） | 见细节 2 |
+| 21 | `01_kv_ledger.py` | 0.1 s | Match | The two ledger tables match item by item. (The script prints MiB for values smaller than 1 GiB, and the README changes them to GiB: 448 MiB = 0.44 GiB, 1008 MiB = 0.98 GiB, and so on.) The two parity checks against `zero` both give True |
+| 21 | `02_prefill_decode.py` | 2.4 s | Match | The prefill table, the decode table, and the table of concurrent conversations are all correct. (For the row 131,072, the script prints 2173.9 ms, and the README writes 2.2 s.) |
+| 21 | `03_mla.py` | 2.6 s | Mismatch (rounding level) | "Absorbed path = explicit path": 4.4e-16, a match. "Token by token with a cache = one forward pass over the full sequence": README 2.8e-16, measured 3.9e-16 (float64). All other values match |
+| 21 | `04_attention_variants.py` | 1370 s (trains 15 models) | Mismatch (FP32 training drift, the conclusions do not change) | See Detail 1 |
+| 22 | `01_masks_and_ledger.py` | 2.7 s | Match | The mask plots, 55/34 pairs, 128×/4,096×, the two receptive-field rows, and the four rows of the 128K ledger are all correct |
+| 22 | `02_swa_model.py` | 735 s (trains 6 models) | Only the timing differs | It prints only the parameter counts (449K / 167K), and the README does not quote them. For the run time, see Detail 4 |
+| 22 | `03_compare.py` | 84 s | Match | Loss 1.797 / 1.745 / 1.748, the KV position counts, the needle-in-a-haystack accuracy in the three ranges, and the breakdown into 12 groups are all correct |
+| 22 | `04_bounded_cache.py` | 13 s | Match | The three True rows and the cache byte counts are all correct |
+| 22 | `05_topk_sparse.py` | 236 s | Match | The 7-row table matches character for character |
+| 23 | `01_linear_attention.py` | 4.9 s | Mismatch (rounding level) + timing | Max relative error of parallel vs recurrent: README 4.7e-07, measured 4.2e-07. The KV/state table matches. For the decode timing, see Detail 3 |
+| 23 | `02_chunked.py` | 6.1 s | Mismatch (rounding level) + timing | Recurrent − parallel: README 1.8e-06, measured 2.0e-06. Recurrent − chunked: 6.0e-07, a match. The decay table matches. For the speed table, see Detail 3 |
+| 23 | `03_delta_rule.py` | 2.4 s | Mismatch (rounding level) | Parts 1–3 are all correct. Part 4, output difference / state difference: README 4.8e-07 / 3.6e-07, measured 4.2e-07 / 2.4e-07 |
+| 23 | `04_hybrid_lm.py` | 1320 s (trains 4 models) | **Mismatch** (changes one sentence of the text) | See Detail 2 |
+| 23 | `05_associative_recall.py` | 400 s (trains 4 models) | Mismatch (±1 percentage point, the conclusions do not change) | See Detail 2 |
 
-统计（14 个脚本）：一致 6；仅计时不同 1（22/02）；不一致但只是舍入级 4（21/03、23/01、23/02、23/03，其中 23/01、23/02 同时有计时差异）；不一致、FP32 训练数值漂移 3（21/04、23/04、23/05，只有 23/04 让正文里一句话不再成立）；报错 0。
+Totals (14 scripts): 6 match. 1 differs only in timing (22/02). 4 differ only at the rounding level (21/03, 23/01, 23/02, 23/03; 23/01 and 23/02 also have timing differences). 3 differ because of numerical drift in FP32 training (21/04, 23/04, 23/05; only 23/04 makes one sentence of the text incorrect). 0 errors.
 
-**这些差异是机器相关的，不是同一台机器上的随机性**：21/03、23/01、23/02、23/03 在本机复跑一次，数字逐位相同；23/04 的 GGGA 在新目录里重新训练一次，验证 loss 仍是 1.652。第 10 章（另一个 agent）在本机复跑 `01_tiny_model.py` 得到的 MHA 种子 0 是 1.831、种子 1 是 1.861，和本机 21/04 的 MHA 种子 0、1 完全相同。所以 README 的数字大概是在另一种 CPU（可能是 AVX-512 的机器）上生成的，FP32 kernel 的舍入不同，训练几百步后放大到小数点后第三位。
+**These differences depend on the machine. They are not random variation on the same machine.** I ran 21/03, 23/01, 23/02, and 23/03 again on this machine, and the numbers were bit-identical. I trained GGGA of 23/04 again in a new folder, and the validation loss was 1.652 again. For Chapter 10, another agent ran `01_tiny_model.py` again on this machine: MHA seed 0 gave 1.831 and seed 1 gave 1.861. These values are exactly the same as MHA seeds 0 and 1 of 21/04 on this machine. Thus the README numbers were probably made on a different CPU (possibly a machine with AVX-512). Its FP32 kernels round differently. After a few hundred training steps, the difference grows to the third decimal place.
 
-## 二、不一致与计时差异的细节
+## 2. Details of the mismatches and the timing differences
 
-### 细节 1：第 21 章 `04_attention_variants.py`（FP32 训练漂移，结论不变）
+### Detail 1: Chapter 21 `04_attention_variants.py` (FP32 training drift, the conclusions do not change)
 
-| 方案 | README 均值 [三个种子] | 实测均值 [三个种子] |
+| Variant | README mean [three seeds] | Measured mean [three seeds] |
 |---|---|---|
 | MHA | 1.858 [1.838 / 1.869 / 1.867] | 1.852 [1.831 / 1.861 / 1.865] |
 | GQA | 1.856 [1.867 / 1.849 / 1.852] | 1.853 [1.865 / 1.843 / 1.852] |
 | MQA | 1.860 [1.860 / 1.858 / 1.862] | 1.859 [1.860 / 1.853 / 1.864] |
 | MLA-48 | 1.887 [1.878 / 1.888 / 1.895] | 1.886 [1.878 / 1.887 / 1.894] |
-| MLA-16 | 1.886 [1.889 / 1.854 / 1.916] | 1.886 [1.889 / 1.854 / 1.916]（完全相同） |
+| MLA-16 | 1.886 [1.889 / 1.854 / 1.916] | 1.886 [1.889 / 1.854 / 1.916] (exactly the same) |
 
-每层每位置个数、每 token 字节数、实测缓存字节数（2,150,400 / 1,075,200 / 537,600 / 537,600 / 268,800）、注意力参数量、"缓存版 = 朴素版"全部一致。受影响的正文数字（第 5 节）：
+All other columns match: the numbers per layer per position, the bytes per token, the measured cache bytes (2,150,400 / 1,075,200 / 537,600 / 537,600 / 268,800), the attention parameter counts, and "Cached = naive". These numbers in the text change (Section 5):
 
-- "MHA 种子 0 的 loss 1.838 与第 10 章完全相同"：本机是 1.831，第 10 章本机也是 1.831，"完全相同"仍成立，只是数字变了；
-- "MHA 自己换种子就能差 0.031（1.838 对 1.869）"→ 本机 0.034（1.831 对 1.865）；
-- "三者均值在 1.856–1.860 之间"→ 本机 1.852–1.859；
-- "MLA-48 的三个种子（1.878–1.895）全部高于前三种结构的全部九个种子（最高 1.869）"→ 本机 1.878–1.894、最高 1.865，结论仍成立；"均值比 MQA 高约 0.03"→ 本机 0.027，仍成立。
+- "The loss of MHA with seed 0, 1.838, is exactly the same as in Chapter 10": on this machine, the value is 1.831, and Chapter 10 on this machine also gives 1.831. "Exactly the same" is still true; only the number changed.
+- "MHA alone changes by 0.031 with a different seed (1.838 vs 1.869)" → 0.034 on this machine (1.831 vs 1.865).
+- "Their means are between 1.856 and 1.860" → 1.852–1.859 on this machine.
+- "All three seeds of MLA-48 (1.878–1.895) are higher than all nine seeds of the first three structures (the highest is 1.869)" → 1.878–1.894 on this machine, and the highest is 1.865. The conclusion is still true. "Its mean is about 0.03 higher than that of MQA" → 0.027 on this machine; still true.
 
-### 细节 2：第 23 章 `04_hybrid_lm.py`、`05_associative_recall.py`
+### Detail 2: Chapter 23 `04_hybrid_lm.py` and `05_associative_recall.py`
 
-`04_hybrid_lm.py` 的验证 loss：
+Validation loss of `04_hybrid_lm.py`:
 
-| 结构 | README | 实测 |
+| Architecture | README | Measured |
 |---|---:|---:|
 | AAAA | 1.685 | 1.683 |
 | LLLL | 1.754 | 1.760 |
 | GGGG | 1.661 | **1.648** |
 | GGGA | **1.649** | 1.652 |
 
-参数量、推理缓存表、Qwen3.5-0.8B 缓存表全部一致。**受影响的正文**（第 8.2 节）："3:1 混合最低（1.649）"在本机不成立——本机最低的是 GGGG（1.648），GGGA 1.652 第二；表里 GGGA 那格的加粗也随之不对。"Gated DeltaNet 比纯注意力略好（1.661 vs 1.685）"→ 本机 1.648 vs 1.683，方向不变。"前三名之间只差 0.04"（本机 0.035）、"最大 0.1 nats"（本机 0.112）仍成立。README 已经写了"单一随机种子……不能据此排出可靠的名次"，所以只是一句具体表述要改，结论不受影响。
+The parameter counts, the inference cache table, and the Qwen3.5-0.8B cache table all match. **The text that changes** (Section 8.2): "the 3:1 hybrid is the lowest (1.649)" is not true on this machine. On this machine, GGGG is the lowest (1.648), and GGGA is second (1.652). Thus the bold value in the GGGA cell of the table is also incorrect. "Gated DeltaNet is a little better than pure attention (1.661 vs 1.685)" → 1.648 vs 1.683 on this machine; the direction does not change. "Only 0.04 among the top three" (0.035 on this machine) and "at most 0.1 nats" (0.112 on this machine) are still true. The README already says "We used a single random seed … Thus we cannot make a reliable ranking from them". Thus only one specific statement must change, and the conclusion does not change. (Fixed later: the table of Section 8.2 now has a column for the rerun on another server. The text says that the order of GGGA and GGGG changed in the rerun.)
 
-`05_associative_recall.py`：AA、GA 两行逐格一致；LL 的 N = 16 / 20 从 24% / 19% 变成 25% / 18%；GG 的 N = 8 / 16 / 20 从 62% / 39% / 32% 变成 63% / 38% / 31%。三条结论不变（N = 24 时 29% → 79% 一致）。顺带发现：正文"Gated DeltaNet 比朴素线性……每个 N 上都高 10–20 个百分点"用 README 自己的数字算，N = 4、8 已经是 21、22 个百分点（本机 21、23），建议改成"12–23 个百分点"或"十到二十几个百分点"。
+`05_associative_recall.py`: the rows AA and GA match cell by cell. For LL, N = 16 / 20 changed from 24% / 19% to 25% / 18%. For GG, N = 8 / 16 / 20 changed from 62% / 39% / 32% to 63% / 38% / 31%. The three conclusions do not change (at N = 24, 29% → 79% matches). I also found this: the text says that Gated DeltaNet is higher than naive linear attention "by 10–20 percentage points at each N". With the README's own numbers, the difference at N = 4 and 8 is already 21 and 22 percentage points (21 and 23 on this machine). I suggest "12–23 percentage points" or "from ten to more than twenty percentage points". (Fixed later: the README now says "12 to 22 percentage points higher at each N".)
 
-### 细节 3：第 23 章 01、02 的计时（仅计时不同）
+### Detail 3: Chapter 23, the timing of 01 and 02 (only the timing differs)
 
-- `01` 第 3 部分（毫秒）：README 0.033/0.030、0.250/0.030、12.5/0.030、44.2/0.030；本机 0.056/0.042、0.260/0.039、5.356/0.041、20.920/0.041。趋势相同（softmax 随 T 涨，线性是常数）。
-- `02` 速度表（毫秒）：README 256：33.4/4.1/3.9，1024：76.2/12.7/79.6，4096：344.1/47.2/2015.0；本机 256：10.2/0.8/0.9，1024：41.8/3.9/23.3，4096：167.0/15.5/678.8。正文"分块比逐 token 快约 7 倍"本机是 10.8 倍；"比完全并行快 40 多倍"本机 43.8 倍，成立；"短序列时完全并行最快"本机 T = 256 时分块 0.8 ms 略快于并行 0.9 ms，两者持平。
+- `01`, part 3 (milliseconds): README 0.033/0.030, 0.250/0.030, 12.5/0.030, 44.2/0.030; this machine 0.056/0.042, 0.260/0.039, 5.356/0.041, 20.920/0.041. The trend is the same (softmax grows with T, and linear stays constant).
+- `02`, speed table (milliseconds): README 256: 33.4/4.1/3.9, 1024: 76.2/12.7/79.6, 4096: 344.1/47.2/2015.0; this machine 256: 10.2/0.8/0.9, 1024: 41.8/3.9/23.3, 4096: 167.0/15.5/678.8. The text says that the chunkwise form "is about 7 times faster than the token-by-token form": 10.8 times on this machine. "More than 40 times faster than the fully parallel form": 43.8 times on this machine, still true. "For short sequences, the fully parallel form is the fastest": on this machine, at T = 256, chunkwise (0.8 ms) is a little faster than parallel (0.9 ms), so the two are equal.
 
-### 细节 4：第 22 章 `02_swa_model.py` 的耗时说法不统一（仅计时）
+### Detail 4: Chapter 22 `02_swa_model.py`: the statements about the run time do not agree (only timing)
 
-脚本 docstring 写"训练全部 6 个模型，约 5 分钟"，README 写"首次共用了约 40 分钟"。本机 4 个进程并行时用了 735 s（约 12 分钟）。两处说法不一致，建议统一。
+The docstring of the script says "trains all 6 models, about 5 minutes". The README says "the first run took about 40 minutes in total". On this machine, with 4 processes in parallel, the script took 735 s (about 12 minutes). The two statements do not agree. I suggest that we make them the same. (Fixed later: the docstring now says "about 12 minutes on an idle CPU, up to 40 minutes on a busy one".)
 
-## 三、新增的 GPU 脚本和 README 小节
+## 3. New GPU scripts and README sections
 
-三个脚本都通过 `UV_NO_SYNC=1 uv run ruff check`；没有 CUDA 时打印约定的提示并 exit 0（已用 `CUDA_VISIBLE_DEVICES=` 验证）；固定随机种子；先预热，用 CUDA event 计时取中位数；开头打印 GPU 名称和 torch 版本。README 里的数字全部逐字取自最终版本在 GPU0 上的一次运行（`scratchpad/ch21-23/final/*.log`）。
+All three scripts pass `UV_NO_SYNC=1 uv run ruff check`. Without CUDA, they print the agreed message and exit 0 (verified with `CUDA_VISIBLE_DEVICES=`). They use a fixed random seed. They warm up first, measure the time with CUDA events, and take the median. At the start, they print the GPU name and the torch version. All numbers in the READMEs come character for character from one run of the final version on GPU0 (`scratchpad/ch21-23/final/*.log`).
 
-| 章 | 新脚本 | GPU0 墙钟 | README 新增 |
+| Ch. | New script | GPU0 wall-clock time | New in the README |
 |---|---|---:|---|
-| 21 | `chapters/21-kv-cache-ledger/code/05_gpu_decode_ledger.py` | 9.0 s | `## GPU 实测（单张 RTX 3090）`，第 6 节小结之后、`## 从极简到生产级` 之前 |
-| 22 | `chapters/22-local-sparse-attention/code/06_gpu_flex_window.py` | 39.6 s（含 FlexAttention 冷编译 7 s） | 同上位置 |
-| 23 | `chapters/23-linear-attention-hybrid/code/06_gpu_linear_vs_softmax.py` | 23.6 s | 同上位置 |
+| 21 | `chapters/21-kv-cache-ledger/code/05_gpu_decode_ledger.py` | 9.0 s | `## GPU measurements (one RTX 3090)`, after the summary of Section 6 and before `## From minimal code to production code` |
+| 22 | `chapters/22-local-sparse-attention/code/06_gpu_flex_window.py` | 39.6 s (includes 7 s for the cold compile of FlexAttention) | Same position |
+| 23 | `chapters/23-linear-attention-hybrid/code/06_gpu_linear_vs_softmax.py` | 23.6 s | Same position |
 
-### 第 21 章：decode 一步 ≈（权重 + KV cache）÷ 带宽
+### Chapter 21: one decode step ≈ (weights + KV cache) ÷ bandwidth
 
-按主线模型形状（28 层、宽 1280、16/8 头、head_dim 128、FFN 3584、词表 65,536）搭随机权重的 BF16 decode 步，KV cache 预填 T 个位置，CUDA Graph 重放；理论下限直接调用 `02_prefill_decode.py` 的 `decode_step`，只把 `PEAK_FLOPS`/`HBM_BW` 换成 3090 规格。普通注意力用 SDPA（FlashAttention），MLA 手写吸收路径（加权平均用 split-KV）。
+The script builds a BF16 decode step with random weights in the shape of the main-line model (28 layers, width 1280, 16/8 heads, head_dim 128, FFN 3584, vocabulary 65,536). It fills the KV cache with T positions first, and it replays the step with a CUDA Graph. For the theoretical lower bound, it calls `decode_step` of `02_prefill_decode.py` directly and only replaces `PEAK_FLOPS`/`HBM_BW` with the 3090 specs. Normal attention uses SDPA (FlashAttention). MLA uses a hand-written absorbed path (the weighted average uses split-KV).
 
-主要结果：batch 1 从 T = 1K 到 128K，KV cache 多读 13.89 GiB、一步多 23.83 ms（折合 626 GB/s，每 GiB 约 1.7 ms）；"4 条 32K"与"1 条 128K"都读 14 GiB KV，一步 27.48 vs 27.23 ms；4K 时 batch 1→16 吞吐 244→936（约 3.8×，3090 账本预测 3.3×），32K 时 batch 1→4 只有 108→146（约 1.35×，账本 1.25×）。T = 32K 时 MHA/GQA/MQA/MLA 的 KV cache 实际分配 7.00/3.50/0.44/0.98 GiB，与账本完全一致；一步 15.57/9.33/4.36/7.75 ms。实测比理论下限慢 1.5–2.1 倍：短上下文时等效带宽只有 440 GB/s（每层权重矩阵只有 5–18 MB，batch 1 的矩阵-向量乘跑不满带宽；微基准里每层大小的单个矩阵-向量乘（1280×5120、3584×1280 等，batch 1）只有 240–410 GB/s，而 1280×65536 的 lm_head 能到 660–750 GB/s），长上下文靠近 600 GB/s。不用 CUDA Graph 时 T = 1K 一步 7.51 ms（用了 3.40 ms）。
+Main results:
 
-调试中发现：手写 `q @ Kᵀ → softmax → @ V` 做 GQA decode 只有约 270 GB/s（长度 T 的归约只分给很少几个 SM），换成 SDPA 后 600 GB/s；MLA 走 SDPA（head_dim 576）会退到极慢的路径（11 ms/层），所以 MLA 用手写 + split-KV。
+- With batch 1, from T = 1K to 128K, the step reads 13.89 GiB more KV cache and takes 23.83 ms longer. This is 626 GB/s, about 1.7 ms for each GiB.
+- "4 sequences of 32K" and "1 sequence of 128K" both read 14 GiB of KV. One step takes 27.48 vs 27.23 ms.
+- At 4K, batch 1→16 increases the throughput from 244 to 936 (about 3.8×; the 3090 ledger predicts 3.3×). At 32K, batch 1→4 increases it only from 108 to 146 (about 1.35×; the ledger gives 1.25×).
+- At T = 32K, MHA/GQA/MQA/MLA really allocate 7.00/3.50/0.44/0.98 GiB of KV cache, exactly as in the ledger. One step takes 15.57/9.33/4.36/7.75 ms.
+- The measured times are 1.5–2.1 times slower than the theoretical lower bound. With a short context, the effective bandwidth is only 440 GB/s. Each weight matrix of a layer has only 5–18 MB, and the matrix-vector products of batch 1 cannot use the full bandwidth. In a microbenchmark, one matrix-vector product with the size of one layer (1280×5120, 3584×1280, and so on; batch 1) reaches only 240–410 GB/s. But the 1280×65536 lm_head reaches 660–750 GB/s. With a long context, the bandwidth comes near 600 GB/s.
+- Without CUDA Graph, one step at T = 1K takes 7.51 ms (with CUDA Graph, 3.40 ms).
 
-### 第 22 章：滑动窗口要"真的跳过"窗口外的块
+Found during debugging: a hand-written `q @ Kᵀ → softmax → @ V` for GQA decode reaches only about 270 GB/s, because the reduction over the length T goes to very few SMs. With SDPA, it reaches 600 GB/s. MLA through SDPA (head_dim 576) falls back to a very slow path (11 ms per layer). Thus MLA uses the hand-written path + split-KV.
 
-batch 1、16 头、head_dim 128、BF16；稠密因果 SDPA（FlashAttention）/ 布尔掩码 SDPA（memory-efficient + T×T 掩码）/ FlexAttention（`create_block_mask` 块稀疏）。T = 16,384 时 FlexAttention 从 W = 128 的 0.90 ms 涨到 W = 4,096 的 9.37 ms，稠密因果恒为约 23 ms，布尔掩码恒为约 70 ms；W = 1,024 时 T = 4K/16K/64K 下 FlexAttention 0.94/3.61/12.06 ms，稠密 1.62/22.72/473.55 ms（64K 时快 39.3×）。三者最大差 3.9e-03（BF16 舍入量级）。**FlexAttention 在 3090 + PyTorch 2.11 上能跑**，唯一的坑是 `create_block_mask` 默认会铺开整张 T×T 表，T = 65,536 时要申请 32 GiB 而 OOM；用 `torch.compile(create_block_mask)`（`_compile=True` 已被标为弃用）解决。
+### Chapter 22: the sliding window must "really skip" the blocks outside the window
 
-### 第 23 章：softmax vs 线性注意力的分块 / 递推形式
+The setup: batch 1, 16 heads, head_dim 128, BF16. Three versions: dense causal SDPA (FlashAttention), boolean-mask SDPA (memory-efficient + a T×T mask), and FlexAttention (block-sparse with `create_block_mask`).
 
-形状取 Qwen3.5-0.8B 的 Gated DeltaNet 层（16 头，d_k = d_v = 128）；03、04 的函数原样在 `with torch.device("cuda")` 里调用（FP32、块长 64），softmax 用 FlashAttention（BF16）。GPU 上分块 = 递推（输出差 6.0e-07、状态差 4.8e-07）。T = 4,096 时逐 token 递推 813.5 ms、分块 43.1 ms（约 19×）；分块随 T 线性涨，FlashAttention 16K→64K 涨 21×，64K 时朴素线性分块 180.7 ms 已快于 FlashAttention 460.1 ms（Gated DeltaNet 分块 757.5 ms 还没追上）。decode：Gated DeltaNet 状态始终是 (1, 16, 128, 128)、1 MiB，一步 0.24–0.31 ms；softmax 的 KV cache 从 8 MiB 涨到 2,048 MiB，一步从 0.053 涨到 3.408 ms。短序列上本章纯 PyTorch 实现被 Python 循环的固定开销压住（Gated DeltaNet 每块约 0.7 ms、朴素线性每块约 0.18 ms，与 T 无关），这是生产上要用 fla 融合 kernel 的原因（本机没装 fla，没有对比）。
+- At T = 16,384, FlexAttention grows from 0.90 ms at W = 128 to 9.37 ms at W = 4,096. Dense causal stays at about 23 ms, and the boolean mask stays at about 70 ms.
+- At W = 1,024, for T = 4K/16K/64K, FlexAttention takes 0.94/3.61/12.06 ms, and dense takes 1.62/22.72/473.55 ms (39.3× faster at 64K).
+- The max difference between the three versions is 3.9e-03 (the size of BF16 rounding).
 
-## 四、GPU 结果对 README 里 GPU 说法的影响（均未改动原文，请统一处理）
+**FlexAttention runs on a 3090 + PyTorch 2.11.** There is only one problem. By default, `create_block_mask` builds the full T×T table. At T = 65,536, it requests 32 GiB and runs out of memory (OOM). `torch.compile(create_block_mask)` solves the problem (`_compile=True` is marked as deprecated).
 
-1. **第 22 章"从极简到生产级"最后一行**："GPU 上要真正跳过窗口外的块，需要 FlashAttention 的 `window_size=(W − 1, 0)`，或 PyTorch FlexAttention 的滑动窗口 `mask_mod`……**这些 GPU 路径尚未在 GPU 上验证**"。本次证实了 FlexAttention 这一条：在 3090 + PyTorch 2.11 上能跑、真的按块跳过、数值与掩码版一致（注意是章节里的独立脚本，不是 `zero/arch/sliding_window.py`）。FlashAttention 的 `window_size` 没法验证（没装 `flash_attn`），vLLM / transformers 也没测。
-2. **`zero/arch/sliding_window.py` 在 GPU 上的现行路径会比全注意力还慢**：它（第 229–232 行）用 SDPA + 布尔掩码，本次的同款调用在 T = 16K 时约 70 ms，是稠密因果 FlashAttention（约 23 ms）的 3 倍，还要 T² 大小的掩码和偏置（T = 16K 时 256 MiB + 512 MiB）。它的注释已经写了"GPU 上用 FlashAttention 的 window_size 或 FlexAttention 才能真正跳过"，本次数据给这句话提供了实测依据。是否把 zero 的 CUDA 路径换成 FlexAttention，请你决定（zero/ 我没有改）。
-3. **第 23 章第 3 节**"GPU 上的差距会更大，因为分块把工作变成了 GPU 最擅长的矩阵乘法"：分块 vs 逐 token 递推这一对，GPU 上是约 19×（T = 4,096），CPU 上 README 写 7×、本机 10.8×，**证实**。但要补一句限定：本章纯 PyTorch 的分块循环在 GPU 上绝对速度受 Python 发射开销限制，短序列比 FlashAttention 慢几十倍。"比完全并行快 40 多倍"那一半 GPU 上没有测。
-4. **第 21 章"从极简到生产级"**"本课的 MLA……尚未在 GPU 上验证性能"：本次脚本是自己写的 MLA 吸收路径 decode，不是 `zero/arch/mla.py`，所以 zero 的 MLA 仍未在 GPU 上验证；但数据支持"真正上线要用专门实现"：不融合时 MLA 缓存只有 GQA 的 28%，一步只省约 17%。
-5. **第 21 章第 1.2 节**（H100 理论值）："4K 时 batch 1→16 吞吐涨 3.3 倍、32K 时拼批几乎失灵"——3090 实测同一趋势（4K：3.8×；32K batch 1→4：1.35×），与第 1.2 节的说法一致。
-6. `zero/arch/linear_attention.py` 的 GPU 路径本次没有测（脚本用的是章节代码）。
+### Chapter 23: softmax vs the chunkwise / recurrent forms of linear attention
 
-## 五、其他
+The shapes are those of the Gated DeltaNet layer of Qwen3.5-0.8B (16 heads, d_k = d_v = 128). The script calls the functions of 03 and 04 without changes in `with torch.device("cuda")` (FP32, chunk length 64). Softmax uses FlashAttention (BF16).
 
-- `chapters/22-local-sparse-attention/video/subtitles.srt` 在 `git status` 里显示已修改，不是我改的（应是视频渲染）。
-- `chapters/22-local-sparse-attention/code/out/` 和 `chapters/23-linear-attention-hybrid/code/out/`（`*.pt`，被 .gitignore 忽略）是 10:29 之后视频渲染（`video/build.sh`，scenes.py 缺 cache.json 时会训练小模型）写的，不是我的进程：我开始时这两个目录不存在，我的训练全部重定向到了草稿目录。
-- 解读时的一个口径：GPU0 功耗上限 240 W。第 21 章我用同卡实测的 873 GB/s 纯读带宽作参照，所以"离规格峰值远"那部分我只把超出 873 GB/s 参照的差距归到小矩阵-向量乘上；第 22、23 章的解读只比较相对耗时，没有引用离峰值的比例。
-- 没有 commit、push、切分支；没有安装任何包。
+- On the GPU, chunkwise = recurrent (output difference 6.0e-07, state difference 4.8e-07).
+- At T = 4,096, the token-by-token recurrent form takes 813.5 ms, and the chunkwise form takes 43.1 ms (about 19×).
+- The chunkwise form grows linearly with T. FlashAttention grows 21× from 16K to 64K. At 64K, the naive linear chunkwise form (180.7 ms) is already faster than FlashAttention (460.1 ms). The Gated DeltaNet chunkwise form (757.5 ms) is not faster yet.
+- Decode: the Gated DeltaNet state is always (1, 16, 128, 128), 1 MiB, and one step takes 0.24–0.31 ms. The softmax KV cache grows from 8 MiB to 2,048 MiB, and one step grows from 0.053 to 3.408 ms.
+- For short sequences, the fixed overhead of the Python loop limits the pure PyTorch implementation of this chapter. Each chunk costs about 0.7 ms for Gated DeltaNet and about 0.18 ms for naive linear, independent of T. This is why production code uses the fused kernels of fla. (fla is not installed on this machine, so there is no comparison.)
 
-## 需要你决定的事
+## 4. Effect of the GPU results on the GPU statements in the READMEs (I did not change the original text; please decide on all of them together)
 
-1. 第 23 章第 8.2 节"3:1 混合最低（1.649）"在本机复现不出来（GGGG 1.648 更低），要不要按本机数字改表、改这句话，或者只加一句"不同机器上名次会互换"。
-2. 第 21/04、23/05 和几个舍入级数字是否统一换成本机结果（结论都不变）。
-3. 第 22 章 02 的 docstring（约 5 分钟）与 README（约 40 分钟）的耗时说法要不要统一。
-4. `zero/arch/sliding_window.py` 的 CUDA 路径要不要换成 FlexAttention（见第四节第 2 条）。
+1. **Chapter 22, last row of "From minimal code to production code"**: "On a GPU, to really skip the blocks outside the window, you need `window_size=(W − 1, 0)` of FlashAttention, or a sliding-window `mask_mod` for PyTorch FlexAttention … **these GPU paths are not yet verified on a GPU**". This run confirms the FlexAttention part. FlexAttention runs on a 3090 + PyTorch 2.11, it really skips blocks, and its numbers agree with the masked version. (Note: this is the standalone script of the chapter, not `zero/arch/sliding_window.py`.) We could not verify the `window_size` of FlashAttention (`flash_attn` is not installed). We did not test vLLM / transformers. (Fixed later: the row now gives the FlexAttention measurement and says that the `window_size` of FlashAttention is not verified.)
+2. **On a GPU, the current path of `zero/arch/sliding_window.py` is slower than full attention.** It uses SDPA + a boolean mask (lines 229–232). In this run, the same call takes about 70 ms at T = 16K. This is 3 times the dense causal FlashAttention (about 23 ms). It also needs a mask and a bias of size T² (256 MiB + 512 MiB at T = 16K). Its comment already says that only the `window_size` of FlashAttention or FlexAttention really skips the blocks outside the window on a GPU. The data of this run gives a measured basis for this sentence. Please decide whether to change the CUDA path of zero to FlexAttention. (I did not change zero/.)
+3. **Chapter 23, Section 3**: "On a GPU, the difference is larger, because the chunkwise form changes the work into matrix multiplications, which GPUs do best". For the pair chunkwise vs token-by-token recurrent, the GPU gives about 19× (T = 4,096). On the CPU, the README says 7×, and this machine gives 10.8×. **Confirmed.** But one limit must be added: on a GPU, the Python launch overhead limits the absolute speed of the pure PyTorch chunk loop of this chapter. For short sequences, it is tens of times slower than FlashAttention. The other half, "more than 40 times faster than the fully parallel form", was not measured on a GPU.
+4. **Chapter 21, "From minimal code to production code"**: "The MLA of this course … its performance is … not yet verified on a GPU". The script of this run uses its own MLA absorbed-path decode, not `zero/arch/mla.py`. Thus the MLA of zero is still not verified on a GPU. But the data supports "a real deployment must use special implementations": without fusion, the MLA cache is only 28% of the GQA cache, but one step saves only about 17%.
+5. **Chapter 21, Section 1.2** (H100 theory): "at 4K, when the batch grows from 1 to 16, the throughput increases 3.3 times", and at 32K, batching almost stops working. The 3090 measurements show the same trend (4K: 3.8×; 32K, batch 1→4: 1.35×). This agrees with Section 1.2.
+6. This run did not test the GPU path of `zero/arch/linear_attention.py` (the scripts use the chapter code).
+
+## 5. Other
+
+- `chapters/22-local-sparse-attention/video/subtitles.srt` shows as modified in `git status`. I did not change it (it is probably the video render).
+- `chapters/22-local-sparse-attention/code/out/` and `chapters/23-linear-attention-hybrid/code/out/` (`*.pt`, ignored by .gitignore) were written after 10:29 by the video render (`video/build.sh`; when cache.json is missing, scenes.py trains small models). My processes did not write them. When I started, these two folders did not exist, and I redirected all my training to the scratch folder.
+- One rule for the interpretation: the power limit of GPU0 is 240 W. For Chapter 21, I used the pure read bandwidth of 873 GB/s, measured on the same card, as the reference. Thus, in the part "far from the spec peak", I attribute to the small matrix-vector products only the gap beyond the 873 GB/s reference. The interpretations for Chapters 22 and 23 compare only relative times and do not quote ratios to the peak.
+- No commit, push, or branch change. No package installed.
+
+## Decisions for you
+
+1. Chapter 23, Section 8.2: "the 3:1 hybrid is the lowest (1.649)" does not reproduce on this machine (GGGG, 1.648, is lower). Should we change the table and this sentence to the numbers of this machine? Or should we only add "on different machines, the ranking can change"? (Fixed later: see Detail 2.)
+2. Should we replace the numbers of 21/04, 23/05, and some rounding-level numbers with the results of this machine? (All conclusions stay the same.) (Later, the READMEs of Chapters 21 and 23 kept the original numbers. They added a note about the drift between machines, with a link to this record.)
+3. Should we make the run-time statements of Chapter 22, 02, the same: the docstring (about 5 minutes) and the README (about 40 minutes)? (Fixed later: see Detail 4.)
+4. Should the CUDA path of `zero/arch/sliding_window.py` change to FlexAttention? (See item 2 of Section 4.)

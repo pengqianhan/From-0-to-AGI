@@ -1,10 +1,13 @@
-"""第 16 章视频：SFT —— 对话模板、loss mask、打包
+"""Video for Chapter 16: SFT — chat template, loss mask, packing.
 
-画面里的数值由 ../code/ 中的代码真实计算（见 script.md 事实清单）；S13 的冒烟测试数字读自
-video/data/smoke_before_fix.json：修复工具调用判分器之前那次冒烟测试的真实输出，与 README「主线进度」同一次运行
-（重跑冒烟测试会覆盖 out/smoke，所以冻结在这里，来源写在 json 里）。
-较慢的计算（小模型 SFT、生成）结果缓存在 video/out/cache.json；删掉它会重新计算。
-渲染：bash chapters/16-sft/video/build.sh
+The code in ../code/ calculates the values on screen (see the fact list in script.md).
+The smoke-test numbers in S13 come from video/data/smoke_before_fix.json. This file is the real output
+of the smoke test before the fix of the tool-call grader. It is the same run as in the README section
+"Main-line progress". A new smoke test overwrites out/smoke, thus we freeze the output here.
+The json file gives the source.
+The cache video/out/cache.json keeps the results of the slow calculations (small-model SFT, generation).
+Delete it to calculate them again.
+Render: bash chapters/16-sft/video/build.sh
 """
 
 from __future__ import annotations
@@ -55,7 +58,7 @@ def _load(name: str, filename: str):
 
 
 def compute() -> dict:
-    """从 ../code 真实计算视频要用的全部数字。"""
+    """Calculate all numbers for the video with the real code in ../code."""
     tmpl = _load("ch16_chat_template", "01_chat_template.py")
     sft = _load("ch16_sft_tiny", "03_sft_tiny.py")
     pack = _load("ch16_packing", "04_packing.py")
@@ -96,7 +99,10 @@ def show_ws(s: str) -> str:
 
 
 def sample_lines() -> list[tuple[str, str, bool]]:
-    """把真实样本压缩成适合上屏的若干行：(文本, 角色, 是否算 loss)。system 的工具说明缩成 3 行。"""
+    """Make a real sample short enough for the screen: lines of (text, role, in the loss or not).
+
+    The tool description in the system message becomes 3 lines.
+    """
     lines: list[tuple[str, str, bool]] = [
         ("<|im_start|>system", "system", False),
         ("你是一个会使用工具的助手……", "system", False),
@@ -123,7 +129,7 @@ def role_panel(lines, x_left: float, y_top: float, size: float = 17) -> VGroup:
 
 def table(rows, col_w, x0: float, y0: float, size: float = 22, row_h: float = 0.5,
           colors=None) -> VGroup:
-    """简单表格：rows 是字符串二维表，第一行是表头。"""
+    """Draw a simple table. rows is a 2D table of strings; the first row is the header."""
     g = VGroup()
     for i, row in enumerate(rows):
         x = x0
@@ -147,7 +153,7 @@ class ChapterScene(NarratedScene):
     def badge_in(self):
         return self.show_badge()
 
-    # ── S01 片头 ─────────────────────────────────────────────────────────
+    # ── S01 Opening ──────────────────────────────────────────────────────
     def s01(self):
         with self.shot("S01"):
             card = self.chapter_card()
@@ -157,7 +163,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.8))
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-    # ── S02 底座只会续写 ─────────────────────────────────────────────────
+    # ── S02 A base model only continues text ─────────────────────────────
     def s02(self):
         with self.shot("S02"):
             self.play(*self.set_heading("底座只会续写"), run_time=self.fit(0.8))
@@ -183,7 +189,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in (q, left, right, box_l, box_r, badge)],
                       run_time=self.fit(0.8))
 
-    # ── S03 同一个 loss ───────────────────────────────────────────────────
+    # ── S03 The same loss ─────────────────────────────────────────────────
     def s03(self):
         with self.shot("S03"):
             self.play(*self.set_heading("同一个 loss，换一种数据"), run_time=self.fit(0.8))
@@ -241,7 +247,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.8))
             self.play(FadeOut(blocks), FadeOut(fam), run_time=self.fit(0.8))
 
-    # ── S05 工具调用样本 ─────────────────────────────────────────────────
+    # ── S05 Tool-call sample ─────────────────────────────────────────────
     def s05(self):
         with self.shot("S05"):
             self.play(*self.set_heading("工具调用：一条真实样本"), run_time=self.fit(0.8))
@@ -277,7 +283,7 @@ class ChapterScene(NarratedScene):
             self.play(*dims, FadeOut(self.legend), run_time=self.fit(1.2))
             self.play(Create(hi), run_time=self.fit(1.0))
             pct1 = 100 * D["n_train"] / D["n_chars"]
-            pct2 = 100 * 67191 / 502756  # 冒烟测试全部 1500 条，用 zero 分词器编码（README 3.2）
+            pct2 = 100 * 67191 / 502756  # All 1500 smoke-test samples, encoded with the zero tokenizer (README 3.2)
             bars = VGroup()
             for i, (lab, p) in enumerate((("这一条", pct1), ("冒烟测试全部", pct2))):
                 full = Rectangle(width=4.0, height=0.35, stroke_color=theme.MUTED, stroke_width=1.5)
@@ -291,7 +297,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.8))
             self.play(FadeOut(self.lines_obj), FadeOut(hi), FadeOut(bars), run_time=self.fit(0.8))
 
-    # ── S07 小实验结果 ───────────────────────────────────────────────────
+    # ── S07 Results of the small experiment ──────────────────────────────
     def s07(self):
         with self.shot("S07"):
             self.play(*self.set_heading("小实验：把小底座 SFT 成会调工具"), run_time=self.fit(0.8))
@@ -323,7 +329,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(x) for x in self.mobjects if x is not self._heading],
                       run_time=self.fit(0.8))
 
-    # ── S08 难在参数 ──────────────────────────────────────────────────────
+    # ── S08 The difficult part is the arguments ───────────────────────────
     def s08(self):
         with self.shot("S08"):
             self.play(*self.set_heading("loss 堆在参数上"), run_time=self.fit(0.8))
@@ -356,7 +362,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.8))
             self.play(*[FadeOut(x) for x in (bars, base, grp, hl, badge)], run_time=self.fit(0.8))
 
-    # ── S09 打包 ──────────────────────────────────────────────────────────
+    # ── S09 Packing ───────────────────────────────────────────────────────
     def s09(self):
         with self.shot("S09"):
             self.play(*self.set_heading("打包：把几条对话装进一个窗口"), run_time=self.fit(0.8))
@@ -400,7 +406,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.8))
             self.play(*[FadeOut(x) for x in (left, right, tl, tr, note)], run_time=self.fit(0.8))
 
-    # ── S10 串门与文档 mask ───────────────────────────────────────────────
+    # ── S10 Cross-contamination and the document mask ─────────────────────
     def s10(self):
         with self.shot("S10"):
             self.play(*self.set_heading("串门：打包的代价"), run_time=self.fit(0.8))
@@ -441,7 +447,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.8))
             self.play(*[FadeOut(x) for x in (g1, g2, t1, t2, nums, badge)], run_time=self.fit(0.8))
 
-    # ── S11 过拟合 ────────────────────────────────────────────────────────
+    # ── S11 Overfitting ───────────────────────────────────────────────────
     def s11(self):
         with self.shot("S11"):
             self.play(*self.set_heading("过拟合：40 条数据训 60 个 epoch"), run_time=self.fit(0.8))
@@ -466,7 +472,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.8))
             self.play(*[FadeOut(x) for x in (ax, xl, tr, va, lt, lv, badge)], run_time=self.fit(0.8))
 
-    # ── S12 数据与超参数 ─────────────────────────────────────────────────
+    # ── S12 Data and hyperparameters ─────────────────────────────────────
     def s12(self):
         with self.shot("S12"):
             self.play(*self.set_heading("数据与超参数"), run_time=self.fit(0.8))
@@ -491,7 +497,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.8))
             self.play(FadeOut(t1), FadeOut(t2), FadeOut(lora), run_time=self.fit(0.8))
 
-    # ── S13 主线进度：极小配置演示 ───────────────────────────────────────
+    # ── S13 Main-line progress: tiny-configuration demo ──────────────────
     def s13(self):
         with self.shot("S13"):
             self.play(*self.set_heading("主线进度：zero 冒烟测试"), run_time=self.fit(0.8))
@@ -530,7 +536,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.8))
             self.play(*[FadeOut(x) for x in (cards, ex, tag, badge)], run_time=self.fit(0.8))
 
-    # ── S14 结尾 ──────────────────────────────────────────────────────────
+    # ── S14 End ───────────────────────────────────────────────────────────
     def s14(self):
         with self.shot("S14"):
             self.play(*self.set_heading("小结"), run_time=self.fit(0.8))

@@ -1,9 +1,12 @@
-"""第 14 章视频：预训练工程 —— 混合精度、FlashAttention、数据并行与断点续训
+"""Video for Chapter 14: pretraining engineering.
 
-画面里的所有数值都由 ../code/ 与 zero/tools/ 真实计算（见 script.md 事实清单）。
-结果缓存在 video/out/cache.json；删掉它会重新计算。tiny 预训练日志读自 out/ch14/
-（先按 README"主线进度"的命令跑出来；没有日志时相关镜头显示"未找到日志"）。
-渲染：bash chapters/14-pretraining-engineering/video/build.sh
+Topics: mixed precision, FlashAttention, data parallelism, and resume from a checkpoint.
+
+The code in ../code/ and zero/tools/ calculates all values on screen (see the fact list in script.md).
+The cache video/out/cache.json keeps the results. Delete it to calculate them again.
+The tiny pretraining log comes from out/ch14/. Make it first with the commands in the README section
+"Main-line progress". If there is no log, the related shots show a "log not found" message.
+Render: bash chapters/14-pretraining-engineering/video/build.sh
 """
 
 from __future__ import annotations
@@ -48,7 +51,7 @@ HERE = Path(__file__).resolve().parent
 CODE = HERE.parent / "code"
 ROOT = HERE.parents[2]
 CACHE = HERE / "out" / "cache.json"
-TOKENS = 400e9  # 主线预训练 token 预算（第 12 章：约 400B，闸门 1 定稿）
+TOKENS = 400e9  # Token budget for main-line pretraining (Chapter 12: about 400B, fixed at Gate 1)
 MONO = "Noto Sans Mono"
 GIB = 2**30
 
@@ -68,14 +71,14 @@ def _read_log(path: Path) -> list[dict]:
 
 
 def compute() -> dict:
-    """从 ../code 与 zero/tools 真实计算视频要用的全部数字。"""
+    """Calculate all numbers for the video with the real code in ../code and zero/tools."""
     import torch
 
     sys.path.insert(0, str(ROOT))
     torch.set_num_threads(1)
     d: dict = {}
 
-    # ① 算账（01_step_cost.py）
+    # ① Cost of one step (01_step_cost.py)
     sc = _load("step_cost", "01_step_cost.py")
     cfg = sc.shape(ROOT / "configs/main/pretrain.toml")
     fpt, n_matmul, n_total = sc.flops_per_token(cfg["model"], cfg["seq_len"])
@@ -88,7 +91,7 @@ def compute() -> dict:
         hours = TOKENS / tps / 3600
         d["mfu_rows"].append(dict(mfu=mfu, days=hours / 24, cost=hours * 8 * sc.PRICE))
 
-    # ③ CPU 上的 MFU（极小配置演示）
+    # ③ MFU on the CPU (tiny-configuration demo)
     tiny = sc.shape(ROOT / "configs/tiny/pretrain.toml")
     tfpt, _, tn = sc.flops_per_token(tiny["model"], tiny["seq_len"])
     log = _read_log(ROOT / "out/ch14/pretrain/log.jsonl")
@@ -98,7 +101,7 @@ def compute() -> dict:
         med = tps[len(tps) // 2]
         d["cpu_mfu"] = dict(peak=peak, tps=med, fpt=tfpt, mfu=med * tfpt / peak)
 
-    # ② 显存（05_memory.py + zero/tools/memory_calc.py）
+    # ② GPU memory (05_memory.py + zero/tools/memory_calc.py)
     mem = _load("memory_demo", "05_memory.py")
     from torch import nn
 
@@ -127,7 +130,7 @@ def compute() -> dict:
                    for s in STRATEGIES}
     d["p16"] = 16 * n_total
 
-    # 精度（02_precision.py）
+    # Precision (02_precision.py)
     pr = _load("precision", "02_precision.py")
     d["bits"] = {k: pr.bits(3.14159, v[0]) for k, v in pr.FORMATS.items()}
     d["pi"] = {k: float(torch.tensor(3.14159, dtype=v[0])) for k, v in pr.FORMATS.items()}
@@ -141,7 +144,7 @@ def compute() -> dict:
     d["wupd"] = w
     d["fp16_70000"] = str(float(torch.tensor(70000.0, dtype=torch.float16)))
 
-    # online softmax（03）与分块注意力（04）
+    # Online softmax (03) and tiled attention (04)
     osm = _load("online_softmax", "03_online_softmax.py")
     trace, mfin, lfin = osm.online_softmax_stats(osm.EXAMPLE)
     d["osm"] = dict(x=osm.EXAMPLE, trace=trace,
@@ -153,16 +156,16 @@ def compute() -> dict:
     d["tiled_diff"] = float((out - ref).abs().max())
     d["sp_gib"] = 2 * 4096 * 4096 * 16 * 8 * 2 / GIB
 
-    # 数据并行（06）：多进程部分用子进程跑脚本，解析它的表格
+    # Data parallelism (06): run the multi-process script in a subprocess and parse its table.
     outp = subprocess.run([sys.executable, str(CODE / "06_ddp_by_hand.py")], capture_output=True,
                           text=True, check=True, cwd=ROOT).stdout
     rows = re.findall(r"^\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*$", outp, re.M)
     d["ddp_rows"] = [[int(r[0]), float(r[1]), float(r[2]), float(r[3])] for r in rows]
-    # 06 的输出已改成英文；两种输出都能解析
+    # The output of 06 is now in English. The regexes parse the English and the Chinese output.
     d["ddp_pdiff"] = re.search(r"(?:2 进程|2 processes) ([\d.e+-]+)", outp).group(1)
     d["ring_send"] = re.search(r"(?:每张卡发出|Each GPU sends) ([\d,]+)", outp).group(1)
 
-    # 断点续训（07）
+    # Resume from a checkpoint (07)
     rs = _load("resume_demo", "07_resume.py")
     ref_run = rs.Run()
     ref_l = [ref_run.train_step() for _ in range(rs.STEPS)]
@@ -182,7 +185,7 @@ def compute() -> dict:
     d["resume_skip"] = {key: max(abs(a - b) for a, b in zip(ref_l[rs.SAVE_AT:], rs.resume(ckpt, key)))
                         for key in ("optim", "sched", "data_rng", "torch_rng")}
 
-    # tiny 预训练日志（极小配置演示）
+    # Tiny pretraining log (tiny-configuration demo)
     d["tiny"] = [[r["step"], r["loss"], r.get("val_loss")] for r in log]
     d["tiny_resume"] = [[r["step"], r["loss"], r.get("val_loss")]
                         for r in _read_log(ROOT / "out/ch14/resume/log.jsonl")]
@@ -240,7 +243,7 @@ class ChapterScene(NarratedScene):
         self.wait(max(0.1, self.remaining() - t))
         self.play(*[FadeOut(m) for m in mobs], run_time=self.fit(t))
 
-    # ── S01 片头 ─────────────────────────────────────────────────────────
+    # ── S01 Opening ──────────────────────────────────────────────────────
     def s01(self):
         with self.shot("S01"):
             card = self.chapter_card()
@@ -250,7 +253,7 @@ class ChapterScene(NarratedScene):
             self.play(Write(sub), run_time=self.fit(1.5))
             self.clear_all(card, sub, t=0.8)
 
-    # ── S02 先算账 ───────────────────────────────────────────────────────
+    # ── S02 Do the calculation first ─────────────────────────────────────
     def s02(self):
         with self.shot("S02"):
             self.play(*self.set_heading("先算账：一步预训练要多少算力"), run_time=self.fit(0.8))
@@ -283,11 +286,11 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeIn(r[2]) for r in rows], run_time=self.fit(1))
             self.clear_all(f, lines, title, rows)
 
-    # ── S03 显存里有什么 ─────────────────────────────────────────────────
+    # ── S03 What is in GPU memory ────────────────────────────────────────
     def s03(self):
         with self.shot("S03"):
             self.play(*self.set_heading("显存里装了什么（每张卡，DDP）"), run_time=self.fit(0.8))
-            scale = 4.6 / 120  # GiB → 画面高度
+            scale = 4.6 / 120  # GiB → height on screen
             base = -2.4
             cap = DashedLine([-1.0, base + 80 * scale, 0], [6.6, base + 80 * scale, 0],
                              color=theme.GRAD, stroke_width=3)
@@ -336,7 +339,7 @@ class ChapterScene(NarratedScene):
                       FadeIn(s8[1]), FadeIn(s8[2]), run_time=self.fit(1.8))
             self.clear_all(legend, cap, cap_l, stacks, p16)
 
-    # ── S04 激活检查点与梯度累积 ─────────────────────────────────────────
+    # ── S04 Activation checkpointing and gradient accumulation ───────────
     def s04(self):
         with self.shot("S04"):
             self.play(*self.set_heading("两招：激活检查点、梯度累积"), run_time=self.fit(0.8))
@@ -355,7 +358,7 @@ class ChapterScene(NarratedScene):
                       run_time=self.fit(2))
             self.play(*[FadeIn(r[2]) for r in rows], run_time=self.fit(0.6))
             self.wait(self.remaining() * 0.35)
-            # 梯度累积：4 个小梯度块 → 1 个大块
+            # Gradient accumulation: 4 small gradient blocks → 1 large block
             y = -1.2
             smalls = VGroup(*[Square(0.55, stroke_width=0, fill_color=theme.GRAD, fill_opacity=0.35 + 0.15 * i)
                               for i in range(4)]).arrange(RIGHT, buff=0.55).move_to([-3.2, y, 0])
@@ -373,7 +376,7 @@ class ChapterScene(NarratedScene):
                 if m is not getattr(self, "_heading", None):
                     self.remove(m)
 
-    # ── S05 三种浮点格式 ─────────────────────────────────────────────────
+    # ── S05 Three floating-point formats ─────────────────────────────────
     def s05(self):
         with self.shot("S05"):
             self.play(*self.set_heading("三种浮点格式：指数管范围，尾数管精度"), run_time=self.fit(0.8))
@@ -402,7 +405,7 @@ class ChapterScene(NarratedScene):
                 self.wait(self.remaining() * 0.2)
             self.clear_all(rows, leg)
 
-    # ── S06 精度不够会怎样 ───────────────────────────────────────────────
+    # ── S06 What occurs when the precision is too low ────────────────────
     def s06(self):
         with self.shot("S06"):
             self.play(*self.set_heading("精度不够：BF16 算，FP32 存"), run_time=self.fit(0.8))
@@ -433,7 +436,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(of), run_time=self.fit(0.8))
             self.clear_all(t1, counters, t2, wrows, rule, of)
 
-    # ── S07 注意力慢在读写 ───────────────────────────────────────────────
+    # ── S07 Attention is slow because of reads and writes ────────────────
     def s07(self):
         with self.shot("S07"):
             self.play(*self.set_heading("注意力慢在读写，不在计算"), run_time=self.fit(0.8))
@@ -510,7 +513,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(res), run_time=self.fit(0.8))
             self.clear_all(f, xs, xl, ml, ll, mv, lv, res)
 
-    # ── S09 分块注意力 ───────────────────────────────────────────────────
+    # ── S09 Tiled attention ──────────────────────────────────────────────
     def s09(self):
         with self.shot("S09"):
             self.play(*self.set_heading("FlashAttention：分块 + online softmax"), run_time=self.fit(0.8))
@@ -561,7 +564,7 @@ class ChapterScene(NarratedScene):
                 if m is not getattr(self, "_heading", None):
                     self.remove(m)
 
-    # ── S10 数据并行 ─────────────────────────────────────────────────────
+    # ── S10 Data parallelism ─────────────────────────────────────────────
     def s10(self):
         with self.shot("S10"):
             self.play(*self.set_heading("数据并行：梯度求平均"), run_time=self.fit(0.8))
@@ -602,7 +605,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(same), run_time=self.fit(0.8))
             self.clear_all(cards, grads, avg, code, hdr, table, same)
 
-    # ── S11 环形 all-reduce ──────────────────────────────────────────────
+    # ── S11 Ring all-reduce ──────────────────────────────────────────────
     def s11(self):
         with self.shot("S11"):
             self.play(*self.set_heading("环形 all-reduce"), run_time=self.fit(0.8))
@@ -631,7 +634,8 @@ class ChapterScene(NarratedScene):
             phase = zh("① reduce-scatter：N−1 轮，每轮传一块、累加", 18, theme.FG).move_to([3.6, 1.8, 0]).align_to([0.0, 0, 0], LEFT)
             self.play(FadeIn(phase), run_time=self.fit(0.6))
             per = max(0.5, (self.remaining() - 6) / 6)
-            # reduce-scatter：第 r 轮，卡 i 把第 (i−r) 块发给右邻居，右邻居这一块变深
+            # reduce-scatter: in round r, GPU i sends chunk (i−r) to its right neighbor.
+            # That chunk becomes darker at the neighbor.
             for r in range(n - 1):
                 anims = []
                 for i in range(n):
@@ -655,7 +659,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(res), run_time=self.fit(0.8))
             self.clear_all(nodes, ring, phase, phase2, res)
 
-    # ── S12 FSDP 切分 ────────────────────────────────────────────────────
+    # ── S12 FSDP sharding ────────────────────────────────────────────────
     def s12(self):
         with self.shot("S12"):
             self.play(*self.set_heading("ZeRO / FSDP：把状态切开"), run_time=self.fit(0.8))
@@ -742,7 +746,7 @@ class ChapterScene(NarratedScene):
                       axis_config={"color": theme.MUTED, "include_ticks": False}).move_to([-3.4, 0.2, 0])
             xl = zh("训练步", 20, theme.MUTED).next_to(ax, DOWN, 0.1)
             yl = zh("loss", 20, theme.MUTED).next_to(ax, LEFT, 0.1)
-            # 示意曲线（不是真实数据）：平滑下降，第 60 步附近一个尖峰
+            # Schematic curve (not real data): a smooth decrease and one spike near step 60.
             pts = []
             for i in range(0, 101):
                 base = 2.6 + 2.8 * math.exp(-i / 22)
@@ -764,7 +768,7 @@ class ChapterScene(NarratedScene):
                       run_time=self.fit(4))
             self.clear_all(ax, xl, yl, note, curve, cause, items)
 
-    # ── S15 断点续训 ─────────────────────────────────────────────────────
+    # ── S15 Resume from a checkpoint ─────────────────────────────────────
     def s15(self):
         with self.shot("S15"):
             self.play(*self.set_heading("断点续训：恢复全部状态"), run_time=self.fit(0.8))
@@ -813,7 +817,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(cap), LaggedStart(*[FadeIn(b) for b in bars], lag_ratio=0.3), run_time=self.fit(2))
             self.clear_all(tl, flag, crash, ax, ref_c, res_c, lg, same, cap, bars)
 
-    # ── S16 极小配置演示 ─────────────────────────────────────────────────
+    # ── S16 Tiny-configuration demo ──────────────────────────────────────
     def s16(self):
         with self.shot("S16"):
             self.play(*self.set_heading("zero 生产级代码：CPU 上真跑一遍"), run_time=self.fit(0.8))
@@ -866,7 +870,7 @@ class ChapterScene(NarratedScene):
                 if m is not getattr(self, "_heading", None):
                     self.remove(m)
 
-    # ── S17 小结与下一章 ─────────────────────────────────────────────────
+    # ── S17 Summary and next chapter ─────────────────────────────────────
     def s17(self):
         with self.shot("S17"):
             self.play(*self.set_heading("小结"), run_time=self.fit(0.8))

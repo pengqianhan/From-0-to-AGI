@@ -1,7 +1,7 @@
-"""第 5 章视频：分类与概率 —— 从"猜一个数"到"猜哪一类"
+"""Chapter 5 video: classification and probability — from "guess a number" to "guess the class".
 
-画面里的所有数值都由 ../code/ 中的代码真实计算（见 script.md 事实清单 F2–F13）。
-渲染：bash chapters/05-classification-probability/video/build.sh
+The code in ../code/ calculates all numbers in the frames (see the fact list F2–F13 in script.md).
+Render: bash chapters/05-classification-probability/video/build.sh
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ cem = _load("ce_mod", "02_cross_entropy.py")
 clf = _load("clf_mod", "03_train_classifier.py")
 lm = _load("lm_mod", "04_next_token.py")
 
-# ── 真实数据（全部由 code/ 算出） ──────────────────────────────────────────
+# ── Real data (code/ calculates all of it) ─────────────────────────────────
 LOGITS = smx.LOGITS
 EXPS = np.exp(LOGITS)
 PROBS = smx.softmax(LOGITS)
@@ -85,8 +85,10 @@ W_LIN, B_LIN = clf.train_linear(X, Y)
 LIN_ACC = float(((X @ W_LIN + B_LIN).argmax(1) == Y).mean())
 _, LOG_BAD_CE, _ = clf.train(X, Y, loss="ce", out_std=10.0)
 _, LOG_BAD_MSE, _ = clf.train(X, Y, loss="mse", out_std=10.0)
-# MSE 卡多久对舍入极其敏感（课程构建机上卡七八百步，另一台服务器上两三百步），
-# 所以画面只强调两台机器都成立的部分：第 100 步时的差距，以及 MSE 在这台机器上第几步过 90%。
+# The number of steps that MSE stays stuck is very sensitive to rounding (700–800 steps on
+# the course build machine, 200–300 steps on a different server). Thus the frames show only
+# the facts that are true on both machines: the gap at step 100, and the step where MSE
+# passes 90% on this machine.
 STUCK_STEP = 100
 STUCK = {}
 for _loss in ["ce", "mse"]:
@@ -103,8 +105,8 @@ P_FEN = cem.softmax(W_LM[STOI["分"]])
 TOP_FEN = np.argsort(-P_FEN)[:3]
 
 MONO = "Noto Sans Mono"
-CLASS_COLORS = [theme.INPUT, theme.PARAM, theme.OUTPUT]  # 三类：蓝、橙、绿
-NAMES = smx.CLASSES  # 猫 狗 鸟
+CLASS_COLORS = [theme.INPUT, theme.PARAM, theme.OUTPUT]  # three classes: blue, orange, green
+NAMES = smx.CLASSES  # the Chinese names for cat, dog, bird
 
 
 def mono(text: str, size: float = 24, color: str = theme.FG) -> Text:
@@ -114,7 +116,10 @@ def mono(text: str, size: float = 24, color: str = theme.FG) -> Text:
 def bars(values, labels, colors, center_x: float, base_y: float, unit: float,
          width: float = 0.7, gap: float = 1.2, fmt: str = "{:.2f}", label_y: float | None = None,
          font: float = 24, value_color=None) -> VGroup:
-    """简易柱状图：返回 VGroup(柱子, 数值, 类别名, 基线)。负值向下画。"""
+    """Simple bar chart: return VGroup(bars, values, class names, base line).
+
+    Negative values go down.
+    """
     n = len(values)
     xs = [center_x + (i - (n - 1) / 2) * gap for i in range(n)]
     rects, vals, names = VGroup(), VGroup(), VGroup()
@@ -141,10 +146,14 @@ def _rgb(hex_color: str) -> np.ndarray:
 
 
 def region_image(prob_fn, axes: Axes, res: int = 160) -> ImageMobject:
-    """决策区域：每个像素的颜色 = 各类颜色按预测概率加权，再和背景混合。"""
+    """Decision regions.
+
+    Pixel color = the class colors weighted by the predicted probabilities, then mixed
+    with the background.
+    """
     lo, hi = axes.x_range[0], axes.x_range[1]
     g = np.linspace(lo, hi, res)
-    gx, gy = np.meshgrid(g, g[::-1])  # 图像第 0 行在最上面 = y 最大
+    gx, gy = np.meshgrid(g, g[::-1])  # row 0 of the image is at the top = the largest y
     pts = np.stack([gx.ravel(), gy.ravel()], axis=1)
     p = prob_fn(pts)  # (res², 3)
     cols = np.stack([_rgb(c) for c in CLASS_COLORS])
@@ -167,7 +176,7 @@ class ChapterScene(NarratedScene):
     chapter_title = "分类与概率"
 
     def construct(self) -> None:
-        # ── S01 片头 ─────────────────────────────────────────────────────
+        # ── S01 Opening ──────────────────────────────────────────────────
         with self.shot("S01"):
             card = self.chapter_card()
             sub = zh("从“猜一个数”到“猜哪一类”", 32, theme.HIGHLIGHT).next_to(card, DOWN, 0.6)
@@ -176,7 +185,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-        # ── S02 为什么不预测编号 ─────────────────────────────────────────
+        # ── S02 Why not predict the class number ─────────────────────────
         with self.shot("S02"):
             self.play(*self.set_heading("答案不是一个数，而是“哪一类”"), run_time=self.fit(0.8))
             nl = NumberLine(x_range=[0, 2, 1], length=5, color=theme.MUTED, include_numbers=True,
@@ -229,7 +238,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in [b_logit, stage, formula, notes]], run_time=self.fit(0.6))
 
-        # ── S04 数值稳定 ─────────────────────────────────────────────────
+        # ── S04 Numerical stability ──────────────────────────────────────
         with self.shot("S04"):
             self.play(*self.set_heading("数值稳定：先减去最大值"), run_time=self.fit(0.8))
             of = zh("float32：exp(x) 在 x > 88.7 时溢出成 ∞", 26, theme.MUTED).move_to([0, 2.2, 0])
@@ -255,7 +264,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in [of, z_big, naive, prop, stable]], run_time=self.fit(0.6))
 
-        # ── S05 最大似然 ─────────────────────────────────────────────────
+        # ── S05 Maximum likelihood ───────────────────────────────────────
         with self.shot("S05"):
             self.play(*self.set_heading("最大似然：让正确答案的概率尽量大"), run_time=self.fit(0.8))
             lik = MathTex(r"\text{likelihood}=\prod_{i=1}^{N} p_{i,\,y_i}", font_size=44).move_to([-3.4, 1.9, 0])
@@ -283,7 +292,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [lik, rows, under, arrow, logt, nll, nll_lbl]],
                       run_time=self.fit(0.6))
 
-        # ── S06 交叉熵 ───────────────────────────────────────────────────
+        # ── S06 Cross-entropy ────────────────────────────────────────────
         with self.shot("S06"):
             self.play(*self.set_heading("交叉熵：−log（正确答案的概率）"), run_time=self.fit(0.8))
             ax = Axes(x_range=[0, 1, 0.2], y_range=[0, 4, 1], x_length=5.6, y_length=4.0,
@@ -318,7 +327,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [ax, xl, yl, curve, ce_def, ce_one, oh, pts, ln3, ln3_lbl]],
                       run_time=self.fit(0.6))
 
-        # ── S07 梯度 p − onehot ──────────────────────────────────────────
+        # ── S07 The gradient p − onehot ──────────────────────────────────
         with self.shot("S07"):
             self.play(*self.set_heading("梯度：p − onehot"), run_time=self.fit(0.8))
             d1 = MathTex(r"L=-z_y+\log\sum_j e^{z_j}", font_size=40).move_to([3.4, 2.0, 0])
@@ -356,10 +365,10 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [d1, d2, g_p, g_o, g_g, ts, ops, meaning, check]],
                       run_time=self.fit(0.6))
 
-        # ── S08 MSE vs CE：梯度 ──────────────────────────────────────────
+        # ── S08 MSE vs CE: the gradient ──────────────────────────────────
         with self.shot("S08"):
             self.play(*self.set_heading("自信地错了：MSE 的梯度会消失"), run_time=self.fit(0.8))
-            # 纵轴画 log10(梯度) + 4，让横轴落在最底下（10⁻⁴ 处）
+            # The y-axis shows log10(gradient) + 4, so that the x-axis is at the bottom (at 10⁻⁴).
             ax = Axes(x_range=[0, 10, 2], y_range=[0, 4.5, 1], x_length=6.8, y_length=4.2,
                       axis_config={"color": theme.MUTED, "font_size": 20}, tips=False,
                       x_axis_config={"include_numbers": True}).move_to([-2.4, 0.05, 0])
@@ -392,7 +401,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [ax, ylabels, xl, yl, ce_line, mse_line, leg, nums, why]],
                       run_time=self.fit(0.6))
 
-        # ── S09 MSE vs CE：训练 ──────────────────────────────────────────
+        # ── S09 MSE vs CE: training ──────────────────────────────────────
         with self.shot("S09"):
             self.play(*self.set_heading("一开始就自信地乱猜：MSE 起步慢得多"), run_time=self.fit(0.8))
             ax = Axes(x_range=[0, 3000, 500], y_range=[0.2, 1.0, 0.2], x_length=6.8, y_length=4.0,
@@ -431,7 +440,7 @@ class ChapterScene(NarratedScene):
                           zh("课程构建机：在 65% 附近卡了七八百步", 18, theme.MUTED),
                           zh(f"渲染本视频的机器：第 {MSE_CATCH} 步就过了 90%", 18, theme.MUTED)
                           ).arrange(DOWN, aligned_edge=LEFT, buff=0.18).move_to([4.2, -1.75, 0])
-            note.shift(RIGHT * (1.6 - note.get_left()[0]))  # 左边避开横轴的 3,000，右边留出安全边距
+            note.shift(RIGHT * (1.6 - note.get_left()[0]))  # clear of the 3,000 on the x-axis
             self.wait(self.remaining() * 0.25)
             self.play(FadeIn(note), run_time=self.fit(1))
             self.wait(self.remaining() - 0.6)
@@ -439,7 +448,7 @@ class ChapterScene(NarratedScene):
                                              stuck, note]],
                       run_time=self.fit(0.6))
 
-        # ── S10 螺旋数据 + 线性分类器 ────────────────────────────────────
+        # ── S10 Spiral data + a linear classifier ────────────────────────
         sax = Axes(x_range=[-1.2, 1.2, 0.5], y_range=[-1.2, 1.2, 0.5], x_length=4.7, y_length=4.7,
                    axis_config={"color": theme.MUTED, "stroke_width": 1}, tips=False
                    ).move_to([-3.4, 0.1, 0])
@@ -465,7 +474,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeOut(lin_img), FadeOut(info), FadeOut(lin_acc), FadeOut(lin_why),
                       run_time=self.fit(0.6))
 
-        # ── S11 MLP 训练 ─────────────────────────────────────────────────
+        # ── S11 Train an MLP ─────────────────────────────────────────────
         with self.shot("S11"):
             arch = MathTex(r"2\to64\ (\mathrm{ReLU})\to3\ \to\ \mathrm{softmax}", font_size=34
                            ).move_to([3.5, 2.2, 0])
@@ -499,7 +508,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [img, dots, frame, arch, table, ln3, test]],
                       run_time=self.fit(0.6))
 
-        # ── S12 温度 ─────────────────────────────────────────────────────
+        # ── S12 Temperature ──────────────────────────────────────────────
         with self.shot("S12"):
             self.play(*self.set_heading("温度 T：logits 先除以 T"), run_time=self.fit(0.8))
             cx, by = -3.0, -1.2
@@ -527,7 +536,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in [b, t_grp, formula, notes]], run_time=self.fit(0.6))
 
-        # ── S13 语言模型 = 词表上的分类 ──────────────────────────────────
+        # ── S13 A language model = classification over the vocabulary ────
         with self.shot("S13"):
             self.play(*self.set_heading("语言模型 = 在词表上做分类"), run_time=self.fit(0.8))
             chars = VGroup()
@@ -570,7 +579,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [chars, vs, fen, arr, nb, cap, tbl, conv, gpt]],
                       run_time=self.fit(0.6))
 
-        # ── S14 从极简到生产级 ───────────────────────────────────────────
+        # ── S14 From minimal code to production code ─────────────────────
         with self.shot("S14"):
             left_code = code_block("""
 z = z - z.max(-1, keepdims=True)
@@ -603,7 +612,7 @@ loss.backward()
             self.play(*[FadeOut(m) for m in [left_code, right_code, lt, rt, hl, tag, chk, shape]],
                       run_time=self.fit(0.6))
 
-        # ── S15 小结 ─────────────────────────────────────────────────────
+        # ── S15 Summary ──────────────────────────────────────────────────
         with self.shot("S15"):
             steps = [("logits", theme.PARAM), ("softmax", theme.FG), ("概率 p", theme.OUTPUT),
                      ("−log p_y", theme.GRAD), ("p − onehot", theme.GRAD)]

@@ -1,15 +1,16 @@
-# tiny_corpus 来源与许可证
+# tiny_corpus: sources and licenses
 
-这个目录是提交进仓库的极小语料（总计约 2.5MB），只用于离线冒烟测试、单元测试和章节演示，
-**不是**主线模型的训练数据。重新生成的方法见 `build_corpus.py`。
+**English** · [中文](LICENSES.zh.md)
 
-| 文件 | 内容 | 来源 | 许可证 |
+This folder contains a very small corpus (about 2.5 MB in total) that is committed to the repository. Use it only for offline smoke tests, unit tests, and chapter demos. It is **not** training data for the main-line model. `build_corpus.py` shows how to make the files again.
+
+| File | Content | Source | License |
 |---|---|---|---|
-| `shakespeare.txt` | 莎士比亚剧作选段（Tiny Shakespeare，约 1.1MB，原样复制） | https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt | 公有领域（莎士比亚原作已进入公有领域；char-rnn 仓库本身为 MIT 许可证） |
-| `chinese_poetry.txt` | 《论语》《诗经》、水墨唐诗、宋词三百首，以及全宋词的前若干首（均为简体，约 1.2MB），从 JSON 转成纯文本，每篇之间空一行 | https://github.com/chinese-poetry/chinese-poetry （2026-09-26 克隆的 master） | MIT License，Copyright (c) 2016 JackeyGao；原典为古籍，属公有领域 |
-| `code.txt` | 本仓库 `zero/` 目录下部分 Python 源码的拼接 | 本仓库 https://github.com/pengqianhan/From-0-to-AGI | 与本仓库相同（仓库许可证待作者确定，待核实） |
+| `shakespeare.txt` | Excerpts from Shakespeare's plays (Tiny Shakespeare, about 1.1 MB, copied unchanged) | https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt | Public domain (the original works of Shakespeare are in the public domain; the char-rnn repository itself uses the MIT License) |
+| `chinese_poetry.txt` | The Analects (Lunyu), the Book of Songs (Shijing), Shuimo Tangshi (Tang poems), Three Hundred Song Ci Poems, and the first poems of the Complete Song Ci (all in simplified Chinese, about 1.2 MB). Converted from JSON to plain text, with an empty line between two texts | https://github.com/chinese-poetry/chinese-poetry (master, cloned on 2026-09-26) | MIT License, Copyright (c) 2016 JackeyGao; the original texts are ancient books in the public domain |
+| `code.txt` | Concatenation of some Python source files in the `zero/` folder of this repository | This repository: https://github.com/pengqianhan/From-0-to-AGI | The same as this repository (the author has not chosen the repository license yet; to be verified) |
 
-chinese-poetry 的 MIT 许可证全文：
+Full text of the MIT License of chinese-poetry:
 
 ```
 The MIT License (MIT)

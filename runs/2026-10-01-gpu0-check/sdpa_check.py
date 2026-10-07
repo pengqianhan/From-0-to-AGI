@@ -1,14 +1,19 @@
-"""阶段 6 第 1 项：BF16 + SDPA 能否走 FlashAttention，`enable_gqa=True` 走哪个后端（单张 RTX 3090）。
+"""Stage 6, item 1: can BF16 + SDPA use FlashAttention, and which backend does `enable_gqa=True` use?
+
+The test uses one RTX 3090.
 
     CUDA_VISIBLE_DEVICES=0 UV_NO_SYNC=1 uv run python runs/2026-10-01-gpu0-check/sdpa_check.py
 
-三部分：
-A. 只看注意力本身（主线形状：16 个查询头、8 个 K/V 头、head_dim 128、T=4096、BF16、因果）：
-   每个后端 × {enable_gqa=True, 先 repeat_interleave K/V}，能不能跑、前向+反向耗时、与 FP32 math 的误差；
-   再用 `torch.backends.cuda.can_use_*_attention(..., debug=True)` 问 PyTorch 自己的判断。
-B. RUNBOOK 里的原命令：主线 689.5M 模型 `.cuda().bfloat16()`，在 `sdpa_kernel(FLASH_ATTENTION)` 下前向 T=4096。
-C. 整个模型的训练步（FP32 主权重 + BF16 autocast，前向+反向，micro batch 1 × 4096）：
-   默认选择 / 强制 Flash / 强制 efficient / 先 repeat_interleave 再 Flash，比较吞吐和 MFU（3090 稠密 BF16 峰值 71 TFLOPS）。
+Three parts:
+A. Attention only (main-line shape: 16 query heads, 8 K/V heads, head_dim 128, T=4096, BF16, causal):
+   for each backend × {enable_gqa=True, repeat_interleave K/V first}: does it run, the forward+backward time,
+   and the error against FP32 math. Then `torch.backends.cuda.can_use_*_attention(..., debug=True)` asks
+   PyTorch for its own decision.
+B. The original command in the RUNBOOK: the main-line 689.5M model `.cuda().bfloat16()`, forward pass
+   at T=4096 under `sdpa_kernel(FLASH_ATTENTION)`.
+C. Training step of the full model (FP32 master weights + BF16 autocast, forward+backward, micro batch 1 × 4096):
+   default selection / forced Flash / forced efficient / repeat_interleave and then Flash.
+   Compare throughput and MFU (3090 dense BF16 peak 71 TFLOPS).
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ sys.path.insert(0, str(REPO))
 from zero.config import load_model_config  # noqa: E402
 from zero.model import Transformer  # noqa: E402
 
-PEAK_3090 = 71e12  # RTX 3090 稠密 BF16 Tensor Core（FP32 累加）峰值，GA102 白皮书
+PEAK_3090 = 71e12  # RTX 3090 dense BF16 Tensor Core peak (FP32 accumulation), from the GA102 white paper
 BACKENDS = {
     "flash": SDPBackend.FLASH_ATTENTION,
     "efficient": SDPBackend.EFFICIENT_ATTENTION,
@@ -56,7 +61,7 @@ def part_a(B: int = 1, H: int = 16, Hkv: int = 8, T: int = 4096, D: int = 128) -
     k = torch.randn(B, Hkv, T, D, device=dev, dtype=torch.bfloat16)
     v = torch.randn(B, Hkv, T, D, device=dev, dtype=torch.bfloat16)
     rep = H // Hkv
-    # 参考：FP32 math（K/V 先显式复制）
+    # Reference: FP32 math (K/V are copied explicitly first)
     with sdpa_kernel(SDPBackend.MATH):
         ref = F.scaled_dot_product_attention(
             q.float(),
@@ -65,7 +70,7 @@ def part_a(B: int = 1, H: int = 16, Hkv: int = 8, T: int = 4096, D: int = 128) -
             is_causal=True,
         )
 
-    # PyTorch 自己的判断（debug=True 会把不能用的原因打成 warning）
+    # PyTorch's own decision (with debug=True, PyTorch gives the reasons for "cannot use" as warnings)
     ask = {}
     for mode, (kk, vv, gqa) in {
         "enable_gqa": (k, v, True),
@@ -84,7 +89,8 @@ def part_a(B: int = 1, H: int = 16, Hkv: int = 8, T: int = 4096, D: int = 128) -
             ask[f"{mode}/{name}"] = {"can_use": ok, "reasons": reasons}
 
     rows = []
-    # 不加任何限制时 PyTorch 选哪个内核：用 profiler 看实际启动的 CUDA kernel 名字
+    # Which kernel PyTorch selects with no restriction: the profiler shows the names of the CUDA kernels
+    # that really start
     default_kernels = {}
     for mode, (kk, vv, gqa) in {
         "enable_gqa": (k, v, True),
@@ -151,7 +157,7 @@ def part_a(B: int = 1, H: int = 16, Hkv: int = 8, T: int = 4096, D: int = 128) -
 
 
 def part_b(cfg) -> dict:
-    """RUNBOOK 第 1 项原命令。"""
+    """The original command of item 1 in the RUNBOOK."""
     m = Transformer(cfg).cuda().bfloat16().eval()
     x = torch.randint(0, cfg.vocab_size, (1, 4096), device="cuda")
     out: dict = {}
@@ -168,7 +174,10 @@ def part_b(cfg) -> dict:
 
 
 def _gqa_repeat_wrapper(orig):
-    """把 enable_gqa=True 的调用改成"先 repeat_interleave K/V 再调用"（只在本脚本里替换，不改 zero）。"""
+    """Change a call with enable_gqa=True to "repeat_interleave K/V first, then call".
+
+    The replacement occurs only in this script. The code in zero does not change.
+    """
 
     def sdpa(q, k, v, *args, enable_gqa=False, **kw):
         if enable_gqa and k.shape[1] != q.shape[1]:
@@ -181,7 +190,7 @@ def _gqa_repeat_wrapper(orig):
 
 
 def part_c(cfg, T: int = 4096, iters: int = 4) -> dict:
-    """整个模型的前向+反向（FP32 主权重 + BF16 autocast，与 Trainer 相同），不含优化器。"""
+    """Forward+backward of the full model (FP32 master weights + BF16 autocast, as in Trainer), without the optimizer."""
     torch.manual_seed(0)
     m = Transformer(cfg).cuda().train()
     m.activation_checkpointing = False
@@ -235,7 +244,7 @@ def part_c(cfg, T: int = 4096, iters: int = 4) -> dict:
 
 
 def main() -> None:
-    assert torch.cuda.device_count() == 1, "只允许看到 1 张卡（CUDA_VISIBLE_DEVICES=0）"
+    assert torch.cuda.device_count() == 1, "Only 1 GPU may be visible (CUDA_VISIBLE_DEVICES=0)"
     cfg = load_model_config(REPO / "configs/main/pretrain.toml")
     env = {
         "torch": torch.__version__,
@@ -254,7 +263,7 @@ def main() -> None:
     out = REPO / "out/gpu0-check/sdpa_check.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(res, ensure_ascii=False, indent=1))
-    print(f"写入 {out}")
+    print(f"Wrote {out}")
 
 
 if __name__ == "__main__":

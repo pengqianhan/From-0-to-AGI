@@ -1,11 +1,16 @@
-"""第 13 章视频：数据 —— 从一堆网页到一份能训练的数据集
+"""Chapter 13 video: data — from a pile of web pages to a data set that you can train on.
 
-画面里的数值都由 ../code/ 中的脚本真实计算（见 script.md 事实清单）：
-- 01–05 的漏斗、S 曲线、分类器阈值表、去污染表：现场计算（约 1 分钟），结果缓存到 video/out/cache.json；
-- 06/07 的消融：读 video/out/ablation_quality.json、ablation_mixture.json（由脚本的 --json 写出；没有就现场跑）；
-- 08 的词表测量：读 video/out/vocab_big.json（`08_vocab_size.py --corpus ... --json`；没有就用 tiny 语料现场测）；
-- 极小配置流水线：读 out/tiny/data_pipeline/manifest.json（没有就现场跑 zero.data.pipeline）。
-渲染：bash chapters/13-data/video/build.sh
+The scripts in ../code/ calculate the numbers in the frames (see the fact list in script.md):
+- funnel, S-curve, classifier threshold table, and decontamination table of 01–05: calculated
+  during the render (about 1 min); the results are cached in video/out/cache.json;
+- ablations of 06/07: read video/out/ablation_quality.json and ablation_mixture.json (written by
+  the --json option of the scripts; if they are missing, run the scripts during the render);
+- vocabulary measurement of 08: read video/out/vocab_big.json
+  (`08_vocab_size.py --corpus ... --json`; if it is missing, measure on the tiny corpus
+  during the render);
+- tiny-configuration pipeline: read out/tiny/data_pipeline/manifest.json (if it is missing,
+  run zero.data.pipeline during the render).
+Render: bash chapters/13-data/video/build.sh
 """
 
 from __future__ import annotations
@@ -102,7 +107,7 @@ def compute_data() -> dict:
     d["decontam"] = {"variants": variants, "rows": dec}
     hits13 = c05.find_contaminated(qdocs, crawl["eval"], 13)
     d["n_final"] = len(qdocs) - len(hits13)
-    # 一个泄漏例子：考题与文档共享的 13-gram
+    # A leak example: a 13-gram that an exam question and a document share
     ev = {e["id"]: e for e in crawl["eval"]}
     leak_doc = next(x for x in qdocs if x["kind"] == "contaminated"
                     and x["leak"]["variant"] == "verbatim" and x["lang"] == "en")
@@ -135,7 +140,7 @@ ABL2 = load_json_or_run("ablation_mixture.json", "07_mixture_ablation.py", [])
 VOCAB = load_json_or_run("vocab_big.json", "08_vocab_size.py", [])
 MANIFEST = load_manifest()
 with open(REPO / "configs" / "main" / "data.toml", "rb") as _f:
-    VOCAB_CHOICE = tomllib.load(_f)["tokenizer"]["vocab_size"]  # 主线词表的选择（正文第 10 节）
+    VOCAB_CHOICE = tomllib.load(_f)["tokenizer"]["vocab_size"]  # main-line vocabulary (section 10)
 
 MONO = "DejaVu Sans Mono"
 KIND_ZH = {"good": "好文档", "contaminated": "夹带考题", "exact_dup": "原样转载", "near_dup": "改写转载",
@@ -161,7 +166,7 @@ def card(lines: list[tuple[str, float, str]], w: float, h: float, color: str) ->
 
 def table(rows: list[list[str]], widths: list[float], size: float = 20,
           header_color: str = theme.MUTED, row_h: float = 0.42) -> VGroup:
-    """简单表格：每格一个居中的文字，第一行是表头。"""
+    """Simple table: one centered text in each cell. The first row is the header."""
     out = VGroup()
     for r, row in enumerate(rows):
         line = VGroup()
@@ -185,7 +190,7 @@ class ChapterScene(NarratedScene):
         self.play(*[FadeOut(m) for m in mobs], run_time=self.fit(0.6))
 
     def construct(self) -> None:
-        # ── S01 片头 ─────────────────────────────────────────────────────
+        # ── S01 Opening ──────────────────────────────────────────────────
         with self.shot("S01"):
             c = self.chapter_card()
             sub = zh("从一堆网页到一份能训练的数据集", 32, theme.HIGHLIGHT).next_to(c, DOWN, 0.6)
@@ -194,7 +199,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(c), FadeOut(sub), run_time=self.fit(0.8))
 
-        # ── S02 数据是最大的杠杆 ─────────────────────────────────────────
+        # ── S02 Data is the largest lever ────────────────────────────────
         with self.shot("S02"):
             self.play(*self.set_heading("同样的尺寸，数据决定上限"), run_time=self.fit(0.8))
             scale = 9.0 / 36.0
@@ -220,7 +225,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.fade_all(lab1, bar1, v1, lab2, bar2, v2, puro)
 
-        # ── S03 开放数据集与许可证 ───────────────────────────────────────
+        # ── S03 Open data sets and licenses ──────────────────────────────
         with self.shot("S03"):
             self.play(*self.set_heading("开放数据集：每一份都要核对许可证"), run_time=self.fit(0.8))
             ds = [
@@ -245,7 +250,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.fade_all(cards, note)
 
-        # ── S04 流水线与一份脏网页 ───────────────────────────────────────
+        # ── S04 The pipeline and a dirty web page ────────────────────────
         with self.shot("S04"):
             self.play(*self.set_heading("一条流水线：便宜的步骤放前面"), run_time=self.fit(0.8))
             steps = ["抽取", "语言识别", "启发式规则", "去重", "模型打分", "去污染", "分词分片"]
@@ -284,7 +289,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.fade_all(boxes, arrows, cheap, dear, segs, labels, title, badge)
 
-        # ── S05 启发式规则 ───────────────────────────────────────────────
+        # ── S05 Heuristic rules ──────────────────────────────────────────
         with self.shot("S05"):
             self.play(*self.set_heading("启发式规则：抓格式，抓不住“不像话”"), run_time=self.fit(0.8))
             badge = self.show_badge()
@@ -323,7 +328,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.fade_all(bars, head, ex, exl, badge)
 
-        # ── S06 去重：Jaccard ────────────────────────────────────────────
+        # ── S06 Deduplication: Jaccard ───────────────────────────────────
         with self.shot("S06"):
             self.play(*self.set_heading("去重：两篇文档有多像？"), run_time=self.fit(0.8))
             a = VGroup(zh("原文", 22, theme.MUTED), mono("Now is the winter of", 22),
@@ -393,7 +398,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.fade_all(rows, legend, form, jv, sig)
 
-        # ── S08 LSH 的 S 曲线 ────────────────────────────────────────────
+        # ── S08 The S-curve of LSH ───────────────────────────────────────
         with self.shot("S08"):
             self.play(*self.set_heading("LSH：切成 16 段，任一段相同就是候选"), run_time=self.fit(0.8))
             badge = self.show_badge()
@@ -431,7 +436,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.fade_all(segs, sl, ax, xl, yl, curve, form, kl, kt, dots, dl, red, badge)
 
-        # ── S09 基于模型的质量过滤 ───────────────────────────────────────
+        # ── S09 Model-based quality filtering ────────────────────────────
         with self.shot("S09"):
             self.play(*self.set_heading("模型打分：大模型标一小部分，小分类器打全部"), run_time=self.fit(0.8))
             flow = VGroup(card([("Llama-3-70B", 22, theme.FG), ("标 46 万个网页 0–5 分", 20, theme.MUTED)],
@@ -460,7 +465,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.fade_all(flow, arr, tag, tb, cap, hl, badge)
 
-        # ── S10 合成改写 ─────────────────────────────────────────────────
+        # ── S10 Synthetic rephrasing ─────────────────────────────────────
         with self.shot("S10"):
             self.play(*self.set_heading("合成改写：让模型把文本换个写法重写"), run_time=self.fit(0.8))
             data = [("原文 × 10 遍", 23.76, theme.MUTED), ("改写 1 次 × 10 遍", 27.39, theme.PARAM),
@@ -494,7 +499,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.fade_all(bars, cap, side)
 
-        # ── S11 配比与代理实验 ───────────────────────────────────────────
+        # ── S11 Data mixture and proxy experiments ───────────────────────
         with self.shot("S11"):
             self.play(*self.set_heading("配比：靠对照实验，不靠公式"), run_time=self.fit(0.8))
             mix = [("英文网页", 0.45, theme.INPUT), ("中文网页", 0.30, theme.GRAD),
@@ -530,7 +535,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.fade_all(pie, labs, pl, steps)
 
-        # ── S12 我们的两个消融 ───────────────────────────────────────────
+        # ── S12 Our two ablations ────────────────────────────────────────
         with self.shot("S12"):
             self.play(*self.set_heading("同样的算力，只换数据（配对比较 bpb）"), run_time=self.fit(0.8))
             badge = self.show_badge()
@@ -561,7 +566,7 @@ class ChapterScene(NarratedScene):
                       theme.HIGHLIGHT).move_to([-3.35, -2.05, 0])
             self.wait(self.remaining() * 0.15)
             self.play(FadeIn(diff), run_time=self.fit(0.8))
-            # 右边：配比
+            # Right: the data mixture
             m = ABL2["bpb"]
             rows = [["配比（英/中/码）", "英文", "中文", "代码"]]
             mixes = {"均衡": "0.45/0.45/0.10", "英文为主": "0.80/0.10/0.10", "代码为主": "0.25/0.25/0.50"}
@@ -578,7 +583,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.fade_all(groups, glabels, legend, axis_note, diff, tb, cap, badge)
 
-        # ── S13 去污染 ───────────────────────────────────────────────────
+        # ── S13 Decontamination ──────────────────────────────────────────
         with self.shot("S13"):
             self.play(*self.set_heading("去污染：训练数据不能见过考题"), run_time=self.fit(0.8))
             badge = self.show_badge()
@@ -614,7 +619,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.fade_all(q, gram, box, tb, hl, note, badge)
 
-        # ── S14 主线分词器 ───────────────────────────────────────────────
+        # ── S14 The tokenizer of the main-line model ─────────────────────
         with self.shot("S14"):
             self.play(*self.set_heading("词表：比“读同样多的文字要花多少算力”"), run_time=self.fit(0.8))
             zero_rows = [r for r in VOCAB if r["label"].startswith("zero")]
@@ -664,7 +669,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.fade_all(ax, xt, yl, lines, tb, limit, hl, rx)
 
-        # ── S15 主线进度：生产级流水线 ───────────────────────────────────
+        # ── S15 Main-line progress: the production pipeline ──────────────
         with self.shot("S15"):
             self.play(*self.set_heading("主线进度：一个配置，十个阶段，一份清单"), run_time=self.fit(0.8))
             badge = self.show_badge()
@@ -694,7 +699,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.fade_all(cfg, man, mid, a1, a2, tb, extra, todo, badge)
 
-        # ── S16 小结 ─────────────────────────────────────────────────────
+        # ── S16 Summary ──────────────────────────────────────────────────
         with self.shot("S16"):
             self.play(*self.set_heading("小结"), run_time=self.fit(0.8))
             items = VGroup(

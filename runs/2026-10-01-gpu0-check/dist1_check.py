@@ -1,16 +1,20 @@
-"""阶段 6 第 4 项（单卡版）：在 1 张卡上真正走一遍 DDP / FSDP2 的代码路径。
+"""Stage 6, item 4 (1-GPU version): really run the DDP / FSDP2 code paths on 1 GPU.
 
-`torchrun --nproc_per_node=1` 时 WORLD_SIZE=1，`DistInfo.is_distributed` 为 False，`wrap_model` 原样返回模型——
-`--set train.parallel=fsdp` 在单卡上**什么都不做**，DDP 也一样。为了让 wrap_model / checkpoint 里 FSDP 的分支
-真的执行，这里自己建一个 world_size=1 的 NCCL 进程组，并把 `is_distributed` 强制为 True：
+With `torchrun --nproc_per_node=1`, WORLD_SIZE=1, `DistInfo.is_distributed` is False, and `wrap_model`
+returns the model unchanged. Thus `--set train.parallel=fsdp` does **nothing** on 1 GPU, and the same is
+true for DDP. To make the FSDP branches in wrap_model / checkpoint really run, this script makes its own
+NCCL process group with world_size=1 and forces `is_distributed` to True:
 
     CUDA_VISIBLE_DEVICES=0 UV_NO_SYNC=1 uv run python runs/2026-10-01-gpu0-check/dist1_check.py
 
-同一份配置（l20m 形状 + tiny 数据）跑 50 步（打开 torch.use_deterministic_algorithms，学习率 3e-3 与 3e-4 各一组）：
-  plain（不包装，与 torchrun 单卡相同）/ ddp（DDP，NCCL，1 个 rank）/ fsdp（fully_shard + MixedPrecisionPolicy）
-比较逐步 loss；FSDP 的 checkpoint（get_model_state_dict 聚合）用 `load_policy` 在单卡上读回并对拍 logits；
-再从 FSDP 的 step 25 checkpoint 续训到 50（set_model_state_dict / set_optimizer_state_dict），与不中断的 loss 对比。
-只能说明"单卡通路能跑、数值合理"，多卡切分与通信仍需多卡验证。
+The same configuration (l20m shape + tiny data) runs for 50 steps, with torch.use_deterministic_algorithms
+on, one group at learning rate 3e-3 and one group at 3e-4:
+  plain (no wrapper, the same as torchrun on 1 GPU) / ddp (DDP, NCCL, 1 rank) / fsdp (fully_shard + MixedPrecisionPolicy)
+The script compares the loss at each step. It reads the FSDP checkpoint (gathered with get_model_state_dict)
+back on 1 GPU with `load_policy` and does a parity check of the logits. Then it resumes from the FSDP
+checkpoint of step 25 to step 50 (set_model_state_dict / set_optimizer_state_dict) and compares the loss
+with the uninterrupted run. The result shows only that "the 1-GPU code path runs and the values are
+reasonable". Sharding and communication across GPUs still need a check on several GPUs.
 """
 
 from __future__ import annotations
@@ -43,7 +47,7 @@ STEPS = 50
 
 @dataclass
 class ForcedDistInfo(DistInfo):
-    """world_size=1 但假装是分布式，让 wrap_model / checkpoint 走 DDP、FSDP 分支。"""
+    """world_size=1, but it acts as distributed, so wrap_model / checkpoint take the DDP and FSDP branches."""
 
     @property
     def is_distributed(self) -> bool:  # type: ignore[override]
@@ -75,8 +79,8 @@ def run(mode: str, info: DistInfo, lr: float | None = None) -> list[float]:
     trainer = Trainer(cfg, info, log=lambda m: None)
     hist = trainer.train()
     print(
-        f"[{mode}] 包装后类型 {type(trainer.model).__name__}；optimizer fused="
-        f"{trainer.optimizer.defaults.get('fused')}；显存峰值 {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB",
+        f"[{mode}] type after wrapping {type(trainer.model).__name__}; optimizer fused="
+        f"{trainer.optimizer.defaults.get('fused')}; peak GPU memory {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB",
         flush=True,
     )
     losses = [h["loss"] for h in hist]
@@ -85,7 +89,7 @@ def run(mode: str, info: DistInfo, lr: float | None = None) -> list[float]:
 
 
 def main() -> None:
-    assert torch.cuda.device_count() == 1, "只允许看到 1 张卡（CUDA_VISIBLE_DEVICES=0）"
+    assert torch.cuda.device_count() == 1, "Only 1 GPU may be visible (CUDA_VISIBLE_DEVICES=0)"
     if OUT.exists():
         shutil.rmtree(OUT)
     os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
@@ -93,7 +97,8 @@ def main() -> None:
     torch.cuda.set_device(0)
     dist.init_process_group("nccl", rank=0, world_size=1, device_id=torch.device("cuda", 0))
     dev = torch.device("cuda", 0)
-    # 确定性算法：GPU 默认内核（FlashAttention 反向等）有运行间差异，会淹没 DDP / FSDP 通路本身的数值差
+    # Deterministic algorithms: the default GPU kernels (FlashAttention backward and others) differ
+    # between runs. That difference would hide the numerical differences of the DDP / FSDP code paths.
     torch.use_deterministic_algorithms(True)
     plain = DistInfo(device=dev)
     forced = ForcedDistInfo(rank=0, local_rank=0, world_size=1, device=dev, backend="nccl")
@@ -102,7 +107,8 @@ def main() -> None:
         return max(abs(x - y) / abs(y) for x, y in zip(a, b, strict=True))
 
     res: dict = {}
-    # 学习率 3e-4：比阶梯默认的 3e-3 小 10 倍，早期不那么"混沌"，更容易看出通路本身的数值差
+    # Learning rate 3e-4: 10 times smaller than the ladder default 3e-3. The early phase is less "chaotic",
+    # so the numerical differences of the code paths are easier to see.
     res["lr3e-4"] = {
         m: run(f"{m}_lr3e-4", i, 3e-4)
         for m, i in (("plain", plain), ("ddp", forced), ("fsdp", forced))
@@ -116,13 +122,14 @@ def main() -> None:
     res["max_rel_diff_fsdp_vs_plain"] = rel(res["fsdp"], res["plain"])
     res["ddp_bitwise_equal_plain"] = res["ddp"] == res["plain"]
     print(
-        f"逐步 loss 最大相对差（lr 3e-3）：ddp vs plain {res['max_rel_diff_ddp_vs_plain']:.2e}"
-        f"（逐位相同：{res['ddp_bitwise_equal_plain']}），fsdp vs plain {res['max_rel_diff_fsdp_vs_plain']:.2e}；"
-        f"（lr 3e-4）ddp {res['lr3e-4_max_rel_diff_ddp_vs_plain']:.2e}，fsdp {res['lr3e-4_max_rel_diff_fsdp_vs_plain']:.2e}",
+        f"Max relative difference of the per-step loss (lr 3e-3): ddp vs plain {res['max_rel_diff_ddp_vs_plain']:.2e}"
+        f" (bit-identical: {res['ddp_bitwise_equal_plain']}), fsdp vs plain {res['max_rel_diff_fsdp_vs_plain']:.2e}; "
+        f"(lr 3e-4) ddp {res['lr3e-4_max_rel_diff_ddp_vs_plain']:.2e}, fsdp {res['lr3e-4_max_rel_diff_fsdp_vs_plain']:.2e}",
         flush=True,
     )
 
-    # FSDP checkpoint 用 load_policy 在单卡上读回（strict 加载），在真实验证数据上算 CE，与 plain 的同步 checkpoint 比较
+    # Read the FSDP checkpoint back on 1 GPU with load_policy (strict load), compute the CE on real
+    # validation data, and compare it with the plain checkpoint of the same step.
     from zero.data.loader import PackedDataLoader
 
     m_fsdp, _ = load_policy(OUT / "fsdp" / "ckpt", device=dev)
@@ -140,12 +147,12 @@ def main() -> None:
     res["fsdp_ckpt_loaded_keys"] = len(m_fsdp.state_dict())
     res["val_ce_fsdp_ckpt_vs_plain_ckpt"] = [ce_f, ce_p]
     print(
-        f"FSDP checkpoint 经 load_policy 读回：{res['fsdp_ckpt_loaded_keys']} 个张量（strict）；"
-        f"验证集 CE {ce_f:.4f}（FSDP）vs {ce_p:.4f}（plain），相对差 {abs(ce_f - ce_p) / ce_p:.2e}",
+        f"FSDP checkpoint read back with load_policy: {res['fsdp_ckpt_loaded_keys']} tensors (strict); "
+        f"validation CE {ce_f:.4f} (FSDP) vs {ce_p:.4f} (plain), relative difference {abs(ce_f - ce_p) / ce_p:.2e}",
         flush=True,
     )
 
-    # FSDP 续训：把 fsdp 的目录复制一份，只留 step 25，再训练到 50
+    # FSDP resume: copy the fsdp directory, keep only step 25, then train to step 50
     src, dst = OUT / "fsdp", OUT / "fsdp_resume"
     shutil.copytree(src, dst)
     shutil.rmtree(dst / "ckpt" / "step_00000050")
@@ -161,7 +168,7 @@ def main() -> None:
         abs(a - b) for a, b in zip(resumed, res["fsdp"][25:], strict=True)
     )
     print(
-        f"FSDP 从 step 25 续训到 50：与不中断的 loss 最大绝对差 {res['fsdp_resume_max_abs_diff']:.2e}",
+        f"FSDP resumed from step 25 to 50: max absolute difference from the uninterrupted loss {res['fsdp_resume_max_abs_diff']:.2e}",
         flush=True,
     )
 

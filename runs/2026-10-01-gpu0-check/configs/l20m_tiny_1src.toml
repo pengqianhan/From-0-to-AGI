@@ -1,6 +1,9 @@
-# 多卡对拍用（dist2_check.py）：与 l20m_tiny.toml 相同，只把三个来源合成一个 PackedDataLoader。
-# 多来源时 MixtureLoader 的来源采样器按 (seed, rank) 播种，每张卡各自抽来源，2 卡与 1 卡每步看到的样本组成不同；
-# 单来源时第 g 个全局样本分给 rank g % world_size，"2 卡各 B 条"与"1 卡 2B 条"是同一批数据，才能逐步对拍 loss。
+# For the multi-GPU parity check (dist2_check.py): the same as l20m_tiny.toml, but the three sources are
+# merged into one PackedDataLoader.
+# With several sources, the source sampler of MixtureLoader is seeded with (seed, rank), and each GPU samples
+# its own sources. Thus the samples per step on 2 GPUs and on 1 GPU are different.
+# With one source, global sample g goes to rank g % world_size. Then "B sequences on each of 2 GPUs" and
+# "2B sequences on 1 GPU" are the same data, and a per-step parity check of the loss is possible.
 base = "l20m_tiny.toml"
 
 [[data.sources]]

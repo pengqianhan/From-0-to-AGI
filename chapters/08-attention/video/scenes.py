@@ -1,8 +1,9 @@
-"""第 8 章视频：注意力 —— 让每个位置自己决定看哪里
+"""Chapter 8 video: attention — each position decides where to look.
 
-画面里的所有数值都由 ../code/ 中的代码真实计算（见 script.md 事实清单）。
-训练小模型（约 1 分钟）的结果缓存在 video/out/cache.json，删掉即可重算。
-渲染：bash chapters/08-attention/video/build.sh
+The code in ../code/ calculates all numbers in the frames (see the fact list in script.md).
+The results of the small-model training (about 1 min) are cached in video/out/cache.json.
+Delete the file to calculate them again.
+Render: bash chapters/08-attention/video/build.sh
 """
 
 from __future__ import annotations
@@ -62,13 +63,14 @@ m03 = _load("sqrt03", "03_why_sqrt_d.py")
 m05 = _load("zero05", "05_zero_parity.py")
 PARITY = m05.parity()
 
-# ── 01：5 个 2 维 token 向量 ──────────────────────────────────────────────
+# ── 01: five 2-dimensional token vectors ──────────────────────────────────
 X = m01.make_x()
 T5 = len(X)
 W_UNI = m01.uniform_weights(T5)
 W_DOT = m01.dot_product_weights(X)
 
-# ── 02：随机输入上的多头注意力（4 个头的权重图 + 对拍误差） ─────────────────
+# ── 02: multi-head attention on random input ──────────────────────────────
+# Weight maps of 4 heads + parity-check error.
 torch.manual_seed(0)
 _B, _T, _C, _H = 2, 8, 32, 4
 _x = torch.randn(_B, _T, _C)
@@ -81,7 +83,8 @@ with torch.no_grad():
     CAUSAL_DIFF = float((_mha(_x2)[:, :5] - _out[:, :5]).abs().max())
 HEAD_MAPS = _w[0].numpy()  # (4, 8, 8)
 
-# ── 03：为什么除以 √d（与脚本 main() 同样的随机数顺序，数字和终端输出一致） ──
+# ── 03: why divide by √d ──────────────────────────────────────────────────
+# Same random-number order as main(), so the numbers match the terminal output.
 _rng = np.random.default_rng(0)
 SQRT_STATS = {s: {d: m03.stats(d, s, _rng) for d in m03.DIMS} for s in (False, True)}
 _rng2 = np.random.default_rng(1)
@@ -90,7 +93,7 @@ _sc = _k @ _q
 BARS_RAW = m03.softmax(_sc[None])[0]
 BARS_SCALED = m03.softmax(_sc[None] / math.sqrt(1024))[0]
 
-# ── 04：训练单层注意力模型（缓存） ──────────────────────────────────────────
+# ── 04: train a one-layer attention model (cached) ──────────────────────────
 HEAT_TEXT = "further, hear me speak."
 SMALL_TEXT = "speak."
 SMALL_HEAD = 1
@@ -114,7 +117,8 @@ def _train_results() -> dict:
     s = len(m04.SAMPLE) - len(HEAT_TEXT)
     assert m04.SAMPLE[s:] == HEAT_TEXT
     heat = w[:, s:, s:].tolist()
-    # 小例子：模型直接读 "speak."，取一个头的缩放分数和权重
+    # Small example: the model reads "speak." directly.
+    # Take the scaled scores and the weights of one head.
     with torch.no_grad():
         idx = torch.tensor([[stoi[c] for c in SMALL_TEXT]])
         T = idx.shape[1]
@@ -145,7 +149,7 @@ def show_c(c: str) -> str:
 
 def grid(values: np.ndarray, cell: float, color: str = theme.ATTN, numbers: bool = False,
          fs: float = 16, fmt: str = "{:.2f}", opacity_scale: float = 1.0) -> VGroup:
-    """T×T 的格子：填充透明度 = 权重。返回 VGroup(cells, texts)，cells[i][j]。"""
+    """T×T grid: fill opacity = weight. Return VGroup(cells, texts), with cells[i][j]."""
     n, m = values.shape
     cells, texts = VGroup(), VGroup()
     for i in range(n):
@@ -166,7 +170,7 @@ class ChapterScene(NarratedScene):
     chapter_title = "注意力"
 
     def construct(self) -> None:
-        # ── S01 片头 ─────────────────────────────────────────────────────
+        # ── S01 Opening ──────────────────────────────────────────────────
         with self.shot("S01"):
             card = self.chapter_card()
             sub = zh("让每个位置自己决定看哪里", 32, theme.ATTN).next_to(card, DOWN, 0.6)
@@ -175,7 +179,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-        # ── S02 只看前一个字不够 ─────────────────────────────────────────
+        # ── S02 Only the previous character is not sufficient ────────────
         with self.shot("S02"):
             text = "hear me speak"
             boxes = VGroup()
@@ -232,7 +236,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(ins, states, hl, ups, rights, n1, n2)), run_time=self.fit(0.6))
 
-        # ── S04 取平均 ───────────────────────────────────────────────────
+        # ── S04 Take the average ─────────────────────────────────────────
         ax = Axes(x_range=[-1.5, 1.5, 0.5], y_range=[-1.5, 1.5, 0.5], x_length=4.4, y_length=4.4,
                   axis_config={"color": theme.MUTED, "stroke_width": 1.5}, tips=False).move_to([-4.2, 0.0, 0])
         tok_cols = [theme.INPUT, theme.OUTPUT, theme.PARAM, theme.HIGHLIGHT, theme.GRAD]
@@ -277,7 +281,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() * 0.3)
             self.play(FadeIn(same), run_time=self.fit(0.8))
 
-        # ── S05 权重由数据决定 ───────────────────────────────────────────
+        # ── S05 The data decides the weights ─────────────────────────────
         with self.shot("S05"):
             g_dot = grid(W_DOT, cell, theme.ATTN, numbers=True, fs=16).move_to(g_uni)
             wl2 = MathTex(r"W=\mathrm{softmax}(XX^{\top}+\text{mask})", font_size=34,
@@ -329,7 +333,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(xb, *rows, sc)), run_time=self.fit(0.6))
 
-        # ── S07 分数 → mask → softmax → 乘 V ────────────────────────────────
+        # ── S07 Scores → mask → softmax → multiply by V ─────────────────────
         S = np.array(RES["small_scores"])
         Wsm = np.array(RES["small_w"])
         n = len(SMALL_TEXT)
@@ -376,7 +380,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(cells, nums, col_l, row_l, kq, steps, tag, rs)), run_time=self.fit(0.6))
 
-        # ── S08 为什么除以 √d ────────────────────────────────────────────
+        # ── S08 Why divide by √d ─────────────────────────────────────────
         with self.shot("S08"):
             hdr = ["d", "方差", "最大权重", "方差", "最大权重"]
             tbl = VGroup()
@@ -417,7 +421,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(tbl, g1, g2, c1, c2)), run_time=self.fit(0.6))
 
-        # ── S09 对拍与因果性 ─────────────────────────────────────────────
+        # ── S09 Parity check and causality ───────────────────────────────
         with self.shot("S09"):
             src = code_block("out = F.scaled_dot_product_attention(\n    q, k, v, is_causal=True)", 24)
             src.move_to([0, 1.3, 0])
@@ -432,7 +436,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(src, r1, r2)), run_time=self.fit(0.6))
 
-        # ── S10 多头 ─────────────────────────────────────────────────────
+        # ── S10 Multiple heads ───────────────────────────────────────────
         with self.shot("S10"):
             head_cols = [theme.INPUT, theme.OUTPUT, theme.PARAM, theme.HIGHLIGHT]
             strip = VGroup(*[Rectangle(width=0.16, height=0.5, stroke_width=0.5, stroke_color=theme.BG,
@@ -465,7 +469,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(strip, cl, maps, arrows, sh, pc)), run_time=self.fit(0.6))
 
-        # ── S11 训练结果 ─────────────────────────────────────────────────
+        # ── S11 Training results ─────────────────────────────────────────
         with self.shot("S11"):
             names = {"bigram": "bigram（只看当前）", "average": "均匀平均", "attention": "注意力"}
             cols = {"bigram": theme.MUTED, "average": theme.INPUT, "attention": theme.ATTN}
@@ -494,7 +498,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(rows, axis_note, base, last)), run_time=self.fit(0.6))
 
-        # ── S12 真实热力图 ───────────────────────────────────────────────
+        # ── S12 A real heat map ──────────────────────────────────────────
         with self.shot("S12"):
             heat = np.array(RES["heat"])
             prof = np.array(RES["profile"])
@@ -524,7 +528,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(panels, axes_note)), run_time=self.fit(0.6))
 
-        # ── S13 从极简到生产级 ───────────────────────────────────────────
+        # ── S13 From minimal code to production code ─────────────────────
         with self.shot("S13"):
             src = """q = q_norm(wq(x).view(B, T, H, d))
 k = k_norm(wk(x).view(B, T, Hkv, d))
@@ -568,7 +572,7 @@ return wo(out.reshape(B, T, H * d))"""
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(cb, fn, prev, par)), run_time=self.fit(0.6))
 
-        # ── S14 小结 ─────────────────────────────────────────────────────
+        # ── S14 Summary ──────────────────────────────────────────────────
         with self.shot("S14"):
             chain = [(r"X", theme.INPUT), (r"Q,K,V", theme.ATTN), (r"QK^{\top}/\sqrt{d}", theme.FG),
                      (r"+\text{mask}", theme.MUTED), (r"\mathrm{softmax}", theme.ATTN),

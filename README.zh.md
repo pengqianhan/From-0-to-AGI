@@ -12,7 +12,7 @@
 - **讲解视频**：5–10 分钟。视频里的每个数字都由本章代码真实算出。
 - **两层代码**：第一层是**极简代码**，在 CPU 上几秒到几分钟跑完（`chapters/NN-*/code/`）。第二层是同一个想法在主线模型里的**生产级代码**（[`zero/`](zero/DESIGN.zh.md)）。两层代码互相对拍，保证结果一致。
 
-课程的后半部分围绕一个**主线模型**。我们用约 1 万美元的算力，从零训练一个中英双语、约 0.69B 参数的小模型。目标是在**工具调用**上超过同尺寸的所有公开模型（包括 Qwen3.5-0.8B）。通用基准如实报告。生产级代码已经全部写好，并在 CPU 上用极小配置跑通。真实训练在第二步、有 GPU 之后进行（见 [runs/RUNBOOK.md](runs/RUNBOOK.md)）。
+课程的后半部分围绕一个**主线模型**。我们用约 1 万美元的算力，从零训练一个中英双语、约 0.69B 参数的小模型。目标是在**工具调用**上超过同尺寸的所有公开模型（包括 Qwen3.5-0.8B）。通用基准如实报告。生产级代码已经全部写好，并在 CPU 上用极小配置跑通。真实训练在第二步、有 GPU 之后进行（见 [runs/RUNBOOK.md](runs/RUNBOOK.zh.md)）。
 
 ## 和斯坦福 CS336 的关系
 
@@ -110,14 +110,14 @@ uv run python -m zero.smoke
 | 阶段 | 状态 |
 |---|---|
 | 第一步：课程 + 生产级代码（在 CPU 上用极小配置跑通，测试通过） | ✅ 完成 |
-| 阶段 6：GPU 环境验证（≤ $50） | 🟡 单卡与 2 卡 RTX 3090 版已完成（[runs/2026-10-01-gpu0-check](runs/2026-10-01-gpu0-check/README.md)），8×H100 版还没有做 |
-| 阶段 7：重跑对手模型，定稿预注册（[草案](eval/PREREGISTRATION.md)） | ⏳ 等 GPU |
+| 阶段 6：GPU 环境验证（≤ $50） | 🟡 单卡与 2 卡 RTX 3090 版已完成（[runs/2026-10-01-gpu0-check](runs/2026-10-01-gpu0-check/README.zh.md)），8×H100 版还没有做 |
+| 阶段 7：重跑对手模型，定稿预注册（[草案](eval/PREREGISTRATION.zh.md)） | ⏳ 等 GPU |
 | 阶段 8：阶梯实验与闸门 1（3×RTX 3090 的小规模版本正在进行：[runs/ladder-3090](runs/ladder-3090/README.md)） | 🔄 暂停中 |
 | 阶段 9：预训练、中期训练与闸门 2 | ⏳ 等 GPU |
 | 阶段 10：后训练、闸门 3 与发布 | ⏳ 等 GPU |
 | 阶段 11：把真实结果写回第三、四部分 | ⏳ 等 GPU |
 
-第一步的报告（和计划的差异、没有在 GPU 上验证的部分、第二步的花费、待定的决定）见 [runs/STEP1_REPORT.md](runs/STEP1_REPORT.md)。第二步的操作手册、成本估算和记账表见 [runs/RUNBOOK.md](runs/RUNBOOK.md)、[runs/ledger.md](runs/ledger.md)、[runs/RELEASE_CHECKLIST.md](runs/RELEASE_CHECKLIST.md)。
+第一步的报告（和计划的差异、没有在 GPU 上验证的部分、第二步的花费、待定的决定）见 [runs/STEP1_REPORT.md](runs/STEP1_REPORT.zh.md)。第二步的操作手册、成本估算和记账表见 [runs/RUNBOOK.md](runs/RUNBOOK.zh.md)、[runs/ledger.md](runs/ledger.zh.md)、[runs/RELEASE_CHECKLIST.md](runs/RELEASE_CHECKLIST.zh.md)。
 
 ## 仓库结构
 
@@ -142,4 +142,4 @@ references.md         参考资料
 - 视频旁白由离线 TTS（sherpa-onnx + MeloTTS 中英混读模型）合成。**还没有人试听过发音和语速。**发布前必须有人逐个试听。
 - 第三、四部分标注"极小配置演示"的数字，来自约 1M 参数的极小模型在 CPU 上的真实运行。这些数字只说明代码能跑通，不代表主线模型的效果。
 - 第 11、16–20 章引用的冒烟测试数字，来自修复工具调用评分器之前的那次运行。修复后重跑，SFT 及之前各阶段的数字完全相同，蒸馏及之后的数字有变化（各章"主线进度"里有说明）。
-- 生产级代码里，CPU 上测不了的路径（多卡、FlashAttention kernel、BF16 等）原来都标注"尚未在 GPU 上验证"。2026 年 10 月，我们在单张和 2 张 RTX 3090 上验证了这些路径（BF16、FlashAttention、DDP / FSDP2、断点续训、compile、后训练通路等）。结果见 [runs/2026-10-01-gpu0-check](runs/2026-10-01-gpu0-check/README.md)，标注已改为具体的验证状态。8×H100 / NVLink 下的吞吐与 MFU、32K 长序列的显存，还要在第二步实测。
+- 生产级代码里，CPU 上测不了的路径（多卡、FlashAttention kernel、BF16 等）原来都标注"尚未在 GPU 上验证"。2026 年 10 月，我们在单张和 2 张 RTX 3090 上验证了这些路径（BF16、FlashAttention、DDP / FSDP2、断点续训、compile、后训练通路等）。结果见 [runs/2026-10-01-gpu0-check](runs/2026-10-01-gpu0-check/README.zh.md)，标注已改为具体的验证状态。8×H100 / NVLink 下的吞吐与 MFU、32K 长序列的显存，还要在第二步实测。

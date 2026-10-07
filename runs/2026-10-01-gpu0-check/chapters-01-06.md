@@ -1,73 +1,77 @@
-# GPU0 验证：第 1–6 章
+# GPU0 verification: Chapters 1–6
 
-日期：2026-10-01。分支 `gpu0-verification`。负责范围：`chapters/01-*` 到 `chapters/06-*`。
+**English** · [中文](chapters-01-06.zh.md)
 
-## 环境
+Date: 2026-10-01. Branch: `gpu0-verification`. Scope: `chapters/01-*` to `chapters/06-*`.
 
-- CPU：AMD Ryzen Threadripper PRO 3995WX（64 核 / 128 线程，Zen 2，AVX2，无 AVX-512），共享服务器，运行期间 load average 在 5–45 之间浮动（其他 agent 与视频渲染同时在跑）。
-- NumPy 2.4.4（scipy-openblas 0.3.31，DYNAMIC_ARCH），PyTorch 2.11.0+cu128。
-- GPU：NVIDIA GeForce RTX 3090（只用 GPU0，`CUDA_VISIBLE_DEVICES=0`，经 `gpu0.lock` 排队；运行前确认 `torch.cuda.device_count() == 1`）。
-- CPU 复现命令：`CUDA_VISIBLE_DEVICES= UV_NO_SYNC=1 uv run python chapters/.../code/xx.py`，最多 4 个进程并行。原始输出在 `/tmp/claude-1006/-home-phan635-Opensource-From-0-to-AGI/1d40fca9-4469-49a7-88b9-4e96bf8f0051/scratchpad/ch01-06/cpu/`，探针实验在同目录的 `probe/`。
+## Environment
 
-## 一、CPU 复现表
+- CPU: AMD Ryzen Threadripper PRO 3995WX (64 cores / 128 threads, Zen 2, AVX2, no AVX-512). This is a shared server. During the runs, the load average was between 5 and 45 (other agents and video renders ran at the same time).
+- NumPy 2.4.4 (scipy-openblas 0.3.31, DYNAMIC_ARCH), PyTorch 2.11.0+cu128.
+- GPU: NVIDIA GeForce RTX 3090. I used only GPU0 (`CUDA_VISIBLE_DEVICES=0`), with a queue through `gpu0.lock`. Before each run, I made sure that `torch.cuda.device_count() == 1`.
+- CPU reproduction command: `CUDA_VISIBLE_DEVICES= UV_NO_SYNC=1 uv run python chapters/.../code/xx.py`, with a maximum of 4 processes in parallel. The raw output is in `/tmp/claude-1006/-home-phan635-Opensource-From-0-to-AGI/1d40fca9-4469-49a7-88b9-4e96bf8f0051/scratchpad/ch01-06/cpu/`. The probe experiments are in `probe/` in the same folder.
 
-"CPU 耗时"是 `uv run` 整个进程的墙钟时间（4 个并行、机器繁忙时测得，只作量级参考）。分类：`一致` / `仅计时不同` / `不一致` / `报错`。30 个脚本全部 rc=0，**没有报错**。
+## 1. CPU reproduction table
 
-| 章 | 脚本 | CPU 耗时 | 分类 | 说明 |
+"CPU time" is the wall-clock time of the full `uv run` process. I measured it with 4 runs in parallel on a busy machine, so use it only for the order of magnitude. Categories: `match` / `timing only` / `mismatch` / `error`. All 30 scripts returned rc=0. **There were no errors.**
+
+| Chapter | Script | CPU time | Category | Notes |
 |---|---|---:|---|---|
-| 1 | `01_fit_line.py` | 0.2 s | 一致 | 表格 5 行、polyfit 2.052 / 0.879 全对 |
-| 1 | `02_learning_rate.py` | 0.2 s | 一致 | 临界 0.1016；2.34 / 0.29 / 0.25 / 7.7×10⁹ 全对 |
-| 1 | `03_pytorch_version.py` | 5.4 s | 一致 | 201 步后 2.039 / 0.925 两边一致 |
-| 2 | `01_matrix_basics.py` | 0.2 s | 一致 | 59.0、79.0、`[79 125 49 104.5]`、`M@N`、`M*N`、广播报错信息全对 |
-| 2 | `02_matrix_multiply.py` | 0.2 s | 一致 | 58/64/139/154、三个形状例子全对 |
-| 2 | `03_linear_layer.py` | 0.2 s | 一致 | 正文只引用形状，全对 |
-| 2 | `04_multivariate_regression.py` | 0.2 s | 一致 | 标准差、临界学习率、训练表、原始单位表、100.2 万全对；另算 Hessian 特征值比 = 2.42×10⁵，"约二十四万分之一"也对 |
-| 2 | `05_loop_vs_vectorized.py` | 2.1 s | 仅计时不同 | 见下方细节 1（倍数和 README 的"25 倍"差一倍） |
-| 2 | `06_pytorch_version.py` | 5.1 s | 一致 | float64 差 0.0e+00、float32 差 1.8e-05 全对 |
-| 3 | `01_linear_is_not_enough.py` | 0.1 s | 一致 | 0.4341 / 0.5178 / 8.9e-16 / 4.4e-15 全对 |
-| 3 | `02_activations.py` | 0.1 s | 一致 | 两个输出块逐字一致 |
-| 3 | `03_mlp_numpy.py` | 21.2 s | 不一致（舍入级） | 只有"各片之和 + b2 与网络输出的最大差"README 2.2e-15，实测 2.7e-15；其余所有损失、折点、12.17 / 1.20 全对 |
-| 3 | `04_pytorch_version.py` | 15.4 s | 不一致（舍入级） | "差 = 6.2e-18"实测 3.9e-18；其余全对 |
-| 4 | `01_engine.py` | <0.1 s | 一致 | |
-| 4 | `02_grad_check.py` | 6.0 s | 一致 | 四行误差表、表达式梯度、第 3 章对拍 4 行全对 |
-| 4 | `03_train_mlp.py` | 9.6 s | 仅计时不同 | 损失表、预测表、3720 个节点全对；"500 步用了 12.3 秒（每步约 25 毫秒）"实测 9.6 秒 / 19 毫秒 |
-| 4 | `04_pytorch_compare.py` | 28.9 s | 不一致（舍入级）+ 计时 | 见细节 2 |
-| 5 | `01_softmax.py` | 0.2 s | 一致 | |
-| 5 | `02_cross_entropy.py` | 0.1 s | 一致 | 似然表、损失表、2.18e-12、3.63e-11、CE vs MSE 梯度表全对 |
-| 5 | `03_train_classifier.py` | 3.6 s | **不一致** | 对照 3（MSE"卡在 65%"）复现不出来，见细节 3 |
-| 5 | `04_next_token.py` | 0.2 s | 一致 | |
-| 5 | `05_pytorch_version.py` | 4.4 s | 不一致（舍入级） | 梯度最大差 README 6.94e-18 → 实测 1.39e-17；3000 步交叉熵之差 7.85e-11 → 7.23e-11；其余全对 |
-| 6 | `01_signal_propagation.py` | 2.3 s | 一致 | 两张表全对 |
-| 6 | `02_normalization.py` | 2.3 s | 一致 | |
-| 6 | `03_residual.py` | 2.2 s | 一致 | |
-| 6 | `04_optimizers.py` | 0.7 s | 一致 | |
-| 6 | `05_lr_schedule.py` | 0.1 s | 一致 | |
-| 6 | `06_ablation.py` | 59.6 s | **不一致** | float32 训练数值漂移，B 行结论从"学得很慢"变成"没学会"，见细节 4 |
-| 6 | `07_schedule_experiments.py` | 70.0 s | **不一致** | 同上，数值小幅漂移，见细节 4 |
-| 6 | `08_pytorch_version.py` | 17.5 s | **不一致** | float32 对拍差和最终验证损失与 README 不同，见细节 4 |
+| 1 | `01_fit_line.py` | 0.2 s | match | The table with 5 rows and polyfit 2.052 / 0.879: all correct |
+| 1 | `02_learning_rate.py` | 0.2 s | match | Critical value 0.1016; 2.34 / 0.29 / 0.25 / 7.7×10⁹: all correct |
+| 1 | `03_pytorch_version.py` | 5.4 s | match | After 201 steps, 2.039 / 0.925 on both sides |
+| 2 | `01_matrix_basics.py` | 0.2 s | match | 59.0, 79.0, `[79 125 49 104.5]`, `M@N`, `M*N`, and the broadcasting error message: all correct |
+| 2 | `02_matrix_multiply.py` | 0.2 s | match | 58/64/139/154 and the three shape examples: all correct |
+| 2 | `03_linear_layer.py` | 0.2 s | match | The main text quotes only shapes: all correct |
+| 2 | `04_multivariate_regression.py` | 0.2 s | match | Standard deviations, critical learning rate, training table, table in the original units, and 100.2 (10k yuan): all correct. I also calculated the ratio of the Hessian eigenvalues: 2.42×10⁵. Thus "about 1/240,000" is also correct |
+| 2 | `05_loop_vs_vectorized.py` | 2.1 s | timing only | See detail 1 below (the speedup is 2 times the "25×" in the README) |
+| 2 | `06_pytorch_version.py` | 5.1 s | match | float64 difference 0.0e+00 and float32 difference 1.8e-05: all correct |
+| 3 | `01_linear_is_not_enough.py` | 0.1 s | match | 0.4341 / 0.5178 / 8.9e-16 / 4.4e-15: all correct |
+| 3 | `02_activations.py` | 0.1 s | match | The two output blocks are identical, character for character |
+| 3 | `03_mlp_numpy.py` | 21.2 s | mismatch (rounding level) | Only one value differs: `Max difference between (sum of pieces + b2) and the network output` is 2.2e-15 in the README and 2.7e-15 in this run. All other losses, kinks, and 12.17 / 1.20 are correct |
+| 3 | `04_pytorch_version.py` | 15.4 s | mismatch (rounding level) | `difference = 6.2e-18` in the README; 3.9e-18 in this run. All other values are correct |
+| 4 | `01_engine.py` | <0.1 s | match | |
+| 4 | `02_grad_check.py` | 6.0 s | match | The four-row error table, the expression gradients, and the 4 rows of the parity check with Chapter 3: all correct |
+| 4 | `03_train_mlp.py` | 9.6 s | timing only | Loss table, prediction table, and 3720 nodes: all correct. The README says "the 500 steps took 12.3 seconds (about 25 ms per step)". This run took 9.6 seconds / 19 ms |
+| 4 | `04_pytorch_compare.py` | 28.9 s | mismatch (rounding level) + timing | See detail 2 |
+| 5 | `01_softmax.py` | 0.2 s | match | |
+| 5 | `02_cross_entropy.py` | 0.1 s | match | Likelihood table, loss table, 2.18e-12, 3.63e-11, and the gradient table for CE vs MSE: all correct |
+| 5 | `03_train_classifier.py` | 3.6 s | **mismatch** | Comparison 3 (MSE "stuck at 65%") does not reproduce. See detail 3 |
+| 5 | `04_next_token.py` | 0.2 s | match | |
+| 5 | `05_pytorch_version.py` | 4.4 s | mismatch (rounding level) | Max gradient difference: 6.94e-18 in the README → 1.39e-17 in this run. Difference between the cross-entropies at step 3000: 7.85e-11 → 7.23e-11. All other values are correct |
+| 6 | `01_signal_propagation.py` | 2.3 s | match | Both tables are correct |
+| 6 | `02_normalization.py` | 2.3 s | match | |
+| 6 | `03_residual.py` | 2.2 s | match | |
+| 6 | `04_optimizers.py` | 0.7 s | match | |
+| 6 | `05_lr_schedule.py` | 0.1 s | match | |
+| 6 | `06_ablation.py` | 59.6 s | **mismatch** | The values of the float32 training drift. The result of row B changes from "learns slowly" to "did not learn". See detail 4 |
+| 6 | `07_schedule_experiments.py` | 70.0 s | **mismatch** | Same cause: the values drift a little. See detail 4 |
+| 6 | `08_pytorch_version.py` | 17.5 s | **mismatch** | The float32 parity-check difference and the final validation losses are different from the README. See detail 4 |
 
-统计（30 个脚本）：一致 20；仅计时不同 2（第 2 章 05、第 4 章 03）；不一致但只是双精度舍入级（≤1e-15）4（第 3 章 03/04、第 4 章 04、第 5 章 05）；不一致且影响正文数字或结论 4（第 5 章 03、第 6 章 06/07/08）；报错 0。
+Statistics (30 scripts): match 20. Timing only 2 (Chapter 2: 05, Chapter 4: 03). Mismatch, but only at double-precision rounding level (≤1e-15) 4 (Chapter 3: 03/04, Chapter 4: 04, Chapter 5: 05). Mismatch that affects numbers or conclusions in the main text 4 (Chapter 5: 03, Chapter 6: 06/07/08). Error 0.
 
-## 二、不一致与计时差异的细节
+## 2. Details of the mismatches and timing differences
 
-### 细节 1：第 2 章 `05_loop_vs_vectorized.py`（仅计时不同，但影响一句论证）
+### Detail 1: Chapter 2 `05_loop_vs_vectorized.py` (timing only, but it affects one argument)
 
-单独再跑 3 次（机器 load ≈ 45）：
+I ran the script 3 more times separately (machine load ≈ 45):
 
-| | README（4 核 CPU） | 本机实测（3 次） |
+| | README (4-core CPU) | This machine (3 runs) |
 |---|---:|---:|
-| 三重循环 | 62.70 ms | 58.1 / 63.1 / 60.3 ms |
-| 每行一次 `np.dot` | 1.94 ms（32×） | 2.34 / 2.43 / 2.42 ms（25–26×） |
-| 一次 `X @ W` | 0.057 ms（1091×） | 0.038–0.039 ms（1485–1656×） |
-| 循环算梯度 | 538.99 ms | 544.7 / 550.9 / 553.0 ms |
-| 矩阵形式 | 21.73 ms（25×） | 10.5 / 11.0 / 11.1 ms（50–52×） |
-| 参数最大差 | 3.6e-15 | 3.6e-15 |
+| Three nested loops | 62.70 ms | 58.1 / 63.1 / 60.3 ms |
+| One `np.dot` for each row | 1.94 ms (32×) | 2.34 / 2.43 / 2.42 ms (25–26×) |
+| One `X @ W` | 0.057 ms (1091×) | 0.038–0.039 ms (1485–1656×) |
+| Gradient with a loop | 538.99 ms | 544.7 / 550.9 / 553.0 ms |
+| Matrix form | 21.73 ms (25×) | 10.5 / 11.0 / 11.1 ms (50–52×) |
+| Max parameter difference | 3.6e-15 | 3.6e-15 |
 
-README 自己说明了计时随机器变化（"前向倍数在 950–1170 倍之间波动"），所以归为"仅计时不同"。但本机前向倍数 1400–1650 超出 README 给的区间，训练对比约 50 倍而不是 25 倍；正文"对比 2 只快了 25 倍，比对比 1 少得多"和引导问题 5（"为什么训练对比只快了 25 倍"）引用的是具体的 25。论证本身（50 ≪ 1500）仍然成立。**需要你决定**：是否把"25 倍"改成"几十倍"之类不依赖机器的说法。
+The README itself says that the times change with the machine ("the speedup of the forward pass changes between 950× and 1170×"). Thus I put this script in the "timing only" category. But on this machine, the forward speedup is 1400–1650×, outside the range in the README. The training comparison is about 50×, not 25×.
 
-### 细节 2：第 4 章 `04_pytorch_compare.py`（舍入级 + 计时）
+Two places quote the exact value 25. The main text says "Comparison 2 is only 25× faster, much less than comparison 1". Guided question 5 asks "why is the training comparison only 25× faster?". The argument itself (50 ≪ 1500) is still correct. **You need to decide**: change "25×" to a statement that does not depend on the machine, such as "tens of times"?
 
-| 参数 | README 最大差 | 实测 |
+### Detail 2: Chapter 4 `04_pytorch_compare.py` (rounding level + timing)
+
+| Parameter | README max difference | This run |
 |---|---:|---:|
 | 0.weight | 8.3e-17 | 5.6e-17 |
 | 0.bias | 3.1e-17 | 2.2e-17 |
@@ -75,17 +79,17 @@ README 自己说明了计时随机器变化（"前向倍数在 950–1170 倍之
 | 2.bias | 7.5e-17 | 7.1e-17 |
 | 4.weight | 4.2e-17 | 1.1e-16 |
 | 4.bias | 5.6e-17 | 1.4e-17 |
-| 97 个参数最大 | 8.3e-17 | 1.1e-16 |
+| Max over all 97 parameters | 8.3e-17 | 1.1e-16 |
 
-初始损失 0.716258950201、500 步后 0.0093662407、gradcheck True、VJP True 全部一致。速度表：20 样本 47.0 ms / 0.257 ms（183×），200 样本 472.4 ms / 0.294 ms（1608×）；README 为 43.7 / 0.355（约 120×）、775.3 / 0.414（约 1900×）。计时差异属预期；README 里"样本数翻 10 倍，标量引擎的时间几乎跟着翻了 10 多倍"本机是约 10 倍。
+These values all match: the initial loss 0.716258950201, the loss 0.0093662407 after 500 steps, gradcheck True, and VJP True. Speed table in this run: 20 samples 47.0 ms / 0.257 ms (183×), 200 samples 472.4 ms / 0.294 ms (1608×). The README has 43.7 / 0.355 (about 120×) and 775.3 / 0.414 (about 1900×). Timing differences are expected. The README says "when the number of samples increases 10 times, the time of the scalar engine increases by a little more than 10 times". On this machine, the increase was about 10 times.
 
-原因判断：都是双精度 1e-16 量级的舍入差，来自 PyTorch 双精度内核在不同 CPU 指令集（本机 AVX2，无 AVX-512）上的求和顺序不同。第 3 章 03/04、第 5 章 05 的舍入级差异同理。
+Probable cause: all of these are double-precision rounding differences of magnitude 1e-16. The PyTorch double-precision kernels add the numbers in a different order on different CPU instruction sets (this machine: AVX2, no AVX-512). The same cause applies to the rounding-level differences in Chapter 3 (03/04) and Chapter 5 (05).
 
-### 细节 3：第 5 章 `03_train_classifier.py` 对照 3（影响正文论证）
+### Detail 3: Chapter 5 `03_train_classifier.py`, comparison 3 (it affects an argument in the main text)
 
-README 第 5 节表格与本机输出（输出层 std = 10，lr = 1.0）：
+The table in Section 5 of the README and the output of this machine (output-layer std = 10, lr = 1.0):
 
-| 步数 | CE 准确率（README / 实测） | MSE 准确率（README / 实测） |
+| Step | CE accuracy (README / this run) | MSE accuracy (README / this run) |
 |---:|---:|---:|
 | 0 | 30.7% / 30.7% | 30.7% / 30.7% |
 | 100 | 85.7% / 85.7% | **65.3% / 53.3%** |
@@ -93,70 +97,81 @@ README 第 5 节表格与本机输出（输出层 std = 10，lr = 1.0）：
 | 800 | 98.0% / 98.0% | **66.0% / 99.3%** |
 | 1000 | 99.0% / 99.0% | **95.3% / 99.3%** |
 | 3000 | 99.3% / 99.3% | **99.3% / 99.0%** |
-| 500 步时 p(正确) < 1% 的样本 | 0 / 0 | **103 / 7** |
+| Samples with p(correct) < 1% at step 500 | 0 / 0 | **103 / 7** |
 
-CE 列逐位一致；MSE 列完全不同。README 的"MSE 版在 65% 附近卡了七八百步""MSE 版有 103 个样本自信地错着"在本机上不成立：本机 MSE 版 500 步就到 96.7%，800 步反而比 CE 版高。
+The CE column matches digit for digit, but the MSE column is completely different. On this machine, two statements in the README are not true. The first is "the MSE version was stuck near 65% for 700 to 800 steps". The second is "the MSE version has 103 samples that are confidently wrong". In this run, the MSE version reached 96.7% at step 500. At step 800, it was even higher than the CE version.
 
-排查：
+Investigation:
 
-- 换 OpenBLAS 线程数（1 / 4 / 默认 128）：结果不变（本机上是确定性的）。
-- 关掉 NumPy 的 AVX2/FMA3 SIMD（`NPY_DISABLE_CPU_FEATURES`）：结果不变。
-- 换 OpenBLAS 内核（`OPENBLAS_CORETYPE=Prescott`）：MSE 轨迹再次大变（100 步 94.0%，500 步 97.0%，800 步 98.7%，500 步时 < 1% 的样本 3 个）；`Haswell` 内核与默认相同。
+- Change the number of OpenBLAS threads (1 / 4 / default 128): the result did not change (the run is deterministic on this machine).
+- Turn off the AVX2/FMA3 SIMD of NumPy (`NPY_DISABLE_CPU_FEATURES`): the result did not change.
+- Change the OpenBLAS kernel (`OPENBLAS_CORETYPE=Prescott`): the MSE trajectory changed much again (step 100: 94.0%, step 500: 97.0%, step 800: 98.7%; 3 samples below 1% at step 500). The `Haswell` kernel gave the same result as the default.
 
-结论：这条 MSE 训练轨迹对矩阵乘法的舍入极其敏感（logits 很大时 MSE 的梯度被 softmax 的饱和压到很小，微小的舍入差就能决定哪些样本先"翻过来"）。README 的数字多半是在另一种 CPU / BLAS 内核上得到的，不是代码 bug。但**正文用它支撑的"MSE 卡住七八百步"这个具体现象不可复现**；视频 `video/script.md` 事实 F8 和分镜里也写着"65%、103 个"（`scenes.py` 是从代码实时算曲线的，所以画面曲线会和旁白对不上）。第 5 节第 4 部分那张"CE vs MSE 梯度大小"表（纯公式、无训练）完全一致，"MSE 在自信地错时梯度消失"这个核心论点本身没问题。
+Conclusion: this MSE training trajectory is extremely sensitive to the rounding in matrix multiplication. When the logits are large, softmax saturation makes the MSE gradient very small. Then very small rounding differences can decide which samples "flip" first. The README numbers probably come from a different CPU or BLAS kernel. This is not a code bug.
 
-**需要你决定**：是否换一个在不同 BLAS 内核下都稳的演示（例如多个种子取中位数、或把 out_std / 学习率调到 MSE 稳定卡住的区间），并同步 README 和视频旁白。我没有改任何文件。
+But **the specific effect that the main text uses as support, "MSE is stuck for 700 to 800 steps", cannot be reproduced**. The video also has "65%, 103 samples", in fact F8 of `video/script.md` and in the storyboard. (`scenes.py` calculates the curves from the code during the render. Thus the curves on the screen will not agree with the narration.) The table "gradient size of CE vs MSE" in Section 5, part 4 uses only formulas and no training, and it agrees completely. The core argument, "the MSE gradient vanishes when the model is confidently wrong", is still correct.
 
-### 细节 4：第 6 章 `06_ablation.py`、`07_schedule_experiments.py`、`08_pytorch_version.py`（float32 漂移）
+**You need to decide**: replace the demo with one that is stable with all BLAS kernels? For example, use the median of several seeds, or set out_std / the learning rate to a range where MSE is stuck reliably. Then update the README and the video narration to agree. I did not change any file.
 
-这三个脚本用 PyTorch float32、单线程训练。数值与 README 小幅不同，个别地方改变了正文的结论标签。
+### Detail 4: Chapter 6 `06_ablation.py`, `07_schedule_experiments.py`, `08_pytorch_version.py` (float32 drift)
 
-`06_ablation.py`（README → 实测）：
+These three scripts train with PyTorch float32 on a single thread. The values differ a little from the README. In a few places, the difference changes a result label in the main text.
 
-| 配置 | 验证损失 | 准确率 | 结论 / 三个学习率 |
+`06_ablation.py` (README → this run):
+
+| Configuration | Validation loss | Accuracy | Result / three learning rates |
 |---|---|---|---|
-| A | nan → nan | | 一致 |
-| B + Kaiming | **1.931 → 2.035** | **0.279 → 0.168** | **"学得很慢" → "没学会"**；2.301/2.095/1.931 → 2.301/2.093/2.035 |
-| C + 残差 | 0.821 → 0.822 | 0.705 → 0.703 | 0.823/0.821/nan → 0.823/0.822/nan |
+| A | nan → nan | | Same |
+| B + Kaiming | **1.931 → 2.035** | **0.279 → 0.168** | **"learns slowly" → "did not learn"**; 2.301/2.095/1.931 → 2.301/2.093/2.035 |
+| C + residual | 0.821 → 0.822 | 0.705 → 0.703 | 0.823/0.821/nan → 0.823/0.822/nan |
 | D + RMSNorm | 0.811 → 0.811 | 0.700 → 0.697 | 0.838/0.814/0.811 → 0.838/0.815/0.811 |
 | E AdamW | 0.807 → 0.806 | 0.697 → 0.700 | |
-| F + 余弦 | 0.775 → 0.774 | 0.711 → 0.710 | |
-| G 全套 | 0.775 → 0.775 | 0.708 → 0.709 | |
-| 去掉残差 | **1.462 → 1.310** | 0.515 → 0.560 | 结论同为"学得很慢" |
-| 去掉 RMSNorm | 0.747 → 0.744 | 0.726 → 0.726 | |
+| F + cosine | 0.775 → 0.774 | 0.711 → 0.710 | |
+| G full set | 0.775 → 0.775 | 0.708 → 0.709 | |
+| No residual | **1.462 → 1.310** | 0.515 → 0.560 | Same result in both: "learns slowly" |
+| No RMSNorm | 0.747 → 0.744 | 0.726 → 0.726 | |
 | std = 1 | 0.825 → 0.825 | 0.697 → 0.697 | |
-| 恒定学习率 | 0.803 → 0.802 | 0.704 → 0.701 | |
+| Constant learning rate | 0.803 → 0.802 | 0.704 → 0.701 | |
 
-`07_schedule_experiments.py`（README → 实测）：cosine 0.775 → 0.775；WSD 0.769 → 0.770；const 0.806 → 0.808。WSD 分叉：500 步 0.887→0.801（余弦 0.796）→ 实测 0.885→0.801（0.796）；900 步 0.806→0.755（0.760）→ 实测 0.808→0.756（0.761）。压力测试：全套 2.723 / 0.892 → 2.723 / 0.886；去掉 warmup 6.178 / 0.890 → 6.178 / 0.888；**去掉 RMSNorm 1.1×10¹⁰ / 0.991 → 2.4×10¹² / 0.999**。梯度裁剪：开/开 1.1, 1.096, 0.776 → 1.1, 1.095, 0.776；开/关 1.096 → 1.094；**关/开 95.9, 1.118, 0.747 → 106.5, 1.099, 0.747**；关/关 105.9, 1.977, 0.773 → 107.1, 2.000, 0.770。
+`07_schedule_experiments.py` (README → this run):
 
-`08_pytorch_version.py`（README → 实测）：float64 逐步最大差 8.9e-16 → 4.4e-16（舍入级）；**float32 逐步最大差 1.3e-2 → 3.1e-4**，第 200 步 0.8676 / 0.8659 → 0.8659 / 0.8660；**std = 0.02 全套 800 步：余弦 0.80028、WSD 0.80029 → 0.80101、0.79763**。
+- Schedules: cosine 0.775 → 0.775; WSD 0.769 → 0.770; const 0.806 → 0.808.
+- WSD branches: at 500 steps, 0.887→0.801 (cosine 0.796) → this run 0.885→0.801 (0.796). At 900 steps, 0.806→0.755 (0.760) → this run 0.808→0.756 (0.761).
+- Stress test: full set 2.723 / 0.892 → 2.723 / 0.886; no warmup 6.178 / 0.890 → 6.178 / 0.888; **no RMSNorm 1.1×10¹⁰ / 0.991 → 2.4×10¹² / 0.999**.
+- Gradient clipping (RMSNorm / clipping): on/on 1.1, 1.096, 0.776 → 1.1, 1.095, 0.776; on/off 1.096 → 1.094; **off/on 95.9, 1.118, 0.747 → 106.5, 1.099, 0.747**; off/off 105.9, 1.977, 0.773 → 107.1, 2.000, 0.770.
 
-原因判断：float32 训练会放大每步 1e-7 量级的舍入差，而舍入差取决于 PyTorch 选的 CPU 内核。验证：同一台机器上设 `ATEN_CPU_CAPABILITY=default`（关掉向量化内核）再跑 `08`，float32 对拍差变成 2.4e-07，最终验证损失变成 0.80282 / 0.79997——又是另一组数。README 第 8 节自己就写了"固定随机种子可复现只在同一台机器、同一套代码上成立"，所以这不是 bug。
+`08_pytorch_version.py` (README → this run):
 
-受影响的正文句子（**需要你决定**是否改成对机器不敏感的说法）：
+- float64 max loss difference per step: 8.9e-16 → 4.4e-16 (rounding level).
+- **float32 max loss difference per step: 1.3e-2 → 3.1e-4**. At step 200: 0.8676 / 0.8659 → 0.8659 / 0.8660.
+- **Full set with std = 0.02, 800 steps: cosine 0.80028, WSD 0.80029 → 0.80101, 0.79763**.
 
-- 第 8 节表格 B 行"1.931 / 学得很慢"，以及"最好的也只到 1.931""验证损失直接从 1.931 降到 0.821"；第 9 节小结表"验证损失 1.931 → 0.821"。本机 B 行越过了 2.0 的"没学会"阈值。
-- "全套里只拿掉残差，就退回 1.462"（本机 1.310）。
-- 第 7 节"裁剪后只到 1.118"、小结表"1.977 → 1.118"（本机 2.000 → 1.099）。
-- 第 8 节"损失尖峰高达 10¹⁰"、小结表"尖峰从 10¹⁰ 降到 2.7"（本机 2.4×10¹²）。
-- "从极简到生产级"里"200 步后差到 10⁻²"（本机 3×10⁻⁴）和"余弦和 WSD 分别是 0.80028 和 0.80029，碰巧几乎相同"（本机 0.80101 / 0.79763，差 0.003）。
+Probable cause: float32 training makes the rounding differences of about 1e-7 per step larger. The rounding differences depend on the CPU kernels that PyTorch selects. Verification: on the same machine, I set `ATEN_CPU_CAPABILITY=default` (this turns off the vectorized kernels) and ran `08` again. The float32 parity-check difference became 2.4e-07. The final validation losses became 0.80282 / 0.79997, which is a third set of numbers. Section 8 of the README itself says that "a fixed random seed makes the results reproducible only on the same machine with the same code". Thus this is not a bug.
 
-定性结论（残差影响最大、RMSNorm 带来稳健、衰减有提升、裁剪压住尖峰）在本机全部成立。
+These sentences in the main text are affected (**you need to decide** whether to change them to statements that do not depend on the machine):
 
-### 其他观察（不影响数字）
+- Row B of the table in Section 8 ("1.931 / learns slowly"), "the best result is only 1.931", and "the validation loss decreases directly from 1.931 to 0.821". The summary table in Section 9: "validation loss 1.931 → 0.821". On this machine, row B is above the threshold of 2.0 for "did not learn".
+- "If we remove only the residual connections from the full set, the loss goes back to 1.462" (this machine: 1.310).
+- Section 7: "with clipping, it goes only to 1.118". The summary table: "1.977 → 1.118" (this machine: 2.000 → 1.099).
+- Section 8: "the loss spike goes as high as 10¹⁰". The summary table: "the spike decreases from 10¹⁰ to 2.7" (this machine: 2.4×10¹²).
+- In "From minimal code to production code": "after 200 steps, the difference grows to 10⁻²" (this machine: 3×10⁻⁴). Also "the validation losses of cosine and WSD are 0.80028 and 0.80029, almost the same by chance" (this machine: 0.80101 / 0.79763, a difference of 0.003).
 
-- `chapters/01-*/code/03_pytorch_version.py`、`chapters/02-*/code/06_pytorch_version.py`、`chapters/03-*/code/04_pytorch_version.py` 没有 `torch.set_num_threads(1)`（`docs/CHAPTER_GUIDE.md` 第 3 节要求加）。结果本身正确，只是和规范不符。
+All qualitative conclusions are true on this machine. Residual connections have the largest effect. RMSNorm gives robustness. The decay gives an improvement. Clipping limits the spikes.
 
-## 三、GPU 实测
+### Other observations (no effect on numbers)
 
-### 新增文件
+- `chapters/01-*/code/03_pytorch_version.py`, `chapters/02-*/code/06_pytorch_version.py`, and `chapters/03-*/code/04_pytorch_version.py` do not have `torch.set_num_threads(1)`. Section 3 of `docs/CHAPTER_GUIDE.md` requires this line. The results are correct, but these scripts do not follow the guide.
 
-- `chapters/02-from-scalar-to-matrix/code/07_gpu_matmul.py`（新脚本）：方阵乘法 `(N, N) @ (N, N)`，N = 64…8192，对比 CPU float32（8 线程）、GPU float32（关 TF32）、GPU BF16 的耗时与 TFLOPS。预热后取中位数，GPU 每次 `torch.cuda.synchronize()`；每个规模都做了 CPU / GPU / BF16 对拍（assert）。无 CUDA 时打印规定提示并 `exit 0`（已用 `CUDA_VISIBLE_DEVICES=` 验证）。`ruff check` 通过。单次运行墙钟约 22 s。
-- `chapters/02-from-scalar-to-matrix/README.md`：在 `## 从极简到生产级` 紧前面新增 `## GPU 实测（单张 RTX 3090）` 一节（只增 25 行，没有改动原有内容）。表格数字逐字取自最终版本的第一次运行（`scratchpad/ch01-06/gpu/final_run.out`）。
+## 3. GPU measurements
 
-最终版本两次运行（同一次持锁内连续跑）：
+### New files
 
-| N | 运行 1：CPU / GPU fp32 / 倍数 / BF16 TFLOPS | 运行 2：CPU / GPU fp32 / 倍数 / BF16 TFLOPS |
+- `chapters/02-from-scalar-to-matrix/code/07_gpu_matmul.py` (new script): square matrix multiplication `(N, N) @ (N, N)`, N = 64…8192. It compares the time and the TFLOPS of CPU float32 (8 threads), GPU float32 (TF32 off), and GPU BF16. It takes the median after a warmup, and it calls `torch.cuda.synchronize()` for each GPU run. For each size, it does a CPU / GPU / BF16 parity check (assert). Without CUDA, it prints the required message and calls `exit 0` (verified with `CUDA_VISIBLE_DEVICES=`). `ruff check` passes. One run takes about 22 s of wall-clock time.
+- `chapters/02-from-scalar-to-matrix/README.md`: a new section `## GPU measurements (one RTX 3090)`, directly before `## From minimal code to production code`. I only added 25 lines and did not change the existing content. The numbers in the table come exactly from the first run of the final version (`scratchpad/ch01-06/gpu/final_run.out`).
+
+Two runs of the final version (one after the other, while the script held the lock one time):
+
+| N | Run 1: CPU / GPU fp32 / speedup / BF16 TFLOPS | Run 2: CPU / GPU fp32 / speedup / BF16 TFLOPS |
 |---:|---|---|
 | 64 | 0.014 / 0.024 ms / 0.60× / 0.02 | 0.014 / 0.022 ms / 0.63× / 0.02 |
 | 128 | 0.025 / 0.039 ms / 0.63× / 0.18 | 0.023 / 0.023 ms / 0.99× / 0.18 |
@@ -167,29 +182,33 @@ CE 列逐位一致；MSE 列完全不同。README 的"MSE 版在 65% 附近卡�
 | 4096 | 310.0 / 8.138 ms / 38.10× / 51.60 | 289.5 / 8.126 ms / 35.62× / 49.14 |
 | 8192 | 2.40 s / 63.96 ms / 37.54× / 50.62 | 2.41 s / 63.66 ms / 37.84× / 51.15 |
 
-N ≥ 512 时两次高度一致；N ≤ 256 的小矩阵受 CPU 负载（共享服务器）和启动开销抖动影响，倍数在 0.6–1.0×（N=128）、2.9–6.9×（N=256）之间。"小矩阵 GPU 更慢、大矩阵快几十倍"的结论两次都成立。
+For N ≥ 512, the two runs agree closely. For the small matrices (N ≤ 256), the CPU load (shared server) and the variation of the launch overhead have an effect. The speedup is between 0.6× and 1.0× for N=128, and between 2.9× and 6.9× for N=256. The conclusion "the GPU is slower for small matrices, and tens of times faster for large matrices" is true in both runs.
 
-早先一个版本还有"第 8 节对比 1 那次前向 (1000,100)@(100,10) 搬上 GPU"的第二部分。已删掉，原因是 torch CPU 8 线程在这个细长形状上要 0.11 ms，比正文 NumPy 的 0.04–0.06 ms 慢，放在一起会误导读者。
+An earlier version had a second part: "move the forward pass (1000,100)@(100,10) of comparison 1 in Section 8 to the GPU". I removed this part. On this long, thin shape, torch on the CPU with 8 threads needs 0.11 ms. This is slower than the 0.04–0.06 ms of NumPy in the main text. The two results together would mislead the reader.
 
-### 重要发现：GPU0 的功耗上限是 240 W（出厂默认 350 W）
+### Important finding: the power limit of GPU0 is 240 W (factory default: 350 W)
 
-`nvidia-smi -i 0`：`power.limit 240 W, power.default_limit 350 W, clocks.max.sm 2100 MHz`。探针（`scratchpad/ch01-06/probe/clock_probe.py`）连续跑约 4 s 大矩阵乘：
+`nvidia-smi -i 0` gives `power.limit 240 W, power.default_limit 350 W, clocks.max.sm 2100 MHz`. A probe (`scratchpad/ch01-06/probe/clock_probe.py`) ran large matrix multiplications continuously for about 4 s:
 
-| 负载 | 持续 TFLOPS | 采样的 SM 频率 / 功耗 |
+| Load | Sustained TFLOPS | Sampled SM clock / power |
 |---|---:|---|
 | 2048 float32 | 13.0 | 810–960 MHz / 225–239 W |
 | 8192 float32 | 15.6 | 960–1020 MHz / 182–240 W |
 | 8192 BF16 | 47.4 | 1200–1470 MHz / 158–238 W |
 
-所以在这张卡上，持续满载时功耗顶在 240 W，频率只有空闲 boost（约 1.7 GHz）的一半多。基准脚本里 2048 比 4096/8192 快，是因为它每轮只有十几毫秒，还跑在 boost 频率上。**这会影响所有章节 GPU 实测的绝对数字**（尤其是持续几秒以上的计时），建议主流程在各章 GPU 小节或汇总里统一说明，或者决定是否把功耗上限恢复到 350 W 后重测。我没有改动任何 GPU 设置。第 2 章 README 的新小节已写明这一点。
+Thus, on this card, the power stays at the 240 W limit under sustained full load. The clock is then only a little more than half of the idle boost clock (about 1.7 GHz). In the benchmark script, 2048 is faster than 4096/8192 because each round takes only slightly more than 10 ms. Thus it still runs at the boost clock.
 
-### 其他章节：没有新增 GPU 脚本
+**This affects the absolute numbers of all GPU measurements in all chapters**, mainly the timings that last more than a few seconds. I recommend that the main workflow state this one time, in the GPU section of each chapter or in the summary. Alternatively, decide whether to set the power limit back to 350 W and measure again. I did not change any GPU setting. The new section in the Chapter 2 README already states this.
 
-第 1、3–6 章的脚本都是几十到几万参数的 NumPy / 单线程 PyTorch 小例子，正文讨论的是数值和收敛，不是速度。放到 GPU 上只会重复第 2 章"小矩阵 GPU 更慢"的结论，所以按"宁缺毋滥"没有加。考虑过但放弃的候选：第 5 章"从极简到生产级"里"autocast 会把 cross_entropy 提升到 float32"的说法可以在 CUDA 上验证，但它不在速读正文里，也不改变讲解，没做。
+### Other chapters: no new GPU scripts
 
-## 四、需要决定的事
+The scripts of Chapters 1 and 3–6 are small NumPy / single-thread PyTorch examples, with tens to tens of thousands of parameters. The main text discusses values and convergence, not speed. On a GPU, these scripts would only repeat the conclusion of Chapter 2: "the GPU is slower for small matrices". A script that adds nothing is worse than no script, so I did not add any.
 
-1. 第 5 章 03 对照 3 的"MSE 卡在 65% 七八百步 / 103 个样本"不可复现，而且对 BLAS 内核极敏感（细节 3）。README 第 5 节和视频（`video/script.md` 事实 F8、分镜 S09 的画面与旁白"在百分之六十五附近躺了七八百步……一百零三个样本"）是否要换成更稳的演示？
-2. 第 6 章 06/07/08 的 float32 数字随 CPU 内核漂移，B 行结论跨过了"没学会"阈值（细节 4）。是否改成对机器不敏感的写法，或者注明"本机数字"？
-3. 第 2 章正文和引导问题 5 里的"训练对比快 25 倍"，本机约 50 倍（细节 1）。
-4. GPU0 功耗上限 240 W，影响所有 GPU 实测的绝对值（见上）。
+One candidate that I considered and rejected: in Chapter 5, "From minimal code to production code" says that "autocast promotes cross_entropy to float32". This statement can be verified on CUDA. But it is not in the quick-read text, and it does not change the explanation. Thus I did not do it.
+
+## 4. Decisions needed
+
+1. Chapter 5, 03, comparison 3: "MSE is stuck at 65% for 700 to 800 steps / 103 samples" cannot be reproduced. It is also extremely sensitive to the BLAS kernel (detail 3). Replace it with a more stable demo in Section 5 of the README and in the video? In the video, it is in fact F8 of `video/script.md`. It is also in the screen and the narration of storyboard S09: "在百分之六十五附近躺了七八百步……一百零三个样本" ("lay near sixty-five percent for seven or eight hundred steps … one hundred and three samples").
+2. The float32 numbers of Chapter 6 (06/07/08) drift with the CPU kernel. The result of row B crosses the "did not learn" threshold (detail 4). Change the text to statements that do not depend on the machine, or mark the numbers as "numbers from this machine"?
+3. Chapter 2, main text and Guided question 5: "the training comparison is 25× faster". On this machine, it is about 50× (detail 1).
+4. The power limit of GPU0 is 240 W. This affects the absolute values of all GPU measurements (see above).

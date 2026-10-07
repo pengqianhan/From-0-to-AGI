@@ -1,1 +1,2 @@
-"""From 0 to AGI 的视频工具：统一视觉语言、离线旁白合成、分镜对齐渲染、字幕与交付检查。"""
+"""Video tools for From 0 to AGI: one visual language, offline narration synthesis,
+rendering aligned to the shots, subtitles, and a delivery check."""

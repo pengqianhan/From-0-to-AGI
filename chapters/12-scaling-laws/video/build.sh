@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# 渲染第 12 章视频。加 --preview 渲染 480p 样片。
-# 画面里的迷你阶梯数据来自 out/ch12/*.json（由 code/03、04、06 生成；没有缓存时会先训练，单线程约 20 分钟）。
+# Render the video of Chapter 12. Add --preview to render a 480p sample.
+# The mini-ladder data in the frames comes from out/ch12/*.json (made by code/03, 04, 06).
+# If there is no cache, the build trains first (about 20 min on one thread).
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 uv run --extra video python -m video_kit.build "chapters/12-scaling-laws" "$@"

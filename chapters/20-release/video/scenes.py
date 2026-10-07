@@ -1,12 +1,18 @@
-"""第 20 章视频：发布 —— 按预注册交卷，把模型装进笔记本
+"""Video for Chapter 20: release.
 
-画面里的数字来源（见 script.md 事实清单）：
-- 量化误差、第一块的数值、小模型的 loss 表、内存计算：由 ../code/ 的脚本真实计算，缓存在 video/out/cache.json；
-- 判定表、导出结果：读 video/data/smoke_before_fix.json——修复工具调用判分器之前那次冒烟测试
-  （`uv run python -m zero.smoke`，极小配置演示）的真实输出，与 README 第 1.3 节同一次运行；
-  重跑冒烟测试会覆盖 out/smoke（修复后四行都是"持平"），所以冻结在这里，来源写在 json 里；
-- llama.cpp 对拍结果：本章写作时实测（README"从极简到生产级"一节），在下方 LLAMA_CHECK 里原样记录。
-渲染：bash chapters/20-release/video/build.sh
+Hand in the exam as preregistered, and put the model on a laptop.
+
+Sources of the numbers on screen (see the fact list in script.md):
+- Quantization error, values of the first block, loss table of the small model, memory calculation:
+  the scripts in ../code/ calculate them. The cache video/out/cache.json keeps the results.
+- Decision table, export results: we read video/data/smoke_before_fix.json. This file is the real output
+  of the smoke test before the fix of the tool-call grader (`uv run python -m zero.smoke`,
+  tiny-configuration demo). It is the same run as in README Section 1.3.
+  A new smoke test overwrites out/smoke (after the fix, all 4 rows are "tie").
+  Thus we freeze the output here. The json file gives the source.
+- Parity check with llama.cpp: we measured it when we wrote this chapter (README section
+  "From minimal code to production code"). LLAMA_CHECK below keeps the result without changes.
+Render: bash chapters/20-release/video/build.sh
 """
 
 from __future__ import annotations
@@ -48,7 +54,8 @@ CODE = HERE.parent / "code"
 CACHE = HERE / "out" / "cache.json"
 MONO = "Noto Sans Mono"
 
-# 本章写作时用 out/smoke/gguf 与 llama.cpp（commit 81bc6b8）实测的结果（README 有完整记录）
+# Result that we measured with out/smoke/gguf and llama.cpp (commit 81bc6b8)
+# when we wrote this chapter. The README has the full record.
 LLAMA_CHECK = {
     "prompt": "3 * (4 + 5) 等于多少？",
     "n_ids": 20,
@@ -135,7 +142,7 @@ class ChapterScene(NarratedScene):
         items = list(mobs) + ([badge] if badge is not None else [])
         self.play(*[FadeOut(m) for m in items], run_time=self.fit(0.6))
 
-    # ── S01 片头 ─────────────────────────────────────────────────────────
+    # ── S01 Opening ──────────────────────────────────────────────────────
     def s01(self):
         with self.shot("S01"):
             card = self.chapter_card()
@@ -145,7 +152,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.8))
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-    # ── S02 流水线 ───────────────────────────────────────────────────────
+    # ── S02 Pipeline ─────────────────────────────────────────────────────
     def s02(self):
         with self.shot("S02"):
             self.play(*self.set_heading("从 checkpoint 到笔记本"), run_time=self.fit(0.8))
@@ -170,7 +177,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.clear_all(boxes, arrows, ev, card, a1, a2)
 
-    # ── S03 闸门三 ───────────────────────────────────────────────────────
+    # ── S03 Gate 3 ───────────────────────────────────────────────────────
     def s03(self):
         with self.shot("S03"):
             self.play(*self.set_heading("闸门 3：照着考卷跑，一个字不改"), run_time=self.fit(0.8))
@@ -187,7 +194,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(VGroup(stamp, stamp_box), scale=1.4), run_time=self.fit(0.6))
             self.wait(self.remaining() * 0.25)
 
-            x0, scale = 2.4, 9.0  # 数轴：差值 d → x
+            x0, scale = 2.4, 9.0  # Number line: difference d → x
             axis = Line([-0.3, -1.9, 0], [6.8, -1.9, 0], color=theme.MUTED)
             zero = DashedLine([x0, 2.0, 0], [x0, -1.9, 0], color=theme.FG)
             zlab = MathTex("0", font_size=34).next_to(zero, DOWN, 0.1)
@@ -202,7 +209,7 @@ class ChapterScene(NarratedScene):
                 ends = VGroup(*[Line([x0 + v * scale, y - 0.15, 0], [x0 + v * scale, y + 0.15, 0],
                                      color=col, stroke_width=4) for v in (lo, hi)])
                 lab = zh(text, 22, col).next_to(seg, UP, 0.12)
-                if lo < 0 < hi:  # 跨过 0 的区间：标签放右边，别压在 0 线上
+                if lo < 0 < hi:  # The interval crosses 0: put the label on the right, off the 0 line
                     lab.next_to(seg, RIGHT, 0.2)
                 objs.add(VGroup(seg, ends, lab))
                 self.play(Create(seg), FadeIn(ends), FadeIn(lab), run_time=self.fit(0.8))
@@ -211,7 +218,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.clear_all(card, stamp, stamp_box, axis, zero, zlab, objs, note)
 
-    # ── S04 判定表（极小配置演示）────────────────────────────────────────
+    # ── S04 Decision table (tiny-configuration demo) ─────────────────────
     def s04(self):
         with self.shot("S04"):
             self.play(*self.set_heading("一张判定表：全部列出"), run_time=self.fit(0.8))
@@ -248,7 +255,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.clear_all(hdr, rule, rows, hl, hl2, msg, badge=badge)
 
-    # ── S05 标准格式 ─────────────────────────────────────────────────────
+    # ── S05 Standard format ──────────────────────────────────────────────
     def s05(self):
         with self.shot("S05"):
             self.play(*self.set_heading("标准格式：别人的工具直接能用"), run_time=self.fit(0.8))
@@ -283,7 +290,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.clear_all(frame, rows, fws, arrs, proof, badge=badge)
 
-    # ── S06 内存 = 参数 × bit ────────────────────────────────────────────
+    # ── S06 Memory = parameters × bits ───────────────────────────────────
     def s06(self):
         with self.shot("S06"):
             self.play(*self.set_heading("内存 ≈ 参数量 × bit 数"), run_time=self.fit(0.8))
@@ -318,7 +325,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.clear_all(f, n, bars)
 
-    # ── S07 分块量化 ─────────────────────────────────────────────────────
+    # ── S07 Block-wise quantization ──────────────────────────────────────
     def s07(self):
         with self.shot("S07"):
             self.play(*self.set_heading("分块量化：每 32 个数一个 scale"), run_time=self.fit(0.8))
@@ -365,7 +372,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.clear_all(cells, blab, sc, eqs, r_w, r8, r4, zeros, note)
 
-    # ── S08 为什么分块 ───────────────────────────────────────────────────
+    # ── S08 Why blocks ───────────────────────────────────────────────────
     def s08(self):
         with self.shot("S08"):
             self.play(*self.set_heading("为什么分块：一个离群值撑大整组 scale"), run_time=self.fit(0.8))
@@ -399,7 +406,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.clear_all(cap, bars, note)
 
-    # ── S09 GGUF 的块 ────────────────────────────────────────────────────
+    # ── S09 The blocks of GGUF ───────────────────────────────────────────
     def s09(self):
         with self.shot("S09"):
             self.play(*self.set_heading("GGUF 的块：Q8_0 与 Q4_K"), run_time=self.fit(0.8))
@@ -437,7 +444,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.clear_all(q8, q4, m, chk)
 
-    # ── S10 质量换大小 ───────────────────────────────────────────────────
+    # ── S10 Trade quality for size ───────────────────────────────────────
     def s10(self):
         with self.shot("S10"):
             self.play(*self.set_heading("质量换大小：在小模型上量一量"), run_time=self.fit(0.8))
@@ -464,7 +471,8 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(cap), FadeIn(hdr), run_time=self.fit(0.6))
             self.play(LaggedStart(*[FadeIn(t) for t in tbl], lag_ratio=0.25),
                       run_time=self.fit(2.0))
-            # 纵轴上限随数据走：INT2 的 Δloss 在不同机器上训练出的底座上是 0.51–0.58
+            # The data sets the top of the y-axis. The INT2 Δloss is 0.51–0.58
+            # on base models that different machines trained.
             top = max(0.55, max(r["loss"] for r in D["tiny"]) - ref + 0.08)
             ax = Axes(x_range=[2, 8, 1], y_range=[0, top, 0.1], x_length=4.6, y_length=3.2,
                       axis_config={"color": theme.MUTED, "include_numbers": True,
@@ -487,7 +495,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.clear_all(cap, hdr, tbl, ax, xl, yl, dots, line, ref8b)
 
-    # ── S11 对拍 ─────────────────────────────────────────────────────────
+    # ── S11 Parity check ─────────────────────────────────────────────────
     def s11(self):
         with self.shot("S11"):
             self.play(*self.set_heading("对拍：导出的还是同一个模型吗"), run_time=self.fit(0.8))
@@ -517,7 +525,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.clear_all(top, sub, rows, note, badge=badge)
 
-    # ── S12 本地运行与 demo ──────────────────────────────────────────────
+    # ── S12 Run locally and demo ─────────────────────────────────────────
     def s12(self):
         with self.shot("S12"):
             self.play(*self.set_heading("本地运行：笔记本与服务器"), run_time=self.fit(0.8))
@@ -551,7 +559,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.clear_all(lap, srv, term, side, badge=badge)
 
-    # ── S13 模型卡与许可证 ───────────────────────────────────────────────
+    # ── S13 Model card and license ───────────────────────────────────────
     def s13(self):
         with self.shot("S13"):
             self.play(*self.set_heading("模型卡与许可证"), run_time=self.fit(0.8))
@@ -583,7 +591,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.clear_all(left, lic, ck)
 
-    # ── S14 发布之后 ─────────────────────────────────────────────────────
+    # ── S14 After the release ────────────────────────────────────────────
     def s14(self):
         with self.shot("S14"):
             self.play(*self.set_heading("发布之后：收反馈，不夸大"), run_time=self.fit(0.8))

@@ -18,7 +18,7 @@
 - 让多张 GPU 一起工作（数据并行）。
 - 让十来天的训练出了问题也不白跑（loss spike 处理、断点续训）。
 
-> **注意：**正文的代码都在 CPU 上运行。正文里 H100 上的数字（吞吐、MFU、显存）仍是**按公式估算**的。本章新增的"GPU 实测（单张 RTX 3090）"一节在真 GPU 上测了其中几项。zero 的 GPU 路径在单张和 2 张 RTX 3090 上的逐项验证，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md)。在 8×H100 上做一次不超过 $50 的验证运行，仍是第二步的第一件事（见"主线进度"）。
+> **注意：**正文的代码都在 CPU 上运行。正文里 H100 上的数字（吞吐、MFU、显存）仍是**按公式估算**的。本章新增的"GPU 实测（单张 RTX 3090）"一节在真 GPU 上测了其中几项。zero 的 GPU 路径在单张和 2 张 RTX 3090 上的逐项验证，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.zh.md)。在 8×H100 上做一次不超过 $50 的验证运行，仍是第二步的第一件事（见"主线进度"）。
 
 ## 1. 先算账：一步预训练要花多少
 
@@ -275,7 +275,7 @@ out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=is_
                                      enable_gqa=self.n_kv_heads != self.n_heads)
 ```
 
-SDPA 根据设备、dtype、形状自动选择后端。在 GPU 上用 BF16/FP16 时，它优先使用 FlashAttention 内核。条件不满足时，它退到 memory-efficient 后端或 math 后端。在 CPU 上，本章用保存张量的钩子做过检查。zero 的注意力只保存 q、k、v、输出和每行一个 logsumexp，没有 T × T 的矩阵。（第 2 节的激活公式就是这样数出来的。）在 GPU 上，`enable_gqa=True` 时能否使用 Flash 后端？这一点已在 RTX 3090 上验证：BF16 下默认使用 Flash（memory-efficient 后端不支持 GQA）。见"GPU 实测"一节和 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 1 节。
+SDPA 根据设备、dtype、形状自动选择后端。在 GPU 上用 BF16/FP16 时，它优先使用 FlashAttention 内核。条件不满足时，它退到 memory-efficient 后端或 math 后端。在 CPU 上，本章用保存张量的钩子做过检查。zero 的注意力只保存 q、k、v、输出和每行一个 logsumexp，没有 T × T 的矩阵。（第 2 节的激活公式就是这样数出来的。）在 GPU 上，`enable_gqa=True` 时能否使用 Flash 后端？这一点已在 RTX 3090 上验证：BF16 下默认使用 Flash（memory-efficient 后端不支持 GQA）。见"GPU 实测"一节和 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.zh.md) 第 1 节。
 
 ## 5. 数据并行：从 DDP 到 FSDP
 
@@ -550,14 +550,14 @@ T = 4096、打开检查点、加大 micro batch：2 条时每步 1,721 ms、4,76
 | `01_step_cost.py` 的公式 | `zero/model.py` 的 `estimate_flops_per_token`；`zero/tools/estimate_cost.py` | 同一个公式。估算工具带 GPU 峰值表、单价、卡数，输出卡时和费用。代码把 H100 峰值 989.5 TFLOPS 标为"待核实"。Nemotron-4 报告写的是"989 teraFLOP/s（bfloat16，不含稀疏）"，与之吻合 |
 | `05_memory.py` 数保存的张量 | **本章新增** `zero/tools/memory_calc.py`（`estimate_memory`、`max_micro_batch`，CLI） | 按 zero 的 `Block` 逐项写出每层每 token 的激活公式，支持 DDP / ZeRO-1 / ZeRO-2 / FSDP、激活检查点、BF16 / FP32；`tests/test_memory_calc.py` 保证公式与 `saved_tensors_hooks` 实测**逐字节相等** |
 | 手写 `torch.autocast` 实验 | `zero/train/trainer.py` 的 `autocast_context`：CUDA 上用 BF16 autocast，参数和优化器状态保持 FP32；`zero/model.py` 的 RMSNorm、交叉熵先转 FP32 再计算 | 单独保护精度敏感的运算；CPU 上默认 FP32 |
-| `04_tiled_attention.py` 的 Python 循环 | `zero/model.py` 的 `Attention`：`F.scaled_dot_product_attention(..., enable_gqa=...)` | 不自己写内核，由 PyTorch 选择后端。RTX 3090 上实测：BF16 + GQA 走 FlashAttention（memory-efficient 后端不支持 GQA），见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 1 节 |
+| `04_tiled_attention.py` 的 Python 循环 | `zero/model.py` 的 `Attention`：`F.scaled_dot_product_attention(..., enable_gqa=...)` | 不自己写内核，由 PyTorch 选择后端。RTX 3090 上实测：BF16 + GQA 走 FlashAttention（memory-efficient 后端不支持 GQA），见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.zh.md) 第 1 节 |
 | 手写梯度累积 | `Trainer.train`：做 `grad_accum_steps` 次前向 + 反向，损失除以累积步数；DDP 下前几个 micro batch 用 `no_sync()` | 省掉中间的梯度通信 |
-| `06_ddp_by_hand.py` 手写 all-reduce | `zero/train/dist.py`：`init_distributed`（读取 torchrun 的环境变量，GPU 用 NCCL，CPU 用 gloo）、`wrap_model`（DDP 或 FSDP2 `fully_shard`，BF16 参数 + FP32 梯度规约） | 分桶、通信与反向的重叠由 PyTorch DDP 完成。DDP 与 FSDP2 已在 2×RTX 3090（PCIe）上验证（跨卡一致性、checkpoint 聚合与续训）；8 卡与 NVLink 下的吞吐尚未实测，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 14 节 |
+| `06_ddp_by_hand.py` 手写 all-reduce | `zero/train/dist.py`：`init_distributed`（读取 torchrun 的环境变量，GPU 用 NCCL，CPU 用 gloo）、`wrap_model`（DDP 或 FSDP2 `fully_shard`，BF16 参数 + FP32 梯度规约） | 分桶、通信与反向的重叠由 PyTorch DDP 完成。DDP 与 FSDP2 已在 2×RTX 3090（PCIe）上验证（跨卡一致性、checkpoint 聚合与续训）；8 卡与 NVLink 下的吞吐尚未实测，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.zh.md) 第 14 节 |
 | 数据按进程分片 | `zero/data/loader.py` 的 `PackedDataLoader`：第 g 个全局样本分给 rank g % world_size | 保证"2 卡各 B 条"与"1 卡 2B 条"看到同一批数据，DDP 才能对拍 |
 | 第 6 章的 `clip_grad_norm_` | `Trainer.train` 每步裁剪，把梯度范数写进日志 | 梯度范数是发现尖峰的第一信号 |
 | `01_step_cost.py` 的 MFU | `Trainer._peak_flops` + 日志里的 `tok_per_s`、`mfu` | 按设备名查峰值表；CPU 上不报告 |
 | `07_resume.py` 的 `state_dict` | `zero/train/checkpoint.py`：`save_checkpoint`（model / optim / meta.json（步数、token 数、调度器、配置）/ 每个 rank 的数据位置 + 全部 RNG）；先写 `.tmp_step_xxx`，再 `os.replace`，最后原子更新 `latest`；`keep_last` 自动清理旧 checkpoint | 多进程时，每个 rank 各存一份加载器与 RNG 状态。卡数变化时，zero 拒绝精确续训（数据位置对不上） |
-| `05_memory.py` 的 `checkpoint(self.block, ...)` | `zero/model.py` 的 `Transformer.forward`：`train.activation_checkpointing = true` 时，用 `torch.utils.checkpoint` 包住每个 Block（由 `Trainer` 打开）；主线配置默认 `false` | 只在训练、且不用 KV cache 时生效；`tests/test_activation_checkpointing.py` 保证开关前后梯度一致。已在 RTX 3090 上验证（主线尺寸在 24GB 上不开检查点，连 micro batch 1 都放不下），见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 7 节；80GB 的 H100 上是否需要打开，由阶段 6 的实测决定 |
+| `05_memory.py` 的 `checkpoint(self.block, ...)` | `zero/model.py` 的 `Transformer.forward`：`train.activation_checkpointing = true` 时，用 `torch.utils.checkpoint` 包住每个 Block（由 `Trainer` 打开）；主线配置默认 `false` | 只在训练、且不用 KV cache 时生效；`tests/test_activation_checkpointing.py` 保证开关前后梯度一致。已在 RTX 3090 上验证（主线尺寸在 24GB 上不开检查点，连 micro batch 1 都放不下），见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.zh.md) 第 7 节；80GB 的 H100 上是否需要打开，由阶段 6 的实测决定 |
 | — | z-loss、跳过坏 batch | **zero 目前没有实现** |
 
 **对拍（都在 CPU 上通过）**：
@@ -578,7 +578,7 @@ uv run pytest tests/test_train_resume.py tests/test_ddp_cpu.py tests/test_memory
 
 > **注意：**以下全部是**极小配置演示**。它只说明代码能跑通、各项机制按预期生效，不代表主线模型的任何结果。
 
-> **注意：**关于数字：本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同的机器、不同版本的底层数学库，浮点运算的顺序略有不同。训练几百步后，这些微小差异会被放大。你本机跑出的数字可能从小数点后第二、三位开始就不一样。请以下文中不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照，见 [runs/2026-10-01-gpu0-check/chapters-11-15.md](../../runs/2026-10-01-gpu0-check/chapters-11-15.md)。
+> **注意：**关于数字：本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同的机器、不同版本的底层数学库，浮点运算的顺序略有不同。训练几百步后，这些微小差异会被放大。你本机跑出的数字可能从小数点后第二、三位开始就不一样。请以下文中不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照，见 [runs/2026-10-01-gpu0-check/chapters-11-15.md](../../runs/2026-10-01-gpu0-check/chapters-11-15.zh.md)。
 
 **单进程预训练**（为了不和其他章节共用输出目录，用 `--set` 换了 `out_dir`）：
 
@@ -648,7 +648,7 @@ uv run python -m zero.tools.memory_calc configs/main/pretrain.toml
 
 ### 第二步的第一件事：≤ $50 的 GPU 验证运行（GOAL.md 第 10 节阶段 6）
 
-在花大钱预训练之前，先用 8×H100 跑约 1.5 小时（约 $30，上限 $50）。这次运行逐项验证本章所有"尚未在 GPU 上验证"的路径。完整命令见 [`runs/RUNBOOK.md`](../../runs/RUNBOOK.md) 第 2 节。它和本章的对应关系如下：
+在花大钱预训练之前，先用 8×H100 跑约 1.5 小时（约 $30，上限 $50）。这次运行逐项验证本章所有"尚未在 GPU 上验证"的路径。完整命令见 [`runs/RUNBOOK.md`](../../runs/RUNBOOK.zh.md) 第 2 节。它和本章的对应关系如下：
 
 | 验证项 | 验证什么 | 对应本章 |
 |---|---|---|

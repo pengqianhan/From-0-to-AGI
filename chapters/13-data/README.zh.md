@@ -303,7 +303,7 @@ def find_contaminated(docs, eval_items, n=13):
 
 分词器的训练文本按主线配比取（英 55%、中 30%、代码 15%，共 30 MB）。训练文本不能太少。只用 12 MB 时，词表长到约 9 万，出现 2 次以上的相邻对就用完了，更大的词表根本训练不出来。
 
-下载了什么、每个来源下了多少、每个文件的 sha256，都记在 [runs/2026-10-01-vocab-corpus/](../../runs/2026-10-01-vocab-corpus/README.md) 里。语料只在本地做测量，不进仓库，也不用于训练。（这一节的第一版用的是从 GitHub 技术文档拼的语料。写书时，构建环境访问不了 Hugging Face。那一版的结果放在下面表格后面，正好用来看"同分布"的影响有多大。）
+下载了什么、每个来源下了多少、每个文件的 sha256，都记在 [runs/2026-10-01-vocab-corpus/](../../runs/2026-10-01-vocab-corpus/README.zh.md) 里。语料只在本地做测量，不进仓库，也不用于训练。（这一节的第一版用的是从 GitHub 技术文档拼的语料。写书时，构建环境访问不了 Hugging Face。那一版的结果放在下面表格后面，正好用来看"同分布"的影响有多大。）
 
 代价按主线的形状算（`configs/main/pretrain.toml`：28 层、宽 1280、共享 embedding），只换 V。参数 = 非 embedding 605.6M + V × 1280，**总量不能超过 0.8B**。每 token 的训练算力 ≈ 6 × N_matmul（包括 1280 × V 的 lm_head 矩阵乘）+ 注意力。真正要比的是**读完同样多的文本要花多少算力**：
 
@@ -549,7 +549,7 @@ print(bpb_stats(model, val, tb, steps=8).bpb)
 - Karpathy. nanochat（`nanochat/loss_eval.py` 的 `evaluate_bpb`）：<https://github.com/karpathy/nanochat>
 - Qwen3.5-0.8B 的 `tokenizer.json`（预切分正则，2026-09 读取）：<https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/tokenizer.json>
 - llama.cpp 的预切分类型 `qwen35` 与 vocab 测试文件：<https://github.com/ggml-org/llama.cpp>（`src/llama-vocab.cpp`、`models/ggml-vocab-*.gguf`）
-- 第 10 节词表测量用的语料（2026-10，主线预训练来源的样本，记录见 [runs/2026-10-01-vocab-corpus](../../runs/2026-10-01-vocab-corpus/README.md)）：[FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu)（`sample-10BT`）、[DCLM-baseline 1.0](https://huggingface.co/datasets/mlfoundations/dclm-baseline-1.0)、[FineMath](https://huggingface.co/datasets/HuggingFaceTB/finemath)（`finemath-3plus`）、[FineWeb-2](https://huggingface.co/datasets/HuggingFaceFW/fineweb-2)（`cmn_Hani`）、[Ultra-FineWeb](https://huggingface.co/datasets/openbmb/Ultra-FineWeb)（`zh`）、[UltraData-Code](https://huggingface.co/datasets/openbmb/UltraData-Code)（`UltraData-Code-L2`，MiniCPM5 的代码数据）
+- 第 10 节词表测量用的语料（2026-10，主线预训练来源的样本，记录见 [runs/2026-10-01-vocab-corpus](../../runs/2026-10-01-vocab-corpus/README.zh.md)）：[FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu)（`sample-10BT`）、[DCLM-baseline 1.0](https://huggingface.co/datasets/mlfoundations/dclm-baseline-1.0)、[FineMath](https://huggingface.co/datasets/HuggingFaceTB/finemath)（`finemath-3plus`）、[FineWeb-2](https://huggingface.co/datasets/HuggingFaceFW/fineweb-2)（`cmn_Hani`）、[Ultra-FineWeb](https://huggingface.co/datasets/openbmb/Ultra-FineWeb)（`zh`）、[UltraData-Code](https://huggingface.co/datasets/openbmb/UltraData-Code)（`UltraData-Code-L2`，MiniCPM5 的代码数据）
 - 第 10 节第一版词表测量用的语料：[d2l-ai/d2l-zh](https://github.com/d2l-ai/d2l-zh)、[d2l-ai/d2l-en](https://github.com/d2l-ai/d2l-en)、[kubernetes/website](https://github.com/kubernetes/website)（`content/{zh-cn,en}/docs`）、[Snailclimb/JavaGuide](https://github.com/Snailclimb/JavaGuide)、[CyC2018/CS-Notes](https://github.com/CyC2018/CS-Notes)、[jackfrued/Python-100-Days](https://github.com/jackfrued/Python-100-Days)、[python/cpython](https://github.com/python/cpython)（`Lib`、`Objects`、`Doc`）。只在本地做测量，不进仓库，也不用于训练
 - CS336 作业 4 仓库：<https://github.com/stanford-cs336/assignment4-data>
 

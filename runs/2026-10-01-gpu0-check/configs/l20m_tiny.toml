@@ -1,12 +1,15 @@
-# GPU0 验证用：阶梯配置 l20m 的模型形状与优化器，数据换成仓库自带的 tiny 语料（assets/tiny_corpus，
-# 词表 2048 的分词器；模型词表仍是 65,536，与真实阶梯的 logits 开销相同）。只用于验证通路与测吞吐，loss 数值没有意义。
+# For the GPU0 check: the model shape and the optimizer of the ladder configuration l20m. The data is
+# the tiny corpus that comes with the repository (assets/tiny_corpus,
+# with a tokenizer that has a vocabulary of 2048; the model vocabulary is still 65,536, so the logits cost is the same
+# as in the real ladder). Use it only to check the code paths and to measure throughput. The loss values have no meaning.
 base = "../../../configs/ladder/l20m.toml"
 
 [train]
 out_dir = "out/gpu0-check/l20m"
-micro_batch_size = 8     # 3090 24GB：阶梯默认 16 × 2048 的 FP32 logits 峰值放不下，改 8 × 累积 2（每步 token 与单卡份额相同）
+micro_batch_size = 8     # 3090 24 GB: the FP32 logits peak of the ladder default 16 × 2048 does not fit.
+                         # Use 8 × accumulation 2 (the tokens per step are the same as the share of one GPU).
 grad_accum_steps = 2
-gpu_peak_tflops = 71.0   # RTX 3090 稠密 BF16（FP32 累加）峰值；zero 的查表里没有 3090
+gpu_peak_tflops = 71.0   # RTX 3090 dense BF16 peak (FP32 accumulation); the lookup table of zero does not include the 3090
 
 [data]
 tokenizer = "out/gpu0-check/tiny/tokenizer.json"

@@ -1,8 +1,10 @@
-"""第 6 章视频：让训练稳定 —— 初始化、归一化、残差、AdamW 与学习率调度
+"""Chapter 6 video: stable training — initialization, normalization, residuals, AdamW,
+and learning-rate schedules.
 
-画面里的所有数值都由 ../code/ 中的代码真实计算（见 script.md 事实清单）。
-训练类实验（06、07、08）较慢，结果缓存到 video/out/cache.json（按代码文件内容的哈希失效）。
-渲染：bash chapters/06-training-stability/video/build.sh
+The code in ../code/ calculates all numbers in the frames (see the fact list in script.md).
+The training experiments (06, 07, 08) are slow. Their results are cached in video/out/cache.json
+(the cache becomes invalid when the hash of the code files changes).
+Render: bash chapters/06-training-stability/video/build.sh
 """
 
 from __future__ import annotations
@@ -58,7 +60,7 @@ res = _load("residual", "03_residual.py")
 opt = _load("optimizers", "04_optimizers.py")
 sch = _load("sched", "05_lr_schedule.py")
 
-# ── 快速的计算：直接跑 ──────────────────────────────────────────────────────
+# ── Fast calculations: run them directly ────────────────────────────────────
 ACT = {name: sig.layer_stats(std) for name, std in sig.INITS.items()}          # (act, grad)
 NORMED = {name: nrm.normed_layer_stats(sig.INITS[name])
           for name in ["std = 1.0", "std = 0.01", "std = 0.02", "Kaiming"]}
@@ -71,7 +73,7 @@ def steps_to(hist, thr=1e-3):
     return next((i + 1 for i, (t, _) in enumerate(hist) if opt.loss(t) < thr), None)
 
 
-# ── 慢的计算（训练）：缓存 ──────────────────────────────────────────────────
+# ── Slow calculations (training): cache them ────────────────────────────────
 CACHE = VIDEO / "out" / "cache.json"
 
 
@@ -127,9 +129,9 @@ def heavy() -> dict:
 H = heavy()
 
 
-# ── 画图小工具 ──────────────────────────────────────────────────────────────
+# ── Small plot helpers ──────────────────────────────────────────────────────
 def sci(v: float, digits: int = 2) -> str:
-    """把 2.27e+31 写成 LaTeX 的 2.27\\times10^{31}。"""
+    """Write 2.27e+31 as 2.27\\times10^{31} in LaTeX."""
     if v == 0:
         return "0"
     e = int(math.floor(math.log10(abs(v))))
@@ -139,10 +141,11 @@ def sci(v: float, digits: int = 2) -> str:
 
 def log_axes(y_min: int, y_max: int, step: int, x_len=7.0, y_len=4.4, center=(-2.7, -0.1),
              n_layers: int = 30) -> tuple[Axes, VGroup]:
-    """横轴层号 1..n，纵轴 log10 刻度（标签写成 10^k）。
+    """x-axis: layer number 1..n; y-axis: log10 scale (labels in the form 10^k).
 
-    坐标内部整体平移了 -y_min，让横轴落在图的底部（柱子可以向下长而不压住层号）。
-    用 ly(ax, log10 值) 把对数值换成纵坐标。
+    All coordinates inside the axes move by -y_min, so that the x-axis is at the bottom of
+    the plot (bars can go down and do not cover the layer numbers).
+    Use ly(ax, log10 value) to change a log value into a y coordinate.
     """
     ax = Axes(x_range=[0, n_layers + 1, 5], y_range=[0, y_max - y_min, step], x_length=x_len,
               y_length=y_len, tips=False,
@@ -162,7 +165,7 @@ def ly(ax: Axes, logv: float) -> float:
 
 
 def log_bars(ax: Axes, values, color, width=0.16, offset=0.0) -> VGroup:
-    """每层一根柱子，从 10^0 画到 log10(value)；超出坐标范围的截断。"""
+    """One bar for each layer, from 10^0 to log10(value). Cut the bars that go outside the axes."""
     y1 = ax.y_range[1]
     bars = VGroup()
     for i, v in enumerate(values, start=1):
@@ -190,7 +193,7 @@ class ChapterScene(NarratedScene):
     chapter_title = "让训练稳定"
 
     def construct(self) -> None:
-        # ── S01 片头 ─────────────────────────────────────────────────────
+        # ── S01 Opening ──────────────────────────────────────────────────
         with self.shot("S01"):
             card = self.chapter_card()
             sub = zh("初始化 · 归一化 · 残差 · AdamW · 学习率调度", 30, theme.HIGHLIGHT)
@@ -200,7 +203,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-        # ── S02 30 层之后，信号去哪了 ────────────────────────────────────
+        # ── S02 After 30 layers, where did the signal go ─────────────────
         with self.shot("S02"):
             ax, ylab = log_axes(-30, 30, 10)
             xl = zh("层号", 20, theme.MUTED).next_to(ax.x_axis, RIGHT, 0.15)
@@ -234,7 +237,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [ax, ylab, xl, yt, formula, spec, bars1, t1, t2]],
                       run_time=self.fit(0.6))
 
-        # ── S03 连乘的诅咒 ───────────────────────────────────────────────
+        # ── S03 The curse of repeated multiplication ─────────────────────
         with self.shot("S03"):
             self.play(*self.set_heading("深度 = 连乘"), run_time=self.fit(0.6))
             l1 = MathTex(r"1.1^{30}\approx", f"{1.1 ** 30:.0f}", font_size=48).move_to([-3.2, 1.6, 0])
@@ -266,7 +269,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [l1, l2, factor, fz, ex, boom, fade]],
                       run_time=self.fit(0.6))
 
-        # ── S04 Kaiming 初始化 ──────────────────────────────────────────
+        # ── S04 Kaiming initialization ──────────────────────────────────
         with self.shot("S04"):
             ax, ylab = log_axes(-6, 2, 2)
             yt = zh("激活值的标准差（对数刻度）", 20, theme.MUTED).next_to(ax, UP, 0.12)
@@ -299,7 +302,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [ax, ylab, yt, rule, name, kai, xav, kt, xt]],
                       run_time=self.fit(0.6))
 
-        # ── S05 大模型为什么用 0.02 ─────────────────────────────────────
+        # ── S05 Why large models use 0.02 ───────────────────────────────
         with self.shot("S05"):
             ax, ylab = log_axes(-22, 2, 4)
             yt = zh("std = 0.02 的普通网络", 20, theme.MUTED).next_to(ax, UP, 0.12)
@@ -325,7 +328,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [ax, ylab, yt, b02, box, end, key]],
                       run_time=self.fit(0.6))
 
-        # ── S06 LayerNorm 与 RMSNorm ────────────────────────────────────
+        # ── S06 LayerNorm and RMSNorm ───────────────────────────────────
         with self.shot("S06"):
             ln_f = MathTex(r"\mathrm{LayerNorm}(x)=", r"\frac{x-\mu}{\sqrt{\sigma^2+\epsilon}}",
                            r"\gamma", r"+\beta", font_size=38).move_to([0, 2.2, 0])
@@ -369,7 +372,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [ln_f, rms_f, xin, lo, ro, a1, a2, drop, fast]],
                       run_time=self.fit(0.6))
 
-        # ── S07 归一化之后 ───────────────────────────────────────────────
+        # ── S07 After the normalization ──────────────────────────────────
         with self.shot("S07"):
             ax, ylab = log_axes(-2, 2, 1)
             yt = zh("每层前加 RMSNorm：激活值的标准差", 20, theme.MUTED).next_to(ax, UP, 0.12)
@@ -405,7 +408,7 @@ class ChapterScene(NarratedScene):
                 return VGroup(RoundedRectangle(width=0.5, height=0.5, corner_radius=0.25,
                                                color=theme.FG), MathTex("+", font_size=32))
 
-            # Post-Norm（左）：x → f → (+) → Norm
+            # Post-Norm (left): x → f → (+) → Norm
             px = -3.6
             p_in = MathTex("h", font_size=34).move_to([px, -1.9, 0])
             p_f = box("f（子层）", theme.PARAM).move_to([px + 0.9, -0.5, 0])
@@ -418,7 +421,7 @@ class ChapterScene(NarratedScene):
                 Arrow(p_add.get_top(), p_norm.get_bottom(), buff=0.05, color=theme.MUTED),
             )
             p_t = zh("Post-Norm：相加之后再 Norm", 22, theme.MUTED).move_to([px, 2.45, 0])
-            # Pre-Norm（右）：x → Norm → f → (+)
+            # Pre-Norm (right): x → Norm → f → (+)
             qx = 2.6
             q_in = MathTex("h", font_size=34).move_to([qx, -1.9, 0])
             q_norm = box("Norm", theme.ATTN).move_to([qx + 1.3, -0.9, 0])
@@ -450,7 +453,7 @@ class ChapterScene(NarratedScene):
                                              q_f, q_add, q_arrows, q_t, eq, main]],
                       run_time=self.fit(0.6))
 
-        # ── S09 残差连接 ─────────────────────────────────────────────────
+        # ── S09 Residual connections ─────────────────────────────────────
         with self.shot("S09"):
             blocks = VGroup(*[RoundedRectangle(width=0.45, height=0.45, corner_radius=0.08,
                                                color=theme.PARAM) for _ in range(10)])
@@ -595,7 +598,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [l2, aw, ax, bars, labels, dl, dt, note, nodecay]],
                       run_time=self.fit(0.6))
 
-        # ── S12 学习率调度 ───────────────────────────────────────────────
+        # ── S12 Learning-rate schedules ──────────────────────────────────
         total, peak, warm = 1000, 3e-3, 100
         with self.shot("S12"):
             ax = Axes(x_range=[0, 1000, 200], y_range=[0, 3.5, 1], x_length=7.2, y_length=4.2,
@@ -633,7 +636,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [ax, yl, xl, warm_zone, wz_t, cos_l, wsd_l, cos_t, wsd_t,
                                              who]], run_time=self.fit(0.6))
 
-        # ── S13 WSD 随时收尾 ─────────────────────────────────────────────
+        # ── S13 WSD can end at any time ──────────────────────────────────
         with self.shot("S13"):
             def smooth(xs, k=25):
                 out = []
@@ -673,7 +676,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in [ax, yl, tr, tr_t, info, cost]], run_time=self.fit(0.6))
 
-        # ── S14 梯度裁剪 ─────────────────────────────────────────────────
+        # ── S14 Gradient clipping ────────────────────────────────────────
         with self.shot("S14"):
             import numpy as _np
             g = [_np.array([3.0, 4.0]), _np.array([12.0])]
@@ -720,7 +723,7 @@ class ChapterScene(NarratedScene):
                                              leg]],
                       run_time=self.fit(0.6))
 
-        # ── S15 对比实验 ─────────────────────────────────────────────────
+        # ── S15 Comparison experiment ────────────────────────────────────
         with self.shot("S15"):
             names = ["A 普通深网络", "B + Kaiming 初始化", "C + 残差连接", "D + RMSNorm",
                      "E SGD → AdamW", "F + warmup + 衰减", "G + 梯度裁剪"]
@@ -768,7 +771,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [head, rows, stress[:4], nz, frame]],
                       run_time=self.fit(0.6))
 
-        # ── S16 从极简到生产级 ───────────────────────────────────────────
+        # ── S16 From minimal code to production code ─────────────────────
         with self.shot("S16"):
             left = code_block("""
 rms_norm(h, gamma)
@@ -805,7 +808,7 @@ clip_grad_norm_(params, 1.0)
             self.play(*[FadeOut(m) for m in [left, right, lt, rt, links, ok, zt]],
                       run_time=self.fit(0.6))
 
-        # ── S17 第一部分结束 ─────────────────────────────────────────────
+        # ── S17 End of Part 1 ────────────────────────────────────────────
         with self.shot("S17"):
             items = [("初始化", "开局不爆不缩", theme.PARAM), ("RMSNorm", "每层自动对齐", theme.ATTN),
                      ("残差连接", "梯度高速路", theme.OUTPUT), ("AdamW", "按参数定步长", theme.PARAM),

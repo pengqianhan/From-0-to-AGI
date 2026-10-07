@@ -1,19 +1,26 @@
-"""CUDA 对拍：zero 里标了"尚未在 GPU 上验证"的小模块，在 CUDA（FP32 / BF16 autocast）上能不能跑、
-与 CPU FP32 的结果差多少（单张 RTX 3090）。
+"""CUDA parity check of the small modules in zero that are marked "not verified on a GPU yet".
+
+Do they run on CUDA (FP32 / BF16 autocast), and how much do their results differ from CPU FP32?
+The test uses one RTX 3090.
 
     CUDA_VISIBLE_DEVICES=0 UV_NO_SYNC=1 uv run python runs/2026-10-01-gpu0-check/parity_cuda.py
 
-内容：
-1. 主线 Transformer 与第五部分的实验模块（MoE、MLA、滑动窗口、混合线性注意力 ×2、MTP）：
-   同一份权重、同一批 token，CPU FP32 / CUDA FP32 / CUDA BF16 autocast 各做一次前向 + 反向，
-   报告输出与梯度的相对误差 ‖a−b‖/‖b‖（以 CPU FP32 为基准）；
-2. 缓存生成：各模块在 CUDA 上"带缓存"与"每步重算"的贪心输出是否逐字相同；推测解码 / MTP 自推测
-   在 CUDA 上贪心时是否与目标模型贪心逐字相同；
-3. 激活检查点在 CUDA 上梯度是否与不开时一致；
-4. fused AdamW（trainer.py 在 CUDA 上默认打开）与 foreach AdamW / CPU AdamW 的参数差；
-5. Muon：CUDA BF16 的 NS5 与 CPU FP32 的差距、MuonAdamW 在 CUDA 与 CPU 上走几步后的参数差；
-6. checkpoint.py 里 CUDA 随机数状态的保存与恢复；
-7. 几个模块在 CUDA 上的吞吐（只是"跑得动"的参考数字，不是性能验证）。
+Contents:
+1. The main-line Transformer and the experimental modules of Part 5 (MoE, MLA, sliding window,
+   hybrid linear attention ×2, MTP): with the same weights and the same batch of tokens, one forward +
+   backward pass each on CPU FP32 / CUDA FP32 / CUDA BF16 autocast. The script reports the relative
+   error ‖a−b‖/‖b‖ of the output and of the gradients (CPU FP32 is the reference);
+2. Cached generation: is the greedy output of each module on CUDA "with cache" token-for-token identical
+   to "recompute at each step"? Is greedy speculative decoding / MTP self-speculation on CUDA
+   token-for-token identical to greedy decoding of the target model?
+3. Activation checkpointing on CUDA: are the gradients the same as without it?
+4. The parameter difference between fused AdamW (trainer.py turns it on by default on CUDA) and
+   foreach AdamW / CPU AdamW;
+5. Muon: the difference between NS5 in CUDA BF16 and in CPU FP32, and the parameter difference of
+   MuonAdamW on CUDA and on CPU after a few steps;
+6. Save and restore of the CUDA random number state in checkpoint.py;
+7. The throughput of some modules on CUDA (reference numbers that show only "it runs";
+   this is not a performance check).
 """
 
 from __future__ import annotations
@@ -79,7 +86,7 @@ def base_cfg(**kw) -> ModelConfig:
 
 
 # ---------------------------------------------------------------------------
-# 1. 前向 + 反向对拍
+# 1. Parity check of forward + backward
 # ---------------------------------------------------------------------------
 
 
@@ -108,7 +115,7 @@ def parity(name: str, build, loss_fn, out_fn, B: int = 4, T: int = 128, vocab: i
         m = copy.deepcopy(ref_model)
         try:
             runs[tag] = fwd_bwd(m, x, loss_fn, out_fn, dev, bf16)
-        except Exception as e:  # noqa: BLE001 - 记录失败而不是中断整个脚本
+        except Exception as e:  # noqa: BLE001 - record the failure; do not stop the full script
             runs[tag] = e
     row: dict = {"module": name}
     base = runs["cpu_fp32"]
@@ -137,12 +144,12 @@ def lm_out(m, x):
 
 def section_parity() -> list:
     rows = []
-    # 主线 Transformer（对照组：说明 BF16 本身带来的误差量级）
+    # Main-line Transformer (control group: it shows the size of the error that BF16 alone causes)
     rows.append(
-        parity("Transformer（主线，GQA）", lambda: Transformer(base_cfg()), lm_loss, lm_out)
+        parity("Transformer (main-line, GQA)", lambda: Transformer(base_cfg()), lm_loss, lm_out)
     )
 
-    # MoE：4 个路由专家 top-2 + 1 个共享专家；第 0 层稠密
+    # MoE: 8 routed experts with top-2 + 1 shared expert; layer 0 is dense
     def build_moe():
         mc = base_cfg()
         cfg = MoEConfig.from_model_config(
@@ -150,26 +157,26 @@ def section_parity() -> list:
         )
         return moe_transformer(mc, cfg, first_dense=1)
 
-    rows.append(parity("MoE（8 选 2 + 共享专家，逐专家循环）", build_moe, lm_loss, lm_out))
+    rows.append(parity("MoE (top-2 of 8 + shared expert, loop over experts)", build_moe, lm_loss, lm_out))
 
-    # MLA（训练时不吸收）
+    # MLA (no absorption during training)
     def build_mla(q_lora=None):
         mc = base_cfg(n_kv_heads=4)
         cfg = mla_mod.MLAConfig.from_model_config(mc, kv_lora_rank=64, q_lora_rank=q_lora)
         return mla_mod.mla_transformer(mc, cfg)
 
     rows.append(parity("MLA", build_mla, lm_loss, lm_out))
-    rows.append(parity("MLA（q_lora_rank=64）", lambda: build_mla(64), lm_loss, lm_out))
+    rows.append(parity("MLA (q_lora_rank=64)", lambda: build_mla(64), lm_loss, lm_out))
 
-    # 滑动窗口：局部-全局 1:1，窗口 32
+    # Sliding window: local-global 1:1, window 32
     def build_sw():
         m = Transformer(base_cfg())
         sw.convert_to_sliding_window(m, sw.make_layer_types(4, global_every=2), window=32)
         return m
 
-    rows.append(parity("滑动窗口（窗口 32，局部:全局 = 1:1）", build_sw, lm_loss, lm_out))
+    rows.append(parity("Sliding window (window 32, local:global = 1:1)", build_sw, lm_loss, lm_out))
 
-    # 混合线性注意力（3:1）
+    # Hybrid linear attention (3:1)
     def build_hybrid(kind):
         cfg = la.HybridConfig(
             vocab_size=512,
@@ -192,15 +199,15 @@ def section_parity() -> list:
 
     rows.append(
         parity(
-            "Gated DeltaNet 混合（3:1）", lambda: build_hybrid("gated_deltanet"), lm_loss, lm_out
+            "Gated DeltaNet hybrid (3:1)", lambda: build_hybrid("gated_deltanet"), lm_loss, lm_out
         )
     )
-    rows.append(parity("线性注意力混合（3:1）", lambda: build_hybrid("linear"), lm_loss, lm_out))
+    rows.append(parity("Linear attention hybrid (3:1)", lambda: build_hybrid("linear"), lm_loss, lm_out))
 
-    # MTP（深度 1）
+    # MTP (depth 1)
     rows.append(
         parity(
-            "MTP（深度 1）",
+            "MTP (depth 1)",
             lambda: MTPTransformer(base_cfg(), n_mtp=1),
             lambda m, x: mtp_loss(m, x[:, :-1], x[:, 1:])[0],
             lambda m, x: m(x[:, :-1])[0],
@@ -210,7 +217,7 @@ def section_parity() -> list:
 
 
 # ---------------------------------------------------------------------------
-# 2. 缓存生成 / 推测解码（CUDA 上）
+# 2. Cached generation / speculative decoding (on CUDA)
 # ---------------------------------------------------------------------------
 
 
@@ -237,7 +244,7 @@ def section_generation() -> dict:
         b = generate(base, prompt, 60, temperature=0.0, use_cache=False)
         return a == b, {"n": len(a)}
 
-    check("主线 KV cache：带缓存 = 每步重算", main_kv)
+    check("Main-line KV cache: with cache = recompute at each step", main_kv)
 
     def mla_gen():
         mc = base_cfg(n_kv_heads=4, init_std=0.2)
@@ -248,7 +255,7 @@ def section_generation() -> dict:
         b = mla_mod.generate_greedy(m, prompt, 60, cfg, use_cache=False)
         return a == b, {"n": len(a)}
 
-    check("MLA：吸收 + 潜向量缓存 = 每步重算", mla_gen)
+    check("MLA: absorption + latent-vector cache = recompute at each step", mla_gen)
 
     def sw_gen():
         torch.manual_seed(2)
@@ -259,7 +266,7 @@ def section_generation() -> dict:
         b = sw.generate_greedy(m, prompt, 80, cache=None)
         return a == b, {"n": len(a), "cache_device": str(cache.k[0].device)}
 
-    check("滑动窗口：环形缓存 = 每步重算", sw_gen)
+    check("Sliding window: ring buffer = recompute at each step", sw_gen)
 
     for kind in ("gated_deltanet", "linear"):
 
@@ -287,7 +294,7 @@ def section_generation() -> dict:
             b = la.generate_greedy(m, prompt, 60, use_cache=False)
             return a == b, {"n": len(a)}
 
-        check(f"混合 {kind}：递推状态 = 每步重算", hy_gen)
+        check(f"Hybrid {kind}: recurrent state = recompute at each step", hy_gen)
 
     def spec():
         torch.manual_seed(4)
@@ -304,7 +311,7 @@ def section_generation() -> dict:
             "sampled_len": len(sampled.tokens),
         }
 
-    check("推测解码：贪心 = 目标模型贪心（草稿 1 层 / 草稿 = 目标）", spec)
+    check("Speculative decoding: greedy = target-model greedy (1-layer draft / draft = target)", spec)
 
     def mtp_gen():
         torch.manual_seed(5)
@@ -318,18 +325,18 @@ def section_generation() -> dict:
             "sampled_len": len(s.tokens),
         }
 
-    check("MTP 自推测：贪心 = 主模型贪心", mtp_gen)
+    check("MTP self-speculation: greedy = main-model greedy", mtp_gen)
     return out
 
 
 # ---------------------------------------------------------------------------
-# 3–6. 激活检查点、fused AdamW、Muon、CUDA 随机数状态
+# 3–6. Activation checkpointing, fused AdamW, Muon, CUDA random number state
 # ---------------------------------------------------------------------------
 
 
 def section_training_bits() -> dict:
     out: dict = {}
-    # 3. 激活检查点
+    # 3. Activation checkpointing
     torch.manual_seed(0)
     m = Transformer(base_cfg()).to(CUDA).train()
     x = torch.randint(0, 512, (4, 129), device=CUDA)
@@ -345,9 +352,9 @@ def section_training_bits() -> dict:
             gs.append(grads(m))
         res["bf16" if bf16 else "fp32"] = f"{rel(gs[1], gs[0]):.2e}"
     out["activation_checkpointing_grad_rel_diff"] = res
-    print("激活检查点（CUDA）开/关梯度相对差", res, flush=True)
+    print("Activation checkpointing (CUDA) on/off, relative gradient difference", res, flush=True)
 
-    # 4. fused AdamW vs foreach AdamW vs CPU AdamW：同一串梯度，走 20 步
+    # 4. fused AdamW vs foreach AdamW vs CPU AdamW: the same sequence of gradients, 20 steps
     torch.manual_seed(0)
     p0 = torch.randn(1024, 1024)
     gseq = [torch.randn(1024, 1024) * 1e-2 for _ in range(20)]
@@ -370,16 +377,16 @@ def section_training_bits() -> dict:
     }
     print("fused AdamW", out["fused_adamw"], flush=True)
 
-    # 5. Muon：NS5 在 CUDA BF16 vs CPU FP32
+    # 5. Muon: NS5 in CUDA BF16 vs CPU FP32
     from zero.train.muon import build_muon_optimizer, zeropower_via_newtonschulz5
 
     ns = []
     for shape in ((1280, 1280), (2048, 1280), (1280, 3584), (3584, 1280)):
         torch.manual_seed(0)
         G = torch.randn(*shape)
-        ref = zeropower_via_newtonschulz5(G)  # CPU：默认 FP32
+        ref = zeropower_via_newtonschulz5(G)  # CPU: FP32 by default
         g_cuda = G.to(CUDA)
-        cu = zeropower_via_newtonschulz5(g_cuda)  # CUDA：默认 BF16
+        cu = zeropower_via_newtonschulz5(g_cuda)  # CUDA: BF16 by default
         cu32 = zeropower_via_newtonschulz5(g_cuda, dtype=torch.float32)
         sv = torch.linalg.svdvals(cu.float()).cpu()
         torch.cuda.synchronize()
@@ -402,7 +409,8 @@ def section_training_bits() -> dict:
     for r in ns:
         print("Muon NS5", r, flush=True)
 
-    # MuonAdamW（build_muon_optimizer，与 trainer 相同）在 CUDA 与 CPU 上各走 5 步，比较参数的总更新量
+    # MuonAdamW (build_muon_optimizer, the same as in trainer) does 5 steps on CUDA and 5 steps on CPU.
+    # Compare the total update of the parameters.
     from zero.config import OptimConfig
 
     finals = {}
@@ -424,15 +432,15 @@ def section_training_bits() -> dict:
         "update_rel_diff_cuda_vs_cpu": f"{rel(d_cuda, d_cpu):.2e}",
         "update_norm_cpu": f"{float(d_cpu.norm()):.3f}",
     }
-    print("MuonAdamW 5 步", out["muon_optimizer_5_steps"], flush=True)
+    print("MuonAdamW 5 steps", out["muon_optimizer_5_steps"], flush=True)
 
-    # 6. CUDA 随机数状态：rng_state() / set_rng_state() 往返
+    # 6. CUDA random number state: round trip of rng_state() / set_rng_state()
     torch.cuda.manual_seed_all(123)
     _ = torch.rand(10, device=CUDA)
     st = rng_state()
     a = torch.rand(1000, device=CUDA)
     b_cpu = torch.rand(10)
-    torch.rand(12345, device=CUDA)  # 把状态搅乱
+    torch.rand(12345, device=CUDA)  # Change the state
     set_rng_state(st)
     a2 = torch.rand(1000, device=CUDA)
     b2 = torch.rand(10)
@@ -447,7 +455,7 @@ def section_training_bits() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 7. 吞吐参考
+# 7. Throughput reference
 # ---------------------------------------------------------------------------
 
 
@@ -462,7 +470,10 @@ def _bench(fn, iters=5):
 
 
 def section_throughput() -> dict:
-    """中等尺寸（dim 768、12 层、T 1024、batch 8）的训练步（前向 + 反向，BF16 autocast）吞吐。"""
+    """Throughput of a training step (forward + backward, BF16 autocast) at medium size.
+
+    The size is dim 768, 12 layers, T 1024, batch 8.
+    """
     out: dict = {}
     B, T = 8, 1024
     mc = ModelConfig(
@@ -522,12 +533,12 @@ def section_throughput() -> dict:
         except Exception as e:  # noqa: BLE001
             out[name] = {"error": f"{type(e).__name__}: {str(e).splitlines()[0][:160]}"}
         torch.cuda.empty_cache()
-        print("吞吐", name, out[name], flush=True)
+        print("Throughput", name, out[name], flush=True)
     return out
 
 
 def main() -> None:
-    assert torch.cuda.device_count() == 1, "只允许看到 1 张卡（CUDA_VISIBLE_DEVICES=0）"
+    assert torch.cuda.device_count() == 1, "Only 1 GPU may be visible (CUDA_VISIBLE_DEVICES=0)"
     torch.set_num_threads(8)
     RESULTS["parity"] = section_parity()
     RESULTS["generation"] = section_generation()
@@ -536,7 +547,7 @@ def main() -> None:
     out = REPO / "out/gpu0-check/parity_cuda.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(RESULTS, ensure_ascii=False, indent=1))
-    print(f"写入 {out}")
+    print(f"Wrote {out}")
 
 
 if __name__ == "__main__":

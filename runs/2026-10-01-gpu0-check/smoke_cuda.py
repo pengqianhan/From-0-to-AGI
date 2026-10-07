@@ -1,14 +1,16 @@
-"""阶段 6 第 9 项的一部分：把 `zero.smoke` 的训练阶段搬到 CUDA 上跑（BF16 autocast）。
+"""Part of Stage 6, item 9: run the training stages of `zero.smoke` on CUDA (BF16 autocast).
 
-`configs/tiny/*.toml` 都写死了 `device = "cpu"`、`dtype = "fp32"`，所以在有 GPU 的机器上直接跑
-`python -m zero.smoke`，训练仍然全部在 CPU 上。本脚本不改任何配置文件，只在读配置时把
-`[train] device` 换成 "cuda"、`dtype` 换成 "auto"（CUDA 上即 BF16 autocast），其余与 zero.smoke 完全相同：
+All `configs/tiny/*.toml` files set `device = "cpu"` and `dtype = "fp32"`. Thus on a machine with a GPU,
+`python -m zero.smoke` still does all training on the CPU. This script does not change a configuration file.
+When it reads a configuration, it changes only `[train] device` to "cuda" and `dtype` to "auto"
+(on CUDA, "auto" is BF16 autocast). All other behavior is the same as zero.smoke:
 
     CUDA_VISIBLE_DEVICES=0 UV_NO_SYNC=1 uv run python runs/2026-10-01-gpu0-check/smoke_cuda.py \
         --out out/gpu0-check/smoke_cuda
 
-走 CUDA 的阶段：pretrain、midtrain、SFT、蒸馏（学生 + 本地教师）、DPO、GRPO（采样 + 更新）。
-eval / export / demo 在 zero.smoke 里本来就用 `load_policy(..., device="cpu")`，仍在 CPU 上。
+Stages that run on CUDA: pretrain, midtrain, SFT, distillation (student + local teacher), DPO,
+GRPO (sampling + update). In zero.smoke, eval / export / demo already use
+`load_policy(..., device="cpu")`, so they still run on the CPU.
 """
 
 from __future__ import annotations
@@ -35,6 +37,6 @@ def load_tiny_cuda(name: str, out: str) -> dict:
 if __name__ == "__main__":
     import torch
 
-    assert torch.cuda.device_count() == 1, "只允许看到 1 张卡（CUDA_VISIBLE_DEVICES=0）"
+    assert torch.cuda.device_count() == 1, "Only 1 GPU may be visible (CUDA_VISIBLE_DEVICES=0)"
     smoke.load_tiny = load_tiny_cuda
     raise SystemExit(smoke.main(sys.argv[1:]))

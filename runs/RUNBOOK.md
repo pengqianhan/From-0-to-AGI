@@ -1,76 +1,78 @@
-# 第二步运行手册（RUNBOOK）
+# Step 2 runbook (RUNBOOK)
 
-> 适用范围：GOAL.md 第 10 节"第二步：训练主线模型"。第一步（本仓库当前状态）没有 GPU，下面所有 GPU 命令
-> **都还没有在 GPU 上跑过**；CPU 上能测的部分已由 `uv run pytest` 和 `uv run python -m zero.smoke` 覆盖。
-> 每个阶段跑完，把花费记进 [`runs/ledger.md`](ledger.md)。
+**English** · [中文](RUNBOOK.zh.md)
 
-## 0. 规矩
+> Scope: GOAL.md Section 10, "Step 2: train the main-line model". Step 1 (the current state of this repository) has no GPU. **None of the GPU commands below has run on a GPU yet.**
+> `uv run pytest` and `uv run python -m zero.smoke` cover the parts that a CPU can test.
+> At the end of each stage, record the cost in [`runs/ledger.md`](ledger.md).
 
-- **花钱要批准**：任何单次预计超过 **$100** 的运行，先把 `estimate_cost` 的输出和本手册对应小节的检查清单发给项目负责人，批准后再开跑（GOAL.md 3.4）。
-- **每次运行一个目录**：`runs/<日期>-<阶段>-<简称>/`，放本次用的配置副本（`--print-config` 的输出）、日志摘要（`log.jsonl` 的关键行）、结论。大文件（checkpoint、数据）不进仓库。
-- **先小后大**：每个新阶段先用 `--set train.max_steps=20` 跑通，确认 loss、吞吐、显存正常，再跑全量。
-- **价格假设**：H100 SXM $2.5/卡时（GOAL.md 3.4），8 卡 = $20/小时；以实际租价为准，改 `--price`。
-- **吞吐估算的口径**：下文的"预期吞吐"都由 `zero/tools/estimate_cost.py` 按 MFU 0.4 推出（H100 稠密 BF16 峰值 989.5 TFLOPS，待核实）。阶段 6 实测 MFU 后，用实测值重算全部预算。
+## 0. Rules
 
-预期吞吐一览（8×H100、MFU 0.4 的假设；实测前只是估计）：
+- **Spending needs approval**: for any single run with an expected cost of more than **$100**, first send two things to the project lead: the output of `estimate_cost` and the checklist of the related section of this runbook. Start the run only after approval (GOAL.md 3.4).
+- **One folder for each run**: `runs/<date>-<stage>-<short name>/`. Put these files in it: a copy of the configuration of the run (the output of `--print-config`), a log summary (the key lines of `log.jsonl`), and the conclusion. Do not put large files (checkpoints, data) into the repository.
+- **Small first, then large**: for each new stage, first do a run with `--set train.max_steps=20`. Make sure that the loss, the throughput, and the GPU memory are normal. Then do the full run.
+- **Price assumption**: H100 SXM at $2.5 per GPU-hour (GOAL.md 3.4), so 8 GPUs = $20 per hour. The real rental price decides. Change it with `--price`.
+- **How we estimate the throughput**: all "expected throughput" values below come from `zero/tools/estimate_cost.py` with MFU 0.4 (H100 dense BF16 peak 989.5 TFLOPS, to be verified). After Stage 6 measures the MFU, calculate all budgets again with the measured value.
 
-| 阶段 | 序列长度 | 每 token FLOPs | 8 卡总吞吐 | 来源 |
+Expected throughput (assumption: 8×H100, MFU 0.4; before the measurement, these values are only estimates):
+
+| Stage | Sequence length | FLOPs per token | Total throughput of 8 GPUs | Source |
 |---|---:|---:|---:|---|
-| 预训练 / 中期训练 | 4,096 | 6.955e9 | ≈ 455k token/s | `estimate_cost --config configs/main/pretrain.toml` |
-| 长上下文扩展 | 32,768 | 2.669e10 | ≈ 119k token/s | `--config configs/main/longctx.toml` |
-| SFT / 蒸馏训练 | 8,192 | 9.774e9 | ≈ 324k token/s（打包后约 70% 是真实 token） | `--seq-len 8192` |
-| GRPO / DPO 采样 | — | — | 取决于生成，不能按训练 FLOPs 估；阶段 10 实测 | — |
+| Pretraining / mid-training | 4,096 | 6.955e9 | ≈ 455k token/s | `estimate_cost --config configs/main/pretrain.toml` |
+| Long-context extension | 32,768 | 2.669e10 | ≈ 119k token/s | `--config configs/main/longctx.toml` |
+| SFT / distillation training | 8,192 | 9.774e9 | ≈ 324k token/s (after packing, about 70% are real tokens) | `--seq-len 8192` |
+| GRPO / DPO sampling | — | — | Depends on generation, so you cannot estimate it from the training FLOPs; Stage 10 measures it | — |
 
-（换算：总吞吐 = 8 × 989.5e12 × 0.4 / 每 token FLOPs。）
+(Conversion: total throughput = 8 × 989.5e12 × 0.4 / FLOPs per token.)
 
-## 1. 环境准备（每台新机器做一次）
+## 1. Prepare the environment (one time on each new machine)
 
 ```bash
-git clone <本仓库> && cd From-0-to-AGI
-uv sync --group dev                       # torch、tokenizers、safetensors、transformers、pytest
+git clone <this repository> && cd From-0-to-AGI
+uv sync --group dev                       # torch, tokenizers, safetensors, transformers, pytest
 uv run python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.device_count())"
-nvidia-smi topo -m                        # 确认 8 卡 NVLink 全互联
-uv run pytest -q                          # CPU 测试必须先全绿（约 3 分钟）
-uv run python -m zero.smoke --out /tmp/smoke   # 端到端冒烟（CPU 单线程：空闲时约 9 分钟，CPU 被占用时更久）
+nvidia-smi topo -m                        # make sure that NVLink connects all 8 GPUs to each other
+uv run pytest -q                          # all CPU tests must pass first (about 3 minutes)
+uv run python -m zero.smoke --out /tmp/smoke   # end-to-end smoke test (one CPU thread: about 9 minutes on an idle CPU, longer on a busy CPU)
 ```
 
-- torch 需要带 CUDA 的版本（`uv pip install torch --index-url https://download.pytorch.org/whl/cu12x`，与驱动匹配）。
-- 数据放本地 NVMe：`data/tokenizer/`、`data/pretrain/`、`data/midtrain/`、`data/sft/`……（路径见 `configs/main/*.toml`）。
-- 评测：`uv pip install lm-eval==<冻结版本> bfcl-eval==<冻结版本> vllm==<冻结版本>`（版本号写进 `eval/PREREGISTRATION.md`）。
-- 导出 GGUF：`uv run python -m zero.export.gguf ...` 会自动浅克隆并编译 llama.cpp（需要 `cmake`；`apt-get install -y cmake`）。
+- torch must be a version with CUDA (`uv pip install torch --index-url https://download.pytorch.org/whl/cu12x`, matched to the driver).
+- Put the data on a local NVMe disk: `data/tokenizer/`, `data/pretrain/`, `data/midtrain/`, `data/sft/`, and others (the paths are in `configs/main/*.toml`).
+- Evaluation: `uv pip install lm-eval==<frozen version> bfcl-eval==<frozen version> vllm==<frozen version>` (write the version numbers into `eval/PREREGISTRATION.md`).
+- GGUF export: `uv run python -m zero.export.gguf ...` automatically makes a shallow clone of llama.cpp and compiles it (it needs `cmake`; `apt-get install -y cmake`).
 
-## 2. 阶段 6：GPU 验证运行（≤ $50）
+## 2. Stage 6: GPU verification run (≤ $50)
 
-目的：把"尚未在 GPU 上验证"的路径逐项验证掉，并实测 MFU。预算：8×H100 约 1.5 小时 ≈ $30，上限 $50。
+Purpose: verify, item by item, the paths that are "not verified on a GPU yet", and measure the MFU. Budget: 8×H100 for about 1.5 hours ≈ $30, at most $50.
 
-> 2026-10：本节的单卡 / 2 卡 RTX 3090 版已经做过（[`2026-10-01-gpu0-check/`](2026-10-01-gpu0-check/README.md)：通路、跨卡一致性、续训都通过；32K 在 24GB 的卡上放不下）。8×H100 上仍要逐项跑一遍，重点是 NVLink 下的吞吐与 MFU、8 卡 FSDP 和 32K 的显存。
+> 2026-10: we already did the one-GPU / 2-GPU RTX 3090 version of this section ([`2026-10-01-gpu0-check/`](2026-10-01-gpu0-check/README.md)). The paths, the agreement across GPUs, and the resume all passed. 32K does not fit on a 24 GB GPU. We must still run each item on 8×H100. The focus is the throughput and the MFU with NVLink, 8-GPU FSDP, and the GPU memory at 32K.
 
-| # | 验证项 | 命令 | 通过标准 |
+| # | Verification item | Command | Pass criterion |
 |---|---|---|---|
-| 1 | 单卡 BF16 + SDPA 走 FlashAttention | `uv run python -c "import torch; from torch.nn.attention import sdpa_kernel, SDPBackend; from zero.config import load_model_config; from zero.model import Transformer; m=Transformer(load_model_config('configs/main/pretrain.toml')).cuda().bfloat16(); x=torch.randint(0,65536,(1,4096),device='cuda');\nwith sdpa_kernel(SDPBackend.FLASH_ATTENTION): print(m(x).shape)"` | 不报 "No available kernel"。**已核实**（RTX 3090，2026-10，见 [`2026-10-01-gpu0-check/`](2026-10-01-gpu0-check/README.md) 第 1 节）：BF16 下 `enable_gqa=True` 默认就走 Flash 后端。memory-efficient 后端**不支持 GQA**，所以不能"退回 efficient"；万一 H100 上 Flash 不可用，只能在 `Attention` 里先 `repeat_interleave` K/V 再走 efficient，并记录 MFU 差异 |
-| 2 | 多卡 DDP | `uv run torchrun --standalone --nproc_per_node=8 -m zero.train.pretrain --config configs/main/pretrain.toml --set train.max_steps=200 --set checkpoint.every=100 --set train.out_dir=out/gpu_check/ddp` | loss 下降；各卡显存均衡；日志里 `tok/s` 与 MFU 稳定 |
-| 3 | 断点续训 | 上一条跑到 ~150 步时 `kill`，再执行同一条命令 | 从 step 100 续训，第 101–200 步 loss 与不中断的对照运行一致（BF16 下允许 1e-3 级差异；数据顺序必须完全一致） |
-| 4 | FSDP2 | 同 2，加 `--set train.parallel=fsdp`，另起目录 | 与 DDP 的前 50 步 loss 曲线一致（误差 < 1%）；checkpoint 能被单卡 `load_policy` 读回 |
-| 5 | torch.compile | 同 2，默认 `compile = true` 与 `--set train.compile=false` 各跑 100 步 | 两者 loss 一致；记录 compile 带来的吞吐提升 |
-| 6 | MFU 实测 | 取 2 的第 100–200 步日志 | 记录 `tok/s`、`mfu`；用实测 MFU 重跑 `estimate_cost --mfu <实测>`，更新本手册和预算 |
-| 7 | 显存与 batch | `--set train.micro_batch_size=16 --set train.grad_accum_steps=1` 试探 | 找到不 OOM 的最大 micro batch，保持每步 token 数 = 524,288 |
-| 8 | 长序列 | `torchrun ... -m zero.train.midtrain --config configs/main/longctx.toml --set train.max_steps=20`（init_from 指向 2 的 checkpoint，可临时 `--set train.init_from=out/gpu_check/ddp/ckpt`） | 32K 序列不 OOM（FSDP），吞吐与估算同量级 |
-| 9 | 后训练通路 | `torchrun ... -m zero.post.sft --config configs/main/sft.toml --set train.max_steps=20 --set train.init_from=out/gpu_check/ddp/ckpt`（需要一份小 SFT JSONL）；`python -m zero.post.grpo --config configs/main/grpo.toml --set train.max_steps=2 --set grpo.prompts_per_step=4` | 不报错；GRPO 记录每步采样耗时，用来估算阶段 10 的预算 |
-| 10 | 导出 | `load_policy` + `export_to_hf_qwen3(..., chat=True)`，再 `vllm serve out/gpu_check/hf --enable-auto-tool-choice --tool-call-parser hermes`，发一个带 tools 的请求 | vLLM 能加载；返回结构化的 `tool_calls`（模型乱答没关系，看格式通路） |
+| 1 | One GPU, BF16 + SDPA uses FlashAttention | `uv run python -c "import torch; from torch.nn.attention import sdpa_kernel, SDPBackend; from zero.config import load_model_config; from zero.model import Transformer; m=Transformer(load_model_config('configs/main/pretrain.toml')).cuda().bfloat16(); x=torch.randint(0,65536,(1,4096),device='cuda');\nwith sdpa_kernel(SDPBackend.FLASH_ATTENTION): print(m(x).shape)"` | No "No available kernel" error. **Verified** (RTX 3090, 2026-10, see Section 1 of [`2026-10-01-gpu0-check/`](2026-10-01-gpu0-check/README.md)): in BF16, `enable_gqa=True` uses the Flash backend by default. The memory-efficient backend **does not support GQA**, so "fall back to efficient" is not possible. If Flash is not available on the H100, there is only one way: in `Attention`, first `repeat_interleave` K/V, then use the efficient backend. Record the MFU difference |
+| 2 | Multi-GPU DDP | `uv run torchrun --standalone --nproc_per_node=8 -m zero.train.pretrain --config configs/main/pretrain.toml --set train.max_steps=200 --set checkpoint.every=100 --set train.out_dir=out/gpu_check/ddp` | The loss decreases; the GPU memory is balanced across the GPUs; `tok/s` and MFU in the log are stable |
+| 3 | Resume from a checkpoint | `kill` the previous command at about step 150, then run the same command again | Training resumes from step 100. The loss of steps 101–200 agrees with a control run without interruption (BF16 allows differences of the order of 1e-3; the data order must be exactly the same) |
+| 4 | FSDP2 | Same as 2. Add `--set train.parallel=fsdp`, and use a different folder | The loss curve of the first 50 steps agrees with DDP (error < 1%); `load_policy` on one GPU can read the checkpoint back |
+| 5 | torch.compile | Same as 2. Run 100 steps with the default `compile = true`, and 100 steps with `--set train.compile=false` | The two runs give the same loss; record the throughput gain from compile |
+| 6 | Measured MFU | Use the log of steps 100–200 of item 2 | Record `tok/s` and `mfu`. Run `estimate_cost --mfu <measured>` again with the measured MFU, and update this runbook and the budget |
+| 7 | GPU memory and batch | Try `--set train.micro_batch_size=16 --set train.grad_accum_steps=1` | Find the largest micro batch without OOM; keep the tokens per step = 524,288 |
+| 8 | Long sequences | `torchrun ... -m zero.train.midtrain --config configs/main/longctx.toml --set train.max_steps=20` (init_from points to the checkpoint of item 2; as a temporary setting, you can use `--set train.init_from=out/gpu_check/ddp/ckpt`) | 32K sequences do not cause OOM (FSDP); the throughput has the same order of magnitude as the estimate |
+| 9 | Post-training paths | `torchrun ... -m zero.post.sft --config configs/main/sft.toml --set train.max_steps=20 --set train.init_from=out/gpu_check/ddp/ckpt` (needs a small SFT JSONL file); `python -m zero.post.grpo --config configs/main/grpo.toml --set train.max_steps=2 --set grpo.prompts_per_step=4` | No errors; GRPO records the sampling time of each step, to estimate the budget of Stage 10 |
+| 10 | Export | `load_policy` + `export_to_hf_qwen3(..., chat=True)`, then `vllm serve out/gpu_check/hf --enable-auto-tool-choice --tool-call-parser hermes`. Send one request with tools | vLLM can load the model; the response has structured `tool_calls` (bad answers from the model are not a problem; the check is on the format path) |
 
-验证完：把实测 MFU、吞吐、显存写进 `runs/<日期>-gpu-check/README.md`，更新本手册顶部的吞吐表，并记账。
+After the verification: write the measured MFU, throughput, and GPU memory into `runs/<date>-gpu-check/README.md`. Update the throughput table at the top of this runbook, and record the cost.
 
-## 3. 阶段 7：对手重跑与预注册定稿（约 $200）
+## 3. Stage 7: opponent reruns and the final preregistration (about $200)
 
-1. 按 `eval/opponents.md` 的规则确定对手清单与**冻结日期**；
-2. 固定评测框架版本（lm-evaluation-harness、BFCL、ACEBench 等），写进 `eval/PREREGISTRATION.md`；
-3. 对每个对手：官方模板、两种模式（思考 / 非思考，如有）、相同解码参数，跑全部基准，保存逐题结果；
-   - 通用基准：`lm_eval --model vllm --model_args pretrained=<对手>,dtype=bfloat16 --tasks <冻结的任务> --batch_size auto --log_samples --output_path eval/results/<对手>`
-   - BFCL：对手用 BFCL 内置的 handler 名：`bfcl generate --model <handler 名> --test-category <冻结的类别> --backend vllm`，再 `bfcl evaluate`；我们的模型用 `python -m zero.eval.bfcl`（见 `zero/eval/bfcl.py`，尚未验证）
-4. 估算：约 25 个模型 × 每个 ~1 GPU·h ≈ $60–200，超过 $100 先报批；
-5. **停下来等确认预注册内容**，确认后提交 `eval/PREREGISTRATION.md`（commit 时间即登记时间）。
+1. Use the rules of `eval/opponents.md` to fix the opponent list and the **freeze date**.
+2. Fix the versions of the evaluation frameworks (lm-evaluation-harness, BFCL, ACEBench, and others). Write them into `eval/PREREGISTRATION.md`.
+3. For each opponent: use the official template, both modes (thinking / non-thinking, if the model has them), and the same decoding parameters. Run all benchmarks, and save the per-question results.
+   - General benchmarks: `lm_eval --model vllm --model_args pretrained=<opponent>,dtype=bfloat16 --tasks <frozen tasks> --batch_size auto --log_samples --output_path eval/results/<opponent>`
+   - BFCL: for an opponent, use the handler name that BFCL has built in: `bfcl generate --model <handler name> --test-category <frozen categories> --backend vllm`, then `bfcl evaluate`. For our model, use `python -m zero.eval.bfcl` (see `zero/eval/bfcl.py`; not verified yet).
+4. Estimate: about 25 models × ~1 GPU·h each ≈ $60–200. If the cost is more than $100, get approval first.
+5. **Stop and wait for the confirmation of the preregistration.** After the confirmation, commit `eval/PREREGISTRATION.md` (the commit time is the registration time).
 
-## 4. 阶段 8：阶梯实验与闸门 1（约 $1,200）
+## 4. Stage 8: ladder experiments and Gate 1 (about $1,200)
 
 ```bash
 for s in l20m l60m l150m l300m; do
@@ -78,106 +80,106 @@ for s in l20m l60m l150m l300m; do
 done
 ```
 
-| 配置 | 参数量 | token | 估算卡时 | 估算费用 |
+| Configuration | Parameters | Tokens | Estimated GPU-hours | Estimated cost |
 |---|---:|---:|---:|---:|
 | l20m | 23.1M | 0.46B | 0.1 | $0.3 |
 | l60m | 71.3M | 1.43B | 0.6 | $1.5 |
 | l150m | 160.5M | 3.21B | 2.8 | $7 |
 | l300m | 318.8M | 6.38B | 10.8 | $27 |
 
-（`estimate_cost --config configs/ladder/<s>.toml --tokens <token>`，MFU 0.4；小模型的实际 MFU 通常更低，按阶段 6 实测修正。）
-一轮阶梯很便宜，预算主要花在学习率扫描、数据配比消融（第 13 章）和配方验证 (b)（在一个同尺寸开源 Base 上跑一遍完整后训练）。
+(`estimate_cost --config configs/ladder/<s>.toml --tokens <token>`, MFU 0.4. The real MFU of small models is usually lower. Correct the values with the measurements of Stage 6.)
+One ladder round is cheap. Most of the budget goes to the learning-rate sweeps, the data mixture ablations (Chapter 13), and recipe validation (b) (one full post-training run on an open Base model of the same size).
 
-需要盯的指标：各尺寸的最终 val loss（拟合 L(N, D)）、loss 曲线是否平滑、有无 loss spike、tok/s。
+Metrics to watch: the final val loss of each size (to fit L(N, D)), whether the loss curves are smooth, whether loss spikes occur, and tok/s.
 
-**闸门 1 检查清单**（全部完成才申请预训练预算）：
+**Gate 1 checklist** (complete all items before you ask for the pretraining budget):
 
-- [ ] 阶梯 4 个尺寸跑完，val loss 与 (N, D) 的拟合残差 < 1%，外推出主线 Base 在约 400B token 的 loss（附置信区间）
-- [ ] 外推出通用基准分数（用阶梯模型的"loss → 分数"关系；小模型接近随机的基准不外推，如实说明）
-- [ ] 配方验证 (a)：后训练配方套在 2–3 个阶梯 Base 上，得到"Base 质量 → 工具调用得分"的关系并外推到主线
-- [ ] 配方验证 (b)：后训练配方套在一个现成同尺寸开源 Base 上，看配方上限（只做验证，不发布）
-- [ ] 预测结果是否达到硬目标（预注册的判定标准），写成闸门 1 报告
-- [ ] 预训练预算（`estimate_cost --config configs/main/pretrain.toml --tokens 400B --mfu <实测>`）随报告一起提交
-- [ ] **等批准**
+- [ ] The 4 ladder sizes are complete. The fit residual of val loss against (N, D) is < 1%. Extrapolate the loss of the main-line Base at about 400B tokens (with a confidence interval).
+- [ ] Extrapolate the general benchmark scores (use the "loss → score" relation of the ladder models). Do not extrapolate benchmarks where the small models are near random; say so honestly.
+- [ ] Recipe validation (a): apply the post-training recipe to 2–3 ladder Base models. Get the relation "Base quality → tool-calling score", and extrapolate it to the main line.
+- [ ] Recipe validation (b): apply the post-training recipe to an existing open Base model of the same size, to see the upper limit of the recipe (validation only, do not publish).
+- [ ] Do the predictions reach the hard goal (the criterion in the preregistration)? Write the answer as the Gate 1 report.
+- [ ] Submit the pretraining budget (`estimate_cost --config configs/main/pretrain.toml --tokens 400B --mfu <measured>`) together with the report.
+- [ ] **Wait for approval.**
 
-## 5. 阶段 9：预训练、中期训练、长上下文与闸门 2（约 $5,700）
+## 5. Stage 9: pretraining, mid-training, long context, and Gate 2 (about $5,700)
 
 ```bash
-# 预训练（约 400B token，762,940 步；估算 1,952 GPU·h ≈ $4.9K @ MFU 0.4 —— 以实测 MFU 重算后报批）
+# Pretraining (about 400B tokens, 762,940 steps; estimate 1,952 GPU·h ≈ $4.9K @ MFU 0.4. Calculate again with the measured MFU, then ask for approval)
 uv run torchrun --standalone --nproc_per_node=8 -m zero.train.pretrain --config configs/main/pretrain.toml
-# 中期训练 / 退火（≈ 26B token，估算 127 GPU·h ≈ $317）
+# Mid-training / annealing (≈ 26B tokens, estimate 127 GPU·h ≈ $317)
 uv run torchrun --standalone --nproc_per_node=8 -m zero.train.midtrain --config configs/main/midtrain.toml
-# 长上下文扩展到 32K（≈ 4.2B token，估算 79 GPU·h ≈ $197）
+# Long-context extension to 32K (≈ 4.2B tokens, estimate 79 GPU·h ≈ $197)
 uv run torchrun --standalone --nproc_per_node=8 -m zero.train.midtrain --config configs/main/longctx.toml
 ```
 
-注意：最初按 500B token 估算约 $6.1K（MFU 0.4），超过 GOAL.md 3.4 给预训练的 ~$5K；第 12 章据此把默认值降到约 400B token（`max_steps = 762940`，MFU 0.4 时约 $4.9K）。闸门 1 仍需用阶梯实验和实测 MFU 在"token 数、MFU、租价"三者之间定稿。
+> **Note:** the first estimate, for 500B tokens, was about $6.1K (MFU 0.4). This is more than the ~$5K that GOAL.md 3.4 gives to pretraining. Thus Chapter 12 decreased the default to about 400B tokens (`max_steps = 762940`, about $4.9K at MFU 0.4). Gate 1 must still fix the final balance of three values: the token count, the MFU, and the rental price. Use the ladder experiments and the measured MFU for this decision.
 
-需要盯的指标：
+Metrics to watch:
 
-- `loss` / `val_loss`：平滑下降；与阶梯外推曲线对比；
-- `grad_norm`：稳定在 0.2–1 附近，突然放大 10 倍以上是 spike 前兆；
-- `tok_per_s`、`mfu`：掉速说明有卡慢（查 `nvidia-smi`、NCCL 日志）；
-- `mixture_counts`：各来源实际采样比例与配置一致；
-- checkpoint 每 2,000 步一个，`keep_last = 3`；每天抽一个 checkpoint 做少样本评测（`zero.eval.harness` 的选择题 + lm-eval 的小子集）。
+- `loss` / `val_loss`: they decrease smoothly. Compare them with the extrapolated ladder curve.
+- `grad_norm`: it stays stable near 0.2–1. A sudden increase of more than 10 times is an early sign of a spike.
+- `tok_per_s`, `mfu`: a drop in speed means that a GPU is slow (check `nvidia-smi` and the NCCL logs).
+- `mixture_counts`: the real sampling ratio of each source agrees with the configuration.
+- Checkpoints: one each 2,000 steps, `keep_last = 3`. Each day, take one checkpoint and do a few-shot evaluation (the multiple-choice items of `zero.eval.harness` + a small subset of lm-eval).
 
-故障处理：loss 变 NaN / 发散 → 训练循环会自动停下（`FloatingPointError`）；从上一个 checkpoint 续训，必要时跳过出问题的数据段（改 `data` 的种子或剔除分片）、降低学习率。机器被抢占 → 同一条命令重跑自动续训。
+Failure handling: if the loss becomes NaN or diverges, the training loop stops automatically (`FloatingPointError`). Resume from the last checkpoint. If necessary, skip the bad data segment (change the `data` seed or remove the shard), and decrease the learning rate. If the machine is preempted, run the same command again. Training then resumes automatically.
 
-**闸门 2 检查清单**：
+**Gate 2 checklist**:
 
-- [ ] Base 模型在预注册的 Base 基准上的实际分数 vs 闸门 1 的预测（逐项列出偏差）
-- [ ] 明显偏低时先诊断（数据、学习率、评测模板），写诊断报告，再决定是否进入后训练
-- [ ] 去污染检查：训练数据与全部评测集的 13-gram 重叠（`zero/data/decontam.py`），结果写进模型卡草稿
-- [ ] 花费记账
+- [ ] The real scores of the Base model on the preregistered Base benchmarks vs. the prediction of Gate 1 (list the deviation of each item).
+- [ ] If the scores are clearly lower, diagnose first (data, learning rate, evaluation template). Write a diagnosis report, then decide whether to start post-training.
+- [ ] Decontamination check: the 13-gram overlap of the training data with all evaluation sets (`zero/data/decontam.py`). Write the result into the draft model card.
+- [ ] Record the cost.
 
-## 6. 阶段 10：后训练、闸门 3 与发布（约 $1,500 + $200）
+## 6. Stage 10: post-training, Gate 3, and release (about $1,500 + $200)
 
 ```bash
-# SFT（≈ 1B 窗口 token，估算 6.9 GPU·h ≈ $17）
+# SFT (≈ 1B window tokens, estimate 6.9 GPU·h ≈ $17)
 uv run torchrun --standalone --nproc_per_node=8 -m zero.post.sft --config configs/main/sft.toml
-# 蒸馏：先起教师服务（许可证核实后在配置里填 name / version / license / license_allows_distillation）
-vllm serve <教师> --served-model-name teacher --enable-auto-tool-choice --tool-call-parser hermes &
+# Distillation: first start the teacher server (after you verify the license, fill in name / version / license / license_allows_distillation in the configuration)
+vllm serve <teacher> --served-model-name teacher --enable-auto-tool-choice --tool-call-parser hermes &
 uv run python -m zero.post.distill --config configs/main/distill.toml
-# DPO（单进程实现）
+# DPO (single-process implementation)
 uv run python -m zero.post.dpo --config configs/main/dpo.toml
-# GRPO（单进程实现；吞吐不够时先与 verl 对拍，再用 verl，见 zero/post/grpo.py 模块说明）
+# GRPO (single-process implementation; if the throughput is too low, first do a parity check against verl, then use verl; see the module docstring of zero/post/grpo.py)
 uv run python -m zero.post.grpo --config configs/main/grpo.toml
-# 内部评测（tool_env dev + 玩具集，配对 bootstrap）
+# Internal evaluation (tool_env dev + toy sets, paired bootstrap)
 uv run python -m zero.eval.harness --config configs/main/eval.toml
-# 导出
+# Export (the test prompt 你好 in --run means "hello"; it is data, so keep it)
 uv run python -c "from zero.post.common import load_policy; from zero.hf import export_to_hf_qwen3; m,t=load_policy('out/main/grpo/ckpt'); export_to_hf_qwen3(m,None,'out/main/hf_final',tokenizer=t,chat=True)"
 uv run python -m zero.export.gguf --hf-dir out/main/hf_final --out out/main/zero-f16.gguf --quantize Q4_K_M --run "<|im_start|>user\n你好<|im_end|>\n<|im_start|>assistant\n"
 ```
 
-预算说明：教师数据生成的成本取决于教师大小和样本数（vLLM 吞吐实测后估算）；GRPO 的成本主要是采样，阶段 6 第 9 项实测每步耗时后，用"每步秒数 × 步数 × $20/小时"估算，超过 $100 报批。
+Budget notes: the cost of teacher data generation depends on the size of the teacher and the number of samples (estimate it after you measure the vLLM throughput). The cost of GRPO is mostly sampling. Stage 6, item 9 measures the time of each step. Then estimate the cost as "seconds per step × steps × $20/hour". If it is more than $100, ask for approval.
 
-需要盯的指标：
+Metrics to watch:
 
-- SFT / 蒸馏：只在助手 token 上的 `loss`、`val_loss`；蒸馏数据的执行验证通过率（`teacher.jsonl.meta.json`）；
-- DPO：`loss` 从 0.693 下降、`acc`（隐式奖励 chosen > rejected 的比例）、`margin`；`chosen_reward` 也在下降说明在"一起压低"，要警惕；
-- GRPO：`reward_mean`、`format_rate`、**`call_rate`**（冒烟测试里出现过"不再调用工具"的作弊，见 `tool_env.py` 第 8 条）、`resp_len`、`kl`、`clip_frac`、`zero_std_groups`（太高说明任务太难或太简单）；
-- 每个阶段结束都跑一次 `zero.eval.harness` 和 BFCL 子集，任何一项明显退化就回退到上一阶段的 checkpoint。
+- SFT / distillation: `loss` and `val_loss` on the assistant tokens only; the pass rate of the execution check on the distillation data (`teacher.jsonl.meta.json`).
+- DPO: `loss` decreases from 0.693; `acc` (the fraction of pairs where the implicit reward of chosen > rejected); `margin`. If `chosen_reward` also decreases, the training "pushes both down together": be careful.
+- GRPO: `reward_mean`, `format_rate`, **`call_rate`** (in the smoke test, a hack occurred where the model "stops calling tools"; see item 8 in `tool_env.py`), `resp_len`, `kl`, `clip_frac`, `zero_std_groups` (a high value means that the tasks are too difficult or too easy).
+- At the end of each stage, run `zero.eval.harness` and a BFCL subset. If any item clearly degrades, go back to the checkpoint of the previous stage.
 
-**闸门 3 检查清单**（发布前）：
+**Gate 3 checklist** (before the release):
 
-- [ ] 按 `eval/PREREGISTRATION.md` 冻结的基准、框架版本、模板、解码参数跑完全部评测，保存逐题结果
-- [ ] 与每个对手做配对 bootstrap（`zero.eval.bootstrap`，对手取思考 / 非思考中较高者），按预注册的判定标准给出"超过 / 持平 / 落后"
-- [ ] 没达到硬目标就不宣称"超过"，如实写差距分析
-- [ ] 去污染：训练数据（含教师合成数据）与评测集的 n-gram 重叠、工具函数名 / schema 与 BFCL 的重合检查
-- [ ] 模型卡：数据与许可证、各阶段配方与花费、预注册、全部评测结果（含落后项）、去污染结果、已知局限
-- [ ] GGUF 在笔记本上用 llama.cpp 跑通（Q4_K_M），本地 demo（`python -m zero.demo.cli --model out/main/hf_final`）录屏
-- [ ] 发布后再查冻结日之后的新模型，写"发布后新增对手"
-- [ ] **等最后确认再发布**
+- [ ] Run all evaluations with the benchmarks, framework versions, templates, and decoding parameters that `eval/PREREGISTRATION.md` froze. Save the per-question results.
+- [ ] Do a paired bootstrap against each opponent (`zero.eval.bootstrap`; for the opponent, use the higher of thinking / non-thinking). Use the preregistered criteria to give "ahead / tie / behind".
+- [ ] If the model does not reach the hard goal, do not claim "ahead". Write an honest gap analysis.
+- [ ] Decontamination: the n-gram overlap of the training data (teacher synthetic data included) with the evaluation sets, and the overlap check of tool function names / schemas with BFCL.
+- [ ] Model card: data and licenses, the recipe and cost of each stage, the preregistration, all evaluation results (the items where we are behind included), the decontamination results, and the known limitations.
+- [ ] The GGUF (Q4_K_M) runs with llama.cpp on a laptop. Record the screen during the local demo (`python -m zero.demo.cli --model out/main/hf_final`).
+- [ ] After the release, look again for new models released after the freeze date. Write "Opponents added after release".
+- [ ] **Wait for the final confirmation before the release.**
 
-## 7. 预算对照（GOAL.md 3.4）
+## 7. Budget comparison (GOAL.md 3.4)
 
-| 用途 | GOAL 预算 | 当前估算（MFU 0.4） | 备注 |
+| Use | GOAL budget | Current estimate (MFU 0.4) | Notes |
 |---|---:|---:|---|
-| 阶段 6 GPU 验证 | （预留内） | ≤ $50 | |
-| 第 11 章对手重跑 | ~$200 | $60–200 | 取决于对手数量 |
-| 第 12–13 章阶梯、消融、配方验证 | ~$1,200 | 阶梯本身 < $40，主要是消融 | |
-| 第 14 章预训练 | ~$5,000 | ~$4,900（400B token，MFU 0.4） | 需实测 MFU 后定稿 |
-| 第 15 章中期训练 + 长上下文 | ~$700 | ~$514 | |
-| 第 16–19 章后训练 | ~$1,500 | SFT ~$17 + 蒸馏/DPO/GRPO 待实测 | |
-| 第 20 章最终评测与发布 | ~$200 | — | |
-| 第五部分架构实验 | ~$400 | — | 可选 |
+| Stage 6 GPU verification | (inside the reserve) | ≤ $50 | |
+| Chapter 11 opponent reruns | ~$200 | $60–200 | Depends on the number of opponents |
+| Chapters 12–13 ladder, ablations, recipe validation | ~$1,200 | Ladder itself < $40; most of the cost is ablations | |
+| Chapter 14 pretraining | ~$5,000 | ~$4,900 (400B tokens, MFU 0.4) | Fix it after the MFU measurement |
+| Chapter 15 mid-training + long context | ~$700 | ~$514 | |
+| Chapters 16–19 post-training | ~$1,500 | SFT ~$17 + distillation/DPO/GRPO to be measured | |
+| Chapter 20 final evaluation and release | ~$200 | — | |
+| Part 5 architecture experiments | ~$400 | — | Optional |

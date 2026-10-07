@@ -1,9 +1,13 @@
-"""旁白合成：把每一镜的旁白逐句合成语音，记录每句的起止时间（用来生成字幕）。
+"""Narration synthesis: synthesize the narration of each shot sentence by sentence.
 
-后端（环境变量 VIDEO_TTS 选择）：
-- sherpa（默认）：离线的 sherpa-onnx + MeloTTS 中英混读模型，MIT 许可，结果可复现，
-  不依赖网络服务。模型不存在时自动从 GitHub Releases 下载。
-- edge：edge-tts（微软在线语音），需要能访问 speech.platform.bing.com 的 WebSocket。
+It records the start and end time of each sentence (for the subtitles).
+
+Backends (select one with the environment variable VIDEO_TTS):
+- sherpa (default): offline sherpa-onnx with the MeloTTS model for mixed Chinese and English.
+  MIT license, reproducible results, no network service. If the model is not on the disk,
+  the script downloads it from GitHub Releases.
+- edge: edge-tts (Microsoft online voices). It needs access to the WebSocket of
+  speech.platform.bing.com.
 """
 
 from __future__ import annotations
@@ -24,10 +28,10 @@ import numpy as np
 from .script import Shot
 
 SAMPLE_RATE = 44100
-SENTENCE_GAP = 0.4   # 句与句之间的停顿（秒）
-SHOT_TAIL = 0.6      # 每镜旁白结束后的留白（秒）
-DEFAULT_SPEED = float(os.environ.get("VIDEO_TTS_SPEED", "0.9"))  # 1.0 约每秒 6 个汉字，偏快
-PEAK_TARGET = 0.7    # 约 -3 dBFS：每镜统一响度，同时给 AAC 编码留余量
+SENTENCE_GAP = 0.4   # pause between two sentences (s)
+SHOT_TAIL = 0.6      # silence after the narration of each shot (s)
+DEFAULT_SPEED = float(os.environ.get("VIDEO_TTS_SPEED", "0.9"))  # 1.0 is about 6 Chinese characters/s, a bit fast
+PEAK_TARGET = 0.7    # about -3 dBFS: the same loudness in each shot, with headroom for the AAC encoder
 
 _MELO_URL = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-melo-tts-zh_en.tar.bz2"
@@ -37,7 +41,7 @@ _MELO_URL = (
 @dataclass
 class SentenceTiming:
     display: str
-    start: float  # 相对本镜开始的秒数
+    start: float  # seconds from the start of the shot
     end: float
 
 
@@ -55,10 +59,10 @@ def _model_dir() -> Path:
     if not (target / "model.onnx").exists():
         d.mkdir(parents=True, exist_ok=True)
         archive = d / "vits-melo-tts-zh_en.tar.bz2"
-        print(f"[tts] 下载 TTS 模型到 {archive} …")
+        print(f"[tts] Downloading the TTS model to {archive} …")
         urllib.request.urlretrieve(_MELO_URL, archive)
         with tarfile.open(archive) as tf:
-            tf.extractall(d)  # noqa: S202 - 固定来源的官方模型包
+            tf.extractall(d)  # noqa: S202 - official model archive from a fixed source
     return target
 
 
@@ -78,7 +82,7 @@ class _SherpaBackend:
         fsts = ",".join(
             str(d / f) for f in ["date.fst", "number.fst", "phone.fst", "new_heteronym.fst"]
         )
-        # 默认用满所有核；共享服务器上用 VIDEO_TTS_THREADS 限制线程数
+        # The default uses all cores. On a shared server, set VIDEO_TTS_THREADS to limit the threads.
         threads = int(os.environ.get("VIDEO_TTS_THREADS", "0")) or os.cpu_count() or 2
         cfg = sherpa_onnx.OfflineTtsConfig(
             model=sherpa_onnx.OfflineTtsModelConfig(vits=vits, num_threads=threads),
@@ -152,11 +156,15 @@ def make_backend(name: str | None = None, speed: float | None = None):
         return _SherpaBackend(speed=speed)
     if name == "edge":
         return _EdgeBackend(speed=speed)
-    raise ValueError(f"未知的 TTS 后端：{name}")
+    raise ValueError(f"Unknown TTS backend: {name}")
 
 
 def synthesize_shots(shots: list[Shot], out_dir: Path, backend=None) -> list[ShotAudio]:
-    """逐镜合成旁白；按文本哈希缓存，旁白没改就不重新合成。"""
+    """Synthesize the narration shot by shot.
+
+    The cache key is a hash of the text. If the narration did not change, the shot is not
+    synthesized again.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     backend = backend or make_backend()
     results: list[ShotAudio] = []
@@ -199,5 +207,5 @@ def synthesize_shots(shots: list[Shot], out_dir: Path, backend=None) -> list[Sho
             encoding="utf-8",
         )
         results.append(ShotAudio(shot.shot_id, str(wav_path), duration, timings))
-        print(f"[tts] {shot.shot_id}: {duration:.1f}s，{len(timings)} 句")
+        print(f"[tts] {shot.shot_id}: {duration:.1f}s, {len(timings)} sentences")
     return results

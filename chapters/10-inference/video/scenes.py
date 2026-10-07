@@ -1,8 +1,9 @@
-"""第 10 章视频：推理 —— 采样、KV cache、GQA
+"""Chapter 10 video: inference — sampling, KV cache, GQA.
 
-画面里的所有数值都由 ../code/ 中的代码真实计算（见 script.md 事实清单）。
-较慢的计算（测速、GQA 对比）结果缓存在 video/out/cache.json；删掉它会重新计算。
-渲染：bash chapters/10-inference/video/build.sh
+The code in ../code/ calculates all numbers in the frames (see the fact list in script.md).
+The results of the slow calculations (speed tests, GQA comparison) are cached in
+video/out/cache.json. If you delete the file, the script calculates them again.
+Render: bash chapters/10-inference/video/build.sh
 """
 
 from __future__ import annotations
@@ -53,7 +54,7 @@ def _load(name: str, filename: str):
 
 
 def compute() -> dict:
-    """从 ../code 真实计算视频要用的全部数字。"""
+    """Calculate all numbers for the video with the real code in ../code."""
     import torch
 
     tiny = _load("tiny_model", "01_tiny_model.py")
@@ -140,7 +141,7 @@ def token_box(ch: str, color: str, size: float = 0.42) -> VGroup:
 
 def bars(values, labels, width=0.5, max_h=3.0, vmax=None, color=theme.OUTPUT, gap=0.15,
          label_size=22, base_y=-2.2) -> VGroup:
-    """竖直柱状图：返回 VGroup(柱子组, 标签组)，柱底在 base_y。"""
+    """Vertical bar chart: return VGroup(bar group, label group). The bars start at base_y."""
     vmax = vmax or max(values)
     rects, labs = VGroup(), VGroup()
     for i, (v, lab) in enumerate(zip(values, labels)):
@@ -174,7 +175,7 @@ class ChapterScene(NarratedScene):
         self.s15()
         self.s16()
 
-    # ── S01 片头 ─────────────────────────────────────────────────────────
+    # ── S01 Opening ──────────────────────────────────────────────────────
     def s01(self):
         with self.shot("S01"):
             card = self.chapter_card()
@@ -184,7 +185,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-    # ── S02 自回归生成 ───────────────────────────────────────────────────
+    # ── S02 Autoregressive generation ────────────────────────────────────
     def s02(self):
         with self.shot("S02"):
             self.play(*self.set_heading("自回归生成：一次一个字"), run_time=self.fit(0.8))
@@ -221,7 +222,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(boxes, p_lbl, model, m_lbl, loop)), run_time=self.fit(0.6))
 
-    # ── S03 贪心的问题 ───────────────────────────────────────────────────
+    # ── S03 The problem with greedy decoding ─────────────────────────────
     def s03(self):
         with self.shot("S03"):
             self.play(*self.set_heading("贪心：每一步都挑概率最大的"), run_time=self.fit(0.8))
@@ -247,7 +248,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(greedy), FadeOut(topp), run_time=self.fit(0.6))
 
-    # ── S04 温度 ─────────────────────────────────────────────────────────
+    # ── S04 Temperature ──────────────────────────────────────────────────
     def s04(self):
         with self.shot("S04"):
             self.play(*self.set_heading("温度：先把分布调尖或调平"), run_time=self.fit(0.8))
@@ -281,7 +282,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(cur, tlabel, formula, ctx)), run_time=self.fit(0.6))
 
-    # ── S05 top-k 与 top-p ───────────────────────────────────────────────
+    # ── S05 top-k and top-p ──────────────────────────────────────────────
     def s05(self):
         with self.shot("S05"):
             self.play(*self.set_heading("截掉长尾：top-k 与 top-p"), run_time=self.fit(0.8))
@@ -319,7 +320,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(groups), FadeOut(marks), run_time=self.fit(0.6))
 
-    # ── S06 默认配置 ─────────────────────────────────────────────────────
+    # ── S06 Default settings ─────────────────────────────────────────────
     def s06(self):
         with self.shot("S06"):
             self.play(*self.set_heading("标准做法：温度 + top-p"), run_time=self.fit(0.8))
@@ -355,7 +356,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(table), FadeOut(chart), FadeOut(cap), run_time=self.fit(0.6))
 
-    # ── S07 重复计算的三角形 ─────────────────────────────────────────────
+    # ── S07 The triangle of repeated calculations ────────────────────────
     def s07(self):
         with self.shot("S07"):
             self.play(*self.set_heading("朴素生成：每一步都从头重算"), run_time=self.fit(0.8))
@@ -400,7 +401,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(grid, xl, yl, note, txt, rep)), run_time=self.fit(0.6))
 
-    # ── S08 KV cache 原理 ────────────────────────────────────────────────
+    # ── S08 How the KV cache works ───────────────────────────────────────
     def s08(self):
         with self.shot("S08"):
             self.play(*self.set_heading("KV cache：把算过的 K、V 存起来"), run_time=self.fit(0.8))
@@ -457,7 +458,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeOut(VGroup(ks, vs, k_lbl, v_lbl, cache_title, info, res, noq)),
                       run_time=self.fit(0.6))
 
-    # ── S09 实测速度 ─────────────────────────────────────────────────────
+    # ── S09 Measured speed ───────────────────────────────────────────────
     def s09(self):
         with self.shot("S09"):
             self.play(*self.set_heading("实测：缓存版快多少（单线程 CPU）"), run_time=self.fit(0.8))
@@ -498,7 +499,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(group, legend, same)), run_time=self.fit(0.6))
 
-    # ── S10 prefill 与 decode ────────────────────────────────────────────
+    # ── S10 prefill and decode ───────────────────────────────────────────
     def s10(self):
         with self.shot("S10"):
             self.play(*self.set_heading("两个阶段：prefill 与 decode"), run_time=self.fit(0.8))
@@ -531,7 +532,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeOut(VGroup(pre, pre_l, pre_t, segs, dec_l, dec_t, ratio)),
                       run_time=self.fit(0.6))
 
-    # ── S11 显存账 ───────────────────────────────────────────────────────
+    # ── S11 The GPU-memory ledger ────────────────────────────────────────
     def s11(self):
         with self.shot("S11"):
             self.play(*self.set_heading("代价：KV cache 占显存"), run_time=self.fit(0.8))
@@ -571,7 +572,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(f, sub, sub_r, who, rows, b16)), run_time=self.fit(0.6))
 
-    # ── S12 GQA 思路 ─────────────────────────────────────────────────────
+    # ── S12 The idea of GQA ──────────────────────────────────────────────
     def s12(self):
         with self.shot("S12"):
             self.play(*self.set_heading("GQA：几个查询头共享一组 K、V"), run_time=self.fit(0.8))
@@ -615,7 +616,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(cols, bars_g, cap)), run_time=self.fit(0.6))
 
-    # ── S13 GQA 小实验 ───────────────────────────────────────────────────
+    # ── S13 A small GQA experiment ───────────────────────────────────────
     def s13(self):
         with self.shot("S13"):
             self.play(*self.set_heading("小实验：同样训练 600 步"), run_time=self.fit(0.8))
@@ -646,7 +647,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(table, nz, concl)), run_time=self.fit(0.6))
 
-    # ── S14 公开模型 ─────────────────────────────────────────────────────
+    # ── S14 Public models ────────────────────────────────────────────────
     def s14(self):
         with self.shot("S14"):
             self.play(*self.set_heading("主流开源模型都在用 GQA"), run_time=self.fit(0.8))
@@ -679,7 +680,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(rows, leg)), run_time=self.fit(0.6))
 
-    # ── S15 从极简到生产级 ───────────────────────────────────────────────
+    # ── S15 From minimal code to production code ─────────────────────────
     def s15(self):
         with self.shot("S15"):
             self.play(*self.set_heading("从极简到生产级"), run_time=self.fit(0.8))
@@ -711,7 +712,7 @@ F.scaled_dot_product_attention(q, k, v,
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(code), FadeOut(side), run_time=self.fit(0.6))
 
-    # ── S16 小结与下一章 ─────────────────────────────────────────────────
+    # ── S16 Summary and the next chapter ─────────────────────────────────
     def s16(self):
         with self.shot("S16"):
             self.play(*self.set_heading("小结"), run_time=self.fit(0.8))

@@ -159,7 +159,7 @@ Layout rules:
 bash chapters/NN-slug/video/build.sh --preview    # 480p sample, about 2 minutes
 ```
 
-- Read the delivery check ("交付检查") at the end of the terminal output. `problems` must be empty. The length must be 5–10 minutes (the sample also reports the length).
+- Read the delivery check (`[build] Delivery check:`) at the end of the terminal output. `problems` must be empty. The length must be 5–10 minutes (the sample also reports the length).
 - Open the screenshots from the middle of each shot in `video/out/frames/`, and check the layout. You can join them into a grid with ffmpeg and look at the grid with the Read tool:
   `ffmpeg -i a.png -i b.png -i c.png -i d.png -filter_complex "[0][1]hstack[x];[2][3]hstack[y];[x][y]vstack" grid.png`
 - Check for these problems: text that overlaps, text outside the frame, content in the subtitle area, headings on top of each other, and lines outside the axes. Fix them until the frames are clean.
