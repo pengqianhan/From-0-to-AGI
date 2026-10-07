@@ -113,4 +113,4 @@ Pass criteria (write them in the Gate 1 report):
 | Learning-rate sweep for each size; if the best value is at an edge, add one more value outside | `code/03_lr_sweep.py` |
 | Power-law extrapolation of η\*(N) to the held-out size | Same as above; the held-out size s5 uses the extrapolated learning rate |
 | `zero.tools.fit_scaling` (non-negative least squares + grouped bootstrap) | `fit_lnd` / `bootstrap` in `04_mini_ladder.py` |
-| l300m held-out test | s5 held-out test (2.3× the largest ladder size) |
+| l300m held-out test | s5 held-out test (2.15× the largest ladder size: N = 467,936 / 217,792) |
