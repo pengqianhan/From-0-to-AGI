@@ -1,18 +1,24 @@
-"""第 16 章 · 极简代码 3：把一个只会续写的小底座，SFT 成会发工具调用的模型
+"""Chapter 16 · Minimal code 3: use SFT to turn a small base model that only continues text
+into a model that writes tool calls.
 
-底座：第 10 章在莎士比亚上训练的字符级小模型（0.86M 参数；没有缓存就先花一两分钟训练它）。
-步骤：
-  1. 看底座怎么"回答"问题：它只会续写，不会回答；
-  2. 扩词表：加上 { } " _ 数字等新字符和 4 个特殊 token（新行用旧 embedding 的平均值初始化）；
-  3. 全参数 SFT：同样的数据、同样的步数，一次只在助手 token 上算 loss（有 mask），一次所有 token
-     都算（无 mask）；
-  4. 在 50 道**没见过的城市和数字**上贪心生成，统计格式对 / 函数名对 / 参数全对的比例；
-  5. 附加：只给 40 条数据训同样多步（约 60 个 epoch），看过拟合。
+Base model: the character-level small model of Chapter 10, trained on Shakespeare (0.86M
+parameters). If there is no cache, the script first trains it (one or two minutes).
+Steps:
+  1. See how the base model "answers" a question: it only continues the text. It does not answer.
+  2. Extend the vocabulary: add new characters ({ } " _ digits, ...) and 4 special tokens.
+     The new rows start from the mean of the old embeddings.
+  3. Full-parameter SFT with the same data and the same number of steps, two times: once with
+     the loss only on assistant tokens (with mask), once with the loss on all tokens (no mask).
+  4. Greedy generation on 50 questions with **cities and numbers that the model never saw**.
+     Count the fraction with the correct format / correct function name / all arguments correct.
+  5. Extra: train for the same number of steps on only 40 samples (about 60 epochs) to see
+     overfitting.
 
-所有模型只在这里训练一次，权重缓存在 code/out/（*.pt 已被 .gitignore 忽略）。
-运行：uv run python chapters/16-sft/code/03_sft_tiny.py
-（首次要训练 3 个模型，每个 300 步；构建机负载很重时共用了约 17 分钟，空闲的笔记本上会快得多。
-之后模型从缓存加载，只剩生成和判分。）
+The script trains each model only once. It caches the weights in code/out/ (.gitignore ignores *.pt).
+Run: uv run python chapters/16-sft/code/03_sft_tiny.py
+(The first run trains 3 models, 300 steps each. On the heavily loaded build machine, this took
+about 17 minutes in total. On an idle laptop, it is much faster. After that, the script loads the
+models from the cache, and only generates and scores.)
 """
 
 from __future__ import annotations
@@ -28,7 +34,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-torch.set_num_threads(1)  # 构建环境多任务共享 CPU；读者本机可以删掉这行
+torch.set_num_threads(1)  # the build machine shares its CPU between many jobs; on your computer, you can remove this line
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "out"
 
@@ -48,14 +54,17 @@ STEPS, BSZ, LR, WARMUP = 300, 8, 1e-3, 20
 N_TRAIN, N_SMALL, N_TEST = 2000, 40, 50
 
 
-# ── 底座 + 扩词表 ────────────────────────────────────────────────────────────
+# ── Base model + vocabulary extension ───────────────────────────────────────────
 def base_model():
-    return ch10.load_or_train(4)  # 第 10 章的 MHA 小模型（有缓存直接加载）
+    return ch10.load_or_train(4)  # the small MHA model of Chapter 10 (loads from the cache if it exists)
 
 
 def extend_vocab(model, tok: lm.ChatTok):
-    """共享 embedding 的词表从 65 扩到 len(tok.itos)。新 token 的向量 = 旧向量的平均（+ 一点噪声），
-    这样初始时新 token 的 logits 不会离谱地大或小。"""
+    """Extend the vocabulary of the shared embedding from 65 to len(tok.itos).
+
+    Each new token vector = the mean of the old vectors (+ a little noise). Then, at the start,
+    the logits of the new tokens are not much too large or much too small.
+    """
     old = model.emb.weight.data
     g = torch.Generator().manual_seed(0)
     new_rows = old.mean(0, keepdim=True) + 0.01 * torch.randn(len(tok.itos) - len(old), old.shape[1],
@@ -66,14 +75,14 @@ def extend_vocab(model, tok: lm.ChatTok):
     return model
 
 
-# ── 数据 ────────────────────────────────────────────────────────────────────
+# ── Data ──────────────────────────────────────────────────────────────────────
 def dataset(n: int, seed: int, split: str):
     rng = random.Random(seed)
     return [lm.make_example(rng, split) for _ in range(n)]
 
 
 def batchify(tok, examples, use_mask: bool):
-    """右侧补齐成一个 batch；补齐位置和不算 loss 的位置，目标都是 -100。"""
+    """Pad on the right to make one batch. Padding positions and positions not in the loss get target -100."""
     rows = [lm.encode_with_mask(tok, ex["messages"]) for ex in examples]
     L = max(len(ids) for ids, _ in rows) - 1
     x = torch.zeros(len(rows), L, dtype=torch.long)
@@ -86,14 +95,21 @@ def batchify(tok, examples, use_mask: bool):
 
 @torch.no_grad()
 def assistant_loss(model, tok, examples) -> float:
-    """验证指标：不管训练时用没用 mask，都只在助手 token 上算（两种训练才可比）。"""
+    """Validation metric: always on assistant tokens only, with or without a mask in training.
+
+    Only then can we compare the two kinds of training.
+    """
     x, y = batchify(tok, examples, use_mask=True)
     return F.cross_entropy(model(x).flatten(0, 1), y.flatten(), ignore_index=-100).item()
 
 
 @torch.no_grad()
 def loss_split(model, tok, examples) -> dict:
-    """把助手 token 分成两类，各自算平均 loss：参数值（城市名、数字，要从问题里照抄）/ 其余（格式、函数名）。"""
+    """Split the assistant tokens into two groups and calculate the mean loss of each group.
+
+    The groups: argument values (city names and numbers, copied from the question) / the rest
+    (format, function name).
+    """
     tot = {"args": [0.0, 0], "rest": [0.0, 0]}
     for ex in examples:
         ids, mask = lm.encode_with_mask(tok, ex["messages"])
@@ -102,14 +118,14 @@ def loss_split(model, tok, examples) -> dict:
         start = text.index('"arguments": ')
         for v in ex["call"]["arguments"].values():
             v = json.dumps(v)
-            v = v[1:-1] if v.startswith('"') else v  # 字符串值不含引号
+            v = v[1:-1] if v.startswith('"') else v  # a string value without its quotes
             p = text.index(v, start)
             a, b = len(tok.encode(text[:p])), len(tok.encode(text[: p + len(v)]))
             arg_pos |= set(range(a, b))
             start = p + len(v)
         logits = model(torch.tensor([ids[:-1]]))[0]
         nll = F.cross_entropy(logits, torch.tensor(ids[1:]), reduction="none")
-        for t in range(1, len(ids)):  # 第 t 个 token 由位置 t-1 预测
+        for t in range(1, len(ids)):  # position t-1 predicts token t
             if mask[t]:
                 k = "args" if t in arg_pos else "rest"
                 tot[k][0] += nll[t - 1].item()
@@ -117,11 +133,11 @@ def loss_split(model, tok, examples) -> dict:
     return {k: v[0] / v[1] for k, v in tot.items()} | {"n_args": tot["args"][1], "n_rest": tot["rest"][1]}
 
 
-# ── 训练 ────────────────────────────────────────────────────────────────────
+# ── Training ──────────────────────────────────────────────────────────────────
 def sft(tok, train_set, val_set, use_mask: bool, steps: int = STEPS, seed: int = 0, log=print):
     torch.manual_seed(seed)
     model = extend_vocab(base_model(), tok).train()
-    opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.0)  # 步数少，不做权重衰减
+    opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.0)  # few steps, so no weight decay
     rng = random.Random(seed)
     order: list[int] = []
     hist = []
@@ -130,7 +146,7 @@ def sft(tok, train_set, val_set, use_mask: bool, steps: int = STEPS, seed: int =
         lr = LR * min(1.0, step / WARMUP) * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * step / steps)))
         for pg in opt.param_groups:
             pg["lr"] = lr
-        if len(order) < BSZ:  # 一轮（epoch）用完就重新打乱
+        if len(order) < BSZ:  # shuffle again after each epoch
             order += rng.sample(range(len(train_set)), len(train_set))
         idx, order = order[:BSZ], order[BSZ:]
         x, y = batchify(tok, [train_set[i] for i in idx], use_mask)
@@ -144,17 +160,17 @@ def sft(tok, train_set, val_set, use_mask: bool, steps: int = STEPS, seed: int =
             v = assistant_loss(model, tok, val_set)
             model.train()
             hist.append({"step": step, "train_loss": round(loss.item(), 4), "val_asst_loss": round(v, 4)})
-            log(f"    step {step:4d}  训练 loss {loss.item():.3f}  验证（助手 token）{v:.3f}"
+            log(f"    step {step:4d}  train loss {loss.item():.3f}  val (assistant tokens) {v:.3f}"
                 f"  ({time.time() - t0:.0f}s)")
     return model.eval(), hist
 
 
-# ── 生成与判分 ──────────────────────────────────────────────────────────────
+# ── Generation and scoring ──────────────────────────────────────────────────
 @torch.no_grad()
 def reply(model, tok, messages, max_new: int = 64) -> str:
-    """贪心生成助手回复，遇到 <|im_end|> 停。"""
+    """Generate the assistant reply greedily. Stop at <|im_end|>."""
     ids, _ = lm.encode_with_mask(tok, messages, add_generation_prompt=True)
-    cache = ch10.KVCache(model.c.n_layers)  # 第 10 章的 KV cache：提示词算一次，之后每步只算新 token
+    cache = ch10.KVCache(model.c.n_layers)  # KV cache of Chapter 10: process the prompt once, then only the new token at each step
     logits = model(torch.tensor([ids]), cache)
     out = []
     for _ in range(max_new):
@@ -193,7 +209,7 @@ def continue_text(model, tok, text: str, n: int = 60) -> str:
     cache = ch10.KVCache(model.c.n_layers)
     logits, out = model(torch.tensor([ids]), cache), []
     for _ in range(n):
-        out.append(int(logits[0, -1][: tok.n_base].argmax()))  # 底座只认得旧字符
+        out.append(int(logits[0, -1][: tok.n_base].argmax()))  # the base model knows only the old characters
         logits = model(torch.tensor([[out[-1]]]), cache)
     return tok.decode(out)
 
@@ -205,7 +221,7 @@ def get_or_train(name: str, tok, train_set, val_set, use_mask: bool, log=print):
         model = extend_vocab(base_model(), tok)
         model.load_state_dict(torch.load(path, weights_only=True))
         return model.eval(), json.loads(hist_path.read_text())
-    log(f"  训练 {name}（{STEPS} 步，batch {BSZ}，lr {LR}，只需一次，之后从 {path.name} 加载）")
+    log(f"  Train {name} ({STEPS} steps, batch {BSZ}, lr {LR}). Only once: later runs load {path.name}.")
     model, hist = sft(tok, train_set, val_set, use_mask, log=log)
     OUT.mkdir(exist_ok=True)
     torch.save(model.state_dict(), path)
@@ -214,12 +230,12 @@ def get_or_train(name: str, tok, train_set, val_set, use_mask: bool, log=print):
 
 
 def run(log=print) -> dict:
-    """做全部实验，返回视频和正文要用的数字。"""
+    """Do all experiments. Return the numbers for the video and the text."""
     tok = lm.ChatTok(ch10.CharData().chars)
     train_set, val_set = dataset(N_TRAIN, 0, "train"), dataset(64, 1, "train")
-    test_set = dataset(N_TEST, 2, "test")  # 没见过的城市、随机数字
+    test_set = dataset(N_TEST, 2, "test")  # unseen cities, random numbers
     base = base_model()
-    demo = next(ex for ex in test_set if ex["call"]["name"] == "get_weather")  # 问题里没有数字，底座认得每个字符
+    demo = next(ex for ex in test_set if ex["call"]["name"] == "get_weather")  # no digits in the question, so the base model knows each character
     q = demo["messages"][1]["content"]
     res = {"n_params": sum(p.numel() for p in base.parameters()), "vocab_base": tok.n_base,
            "vocab_new": len(tok.itos), "question": q,
@@ -228,7 +244,7 @@ def run(log=print) -> dict:
     res["base_reply"] = reply(base_x, tok, demo["messages"][:2], max_new=60)
     res["base_eval"] = evaluate(base_x, tok, test_set[:20])
     res["base_val_asst_loss"] = assistant_loss(base_x, tok, val_set)
-    # 同一批数据上，"只算助手"与"全部都算"两种 loss 各是多少（底座、扩词表后）
+    # On the same data: the loss "on assistant tokens only" and "on all tokens" (base model, extended vocabulary)
     x, y_all = batchify(tok, val_set, use_mask=False)
     res["base_val_all_loss"] = F.cross_entropy(base_x(x).flatten(0, 1), y_all.flatten(),
                                                ignore_index=-100).item()
@@ -249,30 +265,30 @@ def run(log=print) -> dict:
 if __name__ == "__main__":
     t0 = time.time()
     r = run()
-    print(f"\n底座：{r['n_params'] / 1e6:.2f}M 参数，词表 {r['vocab_base']} → {r['vocab_new']}")
-    print(f"问题：{r['question']!r}")
-    print(f"底座直接续写（不套模板）：{r['base_continue']!r}")
-    print(f"底座套上对话模板后的'回答'：{r['base_reply']!r}")
-    print(f"底座在 20 道测试题上：{r['base_eval']}")
-    print(f"底座在验证集上的 loss：只算助手 token {r['base_val_asst_loss']:.3f}，"
-          f"全部 token {r['base_val_all_loss']:.3f}")
-    print("\nSFT 之后（有 mask）的回答：")
+    print(f"\nBase model: {r['n_params'] / 1e6:.2f}M parameters, vocabulary {r['vocab_base']} → {r['vocab_new']}")
+    print(f"Question: {r['question']!r}")
+    print(f"Base model continues the text (no template): {r['base_continue']!r}")
+    print(f"Base model 'answer' with the chat template: {r['base_reply']!r}")
+    print(f"Base model on 20 test questions: {r['base_eval']}")
+    print(f"Base model loss on the validation set: assistant tokens only {r['base_val_asst_loss']:.3f}, "
+          f"all tokens {r['base_val_all_loss']:.3f}")
+    print("\nAnswers after SFT (with mask):")
     for e in r["examples"]:
         print(f"  {e['q']!r:40s} → {e['reply']!r}")
-    print(f"\n{N_TEST} 道测试题（城市都没在训练里出现过）：")
-    print(f"{'设置':24s} {'格式对':>6s} {'函数名对':>8s} {'参数全对':>8s} {'验证 loss（助手）':>16s}")
-    for name, label in (("masked", "有 mask，2000 条"), ("unmasked", "无 mask，2000 条"),
-                        ("small40", "有 mask，只有 40 条")):
+    print(f"\n{N_TEST} test questions (no city was in the training data):")
+    print(f"{'setting':24s} {'format':>6s} {'name ok':>8s} {'args ok':>8s} {'val loss (asst)':>16s}")
+    for name, label in (("masked", "with mask, 2000 samples"), ("unmasked", "no mask, 2000 samples"),
+                        ("small40", "with mask, 40 samples")):
         e = r[name]["eval"]
         print(f"{label:24s} {e['format']:6.2f} {e['name']:8.2f} {e['args']:8.2f} "
               f"{r[name]['val_asst_loss']:16.3f}")
     sp = r["masked"]["split"]
-    print(f"有 mask 的模型，验证集助手 token 拆开看：参数值 {sp['n_args']} 个，平均 loss {sp['args']:.3f}；"
-          f"其余（格式、函数名）{sp['n_rest']} 个，平均 loss {sp['rest']:.3f}")
+    print(f"Model with mask, validation assistant tokens by type: argument values {sp['n_args']}, mean loss {sp['args']:.3f}; "
+          f"rest (format, function name) {sp['n_rest']}, mean loss {sp['rest']:.3f}")
     e = r["masked"]["eval_seen"]
-    print(f"对照：有 mask 的模型换成训练里见过的城市（数字仍随机）：格式 {e['format']:.2f}，"
-          f"函数名 {e['name']:.2f}，参数全对 {e['args']:.2f}")
-    print(f"\n{N_SMALL} 条数据训 {STEPS} 步（约 {STEPS * BSZ // N_SMALL} 个 epoch）的曲线：")
+    print(f"Control: model with mask on cities seen in training (numbers still random): format {e['format']:.2f}, "
+          f"name ok {e['name']:.2f}, args ok {e['args']:.2f}")
+    print(f"\nCurve: {N_SMALL} samples, {STEPS} steps (about {STEPS * BSZ // N_SMALL} epochs):")
     for h in r["small40"]["hist"]:
-        print(f"  step {h['step']:4d}  训练 loss {h['train_loss']:.3f}  验证 loss {h['val_asst_loss']:.3f}")
-    print(f"\n总耗时 {time.time() - t0:.0f}s")
+        print(f"  step {h['step']:4d}  train loss {h['train_loss']:.3f}  val loss {h['val_asst_loss']:.3f}")
+    print(f"\nTotal time {time.time() - t0:.0f}s")

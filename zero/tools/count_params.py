@@ -1,8 +1,9 @@
-"""统计模型参数量（对应第 12 章）。
+"""Count the parameters of a model (Chapter 12).
 
     uv run python -m zero.tools.count_params configs/main/pretrain.toml [configs/ladder/*.toml ...]
 
-按公式计算，不分配内存，0.8B 的配置也是瞬间出结果；`tests/test_config.py` 会用真实构建的模型核对公式。
+The tool uses formulas and does not allocate memory. Thus it gives the result immediately,
+also for a 0.8B config. `tests/test_config.py` checks the formulas against models that it builds.
 """
 
 from __future__ import annotations
@@ -14,10 +15,10 @@ from zero.model import count_params, estimate_flops_per_token
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description="统计配置对应的参数量")
+    ap = argparse.ArgumentParser(description="Count the parameters of each config")
     ap.add_argument("configs", nargs="+")
     args = ap.parse_args(argv)
-    header = f"{'配置':<40}{'总参数':>12}{'embedding':>12}{'非embedding':>13}{'每层':>10}{'FLOPs/token@max_seq':>22}"
+    header = f"{'config':<40}{'total':>12}{'embedding':>12}{'non-embed':>13}{'per layer':>10}{'FLOPs/token@max_seq':>22}"
     print(header)
     for path in args.configs:
         cfg = load_model_config(path)

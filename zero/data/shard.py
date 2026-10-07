@@ -1,14 +1,17 @@
-"""分片：把文本分词后写成 uint32 的二进制分片（对应第 14 章）。
+"""Shards: tokenize the text and write it into uint32 binary shards (Chapter 14).
 
-预训练时不能每步现场分词（太慢），所以先把全部文本分好词，按顺序写成一串 token id：
+Pretraining cannot tokenize the text at each step (too slow). So first tokenize all text, and write
+the token ids in sequence:
 
-    文档1的token … <|endoftext|> 文档2的token … <|endoftext|> …
+    tokens of document 1 … <|endoftext|> tokens of document 2 … <|endoftext|> …
 
-每篇文档后面跟一个 <|endoftext|>，模型由此学会"一篇文章到这里结束"。
-这串 token 切成若干个文件 `<name>_<idx>.bin`（`np.uint32`，没有文件头，可以直接 memmap），
-另写一个 `<name>.json` 记录元数据：分词器哈希、每个分片的 token 数、来源等。
+An <|endoftext|> follows each document. From it, the model learns "the text ends here".
+The token sequence is split into several files `<name>_<idx>.bin` (`np.uint32`, no file header,
+so memmap can open them directly). A separate `<name>.json` holds the metadata: the tokenizer hash,
+the number of tokens in each shard, the source, and more.
 
-为什么用 uint32 而不是 uint16：uint16 最多表示 65535，而本课的词表可能超过 64K（第 13 章实测决定）。
+Why uint32 and not uint16: uint16 can hold at most 65535, but the vocabulary of this course can be
+larger than 64K (a measurement in Chapter 13 decides it).
 """
 
 from __future__ import annotations
@@ -36,9 +39,10 @@ def write_shards(
     batch_docs: int = 256,
     extra_meta: dict[str, Any] | None = None,
 ) -> list[Path]:
-    """分词并写分片；每个分片最多 shard_tokens 个 token（文档可能跨分片，加载器不在意文档边界）。
+    """Tokenize and write the shards. Each shard has at most shard_tokens tokens.
 
-    返回写出的 .bin 路径列表，同时写 `<out_dir>/<name>.json`。
+    A document can continue across shards; the loader does not care about document boundaries.
+    Returns the list of .bin paths that it wrote. It also writes `<out_dir>/<name>.json`.
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -57,7 +61,7 @@ def write_shards(
         p = out / f"{name}_{len(paths):05d}.bin"
         tmp = p.with_suffix(".bin.tmp")
         buf[:fill].tofile(tmp)
-        os.replace(tmp, p)  # 原子写入：要么是完整文件，要么没有
+        os.replace(tmp, p)  # atomic write: the file is either complete or not there
         paths.append(p)
         shard_meta.append({"file": p.name, "num_tokens": int(fill)})
         fill = 0
@@ -112,12 +116,12 @@ def write_shards(
 
 
 def read_shard(path: str | os.PathLike) -> np.memmap:
-    """只读 memmap 打开一个分片（不会把整个文件读进内存）。"""
+    """Open a shard as a read-only memmap (the full file is not read into memory)."""
     return np.memmap(path, dtype=TOKEN_DTYPE, mode="r")
 
 
 def load_metadata(path: str | os.PathLike) -> dict[str, Any]:
-    """读取 <name>.json；也可以传某个 .bin，自动找同名前缀的 json。"""
+    """Read <name>.json. You can also give a .bin file: the function finds the json with the same prefix."""
     p = Path(path)
     if p.suffix == ".bin":
         stem = p.stem.rsplit("_", 1)[0]

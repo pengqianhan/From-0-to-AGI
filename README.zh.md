@@ -4,13 +4,13 @@
 
 > *You can outsource your thinking, but you cannot outsource your understanding.*
 
-这门课从一条直线 `y = ax + b` 开始。之后讲到亲手搭建 Transformer、scaling law、预训练工程、SFT、蒸馏、DPO、GRPO 强化学习，最后讲为了更长的上下文、更小的 KV cache 而出现的最新架构。**课程只讲业界已经形成共识的主流技术**（判定规则见 [GOAL.md](GOAL.md) 第 2.1 节）。课程有英文和中文两个版本，每一页都有切换到另一种语言的按钮或链接。
+这门课从一条直线 `y = ax + b` 开始。之后讲到亲手搭建 Transformer、scaling law、预训练工程、SFT、蒸馏、DPO、GRPO 强化学习，最后讲为了更长的上下文、更小的 KV cache 而出现的最新架构。**课程只讲业界已经形成共识的主流技术**（判定规则见 [GOAL.zh.md](GOAL.zh.md) 第 2.1 节）。课程有英文和中文两个版本，每一页都有切换到另一种语言的按钮或链接。
 
 每一章有三个部分：
 
 - **文字速读版**：15–30 分钟读完。顺序是直觉 → 公式 → 极简代码 → 小结。
 - **讲解视频**：5–10 分钟。视频里的每个数字都由本章代码真实算出。
-- **两层代码**：第一层是**极简代码**，在 CPU 上几秒到几分钟跑完（`chapters/NN-*/code/`）。第二层是同一个想法在主线模型里的**生产级代码**（[`zero/`](zero/DESIGN.md)）。两层代码互相对拍，保证结果一致。
+- **两层代码**：第一层是**极简代码**，在 CPU 上几秒到几分钟跑完（`chapters/NN-*/code/`）。第二层是同一个想法在主线模型里的**生产级代码**（[`zero/`](zero/DESIGN.zh.md)）。两层代码互相对拍，保证结果一致。
 
 课程的后半部分围绕一个**主线模型**。我们用约 1 万美元的算力，从零训练一个中英双语、约 0.69B 参数的小模型。目标是在**工具调用**上超过同尺寸的所有公开模型（包括 Qwen3.5-0.8B）。通用基准如实报告。生产级代码已经全部写好，并在 CPU 上用极小配置跑通。真实训练在第二步、有 GPU 之后进行（见 [runs/RUNBOOK.md](runs/RUNBOOK.md)）。
 
@@ -123,7 +123,7 @@ uv run python -m zero.smoke
 
 ```
 chapters/NN-slug/     每章：README.md（英文）、README.zh.md（中文）、code/（极简代码）、video/
-zero/                 主线模型的生产级代码（设计说明：zero/DESIGN.md）
+zero/                 主线模型的生产级代码（设计说明：zero/DESIGN.zh.md）
 configs/              tiny（CPU 冒烟测试）/ ladder（阶梯实验）/ main（主线训练）三档配置
 tests/                生产级代码的测试（uv run pytest）
 eval/                 预注册草案、对手模型清单

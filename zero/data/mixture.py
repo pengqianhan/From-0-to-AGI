@@ -1,13 +1,18 @@
-"""多来源按比例混合采样（对应第 13、15 章）。
+"""Sampling from multiple sources with a fixed mixture (Chapters 13 and 15).
 
-预训练要把网页、代码、数学、中文等来源按一定比例混在一起；中期训练会换一套比例
-（加大高质量数据、加入指令和工具调用格式数据）。这里的做法是"逐行抽签"：
+Pretraining mixes sources such as web text, code, math, and Chinese text in fixed proportions.
+Mid-training uses a different mixture (more high-quality data, plus data in the instruction and
+tool-call formats). The method here is "one draw per row":
 
-- batch 里的每一行，先按权重抽一个来源，再从那个来源的 `PackedDataLoader` 取下一个样本；
-- 抽签结果只由 (seed, rank, 行号) 决定：行号每 1024 行一组，每组用 `default_rng([seed, rank, 组号])`
-  一次抽完。于是状态只需要记"已经抽了多少行" + 各来源加载器自己的状态，续训逐字节一致。
+- For each row of a batch, draw a source by its weight. Then take the next sample from the
+  `PackedDataLoader` of that source.
+- Only (seed, rank, row index) decide the draw. The rows are in blocks of 1024. For each block,
+  `default_rng([seed, rank, block index])` draws all rows at one time. So the state is only
+  "the number of rows drawn" + the state of the loader of each source. A resumed run gives the
+  same bytes as an uninterrupted run.
 
-每个来源的加载器都按 rank 分好了片（见 loader.py），不同 rank 各自抽签、互不重复。
+The loader of each source is already split by rank (see loader.py). Each rank draws on its own,
+and the ranks do not repeat samples.
 """
 
 from __future__ import annotations
@@ -24,15 +29,15 @@ _BLOCK = 1024
 
 
 class MixtureSampler:
-    """确定性的加权抽签：第 i 次抽签的结果只取决于 (seed, rank, i)。"""
+    """Deterministic weighted draws: the result of draw i depends only on (seed, rank, i)."""
 
     def __init__(self, weights: Mapping[str, float], seed: int = 0, rank: int = 0) -> None:
         if not weights:
-            raise ValueError("weights 不能为空")
+            raise ValueError("weights must not be empty")
         self.names = list(weights)
         w = np.array([float(weights[n]) for n in self.names])
         if (w <= 0).any():
-            raise ValueError(f"权重必须 > 0：{dict(weights)}")
+            raise ValueError(f"All weights must be > 0: {dict(weights)}")
         self.probs = w / w.sum()
         self.seed = seed
         self.rank = rank
@@ -53,7 +58,7 @@ class MixtureSampler:
 
 
 class MixtureLoader:
-    """把多个 `PackedDataLoader` 按权重混成一个加载器，接口与 PackedDataLoader 相同。"""
+    """Mix several `PackedDataLoader`s by weight into one loader. The interface is the same as PackedDataLoader."""
 
     def __init__(
         self,
@@ -66,16 +71,16 @@ class MixtureLoader:
     ) -> None:
         missing = set(weights) - set(loaders)
         if missing:
-            raise ValueError(f"这些来源有权重但没有加载器：{sorted(missing)}")
+            raise ValueError(f"These sources have a weight but no loader: {sorted(missing)}")
         self.loaders = dict(loaders)
         self.sampler = MixtureSampler(weights, seed=seed, rank=rank)
         self.batch_size = batch_size
         self.device = device
         seq_lens = {ld.seq_len for ld in self.loaders.values()}
         if len(seq_lens) != 1:
-            raise ValueError(f"各来源的 seq_len 必须相同，实际 {seq_lens}")
+            raise ValueError(f"All sources must have the same seq_len, got {seq_lens}")
         self.seq_len = seq_lens.pop()
-        self.counts: dict[str, int] = dict.fromkeys(self.loaders, 0)  # 各来源已取的样本数（统计用）
+        self.counts: dict[str, int] = dict.fromkeys(self.loaders, 0)  # samples taken from each source (for statistics)
 
     def next_samples(self, n: int) -> np.ndarray:
         rows = []
@@ -108,7 +113,8 @@ class MixtureLoader:
             state["probs"], self.sampler.probs
         ):
             raise ValueError(
-                "混合比例和保存时不同，不能精确续训（中期训练换比例请从新的加载器状态开始）"
+                "The mixture is different from the saved one, so an exact resume is not possible "
+                "(to change the mixture for mid-training, start from a new loader state)"
             )
         self.sampler.drawn = int(state["drawn"])
         self.counts = dict(state["counts"])

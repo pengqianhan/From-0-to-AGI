@@ -1,11 +1,12 @@
-"""第 6 章 · 极简代码 7：学习率调度、warmup、梯度裁剪各自在什么时候起作用
+"""Chapter 6 · Minimal code 7: when do the learning-rate schedule, warmup, and gradient clipping help?
 
-用 06 的网络和训练循环做三组实验：
-  1. 余弦 vs WSD vs 恒定学习率；以及 WSD 的"随时收尾"：同一条 stable 轨迹，
-     在第 400 步和第 800 步各分出一个 100 步的衰减，和"事先定好总长"的余弦比；
-  2. 高学习率压力测试：去掉 warmup、去掉 RMSNorm 会怎样；
-  3. 梯度裁剪：训练中途混进 5 批坏数据（输入放大 30 倍）。
-运行：uv run python chapters/06-training-stability/code/07_schedule_experiments.py   （约 1.5 分钟）
+Three groups of experiments with the network and the training loop of 06:
+  1. cosine vs WSD vs a constant learning rate. Also, WSD can "finish at any time": from one
+     stable run, branch off a 100-step decay at step 400 and at step 800, and compare with
+     cosine runs whose total length is set before the start;
+  2. high-learning-rate stress test: what occurs without warmup, or without RMSNorm;
+  3. gradient clipping: 5 bad batches (inputs × 30) in the middle of training.
+Run: uv run python chapters/06-training-stability/code/07_schedule_experiments.py   (about 1.5 min)
 """
 
 import copy
@@ -25,7 +26,8 @@ sched = ab.sched
 
 
 def clone(model, state):
-    """复制一份模型和优化器状态（包括数据流的随机数状态），用来从同一个检查点分叉。"""
+    """Copy the model and the optimizer state (also the random state of the data stream),
+    so that several branches can start from the same checkpoint."""
     g = torch.Generator()
     g.set_state(state["data"].get_state())
     st = dict(step=state["step"], data=g, m=[t.clone() for t in state["m"]],
@@ -34,10 +36,10 @@ def clone(model, state):
 
 
 def wsd_branching(cfg=ab.FULL, decay=100, branch_at=(400, 800)):
-    """一条 stable 轨迹，在 branch_at 的每个点分出一个 decay 步的线性衰减。
+    """One stable run. At each point in branch_at, branch off a linear decay of `decay` steps.
 
-    返回 {分叉点: (stable 末尾的验证损失, 衰减后的验证损失, 衰减段的训练损失曲线)}，
-    以及主干（stable）的训练损失曲线。
+    Return {branch point: (val loss at the end of stable, val loss after the decay,
+    training-loss curve of the decay)}, and the training-loss curve of the stable trunk.
     """
     peak, warm = cfg["lr"], cfg["warmup"]
     model = ab.init_model(cfg)
@@ -70,36 +72,37 @@ def stress(cfg, lr):
 if __name__ == "__main__":
     t0 = time.time()
     fmt = ab.fmt
-    print("一、学习率调度（全套配置，800 步）")
+    print("1. Learning-rate schedules (full configuration, 800 steps)")
     for name in ["cosine", "wsd", "const"]:
         r = ab.run(dict(ab.FULL, schedule=name))
-        print(f"  {name:<7s} 验证损失 {fmt(r['val_loss'])}")
+        print(f"  {name:<7s} val loss {fmt(r['val_loss'])}")
 
-    print("\n  WSD 的随时收尾：一条 stable 主干，在第 400、800 步各分叉衰减 100 步")
+    print("\n  WSD can finish at any time: one stable trunk, with a 100-step decay branch at step 400 and 800")
     branches, _ = wsd_branching()
     for b, (before, after, _) in branches.items():
         cos, _ = cosine_run(b + 100)
-        print(f"    总长 {b + 100:>4d} 步：stable 末尾 {fmt(before)} → 衰减后 {fmt(after)}"
-              f"   对照：专门跑一次 {b + 100} 步的余弦 {fmt(cos)}")
-    print("    WSD 总共训练 400+100+400+100 = 1000 步；两次余弦要 500+900 = 1400 步")
+        print(f"    total {b + 100:>4d} steps: end of stable {fmt(before)} → after decay {fmt(after)}"
+              f"   reference: a separate {b + 100}-step cosine run {fmt(cos)}")
+    print("    WSD trains 400+100+400+100 = 1000 steps in total; two cosine runs need 500+900 = 1400 steps")
 
-    print("\n二、高学习率压力测试：η = 0.3（正常是 0.003）")
-    print("  前 150 步里的最大训练损失 / 800 步后的验证损失")
-    rows = [("全套", ab.FULL), ("去掉 warmup", dict(ab.FULL, warmup=0)),
-            ("去掉 RMSNorm", dict(ab.FULL, norm=False))]
+    print("\n2. High-learning-rate stress test: η = 0.3 (normal: 0.003)")
+    print("  max training loss in the first 150 steps / val loss after 800 steps")
+    rows = [("full", ab.FULL), ("no warmup", dict(ab.FULL, warmup=0)),
+            ("no RMSNorm", dict(ab.FULL, norm=False))]
     for name, cfg in rows:
         peak, r = stress(cfg, lr=0.3)
         peak_s = fmt(peak) if peak < 1e3 else f"{peak:.1e}"
-        print(f"  {name:<12s}{peak_s:>10s} / {fmt(r['val_loss'])}" + ("（发散）" if r["diverged"] else ""))
+        print(f"  {name:<12s}{peak_s:>10s} / {fmt(r['val_loss'])}" + (" (diverged)" if r["diverged"] else ""))
 
-    print("\n三、梯度裁剪：第 300–304 步混进 5 批坏数据（输入放大 30 倍）")
+    print("\n3. Gradient clipping: 5 bad batches at steps 300–304 (inputs × 30)")
     bad = tuple(range(300, 305))
     for norm_on in [True, False]:
         for clip in [1.0, None]:
             cfg = dict(ab.FULL, norm=norm_on, clip=clip)
             r = ab.run(cfg, bad_steps=bad)
             after = max(r["losses"][305:345])
-            print(f"  RMSNorm {'开' if norm_on else '关'}、裁剪 {'开' if clip else '关'}："
-                  f"坏数据之后 40 步内最大训练损失 {fmt(after)}，最终验证损失 {fmt(r['val_loss'])}"
-                  f"，坏数据那几步的梯度范数最大 {max(r['grad_norms'][300:305]):.1f}")
-    print(f"\n用时 {time.time() - t0:.0f} 秒")
+            print(f"  RMSNorm {'on' if norm_on else 'off'}, clipping {'on' if clip else 'off'}: "
+                  f"max training loss in the 40 steps after the bad data {fmt(after)}, "
+                  f"final val loss {fmt(r['val_loss'])}"
+                  f", max gradient norm at the bad steps {max(r['grad_norms'][300:305]):.1f}")
+    print(f"\nTime: {time.time() - t0:.0f} s")

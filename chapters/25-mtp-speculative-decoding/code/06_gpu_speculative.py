@@ -1,20 +1,29 @@
-"""第 25 章 · GPU 实测：decode 在等数据，所以"一次验证 k 个"几乎免费；推测解码在 GPU 上能快多少
+"""Chapter 25 · GPU measurements: decode waits for data, so "verify k tokens at once" is almost free.
+How much faster is speculative decoding on a GPU?
 
-正文的计时都来自单线程 CPU。这个脚本把同样的实验搬到一张 GPU 上（需要 CUDA）：
-  1. 已有 200 个位置的 KV cache，目标模型一次前向喂 T 个新 token 要多久？
-     - 本章的小目标模型（0.86M 参数，FP32）；
-     - 同一个 TinyLM 结构放大到约 4.1B 参数（宽 8192、6 层，BF16）："放大版目标"。读一遍权重要 8.3 GB，
-       落在 decode 的带宽受限区。放大版是随机初始化的——这里只测时间，前向耗时和权重的数值无关；
-  2. 本章训练好的目标 + 草稿在 GPU 上跑一遍贪心推测解码（4 段 × 200 个字符，用的就是 02 的
-     speculative_greedy）：GPU 上是否仍然逐字相同，并记下每一轮接受了几个；
-  3. 放大版目标 + 放大版草稿（1 层、宽 1024，约为目标的 1/300）：按第 2 部分每一轮真实的接受个数，
-     把推测解码的全部前向、同步和回滚"回放"一遍，测墙钟加速比，和公式
-     (1 − α^{k+1}) / ((1 − α)(1 + k·c)) 对照。（随机权重的两个模型之间谈不上"猜得准不准"，
-     所以接受几个照抄真实模型那一轮的结果；为了控制总时长，只回放前 2 段提示词。）
+All times in the main text come from a CPU with 1 thread. This script does the same experiments on
+a GPU (CUDA is necessary):
+  1. The KV cache has 200 positions. How long does one forward pass of the target take for T new tokens?
+     - The small target model of this chapter (0.86M parameters, FP32).
+     - The same TinyLM structure made larger, to about 4.1B parameters (width 8192, 6 layers, BF16):
+       the "scaled-up target". One read of its weights is 8.3 GB, so it is in the
+       bandwidth-limited region of decode. The scaled-up model has random initialization. We measure
+       only time here, and the time of a forward pass does not depend on the values of the weights.
+  2. The trained target + draft of this chapter run greedy speculative decoding on the GPU
+     (4 prompts × 200 characters, with speculative_greedy from 02). Are the outputs still
+     token-for-token identical on the GPU? The script also records how many drafts each round accepts.
+  3. Scaled-up target + scaled-up draft (1 layer, width 1024, about 1/300 of the target): use the real
+     number of accepted drafts of each round from part 2, and "replay" all forward passes,
+     synchronizations, and rollbacks of speculative decoding. Measure the wall-clock speedup and
+     compare it with the formula (1 − α^{k+1}) / ((1 − α)(1 + k·c)). (Two models with random weights
+     cannot "guess well" or "guess badly", so the number accepted is copied from the round of the real
+     models. To limit the total time, we replay only the first 2 prompts.)
 
-第 10 章的注意力用 torch.arange 在 CPU 上建因果掩码；这里只把这一处改成建在 GPU 上，其余原样复用。
-运行：uv run python chapters/25-mtp-speculative-decoding/code/06_gpu_speculative.py
-（先运行 01，让目标 / 草稿的权重缓存在 out/ 里；之后约 1–2 分钟，需要约 10 GB 显存）
+The Chapter 10 attention builds the causal mask with torch.arange on the CPU. Here we change only
+this one place so that the mask is built on the GPU. We reuse all other code without changes.
+Run: uv run python chapters/25-mtp-speculative-decoding/code/06_gpu_speculative.py
+(Run 01 first, so that the target / draft weights are cached in out/. Then this script takes about
+1–2 minutes and needs about 10 GB of GPU memory.)
 """
 
 from __future__ import annotations
@@ -44,7 +53,7 @@ def _load(name: str, filename: str):
 
 
 def patch_attention(ch10) -> None:
-    """第 10 章 Attention.forward 的原样拷贝，只把因果掩码的 arange 建在 x 所在的设备上。"""
+    """An exact copy of the Chapter 10 Attention.forward. Only the arange of the causal mask is built on the device of x."""
 
     def forward(self, x, cos, sin, cache, layer):
         B, T, _ = x.shape
@@ -59,7 +68,7 @@ def patch_attention(ch10) -> None:
         g = c.n_heads // c.n_kv_heads
         k, v = k.repeat_interleave(g, dim=1), v.repeat_interleave(g, dim=1)
         att = q @ k.transpose(-2, -1) / math.sqrt(c.head_dim)
-        i = torch.arange(T, device=x.device)[:, None] + (S - T)  # ← 唯一的改动：device=x.device
+        i = torch.arange(T, device=x.device)[:, None] + (S - T)  # ← The only change: device=x.device
         j = torch.arange(S, device=x.device)[None, :]
         att = att.masked_fill(j > i, float("-inf")).softmax(-1)
         return self.wo((att @ v).transpose(1, 2).reshape(B, T, -1))
@@ -68,7 +77,9 @@ def patch_attention(ch10) -> None:
 
 
 class OnGPU(torch.nn.Module):
-    """把 CPU 上的 token id 搬到 GPU 再前向——这样 02 的 greedy_generate / speculative_greedy 可以原样调用。"""
+    """Move the token ids from the CPU to the GPU, then run the forward pass.
+
+    Then greedy_generate / speculative_greedy from 02 work without changes."""
 
     def __init__(self, model) -> None:
         super().__init__()
@@ -79,13 +90,15 @@ class OnGPU(torch.nn.Module):
 
 
 def build_big(ch10, vocab_size: int, cfg: dict):
-    """直接在 GPU 上、直接用 BF16 建放大版（4B 参数先建 FP32 再转会超出 24 GB 显存）。"""
+    """Build the scaled-up model directly on the GPU and directly in BF16.
+
+    With 4B parameters, building in FP32 first and converting after that uses more than 24 GB of GPU memory."""
     old = torch.get_default_dtype()
     torch.set_default_dtype(torch.bfloat16)
     with torch.device(DEV):
         model = ch10.TinyLM(ch10.Config(vocab_size=vocab_size, **cfg))
     torch.set_default_dtype(old)
-    return model.to(torch.bfloat16).eval()  # RoPE 表也转成 BF16，和激活值同一精度
+    return model.to(torch.bfloat16).eval()  # Convert the RoPE tables to BF16 too: the same precision as the activations
 
 
 def n_params(model) -> int:
@@ -97,7 +110,9 @@ def n_bytes(model) -> int:
 
 
 def launch_us(n: int = 2000) -> float:
-    """这台机器上，Python 里下发一个最小的 GPU 算子要多少微秒（一个元素的加法，GPU 本身几乎不花时间）。"""
+    """Microseconds for Python to launch one minimal GPU operation on this machine.
+
+    The operation is an addition on one element, so the GPU itself uses almost no time."""
     x = torch.zeros(1, device=DEV)
     for _ in range(100):
         x.add_(1)
@@ -111,13 +126,14 @@ def launch_us(n: int = 2000) -> float:
 
 @torch.no_grad()
 def forward_ms(model, ctx: int, n_new: int, reps: int = 30) -> float:
-    """已有 ctx 个位置的缓存时，一次前向喂 n_new 个新 token 的耗时（毫秒，CUDA event 计时，中位数）。"""
+    """Time of one forward pass that feeds n_new new tokens, with ctx positions in the cache
+    (milliseconds, CUDA event timing, median)."""
     g = torch.Generator(device=DEV).manual_seed(0)
     cache = m1.KVCache(model.c.n_layers)
     model(torch.randint(0, model.c.vocab_size, (1, ctx), generator=g, device=DEV), cache)
     new = torch.randint(0, model.c.vocab_size, (1, n_new), generator=g, device=DEV)
     times = []
-    for i in range(reps + 5):  # 前 5 次是预热
+    for i in range(reps + 5):  # The first 5 runs are warmup
         start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         start.record()
         model(new, cache)
@@ -125,12 +141,12 @@ def forward_ms(model, ctx: int, n_new: int, reps: int = 30) -> float:
         torch.cuda.synchronize()
         if i >= 5:
             times.append(start.elapsed_time(end))
-        m1.truncate(cache, ctx)  # 每次都回到同样的起点
+        m1.truncate(cache, ctx)  # Go back to the same start point each time
     return statistics.median(times)
 
 
 def wall(fn, *args):
-    """墙钟时间（秒）：前后都等 GPU 算完。"""
+    """Wall-clock time (seconds). Wait for the GPU to finish before and after."""
     torch.cuda.synchronize()
     t0 = time.perf_counter()
     out = fn(*args)
@@ -140,8 +156,11 @@ def wall(fn, *args):
 
 @torch.no_grad()
 def replay(target, draft, prompt: list[int], k: int, accepted: list[int]) -> int:
-    """按给定的逐轮接受数，把 02 的 speculative_greedy 的每一步重走一遍：草稿补喂 + 猜 k 个、
-    目标一次前向验证、取 argmax（同样会等 GPU）、回滚两个缓存。只有"接受几个"不靠比较，而是照抄。"""
+    """Replay each step of speculative_greedy from 02 with the given number accepted per round.
+
+    The steps: the draft feeds the missing tokens and guesses k tokens; the target verifies them in one
+    forward pass; take the argmax (this also waits for the GPU); roll back the two caches.
+    Only the number accepted does not come from a comparison: the function copies it."""
     seq = list(prompt)
     tc, dc = m1.KVCache(target.c.n_layers), m1.KVCache(draft.c.n_layers)
     for m in accepted:
@@ -173,7 +192,7 @@ def expected_tokens(alpha: float, k: int) -> float:
 
 
 def alpha_of(traces_k: list[list[int]], k: int) -> float:
-    """逐 token 接受率 = 接受数 ÷ 被比较过的草稿数（和 02 的算法一样）。"""
+    """Per-token acceptance rate = number accepted ÷ number of drafts that were compared (the same as in 02)."""
     acc = sum(m for tr in traces_k for m in tr)
     examined = sum(m + (1 if m < k else 0) for tr in traces_k for m in tr)
     return acc / examined
@@ -181,7 +200,7 @@ def alpha_of(traces_k: list[list[int]], k: int) -> float:
 
 if __name__ == "__main__":
     if not torch.cuda.is_available():
-        print("本脚本需要 CUDA GPU；没有 GPU 可以跳过，正文里贴了一次 RTX 3090 上的结果。")
+        print("This script needs a CUDA GPU. If you do not have a GPU, skip it: the main text shows one run on an RTX 3090.")
         sys.exit(0)
     t_start = time.perf_counter()
     torch.manual_seed(0)
@@ -190,47 +209,47 @@ if __name__ == "__main__":
     ch10 = m1.ch10
     patch_attention(ch10)
     print(
-        f"GPU：{torch.cuda.get_device_name(0)}，PyTorch {torch.__version__}，CUDA {torch.version.cuda}"
+        f"GPU: {torch.cuda.get_device_name(0)}, PyTorch {torch.__version__}, CUDA {torch.version.cuda}"
     )
 
-    target, draft = m1.load_target().to(DEV), m1.load_draft().to(DEV)  # 权重来自 01 的缓存（FP32）
+    target, draft = m1.load_target().to(DEV), m1.load_draft().to(DEV)  # Weights from the cache of 01 (FP32)
     big_t = build_big(ch10, target.c.vocab_size, BIG_TARGET)
     big_d = build_big(ch10, target.c.vocab_size, BIG_DRAFT)
     print(
-        f"本章目标 {n_params(target) / 1e6:.2f}M 参数（FP32，{n_bytes(target) / 1e6:.1f} MB）；"
-        f"放大版目标 {n_params(big_t) / 1e9:.2f}B 参数（BF16，{n_bytes(big_t) / 1e9:.2f} GB），"
-        f"放大版草稿 {n_params(big_d) / 1e6:.1f}M 参数（目标的 1/{n_params(big_t) / n_params(big_d):.0f}）"
+        f"Target of this chapter {n_params(target) / 1e6:.2f}M parameters (FP32, {n_bytes(target) / 1e6:.1f} MB); "
+        f"scaled-up target {n_params(big_t) / 1e9:.2f}B parameters (BF16, {n_bytes(big_t) / 1e9:.2f} GB), "
+        f"scaled-up draft {n_params(big_d) / 1e6:.1f}M parameters (1/{n_params(big_t) / n_params(big_d):.0f} of the target)"
     )
-    print(f"这台机器上 Python 每下发一个最小的 GPU 算子约 {launch_us():.1f} µs")
+    print(f"On this machine, Python needs about {launch_us():.1f} µs to launch one minimal GPU operation")
 
-    # ── 1. 一次前向喂 T 个 token ──
+    # ── 1. One forward pass that feeds T tokens ──
     print(
-        "\n── 1. 已有 200 个位置的 KV cache，一次前向喂 T 个新 token 的耗时（CUDA event，30 次中位数）──"
+        "\n── 1. KV cache with 200 positions: time of one forward pass that feeds T new tokens (CUDA event, median of 30) ──"
     )
-    print(f"{'T':>4} {'本章目标 ms':>11} {'相对 T=1':>8} {'放大版目标 ms':>13} {'相对 T=1':>8}")
+    print(f"{'T':>4} {'target ms':>11} {'vs T=1':>8} {'big target ms':>13} {'vs T=1':>8}")
     base_s = base_b = None
     for T in (1, 2, 4, 8, 16, 64, 256):
         ts, tb = forward_ms(target, 200, T), forward_ms(big_t, 200, T)
         base_s, base_b = base_s or ts, base_b or tb
         print(f"{T:4d} {ts:11.3f} {ts / base_s:7.2f}× {tb:13.3f} {tb / base_b:7.2f}×")
     print(
-        f"放大版 T=1：{n_bytes(big_t) / 1e9:.2f} GB 权重 / {base_b:.2f} ms = 有效带宽 "
-        f"{n_bytes(big_t) / base_b / 1e6:.0f} GB/s；本章目标 T=1：{n_bytes(target) / 1e6:.1f} MB / "
+        f"Scaled-up T=1: {n_bytes(big_t) / 1e9:.2f} GB of weights / {base_b:.2f} ms = effective bandwidth "
+        f"{n_bytes(big_t) / base_b / 1e6:.0f} GB/s; target of this chapter T=1: {n_bytes(target) / 1e6:.1f} MB / "
         f"{base_s:.2f} ms = {n_bytes(target) / base_s / 1e6:.1f} GB/s"
     )
 
-    # ── 2. 本章的目标 + 草稿：GPU 上的真实推测解码（正确性 + 逐轮接受数）──
+    # ── 2. Target + draft of this chapter: real speculative decoding on the GPU (correctness + number accepted per round) ──
     P, N = m2.prompts(), 200
     T_, D_ = OnGPU(target), OnGPU(draft)
     base_out = greedy_all(T_, P, N)
-    print(f"\n── 2. 本章的目标 + 草稿搬到 GPU（FP32，贪心，4 段 × {N} 个字符）──")
-    print(f"{'k':>2} {'与目标贪心逐字相同':>12} {'接受率α':>7} {'每轮产出':>7} {'目标前向次数':>9}")
+    print(f"\n── 2. Target + draft of this chapter on the GPU (FP32, greedy, 4 prompts × {N} characters) ──")
+    print(f"{'k':>2} {'identical outputs':>12} {' accept α':>7} {' tok/round':>7} {'forward passes':>9}")
     traces = {}
     for k in KS:
         trace: list = []
         res = [m2.speculative_greedy(T_, D_, p, N, k, trace) for p in P]
         same = all(r[0] == b for r, b in zip(res, base_out))
-        # trace 按提示词顺序连在一起：按每段的轮数切开，得到每段的逐轮接受数
+        # trace joins the prompts in order: cut it by the number of rounds of each prompt to get the counts per round
         cuts = [0]
         for r in res:
             cuts.append(cuts[-1] + r[1]["rounds"])
@@ -242,11 +261,11 @@ if __name__ == "__main__":
             f"{rounds:14d}"
         )
 
-    # ── 3. 放大版：按真实的逐轮接受数回放 ──
+    # ── 3. Scaled-up models: replay with the real number accepted per round ──
     BT, BD = OnGPU(big_t), OnGPU(big_d)
     P3 = P[:2]
     c_big = forward_ms(big_d, 200, 1) / forward_ms(big_t, 200, 1)
-    replay(BT, BD, P3[0], 3, traces[3][0][:5])  # 预热
+    replay(BT, BD, P3[0], 3, traces[3][0][:5])  # Warmup
     tb_big, ts_big = [], {k: [] for k in KS}
     for _ in range(3):
         tb_big.append(wall(greedy_all, BT, P3, N)[0])
@@ -254,11 +273,11 @@ if __name__ == "__main__":
             ts_big[k].append(wall(replay_all, BT, BD, P3, k, traces[k][: len(P3)])[0])
     tbb = statistics.median(tb_big)
     print(
-        f"\n── 3. 放大版目标（{n_params(big_t) / 1e9:.2f}B）+ 放大版草稿（{n_params(big_d) / 1e6:.0f}M），"
-        f"BF16，按第 2 部分前 {len(P3)} 段的逐轮接受数回放，墙钟时间 3 次中位数 ──"
+        f"\n── 3. Scaled-up target ({n_params(big_t) / 1e9:.2f}B) + scaled-up draft ({n_params(big_d) / 1e6:.0f}M), "
+        f"BF16, replay with the counts per round of the first {len(P3)} prompts of part 2, wall-clock median of 3 ──"
     )
-    print(f"普通贪心解码 {len(P3) * N} 个 token：{tbb:.2f} s；成本系数 c ≈ {c_big:.3f}")
-    print(f"{'k':>2} {'接受率α':>7} {'每轮产出':>7} {'墙钟 s':>7} {'加速比':>6} {'公式预测':>7}")
+    print(f"Normal greedy decoding of {len(P3) * N} tokens: {tbb:.2f} s; cost coefficient c ≈ {c_big:.3f}")
+    print(f"{'k':>2} {' accept α':>7} {' tok/round':>7} {'wall (s)':>7} {' speedup':>6} {'predicted':>7}")
     for k in KS:
         a = alpha_of(traces[k][: len(P3)], k)
         rounds = sum(len(tr) for tr in traces[k][: len(P3)])
@@ -267,4 +286,4 @@ if __name__ == "__main__":
             f"{k:2d} {a:9.3f} {(sum(map(sum, traces[k][: len(P3)])) + rounds) / rounds:10.2f} "
             f"{ts:8.2f} {tbb / ts:7.2f}× {expected_tokens(a, k) / (1 + k * c_big):8.2f}×"
         )
-    print(f"\n总用时 {time.perf_counter() - t_start:.0f} s")
+    print(f"\nTotal time {time.perf_counter() - t_start:.0f} s")

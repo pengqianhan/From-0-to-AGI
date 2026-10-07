@@ -1,0 +1,452 @@
+# 第 25 章：多 token 预测与推测解码 —— 小模型先猜，大模型检查
+
+[English](README.md) · **中文**
+
+> **目标**：读完这一章，你能写出推测解码的"猜—验—回滚"循环，并验证贪心解码时输出与目标模型逐字相同。你能从 `min(1, p/q)` 和残差分布 `max(0, p − q)` 推出"采样时分布完全不变"，并在小词表上用卡方检验验证这一点。你能用 `(1 − α^{k+1}) / ((1 − α)(1 + k·c))` 估算加速比。你还能讲清楚 DeepSeek-V3 的 MTP 模块的结构，以及它为什么既能让训练更好，又能在推理时当草稿。
+
+📺 **本章视频**：还没有发布。要在本机渲染，运行 `bash chapters/25-mtp-speculative-decoding/video/build.sh`。
+🧪 **本章自检**：学完后，在 Claude Code 里输入 `/ch25-speculative`。
+
+---
+
+上一章的混合专家（MoE）让模型有很多参数，但每个 token 只用其中一小部分。这省下了每个 token 的算力。但不管是稠密模型还是 MoE，生成时仍然**一次只产出一个 token**。第 10 章讲过，decode 每一步只算一个新 token，却要把全部权重和 KV cache 从显存里读一遍。硬件大部分时间在等数据。
+
+这一章要回答的问题是：**大模型能不能一次前向就产出好几个 token，而且输出的质量完全不变？**答案是推测解码（speculative decoding）：一个便宜的草稿（draft）先猜几个 token，大模型一次前向把它们全部检查一遍。草稿从哪来？可以是一个小模型，也可以是大模型在训练时一起学会的"多 token 预测"（Multi-Token Prediction，MTP）模块。DeepSeek-V3 之后，千问、GLM、MiniMax、小米 MiMo 的主力模型都带有这种模块。
+
+本章代码：
+
+```bash
+uv run python chapters/25-mtp-speculative-decoding/code/01_models_and_cost.py    # target/draft models + "verifying k costs the same as generating 1"
+uv run python chapters/25-mtp-speculative-decoding/code/02_greedy_speculative.py # greedy speculative decoding: identical output + acceptance rate + speed
+uv run python chapters/25-mtp-speculative-decoding/code/03_speculative_sampling.py # rejection sampling keeps the distribution: chi-square test + real models
+uv run python chapters/25-mtp-speculative-decoding/code/04_speedup_formula.py    # speedup formula and best k (calculation only, instant)
+uv run python chapters/25-mtp-speculative-decoding/code/05_mtp.py                # MTP module: training + self-speculative decoding
+```
+
+目标模型（target）直接用第 10 章训练好的小模型（4 层、宽 128、字符级 65 个字符、0.86M 参数，验证集损失 1.838）。草稿模型的结构相同，**词表也相同**，但只有 1 层、宽 64（57,600 个参数，约为目标的 1/15，验证集损失 1.966）。第一次运行会训练草稿模型，并缓存到 `code/out/`。
+
+> **注意：**本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同机器、不同版本的底层数学库，浮点运算的顺序略有不同。训练几百步后，这些微小差异会被放大。你本机跑出的数字可能从小数点后第二三位开始就不一样。请以下文不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-24-26.md](../../runs/2026-10-01-gpu0-check/chapters-24-26.md)。
+
+> **注意：**本章所有计时都在一台 4 核机器上单线程测得，这台机器由多个任务共享（测量时负载在 16–33 之间）。为了减少"排队等 CPU"的干扰，计时用的是**进程 CPU 时间**（`time.process_time()`），不是墙钟时间。但计时仍有明显波动。表里的计时只用来看**数量级和趋势**。接受率、前向次数、分布检验都固定了随机种子，可以复现。
+
+## 1. 问题：decode 在等数据，不在计算
+
+回忆第 10 章的一个数字：同一个小模型，prefill 一次喂 256 个 token 的吞吐是 decode 一次喂 1 个的 41 倍。第 21 章算清楚了原因。decode 每生成一个 token，都要把全部权重和整个 KV cache 读一遍，却只做很少的乘加。"算力 ÷ 读取字节"（算术强度，arithmetic intensity）只有 1–5，而 H100 要到约 295 才能用满算力。**decode 阶段，GPU 在等数据。**
+
+这就留下了一个机会。读一遍权重的时间是固定的，所以**一次多喂几个 token，几乎不花额外时间**：读取的字节数不变，多出来的那点计算由本来就空闲的单元完成。`01_models_and_cost.py` 在 CPU 上测了这件事。KV cache 里已经有 200 个位置，目标模型一次前向喂 T 个新 token 要多久？
+
+| 一次喂 T 个 token | 1 | 2 | 3 | 5 | 9 | 17 |
+|---|---|---|---|---|---|---|
+| 目标模型耗时（ms） | 3.55 | 4.13 | 4.44 | 4.60 | 4.85 | 6.08 |
+| 相对 T = 1 | 1.00× | 1.16× | 1.25× | 1.30× | 1.36× | 1.71× |
+| 草稿模型耗时（ms） | 0.88 | 0.88 | 1.05 | 0.92 | 1.07 | 1.06 |
+
+计算量涨了 17 倍，时间只涨了 71%。（在这个极小模型和单线程 CPU 上，时间主要花在 Python 和 PyTorch 每个算子的固定开销上，不在显存带宽上。但结论的形状一样：**检查一段文字比写一段文字便宜得多**。）
+
+问题是：我们不知道后面几个 token 是什么，所以没法"一次喂好几个"。只有先有人把它们猜出来，才能这样做。
+
+## 2. 推测解码：草稿先猜，目标一次检查
+
+推测解码来自 Leviathan 等 2023。DeepMind 的 Chen 等 2023 同时提出了它，叫 speculative sampling。它借用了 CPU 的"推测执行"：先按猜测往下执行，猜错了再撤回。每一轮有四步：
+
+1. **草稿猜 k 个**：一个便宜的模型自回归地生成 k 个 token `d₁ … d_k`。
+2. **目标一次检查**：把"最后一个已确定的 token + k 个草稿"一次喂给目标模型。一次前向得到 k+1 个位置的预测。
+3. **从左往右比**：`d_i` 和目标在这个位置的答案一致，就接受。遇到第一个不一致的，停下，改用目标自己的答案（**纠正**，correction）。k 个全对时，目标在最后一个位置的答案再多给一个 token（**奖励**，bonus）。
+4. **回滚**（roll back）：被拒绝的草稿已经写进了两个模型的 KV cache，要扔掉。
+
+`02_greedy_speculative.py` 里，贪心版本的核心是这几行：
+
+```python
+feed = seq[len(tc) :] + drafts  # Confirmed tokens not in the cache yet + k drafts
+p_logits = target(torch.tensor([feed]), tc)[0, -(k + 1) :]  # One forward pass, the last k+1 positions
+choice = p_logits.argmax(-1).tolist()  # The answer of the target at each position
+m = 0
+while m < k and drafts[m] == choice[m]:  # Accept from left to right
+    m += 1
+seq += drafts[:m] + [choice[m]]  # m drafts + 1 correction (or bonus)
+truncate(tc, len(seq) - 1)  # Roll back: discard the K/V of the rejected drafts
+```
+
+这里有一个真实的例子。视频 S03 用的就是它。（在另一台机器上重训目标模型后，视频渲染时可能会选另一轮。）提示词是验证集里的一段莎士比亚。草稿猜了 4 个字符。目标模型接受了前两个，不同意第三个，换成了自己的答案。这一轮只跑了一次目标模型，就产出了 3 个字符。
+
+**每一轮至少产出 1 个 token**（最坏情况是第一个草稿就被拒，拿到目标自己的答案，和普通解码一样），**最多 k+1 个**。目标模型每轮只跑一次，所以目标的前向次数只会减少，不会增加。多花的只有草稿的时间。
+
+## 3. 贪心：为什么输出逐字相同
+
+先看最简单的情况：目标模型用贪心解码（每步取 argmax）。推测解码的每个输出 token，要么是"和目标 argmax 一致的草稿"，要么是"目标的 argmax"。**它们全都是目标模型在同样前缀下会选的 token。**所以输出和目标模型自己一步一步贪心解码的结果**逐字相同**。草稿只决定"一次能前进几步"，不决定"写什么"。
+
+这句话要用代码验证，因为它很容易写错。最常见的错误是 KV cache 没有回滚干净：被拒草稿的 K/V 留在缓存里，后面的注意力"看见"了从未发生的历史。`02` 用 4 段提示词、每段 200 个字符，在 k = 1、3、5、8 下做对拍（parity check）：
+
+```
+k=1: 4 prompts × 200 tokens, identical to greedy decoding of the target model: True
+k=3: 4 prompts × 200 tokens, identical to greedy decoding of the target model: True
+k=5: 4 prompts × 200 tokens, identical to greedy decoding of the target model: True
+k=8: 4 prompts × 200 tokens, identical to greedy decoding of the target model: True
+```
+
+回滚的写法取决于缓存的实现。第 10 章的极简缓存用 `torch.cat` 拼接，所以回滚就是切片：`cache.k[layer] = cache.k[layer][:, :, :n]`。`zero` 的缓存是预分配的（第 10 章）。`KVCache.update(layer, start_pos, k, v)` 按位置覆盖写入，只返回 `[0, start_pos + T)`。所以回滚连数据都不用动：把"有效长度"退回去，下次从那个位置开始写。
+
+> **注意：**严格说，"逐字相同"还要求浮点计算完全一样。目标模型一次喂 k+1 个 token 和一次喂 1 个 token 时，矩阵乘法的分块顺序可能不同，末位舍入也可能不同。如果两个候选的 logit 几乎相等，argmax 可能翻转。本章的 FP32 小模型上没有遇到这种情况。vLLM 的文档也专门说明：它的实现"在算法上无损"，但 GPU 上不同 batch 大小的数值差异可能让输出不完全一致。
+
+## 4. 采样：拒绝采样让分布完全不变
+
+贪心好办，采样呢？目标模型在某个位置给出分布 `p`，草稿给出另一个分布 `q`。草稿按 `q` 抽出一个 token `x`。我们希望最后留下的 token 服从 `p`，而不是 `q`。
+
+规则只有两条：
+
+1. 以概率 `min(1, p(x) / q(x))` **接受** `x`。
+2. 被拒绝时，从**残差分布**（residual distribution）`p'(x) = max(0, p(x) − q(x)) / Σ max(0, p − q)` 里重抽一个，本轮到此结束。
+
+直觉：对 `p(x) ≥ q(x)` 的 token，草稿给的概率"不够多"，所以一律接受。对 `p(x) < q(x)` 的 token，草稿给得"太多了"，所以按比例砍掉多出来的部分。砍掉的概率质量去了哪里？它正好补给草稿给得不够的那些 token：残差分布只在 `p > q` 的地方有质量。
+
+**推导**：最终抽到某个 token `x` 的概率 = "草稿抽到 x 并被接受" + "被拒绝后从残差里抽到 x"：
+
+```
+P(草稿抽到 x 且接受) = q(x) · min(1, p(x)/q(x)) = min(p(x), q(x))
+P(被拒绝)            = 1 − Σ_x min(p(x), q(x)) = 1 − α
+P(被拒后抽到 x)       = (1 − α) · max(0, p(x) − q(x)) / (1 − α)  = p(x) − min(p(x), q(x))
+两项相加              = p(x)                                                  ✓
+```
+
+（倒数第二行用到 `Σ max(0, p − q) = Σ (p − min(p, q)) = 1 − α`。）顺便得到一个重要的量：**一次接受的概率** `α = Σ_x min(p(x), q(x)) = 1 − TV(p, q)`。TV 是两个分布的总变差距离（total variation distance）。草稿和目标越像，α 越高。
+
+`03_speculative_sampling.py` 里，这条规则是：
+
+```python
+def accept_or_resample(p, q, x, g):
+    if torch.rand((), generator=g) < torch.clamp(p[x] / q[x], max=1.0):  # Accept with min(1, p/q)
+        return True, x
+    residual = torch.clamp(p - q, min=0)  # Residual max(0, p − q)
+    return False, int(torch.multinomial(residual / residual.sum(), 1, generator=g))
+```
+
+**实验一：一步，词表 6 个 token，抽 20 万次。**随机取一对 p、q。草稿按 q 抽，再按上面的规则接受或重抽：
+
+| token | 0 | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|---|
+| 目标 p | 0.123 | 0.310 | 0.055 | 0.230 | 0.197 | 0.085 |
+| 草稿 q | 0.125 | 0.013 | 0.296 | 0.143 | 0.382 | 0.041 |
+| 残差 max(0, p − q)（归一化前） | 0 | 0.297 | 0 | 0.088 | 0 | 0.044 |
+| **推测采样的结果** | 0.123 | 0.310 | 0.055 | 0.231 | 0.198 | 0.084 |
+| 直接用草稿的样本 | 0.125 | 0.013 | 0.296 | 0.143 | 0.382 | 0.041 |
+
+推测采样的结果与 p 的 TV 距离是 0.0013。卡方检验统计量是 4.6（自由度 5），p 值 0.46：看不出和 p 有任何区别。直接用草稿的样本，TV 距离是 0.43，卡方 p 值为 0。实测接受率 0.5722，公式 Σ min(p, q) 给出 0.5714。
+
+**实验二：完整算法。**上面只验证了一个位置。完整的推测解码还有两部分："前面的草稿被接受了，后面的才会被检查"，以及"全部接受时的额外 token（bonus token）"。`03` 用一对马尔可夫链当"语言模型"：下一个 token 只看上一个，目标和草稿是两个随机转移矩阵。取 k = 2，生成长度 3 的序列 6 万次，和目标模型的精确联合分布（4³ = 64 个格子）比较。
+
+TV 距离是 0.0083，卡方统计量是 50.5（自由度 49，合并了期望次数小于 5 的格子），p 值 0.41。平均每轮产出 1.50 个 token。完整算法同样没有改变分布。
+
+**实验三：真实模型，温度 1.0。**把同样的规则用在第 10 章的目标模型和 1 层草稿上（4 段提示词 × 200 个字符，`03` 第 3 部分）：
+
+| k | 实测接受率 | 公式 Σ min(p, q) 的平均 | 每轮产出 | 加速比（CPU 时间） |
+|---|---|---|---|---|
+| 1 | 0.674 | 0.690 | 1.67 | 1.11× |
+| 3 | 0.680 | 0.697 | 2.44 | 1.03× |
+| 5 | 0.747 | 0.714 | 3.19 | 0.94× |
+
+实测接受率和"逐位置算 Σ min(p, q) 再平均"对得上。（每个 k 只有几百次比较，差 0.02–0.03 在抽样误差之内。）采样时的接受率比贪心时（约 0.70–0.72，见第 5 节）略低：温度 1 下分布更平，两个模型的分布差得更多。
+
+CPU 上的加速比很小，k = 5 甚至变慢了。原因和第 5 节的贪心实验一样（c ≈ 0.2、验证不免费、Python 开销）。此外，每个位置还要多做 softmax 和随机抽样。两次运行的普通采样 CPU 时间分别是 2.85 秒和 2.22 秒。加速比随之在 0.9–1.1 倍之间浮动（上一次运行是 1.13、1.12、1.05 倍）。**这里的速度只看趋势。**
+
+两个实用细节：
+
+- **温度和 top-p 要对两边做同样的处理。**`p`、`q` 指的是"经过同样温度、top-p 处理之后"的分布。推测解码保证输出服从"处理后的目标分布"，也就是不用推测解码、用同样参数采样时得到的分布。`zero/arch/speculative.py` 的 `warp_probs` 就是这样做的。
+- **放宽接受条件会损失精确性。**有些实现为了提高接受率，放宽了规则，例如 Leviathan 等论文附录里的 lenience 参数、Medusa 的 typical acceptance。这样更快，但输出分布不再严格等于目标分布。本章只讲严格版本。
+
+## 5. 能快多少：α、k 和 c
+
+假设每个草稿 token 被接受的概率都是 α，且相互独立。一轮里，第 1 个产出 token 一定有。第 2 个要第 1 个草稿被接受（概率 α）。第 3 个要前两个草稿都被接受（α²），依此类推。所以：
+
+```
+每轮期望产出 E = 1 + α + α² + … + α^k = (1 − α^{k+1}) / (1 − α)
+```
+
+每轮的代价是目标模型 1 次前向加草稿 k 次前向。记 `c` = 草稿一步 ÷ 目标一步。**假设目标验证 k+1 个位置和生成 1 个一样快**，加速比就是（Leviathan 等 2023，定理 3.8）：
+
+```
+加速比 = (1 − α^{k+1}) / ((1 − α)(1 + k·c))
+```
+
+`04_speedup_formula.py` 把它算成表（下面是 c = 0.05 时的一部分）：
+
+| α \ k | 1 | 2 | 3 | 4 | 6 | 8 | 最优 k |
+|---|---|---|---|---|---|---|---|
+| 0.5 | 1.43 | 1.59 | 1.63 | 1.61 | 1.53 | 1.43 | 3（1.63×） |
+| 0.7 | 1.62 | 1.99 | 2.20 | 2.31 | 2.35 | 2.28 | 6（2.35×） |
+| 0.9 | 1.81 | 2.46 | 2.99 | 3.41 | 4.01 | 4.38 | 13（4.67×） |
+
+几条规律：α 越高、c 越小，越值得多猜。α 低时，猜多了只是浪费草稿的算力（α = 0.5 时，k 超过 3 反而变慢）。c = 0 时，加速比的上限是 `1/(1 − α)`。这个公式和论文对得上：α = 0.8、k = 5、c = 0 时是 3.69 倍，正是 Leviathan 等表 1 的数字。
+
+**实测（贪心，4 段 × 200 个字符，`02_greedy_speculative.py`）**：普通贪心解码 800 个字符用了 2.73 秒 CPU 时间，成本系数 c ≈ 0.20。
+
+| k | 逐 token 接受率 α | 每轮产出（实测） | 公式 (1) | 目标前向次数（普通解码 800） | CPU 时间（s） | 加速比 | 公式预测 |
+|---|---|---|---|---|---|---|---|
+| 1 | 0.721 | 1.72 | 1.72 | 466 | 2.35 | 1.17× | 1.43× |
+| 2 | 0.697 | 2.19 | 2.18 | 368 | 2.24 | 1.22× | 1.56× |
+| 3 | 0.722 | 2.64 | 2.62 | 306 | 2.13 | 1.28× | 1.63× |
+| 4 | 0.704 | 2.83 | 2.79 | 286 | 2.28 | 1.20× | 1.55× |
+| 5 | 0.700 | 2.95 | 2.94 | 275 | 2.47 | 1.10× | 1.47× |
+| 6 | 0.707 | 3.10 | 3.12 | 262 | 2.51 | 1.09× | 1.41× |
+| 8 | 0.703 | 3.32 | 3.22 | 244 | 2.76 | 0.99× | 1.23× |
+
+（"逐 token 接受率" = 接受数 ÷ 被比较过的草稿数。第一个被拒之后的草稿没有被比较，不计入。）
+
+这张表里有三件事值得看：
+
+1. **公式 (1) 几乎完全对得上**：实测的每轮产出和 `(1 − α^{k+1})/(1 − α)` 相差不到 0.1。不同 k 下接受率都在 0.70–0.72。这说明"每个草稿独立地以 α 被接受"在这里是一个不错的近似。
+2. **目标模型的前向次数确实少了**：k = 3 时从 800 次降到 306 次。这个数和硬件无关。
+3. **CPU 上的加速远小于前向次数的减少**：最快的 k = 3 只快了 1.28 倍，比公式预测的 1.63 倍还低。原因都在公式的假设里。第一，c 不小：1 层草稿的一步要花目标一步的约五分之一。在这么小的模型上，时间主要是每个算子的固定开销；层数少了、宽度小了，这部分开销却省不了多少。
+
+   第二，验证并不完全免费：第 1 节的表里，一次喂 4 个 token 要慢约 1.3 倍。把它代进公式（`2.64 / (1.28 + 3 × 0.2) ≈ 1.40`），就接近实测了。剩下的差距是 Python 循环、回滚和草稿补喂 token 的开销。k 越大，草稿的开销积累得越多。k = 8 时，推测解码已经比不用它还慢。
+
+所以：**这个 CPU 小实验能验证正确性、接受率和前向次数，但它的加速比不代表 GPU 上的情况**。
+
+在真实的 GPU 系统上，草稿通常比目标小两个数量级，验证 k+1 个 token 也几乎真的免费。c 能降到 0.05 以下，但前提是把每一步下发 kernel 的调度开销也压下来（CUDA Graph、融合 kernel 等）。本章"GPU 实测"一节里，草稿参数只有目标的 1/322，但用 PyTorch 逐个下发算子时，c 仍是 0.078。Leviathan 等在 TPU 上用 T5-small（77M）给 T5-XXL（11B）当草稿，α 在 0.62–0.75，实测加速 2.3–3.4 倍。
+
+**什么时候推测解码不划算**：一是 α 太低（草稿和目标差太远，或者采样温度很高、分布很平）。二是**大批量、高并发**时。服务端把几十条请求拼成一批做 decode，算术强度已经上来了。这时"多验证几个位置几乎免费"不再成立，多出来的验证计算会挤占其他请求的算力。vLLM 的文档写明，推测解码主要用于"中低 QPS、带宽受限"的场景。vLLM 也提供了按负载动态调整猜测长度的选项。
+
+## 6. 草稿从哪来
+
+推测解码对草稿**没有任何正确性要求**：草稿再差，输出分布都不变，只是变慢。所以草稿可以有很多种。只有一条硬约束：**草稿必须和目标模型用同一个分词器**（目标要能直接给草稿提出的 token id 打分）。常见的有三类：
+
+1. **同家族的小模型。**分词器相同，训练数据相同，所以"想法相近"。Leviathan 等发现，草稿比目标小两个数量级左右时，α 和 c 平衡得最好。CS336 的推理讲座举的搭配是 70B 配 8B、8B 配 1B，并建议用蒸馏（distillation）让草稿更像目标。Google 给 Gemma 4 的 E2B、E4B、12B、26B-A4B、31B 都发布了专门的 MTP 草稿模型（`gemma-4-*-it-assistant`；31B 的草稿只有 4 层，与目标模型共享 KV cache）。模型卡写的是"最多约 3 倍加速，输出质量与标准生成完全相同"。
+2. **提示词查找（prompt lookup / n-gram）。**在已有的文本里找和末尾几个 token 相同的片段，把它后面的 token 当草稿。代价几乎为零（c ≈ 0）。在"大量复制上下文"的任务上 α 很高，例如改写代码、总结文档、工具调用里重复参数名。Leviathan 等甚至发现，一个小的 bigram 表就能让 T5-XXL 的翻译快 1.25 倍。`zero/arch/speculative.py` 在 `draft=None` 时就用提示词查找。
+3. **模型自带的草稿头。**不另外训练、部署一个模型，而是在目标模型身上长出一个"猜后面几个 token"的小部件。这个部件能直接读目标模型最后一层的表示，信息比独立的小模型多得多，所以猜得准。这一类里最主流的是下一节的 MTP。Medusa、EAGLE 等方法见章末"前沿观察"。
+
+## 7. MTP：训练时多学一步，推理时自带草稿
+
+### 7.1 从"多个头"到"顺序的模块"
+
+多 token 预测最早的形式（Gloeckle 等 2024，Meta）很直接：共享的主干后面接 n 个独立的输出头。第 j 个头预测往后第 j 个 token，各头的损失加起来。DeepSeek-V3 做了一个关键改动：**按顺序预测，保留完整的因果链**。深度为 k 的 MTP 模块在位置 i 做的事是：
+
+```
+h'ᵏᵢ = Mₖ [RMSNorm(hᵏ⁻¹ᵢ) ; RMSNorm(Emb(t_{i+k}))]       # 上一层的表示 + 第 i+k 个 token 的 embedding
+hᵏ   = TRMₖ(h'ᵏ)                                          # 一个 Transformer block（因果注意力）
+Pᵏ_{i+k+1} = OutHead(hᵏᵢ)                                 # 与主模型共享的输出头
+L_MTP = λ/D · Σₖ CrossEntropy(Pᵏ, t)                      # 加到主损失上
+```
+
+几个要点：
+
+- **Embedding 和输出头与主模型共享。**MTP 模块自己只有两个 RMSNorm、一个 `2d → d` 的投影 `Mₖ` 和一个 Transformer block。在本章的小模型上，MTP 模块有 246,400 个参数，是主模型（861,440）的 29%。原因是主模型只有 4 层，多一个 block 就多了四分之一。DeepSeek-V3 有 61 层，一个 MTP 模块占的比例就小得多。
+- 模块 k 的输入里有 `t_{i+k}` 的 embedding。也就是说，预测 `t_{i+2}` 时，它**知道** `t_{i+1}` 是什么（训练时是真实的 token，推理时是主模型刚选出的 token）。所以它不是在"盲猜两步之后"，而是在主模型的表示上**再多走一步**。这就是它当草稿格外准的原因。
+- DeepSeek-V3 用 D = 1（只多预测一个 token）。λ 在前 10T token 取 0.3，之后取 0.1。GLM-4.5 用了同样的 λ 设置（前 15T token 取 0.3，之后取 0.1）。
+
+### 7.2 训练：信号更密
+
+MTP 的第一个目的是**让主模型训练得更好**。每个位置除了要为"下一个 token"提供有用的表示，还要为"下下个 token"提供。训练信号更密（DeepSeek 原文："densifies the training signals"），模型也可能学会"提前规划"。DeepSeek-V3 的消融实验（表 4）在 15.7B 和 228.7B 两个规模的 MoE 上各训练一对模型，每对的唯一区别是加不加 1 层 MTP。加了之后，大多数基准变好（例如小模型的 HumanEval 20.7 → 26.8、GSM8K 25.4 → 31.4）。推理时丢掉 MTP 模块，成本完全相同。
+
+`05_mtp.py` 在第 10 章的小模型上做了同样的事：同样的初始化、同样的数据顺序、同样的 600 步，只多了 `0.3 × L_MTP`。第 10 章缓存的两个模型（种子 0、1）正好是 λ = 0 的对照组：
+
+| 模型 | 验证集损失 | 下一个字符准确率 | MTP 下下个字符准确率 |
+|---|---|---|---|
+| 种子 0，λ = 0（第 10 章） | 1.838 | 0.454 | — |
+| 种子 0，λ = 0.3（加 MTP） | 1.821 | 0.456 | 0.464 |
+| 种子 1，λ = 0（第 10 章） | 1.869 | 0.445 | — |
+| 种子 1，λ = 0.3（加 MTP） | 1.857 | 0.449 | 0.458 |
+
+两个种子里，加了 MTP 的主模型验证集损失都低了一点（0.017、0.012）。但第 10 章发现，**只换一个随机种子，同样的模型损失就差 0.031**，比这里的差距还大。所以这张表**不能**说明"MTP 让主模型变好了"，只能说在这个规模上没看出坏处。DeepSeek 的结论来自几千亿 token、十几亿到几千亿参数的对照实验。这种几分钟的小实验复现不了。
+
+更有意思的是最后一列。MTP 模块预测**下下个**字符的准确率（0.464、0.458），和主模型预测**下一个**字符的准确率（0.456、0.449）差不多，甚至略高。原因在结构里：它预测 t_{i+2} 时，已经拿到了 t_{i+1} 的 embedding 和主模型在位置 i 的表示。它比主模型预测 t_{i+1} 时多知道一个字符。
+
+`05` 里 MTP 模块的核心：
+
+```python
+x = self.proj(
+    torch.cat([self.enorm(emb_next), self.hnorm(h)], dim=-1)
+)  # [RMSNorm(Emb(t_{i+1})); RMSNorm(h_i)] → projection
+return self.norm(self.block(x, cos, sin, cache, 0))  # One block + RMSNorm, then multiply by the shared Embᵀ
+```
+
+训练时只有一行：`loss = l_main + lam * l_mtp`。`l_mtp` 的目标是 `y[:, 1:]`。（y 是左移一位的目标序列，再左移一位就是"下下个"。）
+
+### 7.3 推理：丢掉，或者当草稿
+
+MTP 的第二个用途是**自推测解码**（self-speculative decoding）。主模型给出下一个 token `t_{i+1}`，同时 MTP 模块用主模型的表示和 `t_{i+1}` 的 embedding 猜 `t_{i+2}`。下一次前向把 `[t_{i+1}, 草稿]` 一起喂进去，既验证草稿，又得到再下一个 token。k = 1 时，每次前向期望产出 `1 + α` 个 token。
+
+DeepSeek-V3 报告第二个 token 的接受率在 85%–90% 之间，解码速度（TPS）提到约 1.8 倍。代入公式，1 + α = 1.85–1.90；扣掉 MTP 模块自己的开销，1.8 倍很合理。
+
+`05` 的自推测实验用种子 0 的模型、贪心解码、4 段 × 200 个字符。输出与主模型自己贪心解码**逐字相同**。草稿接受率 0.638，主模型前向从 800 次降到 486 次，每次前向产出 1.65 个字符（= 1 + 0.65，和 `1 + α` 对得上）。
+
+但 CPU 时间几乎没变（普通贪心 2.15 秒，自推测 2.22 秒，0.97 倍）。MTP 模块有一个完整的 block。在 4 层的小模型上，它的一步要花主模型一步的约四分之一以上，再加上 Python 的开销，省下的前向次数就被抵消了。在 61 层的 DeepSeek-V3 上，一个 MTP 模块相对主模型便宜得多，所以能换来约 1.8 倍。
+
+实现上有一个小细节：MTP 模块里的 Transformer block 也要看历史，所以它有自己的一份 KV cache。它在位置 i 需要"主模型在 i 的表示"和"第 i+1 个 token"，所以总比主模型慢一步，只处理已经确定的位置。**它不需要回滚。**
+
+### 7.4 谁在用 MTP
+
+我们按 GOAL.md 2.1 的规则 A 核对（详见"采用方与来源"）：
+
+- DeepSeek：V3、V4 的 `num_nextn_predict_layers: 1`。
+- 千问：Qwen3-Next 的模型卡写明了 MTP。Qwen3.5 全系列的 config 里都有 `mtp_num_hidden_layers: 1`，连 0.8B 都有。
+- 智谱 GLM：GLM-4.5 技术报告写的是"加一层 MoE 作为 MTP 层，用于推理时的推测解码"。GLM-5 的 config 同样有 1 层。
+- MiniMax：M2 的 config 里有 `use_mtp: true`、`num_mtp_modules: 3`。
+- 小米 MiMo：MiMo-7B 的 `num_nextn_predict_layers: 1`。MiMo-V2-Flash 开源了 3 层 MTP 权重，模型卡称"输出速度提到 3 倍"。
+- NVIDIA：Nemotron 3 Super 的 `num_nextn_predict_layers: 1`。
+
+这远超 3 家，满足共识条件，所以 MTP 进正文。反例也有：Kimi K2 的 config 里 `num_nextn_predict_layers: 0`（它沿用 DeepSeek-V3 的结构，但没有带 MTP 层）。推测解码本身则是推理引擎的行业标准：vLLM 和 SGLang 都内置了草稿模型、n-gram、MTP、EAGLE 等多种草稿方式。
+
+## 8. 小结
+
+- **前提**：decode 受显存带宽限制。目标模型一次验证 k+1 个位置的时间，和生成 1 个差不多。
+- **算法**：草稿猜 k 个 → 目标一次前向 → 从左往右接受、遇错纠正、全对奖励 → 回滚 KV cache。每轮产出 1 到 k+1 个 token。
+- **质量不变**：贪心时逐字相同。采样时按 `min(1, p/q)` 接受，被拒后从 `max(0, p − q)` 重抽，输出恰好服从目标分布。一次接受的概率是 `α = Σ min(p, q) = 1 − TV(p, q)`。
+- **能快多少**：`(1 − α^{k+1}) / ((1 − α)(1 + k·c))`。只有 α 高、c 小时才快。大批量、高并发时收益变小。
+- **草稿**：同分词器的小模型、提示词查找、模型自带的草稿头。
+- **MTP**：顺序的 MTP 模块（两个 RMSNorm + 投影 + 一个 block，共享 embedding 和输出头）。训练时多一个 λ·L_MTP，让信号更密。推理时丢掉，或者当草稿（DeepSeek-V3：接受率 85%–90%，约 1.8 倍）。
+
+---
+
+## GPU 实测（单张 RTX 3090）
+
+> **注意：**上面正文里的数字都来自 CPU 运行。本节换到一张 NVIDIA GeForce RTX 3090 上实测（24 GB 显存，Ampere 架构）。它的规格表给出：BF16 张量核稠密峰值约 71 TFLOPS，FP32 约 35.6 TFLOPS，显存带宽约 936 GB/s。环境：PyTorch 2.11.0+cu128、CUDA 12.8，2026 年 10 月。服务器把这张卡的功耗上限设成了 240 W（出厂默认 350 W）。持续满载时，这张卡会降频。所以算力和带宽的绝对值比满功耗的 3090 偏低，看相对关系更可靠。没有 GPU 可以跳过本节。
+
+运行：
+
+```bash
+uv run python chapters/25-mtp-speculative-decoding/code/06_gpu_speculative.py
+```
+
+脚本用了三个模型。第一个是本章的小目标模型（0.86M 参数，FP32）。第二个是"放大版目标"：把同一个 TinyLM 结构放大（宽 8192、6 层，4.15B 参数，BF16 下 8.31 GB）。第三个是"放大版草稿"（宽 1024、1 层，12.9M 参数，是目标的 1/322）。放大版是随机初始化的，只用来测时间：前向耗时和权重的数值无关。
+
+**第 1 节的前提：一次前向喂 T 个 token 要多久？**（已有 200 个位置的 KV cache，CUDA event 计时，30 次中位数。）
+
+| 一次喂 T 个 token | 1 | 2 | 4 | 8 | 16 | 64 | 256 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 本章目标（0.86M，FP32），ms | 3.838 | 3.864 | 3.930 | 3.453 | 3.984 | 3.929 | 3.835 |
+| 放大版目标（4.15B，BF16），ms | 13.385 | 13.876 | 13.815 | 14.180 | 14.597 | 20.189 | 46.902 |
+| 放大版相对 T = 1 | 1.00× | 1.04× | 1.03× | 1.06× | 1.09× | 1.51× | 3.50× |
+
+T = 1 时，放大版读 8.31 GB 权重用了 13.39 ms，有效带宽 621 GB/s。本章小目标的 3.4 MB 权重只折合 0.9 GB/s。小目标在 GPU 上一次前向要 3.84 ms，并不比第 1 节的单线程 CPU 快。时间全花在 Python 逐个下发几百个小 kernel 上（这台机器上每个约 6.5 µs）。
+
+**推测解码的墙钟加速比。**先把本章训练好的目标 + 草稿搬到 GPU 上，跑一遍 `02` 的 `speculative_greedy`（FP32，4 段 × 200 个字符）。k = 1、2、3、4、6、8 时，输出全部与目标模型贪心解码**逐字相同**，逐 token 接受率 0.702–0.723。（这次用的权重是在另一台机器上重新训练的。目标模型验证集损失是 1.831，不是 1.838，所以接受率和第 5 节的表差 0.01–0.02。）
+
+然后换成放大版目标 + 放大版草稿。随机权重之间谈不上猜得准不准，所以**每一轮接受几个，照抄小模型那一轮的真实结果**。其余步骤一步不少地重走一遍：草稿补喂、猜 k 个，目标一次验证、取 argmax，两个缓存回滚。（为了控制时长，只回放前 2 段提示词；墙钟时间取 3 次的中位数。）普通贪心解码 400 个 token 用 5.68 s，GPU 上测得成本系数 c ≈ 0.078：
+
+| k | 1 | 2 | 3 | 4 | 6 | 8 |
+|---|---:|---:|---:|---:|---:|---:|
+| 逐 token 接受率 α（前 2 段） | 0.724 | 0.699 | 0.731 | 0.721 | 0.714 | 0.707 |
+| 每轮产出 | 1.72 | 2.18 | 2.67 | 2.97 | 3.27 | 3.35 |
+| 墙钟时间（s） | 3.53 | 2.99 | 2.61 | 2.53 | 2.60 | 2.83 |
+| **实测加速比** | **1.61×** | **1.90×** | **2.18×** | **2.25×** | **2.18×** | **2.01×** |
+| 公式 `(1 − α^{k+1}) / ((1 − α)(1 + k·c))` | 1.60× | 1.89× | 2.15× | 2.20× | 2.15× | 2.01× |
+
+第 1 节的前提在 GPU 上才真正成立。4.15B 的模型一次喂 16 个 token 只比喂 1 个慢 9%，因为时间花在从显存搬 8 GB 权重上。到 64 个才明显变慢，256 个时算力成了瓶颈（3.5 倍）。验证几乎免费，c 又小，所以第 5 节的公式几乎完全对上：实测和预测差不到 3%。
+
+k = 4 时快 2.25 倍，和 Leviathan 等在 TPU 上报告的 2.3–3.4 倍是同一量级。第 5 节的 CPU 实验最多只快 1.28 倍，比公式低两成。差别正出在"验证免费"和"c 小"这两条假设上。
+
+c 的值出乎意料。草稿的参数只有目标的 1/322，一步的耗时却是目标的 1/13。原因是 1 层小模型的时间几乎全是下发 kernel 的固定开销，和参数多少无关。在这种 Python 逐个下发算子的实现里，c 由层数和算子数决定。推理引擎要靠 CUDA Graph、融合 kernel 把这部分开销压下去，c 才能再往下走。
+
+## 从极简代码到生产级代码
+
+生产级实现在 `zero/arch/speculative.py` 和 `zero/arch/mtp.py`。它们是第五部分的实验模块，**不用于主线模型的训练**。
+
+| 极简代码（`code/`） | 生产级代码（`zero/arch/`） | 多做了什么、为什么 |
+|---|---|---|
+| `02` 的 `speculative_greedy`、`03` 的 `speculative_sample`，第 10 章的 `TinyLM` + 拼接式 KV cache | `speculative.py` 的 `speculative_generate(target, draft, prompt_ids, max_new_tokens, k, temperature, top_p, seed, eos_id)` → `SpeculativeResult` | 用 `zero.model.Transformer` 和预分配的 `zero.kv_cache.KVCache`：回滚只需 `rollback(cache, n)` 把有效长度退回去（`KVCache.update` 按 `start_pos` 覆盖写入，只返回 `[0, start_pos + T)`）；贪心与采样用同一套代码；`eos_id` 提前停止；返回接受数、被比较数、每轮接受数，`acceptance_rate`、`tokens_per_round` 可以直接读；检查两个模型的词表一致 |
+| `03` 的 `accept_or_resample`、`speculative_step` | `verify(p_logits, drafts, q_probs, temperature, top_p, generator)` | 支持 **top-p**：`warp_probs` 对 p、q 做同样的温度和 top-p 处理（与 `zero.generate.sample_next` 是同一个分布）；草稿分布可以是 None（确定性草稿，按 one-hot 处理，接受概率就是 p(x)）；残差在数值上为 0 时有兜底 |
+| 无 | `prompt_lookup_draft(seq, k, max_ngram)`；`speculative_generate(..., draft=None)` | 零成本的 n-gram 草稿（和 vLLM 的 `ngram` 方法同类） |
+| `04` 的公式 | `expected_tokens_per_round(α, k)`、`expected_speedup(α, k, c)` | 同一个公式，给评测脚本用 |
+| `05` 的 `MTPHead` | `mtp.py` 的 `MTPModule`（`enorm`、`hnorm`、`eh_proj`、`block`、`norm`） | 命名与 vLLM / SGLang 的 DeepSeek MTP 实现一致（拼接顺序是 `[enorm(emb); hnorm(h)]`，送进 MTP 的是主模型最后一个 RMSNorm 之后的表示）；block 直接用主线的 `zero.model.Block`（GQA + QK-Norm + RoPE + SwiGLU） |
+| `05` 的 `train_mtp` 里那一行损失 | `MTPTransformer(config, n_mtp)`（主模型原样是 `zero.model.Transformer`）+ `mtp_loss(model, tokens, targets, lam)` | 支持 D 个顺序模块（深度 k 在长度 T−k 上计算）和 `ignore_index`（SFT 的 loss mask 也能用）；返回总损失、主损失和各深度的损失，方便记日志 |
+| `05` 的 `mtp_self_speculative`（贪心） | `mtp_speculative_generate(model, prompt_ids, max_new_tokens, temperature, top_p, seed, eos_id)` | 支持贪心与采样；MTP block 有自己的预分配 KV cache，只处理已确定的位置，不需要回滚；复用 `verify` |
+
+**对拍**（`uv run pytest tests/test_arch_speculative.py tests/test_arch_mtp.py`，本机 17 项全部通过，约 20 秒）：
+
+- `test_arch_speculative.py`：k = 1、3、6 时，贪心推测解码与 `zero.generate.generate(target, ..., temperature=0)` **逐字相同**。提示词查找草稿同样逐字相同。**草稿 = 目标**时（贪心和采样），接受率 100%，每轮正好 k 个草稿 + 1 个奖励。**缓存回滚**：先把 4 个"错误草稿"写进缓存，回滚，再写正确的 token，logits 与一次性全量前向在 1e-5 内一致。单个位置的 `verify` 抽 4 万次：结果分布与 p 的 TV 距离 < 0.01，接受率与 Σ min(p, q) 相差 < 0.01。固定种子的采样可以复现。top-p 规则与 `sample_next` 一致。公式的边界情况也有测试。
+- `test_arch_mtp.py`：形状（D = 2 时，两层 MTP 的 logits 长度分别是 T−1、T−2），且主模型 logits 与 `Transformer.forward` 完全一致。**深度 1 的损失手算**：MTP 损失 = 对 `tokens[i+2]` 的交叉熵，总损失 = 主损失 + λ · MTP 损失。**因果性**：改动位置 7 及以后的 token，不影响位置 0–5 的 MTP 输出；改动位置 7 会影响位置 6（它用了 Emb(t₇)）。**梯度**流到 MTP 模块、共享的 embedding / 输出头和主模型的层。训练几步后损失下降。MTP 自推测解码（贪心）与主模型贪心解码逐字相同。
+
+**真正上线的服务**不会用这样的 Python 循环。行业做法如下：
+
+- **vLLM**：`--speculative-config` 支持草稿模型（`draft_model`）、`ngram`、`mtp`、`eagle` 等方法（以及 suffix decoding、MLP speculator 等）。`num_speculative_tokens` 就是本章的 k。它的拒绝采样器有专门的"收敛到目标分布"测试，也有"贪心逐字相同"的端到端测试。文档里 `method: "mtp"` 的示例用的正是小米 MiMo-7B。
+- **SGLang**：`speculative_algorithm` 可选 `EAGLE` / `EAGLE3`、`STANDALONE`（独立的草稿模型）、`NGRAM` 等。DeepSeek 等模型的 MTP 层用别名 `NEXTN`，走 EAGLE 这条路径（`python/sglang/srt/speculative/spec_info.py`）。另有训练 EAGLE 草稿头的 SpecForge 工具。
+- 服务端的难点是**批量**。一批里每条序列接受的个数不同，所以 KV cache 的回滚、下一轮的输入长度都各不相同。服务端还常用"树状验证"（一次验证多条候选路径）进一步提高每轮产出。这些都由推理引擎的调度器完成，本章 batch = 1 的实现不涉及。
+
+`zero/arch/speculative.py` 和 `mtp.py` 在 CUDA 上的正确性已在 RTX 3090 上验证（推测解码与贪心逐字相同，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 11 节）。zero 这两个模块在 GPU 上的速度没有测过。本章"GPU 实测"一节测的是极简代码放大后的版本。
+
+**主线模型怎么用这一章。**主线模型**不带 MTP**。GOAL.md 3.3 规定主线不冒架构风险。另外，在 0.6B 这个规模上，MTP 对主模型质量的影响也没有公开的可靠证据。第二步发布时，可以用下面的方法给它加速，但要先在 GPU 上实测：
+
+1. **另训一个小草稿**：用主线的分词器和同一份数据，训练一个约 5000 万到 1 亿参数的 `zero` 模型。（在 `configs/` 里加一档配置即可，代码不用改。）再用主线模型的输出做一轮蒸馏（第 17 章），提高 α。
+2. **提示词查找**：工具调用里大量复制函数名、参数名和 JSON 键。提示词查找零成本，值得先试。
+3. **事后加 MTP**：冻结主线模型，只训练一个 `zero.arch.mtp.MTPModule`。DeepSeek 的消融显示联合训练能改进主模型。但如果只拿 MTP 当草稿，事后训练也可以。这一点本课没有验证，**待实验**。
+
+用哪种方式、k 取多少、在 llama.cpp / vLLM 上各快多少，都要等第二步在真实硬件上测了再写。
+
+---
+
+## 前沿观察
+
+> **不算共识、只在这里提一句的技术**
+>
+> - **Medusa**（Cai 等 2024）：在目标模型最后一层上并联几个独立的头。第 j 个头直接预测往后第 j 个 token，不看中间的 token（类似 Gloeckle 等的并行头）。然后用"树状注意力"一次验证多条候选。
+> - **EAGLE / EAGLE-2 / EAGLE-3**（Li 等 2024–2025）：一个很小的自回归草稿网络，输入是目标模型的隐藏特征（EAGLE-3 用多层特征）。配合动态草稿树，它的接受率很高。它是目前推理引擎里最常用的草稿方式之一（vLLM 文档把它和 MTP 并列为收益最高的方法）。Hugging Face 上也有大量 EAGLE-3 草稿头：NVIDIA 给 gpt-oss-120b 训练了一个，社区给 Llama、Qwen3、Kimi K2.6、MiniMax 等训练了很多。但这些几乎都是推理厂商或社区**事后**训练的。在主力版本的技术报告或模型卡里**自己**发布 EAGLE 草稿的头部模型家族，我们没能核实到 3 家，所以 EAGLE 放在这里。它和 MTP 的思路很像：DeepSeek-V3 的原文就说，"保持因果链"这一点和 EAGLE 相似。区别在于 MTP 的首要目的是改进训练。
+> - **树状验证**（SpecInfer、Medusa、EAGLE-2 等）：一次验证一棵候选树，而不是一条链。每轮期望产出更高，但注意力掩码和缓存管理更复杂。
+> - **放宽的接受规则**（lenience、typical acceptance 等）：换来更高的接受率，代价是输出分布不再严格等于目标分布。
+
+## 采用方与来源
+
+| 技术 | 采用方（主力版本） | 来源 |
+|---|---|---|
+| MTP（顺序的多 token 预测模块，训练目标 + 推理草稿） | **DeepSeek**：V3（D = 1，λ = 0.3 → 0.1，第二个 token 接受率 85%–90%，TPS 约 1.8 倍）、V4-Pro（`num_nextn_predict_layers: 1`）；**千问**：Qwen3-Next-80B-A3B（模型卡："MTP 提升预训练效果并加速推理"）、Qwen3.5 全系列（0.8B 的 `mtp_num_hidden_layers: 1`）；**智谱**：GLM-4.5 / 4.5-Air（1 层 MoE 作为 MTP 层，λ = 0.3 → 0.1）、GLM-5（`num_nextn_predict_layers: 1`）；**MiniMax**：M2（`use_mtp: true`、`num_mtp_modules: 3`）；**小米**：MiMo-7B（`num_nextn_predict_layers: 1`）、MiMo-V2-Flash（开源 3 层 MTP 权重）；**NVIDIA**：Nemotron 3 Super 120B-A12B（`num_nextn_predict_layers: 1`） | [DeepSeek-V3 技术报告 arXiv:2412.19437](https://arxiv.org/abs/2412.19437)（第 2.2、4.5.1、5.4.3 节）；config.json：[DeepSeek-V3](https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/config.json)、[DeepSeek-V4-Pro](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/config.json)、[Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/config.json)、[GLM-4.5](https://huggingface.co/zai-org/GLM-4.5/blob/main/config.json)、[GLM-5](https://huggingface.co/zai-org/GLM-5/blob/main/config.json)、[MiniMax-M2](https://huggingface.co/MiniMaxAI/MiniMax-M2/blob/main/config.json)、[MiMo-7B-Base](https://huggingface.co/XiaomiMiMo/MiMo-7B-Base/blob/main/config.json)、[Nemotron-3-Super-120B-A12B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16/blob/main/config.json)；模型卡：[Qwen3-Next-80B-A3B-Instruct](https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct)、[MiMo-V2-Flash](https://huggingface.co/XiaomiMiMo/MiMo-V2-Flash)；[GLM-4.5 技术报告 arXiv:2508.06471](https://arxiv.org/abs/2508.06471)（第 2.1、2.4 节）；[MiMo-7B 技术报告 arXiv:2505.07608](https://arxiv.org/abs/2505.07608) |
+| 推测解码（草稿模型 / n-gram / MTP 草稿 + 拒绝采样验证） | 行业标准（GOAL.md 2.1 的 B 类）：**vLLM**、**SGLang** 内置。模型方发布专用草稿：**Google Gemma 4**（E2B、E4B、12B、26B-A4B、31B 各有 `*-it-assistant` MTP 草稿模型，模型卡称"最多约 3 倍、质量完全相同"）。**DeepSeek-V3**、**GLM-4.5**、**MiMo** 在技术报告/模型卡里说明用 MTP 做推测解码 | Leviathan 等 2023；Chen 等 2023；[vLLM 推测解码文档（源文件）](https://github.com/vllm-project/vllm/blob/main/docs/features/speculative_decoding/README.md)与 [MTP 文档](https://github.com/vllm-project/vllm/blob/main/docs/features/speculative_decoding/mtp.md)；[SGLang](https://github.com/sgl-project/sglang)；[gemma-4-31B-it-assistant 模型卡](https://huggingface.co/google/gemma-4-31B-it-assistant) |
+
+说明：
+
+- 所有 config 与模型卡都在 2026-09 通过 Hugging Face 读取。Qwen3-Next 的 config.json 里没有 MTP 相关字段（MTP 权重的存放方式与 Qwen3.5 不同），所以采用模型卡的明文说法。
+- Kimi K2 的 config 是 `num_nextn_predict_layers: 0`（GLM-4.5 技术报告表 1 也列为 0 层 MTP），不计入采用方。
+- MiMo-7B 技术报告里 MTP 的具体用法（预训练几层、推理用几层、接受率），本章没有逐条核对，只引用了 config 与 vLLM 文档的示例，**待核实**。
+- Gemma 4 的 MTP 草稿是独立的小模型（`Gemma4AssistantForCausalLM`，4 层，与目标共享 KV cache）。它和 DeepSeek 式"主模型内部的 MTP 模块"不完全一样。这里把它计入"推测解码 + 模型方发布草稿"，不计入"DeepSeek 式 MTP 模块"。本章没有读 Gemma 4 技术报告（模型卡链接为 arXiv:2607.02770），其中关于 MTP 训练方式的描述**待核实**。
+
+---
+
+## 引导问题
+
+带着这些问题去问 Claude Code，直到你能用自己的话讲清楚：
+
+1. 推测解码假设"验证 k+1 个位置和生成 1 个一样快"。这个前提在什么情况下不成立？让 Claude Code 帮你估算：主线模型在 H100 上，batch = 1 和 batch = 64 时，一次 decode 的算术强度各是多少？k = 4 时，验证一轮的算术强度又是多少？（提示：第 21 章的 `02_prefill_decode.py`。）
+2. 采样时的推导里，如果草稿抽到的 token 有 `q(x) = 0`（草稿认为它不可能出现），会发生什么？如果目标认为它不可能出现（`p(x) = 0`）呢？温度 → 0 时，采样版的规则会退化成贪心版吗？
+3. 本章说"一次接受的概率 α = 1 − TV(p, q)"。为什么是 TV 距离，而不是 KL 散度？如果你要**训练**一个草稿，让 α 尽量高，损失函数应该选什么？（提示：搜索 DistillSpec。）
+4. DeepSeek-V3 的 MTP 模块预测 `t_{i+2}` 时，能看到 `t_{i+1}` 的 embedding；Gloeckle 等的并行头和 Medusa 看不到。这对训练时的"信号更密"和推理时的接受率分别意味着什么？
+5. `05_mtp.py` 里，MTP 模块的"下下个字符准确率"和主模型的"下一个字符准确率"差不多高。这是否说明预测两步之后和预测一步之后一样容易？
+6. 为什么 MiniMax 的博客把"和推测解码的配合"列为线性注意力 / 混合架构的未解决问题之一？（提示：想想回滚。线性注意力的状态是累加出来的，被拒的草稿已经加进去了，怎么撤回？）
+
+## 动手任务
+
+每个任务都要真的运行代码、看到结果。
+
+**任务 1（基础）**：在 `04_speedup_formula.py` 里，把 c 设成 `01_models_and_cost.py` 在你机器上测出来的值，再用 `02` 测出的 α，找出最优 k。然后在 `02` 里只跑这个 k 和它两边的 k，看实测最快的 k 和公式预测的是否一致。如果不一致，找出公式没考虑到的开销。
+
+**任务 2（核心）**：给 `02_greedy_speculative.py` 加一个提示词查找草稿：在 `seq` 里找与末尾 3 个字符相同的最近片段，取它后面的 k 个字符。和 1 层草稿模型比较接受率和目标前向次数。再换一个"会重复"的提示词（比如把一段台词复制两遍，让模型续写第三遍），两者的差距怎么变？对照 `zero/arch/speculative.py` 的 `prompt_lookup_draft`。
+
+**任务 3（挑战）**：用蒸馏提高草稿的接受率。在 `01_models_and_cost.py` 里新增一个训练函数，损失改成草稿分布与目标分布之间的 KL 散度（目标模型冻结，即第 17 章的 logits 蒸馏）。训练同样的步数，比较蒸馏前后温度 1.0 时的实测接受率（`03` 第 3 部分）和贪心时的接受率（`02`）。再试试把损失换成 TV 距离，哪个对 α 更有效？
+
+---
+
+## 想深入：CS336
+
+本章对应斯坦福 CS336（Spring 2026）<https://cs336.stanford.edu/>：
+
+- **第 10 讲：推理。**这一讲的 speculative sampling 一节（讲义源码 `lecture_10.py` 的 `speculative_sampling()`，见 <https://github.com/stanford-cs336/lectures>）从"prefill 并行、decode 受带宽限制，所以检查比生成快"讲起。它给出了和本章第 4 节相同的两词表证明。它还讲了 70B 配 8B / 8B 配 1B 的草稿搭配、用蒸馏让草稿更像目标，以及 Medusa、EAGLE 两种改进草稿的方法。注意：CS336 讲义里**草稿记作 p、目标记作 q**，和本章（以及 Leviathan 等原论文）正好相反。
+- **CS336 未深入**：MTP 作为训练目标（DeepSeek-V3 的顺序 MTP 模块、损失权重、消融），以及推理引擎里的实现细节。这一讲没有展开，见本章参考文献。
+
+---
+
+## 本章参考文献
+
+- Leviathan, Kalman, Matias. *Fast Inference from Transformers via Speculative Decoding*，ICML 2023：<https://arxiv.org/abs/2211.17192>
+- Chen, Borgeaud, Irving, Lespiau, Sifre, Jumper. *Accelerating Large Language Model Decoding with Speculative Sampling*，2023：<https://arxiv.org/abs/2302.01318>
+- Stern, Shazeer, Uszkoreit. *Blockwise Parallel Decoding for Deep Autoregressive Models*（贪心的"并行猜、再验证"的前身），NeurIPS 2018：<https://arxiv.org/abs/1811.03115>
+- Gloeckle, Idrissi, Rozière, Lopez-Paz, Synnaeve. *Better & Faster Large Language Models via Multi-token Prediction*，ICML 2024：<https://arxiv.org/abs/2404.19737>
+- DeepSeek-AI. *DeepSeek-V3 Technical Report*，2024：<https://arxiv.org/abs/2412.19437>
+- GLM-4.5 Team. *GLM-4.5: Agentic, Reasoning, and Coding (ARC) Foundation Models*，2025：<https://arxiv.org/abs/2508.06471>
+- Xiaomi LLM-Core Team. *MiMo: Unlocking the Reasoning Potential of Language Model – From Pretraining to Posttraining*，2025：<https://arxiv.org/abs/2505.07608>
+- Cai et al. *Medusa: Simple LLM Inference Acceleration Framework with Multiple Decoding Heads*，2024：<https://arxiv.org/abs/2401.10774>
+- Li, Wei, Zhang, Zhang. *EAGLE: Speculative Sampling Requires Rethinking Feature Uncertainty*，2024：<https://arxiv.org/abs/2401.15077>；*EAGLE-3: Scaling up Inference Acceleration of Large Language Models via Training-Time Test*，2025：<https://arxiv.org/abs/2503.01840>
+- Zhou et al. *DistillSpec: Improving Speculative Decoding via Knowledge Distillation*，2023：<https://arxiv.org/abs/2310.08461>
+- Saxena. *Prompt Lookup Decoding*：<https://github.com/apoorvumang/prompt-lookup-decoding>
+- vLLM 推测解码文档（源文件）：<https://github.com/vllm-project/vllm/blob/main/docs/features/speculative_decoding/README.md>；vLLM 的 DeepSeek MTP 实现：<https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/models/deepseek_mtp.py>
+- SGLang：<https://github.com/sgl-project/sglang>
+- 模型配置与模型卡（2026-09 读取）：见上方"采用方与来源"表中的链接；[Kimi-K2-Instruct config](https://huggingface.co/moonshotai/Kimi-K2-Instruct/blob/main/config.json)（`num_nextn_predict_layers: 0`）
+- Google Research. *Looking back at speculative decoding*（CS336 讲义引用的回顾博客）：<https://research.google/blog/looking-back-at-speculative-decoding/>
+- CS336 Spring 2026 讲义源码：<https://github.com/stanford-cs336/lectures>；课程主页：<https://cs336.stanford.edu/>
+
+**下一章**：第五部分的架构实验到这里就做完了：更小的 KV cache（GQA、MLA）、更便宜的长上下文（滑动窗口、线性注意力混合）、更省的计算（MoE），以及更快的生成（推测解码、MTP）。最后一章把这些拼图放回真实的模型里：拆解几个写作时最新的开源旗舰，画出架构演化树，把我们的主线模型也放进同一张表。第 26 章，当前最先进开源模型全景。

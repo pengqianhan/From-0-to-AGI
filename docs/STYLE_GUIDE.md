@@ -164,3 +164,209 @@ Use these terms. If a term is not in the list, add it here before you use it in 
 | guided questions | 引导问题 | section name |
 | hands-on tasks | 动手任务 | section name |
 | parity check | 对拍 | two implementations give the same result |
+| vector | 向量 | |
+| matrix | 矩阵 | |
+| matrix multiplication | 矩阵乘法 | |
+| dot product | 点积 | |
+| transpose | 转置 | |
+| shape | 形状 | tensor shape |
+| broadcasting | 广播 | |
+| vectorization | 向量化 | |
+| element-wise multiplication | 元素级乘法 | |
+| feature | 特征 | |
+| standardization | 标准化 | |
+| batch dimension | batch 维 | |
+| computational graph | 计算图 | |
+| local derivative | 局部导数 | |
+| upstream gradient | 上游梯度 | |
+| topological sort | 拓扑排序 | |
+| gradient check | 梯度检验 | |
+| numerical gradient | 数值梯度 | |
+| central difference | 中心差分 | |
+| reverse mode / forward mode | 反向模式 / 前向模式 | automatic differentiation |
+| Jacobian | 雅可比矩阵 | |
+| vector-Jacobian product (VJP) | 向量-雅可比积（VJP） | |
+| curvature | 曲率 | |
+| cosine similarity | 余弦相似度 | |
+| power law | 幂律 | |
+| multilayer perceptron (MLP) | 多层感知机（MLP） | |
+| hidden unit | 隐藏单元 | |
+| width | 宽度 | of a layer |
+| kink | 折点 | |
+| piecewise-linear function | 分段线性函数 | |
+| universal approximation theorem | 万能近似定理 | |
+| dying ReLU | 死 ReLU | |
+| feed-forward network (FFN) | 前馈网络（FFN） | |
+| gating | 门控 | |
+| initialization | 初始化 | |
+| normalization | 归一化 | |
+| weight decay | 权重衰减 | |
+| gradient clipping | 梯度裁剪 | |
+| learning-rate schedule | 学习率调度 | |
+| cosine decay | 余弦衰减 | |
+| momentum | 动量 | |
+| vanishing / exploding gradient | 梯度消失 / 梯度爆炸 | |
+| residual stream | 残差流 | |
+| loss spike | 损失尖峰（loss spike） | |
+| scale invariance | 尺度不变性 | |
+| hyperparameter | 超参数 | |
+| ablation | 消融 | |
+| logits | logits | do not translate |
+| perplexity | 困惑度 | |
+| maximum likelihood estimation (MLE) | 最大似然估计 | |
+| log-likelihood | 对数似然 | |
+| negative log-likelihood (NLL) | 负对数似然 | |
+| KL divergence | KL 散度 | |
+| forward / reverse KL | 前向 / 反向 KL | |
+| label smoothing | label smoothing | do not translate |
+| temperature | 温度 | |
+| underflow | 下溢 | |
+| saturation | 饱和 | |
+| confidence interval | 置信区间 | |
+| pre-tokenization | 预切分 | |
+| merge | 合并 | a BPE merge |
+| character level / byte level | 字符级 / 字节级 | |
+| code point | 码位 | Unicode |
+| special token | 特殊 token | |
+| smoothing | 平滑 | |
+| query / key / value | 查询 / 键 / 值 | Q / K / V |
+| causal mask | 因果 mask | |
+| multi-head attention | 多头注意力 | |
+| multi-query attention (MQA) | 多查询注意力（MQA） | |
+| grouped-query attention (GQA) | 分组查询注意力（GQA） | |
+| rotary position embedding (RoPE) | 旋转位置编码（RoPE） | |
+| tied embeddings | 共享 embedding | not "shared embedding" |
+| heat map | 热力图 | |
+| autoregressive generation | 自回归生成 | |
+| greedy decoding | 贪心解码 | |
+| sampling | 采样 | not "抽样" |
+| KV cache | KV cache | do not translate |
+| prefill / decode | prefill / decode | do not translate |
+| query head | 查询头 | |
+| chunked prefill | 分块 prefill | |
+| continuous batching | 连续批处理 | |
+| throughput | 吞吐 | |
+| arithmetic intensity | 算术强度 | |
+| memory-bound / compute-bound | 带宽受限 / 算力受限 | |
+| ledger | 账本 | the KV cache ledger |
+| latent vector | 潜向量 | MLA |
+| absorption | 吸收 | MLA |
+| decoupled RoPE | 解耦 RoPE | |
+| sliding window | 滑动窗口 | |
+| ring buffer | 环形缓冲区 | |
+| linear attention | 线性注意力 | |
+| mixture of experts (MoE) | 混合专家（MoE） | |
+| router | 路由器 | |
+| auxiliary loss | 辅助损失 | |
+| speculative decoding | 推测解码 | |
+| draft | 草稿 | draft model, draft tokens |
+| acceptance rate | 接受率 | |
+| mixed precision | 混合精度 | |
+| master weights | 主权重 | |
+| bit-identical | 逐位相同 | |
+| activation checkpointing | 激活检查点 | |
+| gradient accumulation | 梯度累积 | |
+| data parallelism | 数据并行 | |
+| micro batch | micro batch | do not translate |
+| GPU memory | 显存 | |
+| GPU-hour | 卡时 | |
+| wall-clock time | 墙钟时间 | |
+| resume (from a checkpoint) | 续训（断点续训） | |
+| deduplication (dedup) | 去重 | |
+| near-deduplication | 近似去重 | |
+| contamination / decontamination | 污染 / 去污染 | |
+| data mixture | 配比 | |
+| shard | 分片 | |
+| manifest | 清单 | |
+| provenance | 出处 | |
+| heuristic rules | 启发式规则 | |
+| synthetic rephrasing | 合成改写 | |
+| language identification | 语言识别 | |
+| proxy model | 代理模型 | |
+| funnel | 漏斗 | |
+| compute-optimal | 算力最优 | |
+| overtraining | 过训练 | |
+| ladder experiment | 阶梯实验 | |
+| extrapolation | 外推 | |
+| held-out set / held-out test | 留出集 / 留出检验 | |
+| learning-rate sweep | 学习率扫描 | |
+| recipe | 配方 | training recipe |
+| MFU (model FLOPs utilization) | MFU | do not translate |
+| annealing | 退火 | |
+| stable phase / decay phase | 稳定段 / 衰减段 | WSD |
+| branched decay (WSD branch) | 分叉衰减（WSD 分叉） | |
+| base frequency | 基频 | RoPE |
+| position interpolation (PI) | 位置内插（PI） | |
+| needle in a haystack | 大海捞针 | |
+| base model | 底座模型 | |
+| chat template | 对话模板 | |
+| packing | 打包 | |
+| cross-contamination | 串门 | between packed documents |
+| teacher / student | 教师 / 学生 | |
+| soft label | 软标签 | |
+| sequence-level distillation | 序列级蒸馏 | |
+| on-policy distillation | 在线策略蒸馏 | |
+| exposure bias | 暴露偏差 | |
+| rejection sampling | 拒绝采样 | |
+| preference pair | 偏好对 | |
+| reward model (RM) | 奖励模型 | |
+| reference model | 参考模型 | |
+| implicit reward | 隐式奖励 | |
+| reward hacking | reward hacking（奖励作弊） | |
+| policy / policy gradient | 策略 / 策略梯度 | |
+| baseline | 基线 | |
+| advantage | 优势 | |
+| importance ratio | 重要性比 | |
+| verifier | 验证器 | |
+| verifiable reward | 可验证奖励 | |
+| entropy collapse | 熵坍缩 | |
+| multi-armed bandit | 多臂老虎机 | |
+| development set (dev set) | 开发集 | |
+| exact match | 精确匹配 | |
+| paired bootstrap | 配对 bootstrap | |
+| preregistration | 预注册 | |
+| primary endpoint | 主终点 | |
+| ahead / tie / behind | 超过 / 持平 / 落后 | the values in code are "ahead", "tie", "behind" |
+| opponent | 对手 | |
+| canary string | canary 字符串 | |
+| prompt | 提示词 | |
+| thinking mode | 思考模式 | |
+| few-shot | 少样本 | |
+| tool calling | 工具调用 | |
+| smoke test | 冒烟测试 | `zero.smoke` |
+| gate (Gate 1, 2, 3) | 闸门（闸门 1、2、3） | |
+| hard goal | 硬目标 | not "hard target" |
+| model card | 模型卡 | |
+| block-wise quantization | 分块量化 | |
+| outlier | 离群值 | |
+| Step 1 / Step 2 | 第一步 / 第二步 | project phases |
+| tiny-configuration demo | 极小配置演示 | section name |
+| to be verified | 待核实 | |
+| 10k yuan | 万元 | unit of money |
+| mask | mask（掩码） | causal mask = 因果 mask |
+| sparse attention | 稀疏注意力 | |
+| receptive field | 感受野 | |
+| local-global interleaving | 局部-全局交替 | |
+| attention sink | 注意力汇聚点 | |
+| state space model | 状态空间模型 | |
+| chunkwise form / recurrent form | 分块形式 / 递推形式 | |
+| delta rule | delta 规则 | |
+| hybrid architecture | 混合架构 | |
+| associative recall | 联想回忆 | |
+| recurrent neural network (RNN) | 循环神经网络（RNN） | |
+| expert | 专家 | MoE |
+| routed / shared expert | 路由专家 / 共享专家 | |
+| total / active parameters | 总参数 / 激活参数 | |
+| dense model | 稠密模型 | |
+| load balancing | 负载均衡 | |
+| routing collapse | 路由坍缩 | |
+| capacity factor | 容量因子 | |
+| expert parallelism (EP) | 专家并行（EP） | |
+| multi-token prediction (MTP) | 多 token 预测（MTP） | |
+| target model | 目标模型 | speculative decoding |
+| bonus token | 额外 token（bonus token） | not "奖励 token" |
+| speedup | 加速比 | |
+| total variation (TV) distance | 总变差距离 | |
+| consensus | 共识 | |
+| adopter | 采用方 | |
+| evolution tree | 演化树 | |

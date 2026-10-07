@@ -1,4 +1,4 @@
-# Base configuration of the course website. site/build.py adds docs_dir, site_dir, and nav.
+# Base configuration of the course website. site/build.py appends docs_dir, site_dir, and nav.
 site_name: "From 0 to AGI"
 site_description: "From y = ax + b to state-of-the-art open models: a course with text, videos, and code."
 site_url: "https://pengqianhan.github.io/From-0-to-AGI/"
@@ -52,5 +52,7 @@ markdown_extensions:
   - attr_list
   - toc:
       permalink: true
+      # Keep Chinese characters in heading anchors (as GitHub does), so links such as #采用方与来源 work.
+      slugify: !!python/object/apply:pymdownx.slugs.slugify {kwds: {case: lower}}
   - pymdownx.superfences
   - pymdownx.highlight

@@ -1,4 +1,4 @@
-"""导出成 Hugging Face 格式后，用 transformers 加载，logits 必须一致（第 20 章）。"""
+"""After export to the Hugging Face format and a load with transformers, the logits must be the same (Chapter 20)."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def _model(**kw) -> Transformer:
     cfg.update(kw)
     torch.manual_seed(0)
     m = Transformer(ModelConfig(**cfg)).eval()
-    with torch.no_grad():  # 让 RMSNorm 权重不全是 1，对拍更严格
+    with torch.no_grad():  # make the RMSNorm weights not all 1, so the parity check is stricter
         for p in m.parameters():
             if p.dim() == 1:
                 p.uniform_(0.5, 1.5)
@@ -58,7 +58,7 @@ def test_export_then_load_with_transformers(tmp_path: Path, kw: dict) -> None:
     tokens = torch.randint(0, 300, (2, 100), generator=torch.Generator().manual_seed(0))
     with torch.no_grad():
         torch.testing.assert_close(hf(tokens).logits, model(tokens), rtol=1e-5, atol=1e-5)
-    # 目录也能直接读回 zero
+    # zero can also read the directory back directly
     back = load_from_hf_qwen3(out).eval()
     with torch.no_grad():
         torch.testing.assert_close(back(tokens), model(tokens))
@@ -67,7 +67,7 @@ def test_export_then_load_with_transformers(tmp_path: Path, kw: dict) -> None:
 def test_export_bf16_with_tokenizer(tmp_path: Path, tiny_texts: dict[str, str]) -> None:
     tok = train_bpe([tiny_texts["en"][:20000], tiny_texts["zh"][:10000]], vocab_size=300)
     model = _model()
-    out = export_to_hf_qwen3(model, model.config, tmp_path, tokenizer=tok)  # 默认 bf16
+    out = export_to_hf_qwen3(model, model.config, tmp_path, tokenizer=tok)  # default bf16
     assert {
         "tokenizer.json",
         "tokenizer_config.json",
@@ -82,6 +82,6 @@ def test_export_bf16_with_tokenizer(tmp_path: Path, tiny_texts: dict[str, str]) 
     with torch.no_grad():
         ref = model(ids)
         got = hf(ids).logits.float()
-    assert (got - ref).abs().max() < 0.1  # bf16 权重：只要求大致一致
+    assert (got - ref).abs().max() < 0.1  # bf16 weights: only approximate agreement is required
     assert got[0, -1].argmax() == ref[0, -1].argmax() or (got - ref).abs().max() < 0.05
     assert hf.config.eos_token_id == tok.eos_id

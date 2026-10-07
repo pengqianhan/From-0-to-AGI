@@ -1,34 +1,34 @@
-"""第 3 章 · 极简代码 1：直线拟合不了曲线，线性层叠多少层也还是直线
+"""Chapter 3 · Minimal code 1: a straight line cannot fit a curve, and stacked linear layers are still a straight line.
 
-两件事：
-1. 用最小二乘找到"最好的直线"去拟合 y = sin(2x)，看看它能好到哪里。
-2. 把两层（甚至三层）线性层叠起来：(X·W1 + b1)·W2 + b2 = X·(W1·W2) + (b1·W2 + b2)，
-   用数字验证它和"一层线性层"完全等价。
-只用 NumPy，CPU 上不到 1 秒跑完。
-运行：uv run python chapters/03-neural-network/code/01_linear_is_not_enough.py
+The script shows two things:
+1. Use least squares to find the "best straight line" for y = sin(2x). See how good this line can be.
+2. Stack two (or three) linear layers: (X·W1 + b1)·W2 + b2 = X·(W1·W2) + (b1·W2 + b2).
+   Use numbers to show that the stack is identical to one linear layer.
+Uses only NumPy. It runs in less than 1 second on a CPU.
+Run: uv run python chapters/03-neural-network/code/01_linear_is_not_enough.py
 """
 
 import numpy as np
 
 
 def make_data(n: int = 100):
-    """本章的数据：x 在 [−3, 3] 上均匀取 100 个点，y = sin(2x)。形状都是 (N, 1)。"""
+    """The data of this chapter: 100 evenly spaced points for x in [−3, 3], y = sin(2x). Both have the shape (N, 1)."""
     x = np.linspace(-3, 3, n).reshape(-1, 1)
     y = np.sin(2 * x)
     return x, y
 
 
 def best_line(x: np.ndarray, y: np.ndarray):
-    """最小二乘：所有直线里 MSE 最小的那一条（第 1 章的解析解）。"""
+    """Least squares: the straight line with the smallest MSE (the closed-form solution from Chapter 1)."""
     a, b = np.polyfit(x[:, 0], y[:, 0], deg=1)
     mse = float(np.mean((a * x + b - y) ** 2))
     return a, b, mse
 
 
 def collapse(layers):
-    """把一串线性层 [(W1, b1), (W2, b2), ...] 合并成一层 (W, b)。
+    """Merge a stack of linear layers [(W1, b1), (W2, b2), ...] into one layer (W, b).
 
-    (X·W1 + b1)·W2 + b2 = X·(W1·W2) + (b1·W2 + b2)，再往后叠也一样。
+    (X·W1 + b1)·W2 + b2 = X·(W1·W2) + (b1·W2 + b2). The same is true for each layer after that.
     """
     W, b = layers[0]
     for W_next, b_next in layers[1:]:
@@ -37,7 +37,7 @@ def collapse(layers):
 
 
 def forward_stack(x: np.ndarray, layers) -> np.ndarray:
-    """老老实实一层一层算：h ← h·W + b。"""
+    """Calculate layer by layer, with no shortcut: h ← h·W + b."""
     h = x
     for W, b in layers:
         h = h @ W + b
@@ -45,18 +45,22 @@ def forward_stack(x: np.ndarray, layers) -> np.ndarray:
 
 
 def random_stacks(seed: int = 0):
-    """随机造两个纯线性网络：两层 1→8→1、三层 1→8→8→1（每层 h ← h·W + b，中间不加激活）。"""
+    """Make two random linear-only networks: 2 layers 1→8→1 and 3 layers 1→8→8→1.
+
+    Each layer is h ← h·W + b. No activation is between the layers.
+    """
     rng = np.random.default_rng(seed)
-    two = [(rng.normal(size=(1, 8)), rng.normal(size=8)),      # 第 1 层：1 → 8
-           (rng.normal(size=(8, 1)), rng.normal(size=1))]      # 第 2 层：8 → 1
+    two = [(rng.normal(size=(1, 8)), rng.normal(size=8)),      # layer 1: 1 → 8
+           (rng.normal(size=(8, 1)), rng.normal(size=1))]      # layer 2: 8 → 1
     three = [(rng.normal(size=(1, 8)), rng.normal(size=8)),
              (rng.normal(size=(8, 8)), rng.normal(size=8)),
              (rng.normal(size=(8, 1)), rng.normal(size=1))]
-    return {"两层 1→8→1": two, "三层 1→8→8→1": three}
+    return {"2 layers 1→8→1": two, "3 layers 1→8→8→1": three}
 
 
 def stack_demo(x: np.ndarray):
-    """对每个随机线性网络：参数量、合并后的 (W, b)、逐层算与合并算的最大差。"""
+    """For each random linear network: the number of parameters, the merged (W, b),
+    and the maximum difference between the layer-by-layer result and the merged result."""
     rows = []
     for name, layers in random_stacks().items():
         W, b = collapse(layers)
@@ -69,12 +73,13 @@ def stack_demo(x: np.ndarray):
 if __name__ == "__main__":
     x, y = make_data()
     a, b, mse = best_line(x, y)
-    print("1) 用直线拟合 y = sin(2x)")
-    print(f"   最好的直线：y = {a:.3f}·x + {b:.3f}，MSE = {mse:.4f}")
-    print(f"   对照：y 的方差 = {float(np.var(y)):.4f}（直接猜平均值的 MSE）")
+    print("1) Fit y = sin(2x) with a straight line")
+    print(f"   Best straight line: y = {a:.3f}·x + {b:.3f}, MSE = {mse:.4f}")
+    print(f"   Reference: variance of y = {float(np.var(y)):.4f} (the MSE if we always predict the mean)")
 
-    print("\n2) 线性层叠起来，还是一层线性层")
+    print("\n2) Stacked linear layers are still one linear layer")
     for name, n_params, W, bb, diff in stack_demo(x):
-        print(f"   {name}：{n_params} 个参数，合并后 y = {W.item():.3f}·x {bb.item():+.3f}，"
-              f"逐层算 vs 合并算 最大差 = {diff:.1e}")
-    print("   → 参数再多，函数图像仍是一条直线，MSE 不可能低于上面那条最好的直线。")
+        print(f"   {name}: {n_params} parameters, merged y = {W.item():.3f}·x {bb.item():+.3f}, "
+              f"max difference layer-by-layer vs merged = {diff:.1e}")
+    print("   → More parameters do not help. The graph of the function is still a straight line,"
+          " so the MSE cannot be lower than the best straight line above.")

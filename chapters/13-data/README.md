@@ -1,100 +1,104 @@
-# 第 13 章：数据 —— 从一堆网页到一份能训练的数据集
+# Chapter 13: Data — From web pages to a training data set
 
-> **一句话目标**：读完这一章，你能说出一份预训练数据从网页到分片要经过哪几步、每一步干掉什么；能手写 MinHash LSH 去重并算出"相似度 s 的一对文档被抓到的概率"；能用小模型的对照实验（配对比较 bits-per-byte）判断一种过滤或一个配比到底有没有用；能用 13-gram 检查训练数据有没有见过考题；并且能根据"字节/token"和"算力/字节"两本账，为主线模型选定词表大小。
+**English** · [中文](README.zh.md)
 
-📺 **本章视频**：待发布（本地渲染：`bash chapters/13-data/video/build.sh`）
-🧪 **本章自检**：学完后在 Claude Code 里输入 `/ch13-data`
+> **Goal**: After this chapter, you can name the steps that take pretraining data from web pages to shards, and tell what each step removes. You can write MinHash LSH deduplication by hand and calculate "the probability that a document pair with similarity s is caught". You can use controlled experiments with small models (a paired comparison of bits-per-byte) to decide if a filter or a mixture is useful. You can use 13-grams to check if the training data saw the test questions. You can also select the vocabulary size of the main-line model from two accounts: "bytes per token" and "compute per byte".
+
+📺 **Video**: Not published yet. To render it on your computer, run `bash chapters/13-data/video/build.sh`.
+🧪 **Self-check**: After the chapter, type `/ch13-data` in Claude Code.
 
 ---
 
-上一章我们用 scaling law 定下了主线模型的尺寸（约 0.69B 参数）和预训练的 token 预算（约 4000 亿）。这一章要解决的问题是：**这 4000 亿个 token 从哪来、长什么样？** 网上的文字取之不尽，可大部分是导航栏、广告、乱码、一模一样的转载，还混着各种评测集的考题。怎么把它们变成一份"干净、合法、配比合适、不偷看考题"的数据集，再为它训练一个合身的分词器——这就是本章的内容。
+In the previous chapter, we used scaling laws to set the size of the main-line model (about 0.69B parameters) and its pretraining token budget (about 400 billion). This chapter answers the next question: **where do these 400 billion tokens come from, and what do they look like?** The web has an almost unlimited amount of text. But most of it is navigation bars, ads, garbled text, and identical reposts, and it also contains test questions from many evaluation sets. This chapter shows how to change this text into a data set that is clean, legal, well mixed, and free of test questions. Then it trains a tokenizer that fits this data set.
 
-本章代码都在 CPU 上跑（前 5 个脚本加起来约 1 分钟；两个训练小模型的消融实验各需几分钟 CPU 时间，机器繁忙时墙钟时间会长得多）：
+All code in this chapter runs on a CPU. The first 5 scripts take about 1 minute in total. The two ablation experiments train small models and need several minutes of CPU time each. When the machine is busy, the wall-clock time is much longer.
 
 ```bash
-uv run python chapters/13-data/code/01_noisy_crawl.py          # 造一份"脏网页"：真文档 + 七类垃圾 + 泄漏的考题
-uv run python chapters/13-data/code/02_heuristic_filter.py     # 语言识别 + Gopher / C4 / FineWeb 规则
-uv run python chapters/13-data/code/03_minhash.py              # 从零写 MinHash LSH，验证 S 曲线公式
-uv run python chapters/13-data/code/04_quality_classifier.py   # 玩具版"模型打分过滤"
-uv run python chapters/13-data/code/05_decontam.py             # 13-gram 去污染
-uv run python chapters/13-data/code/06_quality_ablation.py     # 消融①：脏数据 vs 过滤后（单线程约 3 分钟 CPU）
-uv run python chapters/13-data/code/07_mixture_ablation.py     # 消融②：三种配比（单线程约 4 分钟 CPU）
-uv run python chapters/13-data/code/08_vocab_size.py           # 词表大小：压缩率 × 参数与算力
-uv run python -m zero.data.pipeline --config configs/tiny/data.toml   # 生产级流水线（极小配置，约半分钟）
+uv run python chapters/13-data/code/01_noisy_crawl.py          # make a "noisy crawl": real documents + seven types of junk + leaked test questions
+uv run python chapters/13-data/code/02_heuristic_filter.py     # language identification + Gopher / C4 / FineWeb rules
+uv run python chapters/13-data/code/03_minhash.py              # MinHash LSH from scratch; check the S-curve formula
+uv run python chapters/13-data/code/04_quality_classifier.py   # toy version of "model-based quality filtering"
+uv run python chapters/13-data/code/05_decontam.py             # 13-gram decontamination
+uv run python chapters/13-data/code/06_quality_ablation.py     # ablation 1: noisy vs. filtered (about 3 min of CPU time on one thread)
+uv run python chapters/13-data/code/07_mixture_ablation.py     # ablation 2: three mixtures (about 4 min of CPU time on one thread)
+uv run python chapters/13-data/code/08_vocab_size.py           # vocabulary size: compression × parameters and compute
+uv run python -m zero.data.pipeline --config configs/tiny/data.toml   # production pipeline (tiny configuration, about half a minute)
 ```
 
-## 1. 数据是最大的杠杆
+## 1. Data is the largest lever
 
-先看两个和主线模型差不多大的例子。
+First, look at two examples of about the same size as the main-line model.
 
-- **MobileLLM-R1**（Meta，2025）：950M 参数，预训练只用了 4.2T token——Qwen3 小模型 36T 的 11.7%——却在多项推理基准上追平或超过 Qwen3-0.6B。论文要挑战的正是"推理能力需要海量数据（10T 以上）"这个假设，结论是：精选约 2T token 的开放数据、再按设计好的比例重复采样，就够了。它的"留一法"实验还发现，去掉 FineWeb-Edu（一份经过教育价值筛选的网页数据）会让知识、数学、代码三项**一起**变差：通用网页像胶水，把各领域粘在一起。
-- **Puro-2B**（清华，2026-08）：2B 参数、约 1.4T token，只用公开数据，拟合出的成本曲线说大约 **4.4K 美元**的算力就能追上 Qwen2-1.5B。它的数据配方不靠自己打分，而是**代理实验（proxy experiment）**：从同一个 Qwen3-0.6B checkpoint 出发，每个候选数据切片续训约 8.4B token，看 15 项基准组成的"能力向量"。一个发现很说明问题：同一个数据集 DCLM，按质量分排序后，最前面那一段在 39 个候选切片里排第 3，往后 25% 的那一段只排第 11。
+- **MobileLLM-R1** (Meta, 2025): 950M parameters. Its pretraining used only 4.2T tokens. This is 11.7% of the 36T tokens of the small Qwen3 models. But it equals or beats Qwen3-0.6B on many reasoning benchmarks. The paper tests the assumption that "reasoning needs very large amounts of data (more than 10T)". Its conclusion: about 2T tokens of carefully selected open data, resampled at designed ratios, are sufficient. Its "leave-one-out" experiment also found this: when you remove FineWeb-Edu (web data filtered for educational value), knowledge, math, and code **all** become worse. General web data acts like glue that holds the domains together.
+- **Puro-2B** (Tsinghua, 2026-08): 2B parameters and about 1.4T tokens, with only public data. Its fitted cost curve says that about **USD 4.4K** of compute is sufficient to match Qwen2-1.5B. Its data recipe does not use its own quality scores. It uses **proxy experiments**. Start from the same Qwen3-0.6B checkpoint, and continue training on each candidate data slice for about 8.4B tokens. Then look at the "capability vector" of 15 benchmarks. One finding shows the effect well. Take the data set DCLM and sort it by quality score. The top slice ranked 3rd of 39 candidate slices, but the slice 25% further down ranked only 11th.
 
-Llama 3 的技术报告也说得很直接：和 Llama 2 相比，架构几乎没变，"性能提升主要来自数据质量和多样性的改进，以及训练规模"。第 9 章的架构、第 12 章的超参，在这个规模下带来的差异，都比不上"喂什么数据"。所以主线模型不冒架构风险（GOAL.md 3.3），把功夫花在数据上。
+The Llama 3 technical report also says it directly. Compared with Llama 2, the architecture almost did not change. The report says: "the performance improvements come mainly from improvements in data quality and diversity, and from the scale of training". At this scale, the architecture of Chapter 9 and the hyperparameters of Chapter 12 make less difference than "which data we feed". Thus the main-line model takes no architecture risk (GOAL.md 3.3) and puts its effort into the data.
 
-## 2. 开放数据集和它们的许可证
+## 2. Open data sets and their licenses
 
-GOAL.md 3.3 要求"只用许可证允许的公开数据，每个数据集都记录来源和许可证"。下表是主线的候选，每一行都在 Hugging Face 的数据集卡上核对过（2026-09-26）：
+GOAL.md 3.3 requires this: "Use only public data that the license permits. Record the source and the license of each data set." The table shows the candidates for the main line. We checked each row against the data set card on Hugging Face (2026-09-26):
 
-| 数据集 | 规模（数据集卡口径） | 语言 | 许可证 | 怎么筛出来的 |
+| Data set | Size (as on the data set card) | Language | License | How it was filtered |
 |---|---|---|---|---|
-| [FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu) | 1.3T token（另有 score≥2 的 5.4T 版） | 英 | ODC-By 1.0 | FineWeb（Common Crawl → trafilatura 抽取 → fastText 语言识别 → Gopher/C4/FineWeb 规则 → 每个 dump 内 MinHash）+ 教育价值分类器（Llama-3-70B 标 46 万篇 → 训练小分类器 → 保留 ≥3 分，删掉 92%） |
-| [DCLM-baseline 1.0](https://huggingface.co/datasets/mlfoundations/dclm-baseline-1.0) | 4T token、3B 篇 | 英 | CC-BY-4.0（卡片注明"仅供研究"，见下文） | RefinedWeb 式启发式 → Bloom 过滤器去重 → fastText 分类器（正例：OpenHermes 2.5 指令数据 + ELI5 高赞回答） |
-| [FineWeb-2](https://huggingface.co/datasets/HuggingFaceFW/fineweb-2)（`cmn_Hani` 子集） | 中文 6.36 亿篇、parquet 1.6TB | 中（及 1000+ 种语言） | ODC-By 1.0 | FineWeb 流水线的多语言版（按语言调过的规则与去重），**没有**模型打分 |
-| [Ultra-FineWeb](https://huggingface.co/datasets/openbmb/Ultra-FineWeb) | 英 约 1T、中 约 120B token | 英、中 | 页面标 Apache-2.0；中文部分来自多个上游语料（待核实） | 对 FineWeb 和中文 FineWeb-edu-v2 做"验证式"筛选：用小代价的训练实验挑正负样本，再训 fastText 分类器（MiniCPM4/5 的核心网页数据） |
-| [Stack-Edu](https://huggingface.co/datasets/HuggingFaceTB/stack-edu) | 125B token、15 种编程语言 | 代码 | 页面无许可证字段，指向 The Stack v2 条款；每个文件带 `detected_licenses`（待核实） | StarCoder2 训练集 → 每种语言一个教育价值分类器（StarEncoder，标注来自 Llama-3-70B）→ 保留 ≥3 分（Java ≥2）。**只含文件 id**，内容要从 Software Heritage 的 S3 取 |
-| [FineMath](https://huggingface.co/datasets/HuggingFaceTB/finemath) | FineMath-3+ 34B token（4+ 约 9.6B） | 英 | ODC-By 1.0 | 从 Common Crawl 召回数学页面 → 数学分类器（Llama-3.1-70B 标注）→ ≥3 分 |
-| [Nemotron-CC](https://data.commoncrawl.org/contrib/Nemotron/Nemotron-CC/index.html)（v2 在 HF 上需申请） | 6.3T token（4.4T 真实 + 1.9T 合成） | 英（v2 加了多语言问答） | Common Crawl 使用条款；v2 是 NVIDIA 数据协议（允许训练、禁止再分发原始数据） | 三个分类器集成打分分成 20 档 → 低质量改写成维基风格、高质量生成问答/摘要/知识列表（第 7 节） |
+| [FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu) | 1.3T tokens (also a 5.4T version with score ≥2) | English | ODC-By 1.0 | FineWeb (Common Crawl → trafilatura extraction → fastText language identification → Gopher/C4/FineWeb rules → MinHash within each dump) + an educational-value classifier (Llama-3-70B labels 460K pages → train a small classifier → keep scores ≥3, remove 92%) |
+| [DCLM-baseline 1.0](https://huggingface.co/datasets/mlfoundations/dclm-baseline-1.0) | 4T tokens, 3B documents | English | CC-BY-4.0 (the card says "research use only"; see below) | RefinedWeb-style heuristics → Bloom filter dedup → fastText classifier (positive examples: OpenHermes 2.5 instruction data + highly voted ELI5 answers) |
+| [FineWeb-2](https://huggingface.co/datasets/HuggingFaceFW/fineweb-2) (`cmn_Hani` subset) | Chinese: 636M documents, 1.6TB of parquet | Chinese (and 1000+ languages) | ODC-By 1.0 | Multilingual version of the FineWeb pipeline (rules and dedup tuned for each language), **no** model-based scoring |
+| [Ultra-FineWeb](https://huggingface.co/datasets/openbmb/Ultra-FineWeb) | English about 1T, Chinese about 120B tokens | English, Chinese | The page says Apache-2.0; the Chinese part comes from many upstream corpora (to be verified) | "Verification-based" filtering of FineWeb and Chinese FineWeb-edu-v2: low-cost training experiments select the positive and negative examples, then a fastText classifier trains on them (the core web data of MiniCPM4/5) |
+| [Stack-Edu](https://huggingface.co/datasets/HuggingFaceTB/stack-edu) | 125B tokens, 15 programming languages | Code | The page has no license field and points to the terms of The Stack v2; each file has `detected_licenses` (to be verified) | StarCoder2 training set → one educational-value classifier per language (StarEncoder, labels from Llama-3-70B) → keep scores ≥3 (Java ≥2). **Contains only file ids**: get the content from the S3 of Software Heritage |
+| [FineMath](https://huggingface.co/datasets/HuggingFaceTB/finemath) | FineMath-3+ 34B tokens (4+ about 9.6B) | English | ODC-By 1.0 | Recall math pages from Common Crawl → math classifier (labels from Llama-3.1-70B) → scores ≥3 |
+| [Nemotron-CC](https://data.commoncrawl.org/contrib/Nemotron/Nemotron-CC/index.html) (v2 on HF needs an application) | 6.3T tokens (4.4T real + 1.9T synthetic) | English (v2 adds multilingual QA) | Common Crawl terms of use; v2 uses the NVIDIA data agreement (training is permitted; redistribution of the raw data is not) | An ensemble of three classifiers puts the data into 20 buckets → rewrite low-quality text in Wikipedia style; generate QA / summaries / knowledge lists from high-quality text (Section 7) |
 
-几点提醒，都是写模型卡时要面对的：
+Some reminders. You must deal with each of them when you write the model card:
 
-- **许可证不只是一个字段。** ODC-By 要求署名，同时受 Common Crawl 使用条款约束；DCLM 的许可证是 CC-BY-4.0，但数据集卡写着"intended for research use only"，发布模型前要确认两者的关系；Ultra-FineWeb 页面标 Apache-2.0，可中文部分汇集了 IndustryCorpus2、WuDao、SkyPile、WanJuan、CCI3 等上游语料，上游条款各不相同（Puro-2B 的论文就专门说明其中 SkyPile 用的是 Skywork 社区许可证）。Nemotron-CC 的论文还提到，他们没把 FineWeb-Edu 分类器放进集成，"因为许可证问题"——分类器的训练标注来自 Llama 3。
-- **"开放"不等于"能下载"。** Stack-Edu 只给文件 id，内容要按数据集卡的脚本去 Software Heritage 的 S3 桶取（要 AWS 凭证）；Nemotron-CC-v2 在 HF 上要申请。
-- 除 Nemotron-CC 外，这张表的每一行都登记在 [`zero/data/sources.py`](../../zero/data/sources.py) 里（Nemotron-CC 暂不纳入主线：v2 要申请，原始数据禁止再分发，和"数据配方全部公开"的目标冲突）；许可证还没核实完的来源，下载器默认拒绝下载（第 11 节）。
+- **A license is more than one field.** ODC-By requires attribution, and the Common Crawl terms of use also apply. The license of DCLM is CC-BY-4.0, but the data set card says "intended for research use only". Before you release a model, make sure how the two statements relate. The Ultra-FineWeb page says Apache-2.0, but its Chinese part collects upstream corpora such as IndustryCorpus2, WuDao, SkyPile, WanJuan, and CCI3. These upstream corpora have different terms. (The Puro-2B paper says specially that SkyPile uses the Skywork community license.) The Nemotron-CC paper also says that they did not put the FineWeb-Edu classifier into the ensemble "because of license issues": the training labels of that classifier come from Llama 3.
+- **"Open" does not mean "downloadable".** Stack-Edu gives only file ids. You must use the script on the data set card to get the content from the S3 bucket of Software Heritage (this needs AWS credentials). Nemotron-CC-v2 on HF needs an application.
+- All rows of this table except Nemotron-CC are registered in [`zero/data/sources.py`](../../zero/data/sources.py). (Nemotron-CC is not in the main line for now: v2 needs an application, and it does not permit redistribution of the raw data. This conflicts with the goal "publish the full data recipe".) If the license of a source is not fully verified, the downloader refuses to download it by default (Section 11).
 
-## 3. 流水线全景，和一份"脏网页"
+## 3. The pipeline, and a "noisy crawl"
 
-从 Common Crawl 到训练分片，主流做法（FineWeb、DCLM、Nemotron-CC、Llama 3 大同小异）是这样一串步骤：
+From Common Crawl to training shards, the common method is this sequence of steps (FineWeb, DCLM, Nemotron-CC, and Llama 3 are similar):
 
 ```
-网页 HTML → 文本抽取 → 语言识别 → 启发式规则 → 精确去重 + 近似去重 → 模型打分过滤
-         →（合成改写）→ 去污染 → 分词 → 分片 + 配比 → 训练
+web HTML → text extraction → language identification → heuristic rules → exact dedup + near dedup → model-based filtering
+         → (synthetic rephrasing) → decontamination → tokenization → shards + mixture → training
 ```
 
-排序有讲究：**便宜的步骤放前面**。规则和哈希每篇文档几微秒；模型打分要跑神经网络——FineWeb-Edu 给 15T token 打分用了 6000 个 H100 卡时。先用便宜的步骤把量减下来，贵的步骤才算得起。
+The order is important: **put the cheap steps first**. Rules and hashes take a few microseconds per document. Model-based scoring must run a neural network: FineWeb-Edu used 6000 H100 GPU hours to score 15T tokens. The cheap steps make the data smaller first. Then we can pay for the expensive steps.
 
-真实网页数据在构建环境里下载不了（也太大），所以 [`01_noisy_crawl.py`](code/01_noisy_crawl.py) 自己造了一份"脏网页"：`assets/tiny_corpus` 里的莎士比亚和宋词当好文档，再按网页上常见的几类垃圾往里掺。每篇都带一个标签，后面每一步都能检查"删得对不对"——真实世界没有这个标签，这正是数据工作难的地方。
+We cannot download real web data in the build environment (and it is too large). Thus [`01_noisy_crawl.py`](code/01_noisy_crawl.py) makes its own "noisy crawl". Shakespeare and Song ci (Chinese poems of the Song dynasty) from `assets/tiny_corpus` are the good documents. Then the script adds the types of junk that are common on web pages. Each document has a label, so each later step can check if it removed the correct documents. The real world has no such label. This is why data work is difficult.
 
-| 类型 | 篇数 | 是什么 |
+| Type | Documents | What it is |
 |---|---:|---|
-| good | 1015 | 真实文档（每篇约 1500 字符） |
-| contaminated | 16 | 好文档中间夹了一道"考题"（12 道原样、2 道改了大小写和标点、2 道改写过） |
-| exact_dup | 80 | 原样转载，只有换行符、行尾空格不同 |
-| near_dup | 80 | 转载时改了几个词，加上"转载自……""分享到……"的页眉页脚 |
-| nav | 60 | 导航页：`首页 \| 关于我们 \| 联系方式 …` |
-| spam | 40 | 关键词堆砌：`免费下载高清在线观看…`、`cheap best price buy now…` |
-| garbled | 30 | 乱码：UTF-8 被当成 Latin-1 解码（`æå®ä¸`），或一堆符号 |
-| salad | 80 | 把好文档每一行的词（中文按字）打乱，行尾标点留在原位 |
+| good | 1015 | Real documents (about 1500 characters each) |
+| contaminated | 16 | A good document with a "test question" in the middle (12 verbatim, 2 with changed case and punctuation, 2 paraphrased) |
+| exact_dup | 80 | Verbatim reposts; only the line ends and the spaces at line ends are different |
+| near_dup | 80 | Reposts with some changed words, plus a header and a footer such as "转载自……" ("Reposted from …") and "分享到……" ("Share to …") |
+| nav | 60 | Navigation pages: `首页 \| 关于我们 \| 联系方式 …` ("Home \| About us \| Contact …") |
+| spam | 40 | Keyword stuffing: `免费下载高清在线观看…` ("free download, HD, watch online …"), `cheap best price buy now…` |
+| garbled | 30 | Garbled text: UTF-8 decoded as Latin-1 (`æå®ä¸`), or a block of symbols |
+| salad | 80 | The words of each line of a good document in random order (in Chinese, the characters); the punctuation at the line end stays in place |
 
-一共 1401 篇、2.76MB；另外留出英文 84 篇、中文 30 篇干净文档做验证集，考题 60 道（中英各 30）就是从这些留出文档里摘的。
+In total, the crawl has 1401 documents and 2.76 MB. We also hold out 84 English and 30 Chinese clean documents as the validation set. The 60 test questions (30 Chinese, 30 English) come from these held-out documents.
 
-## 4. 文本抽取、语言识别与启发式规则
+## 4. Text extraction, language identification, and heuristic rules
 
-**文本抽取**决定了原料的成色。Common Crawl 提供 WARC（原始 HTML）和 WET（它自己抽好的纯文本）两种格式；FineWeb 的消融发现，用 trafilatura 从 WARC 重新抽取，比直接用 WET 训出的模型明显更好（WET 里导航和菜单太多）。Nemotron-CC 则发现换 jusText 能多保留 28.6% 的高质量 token。**语言识别**一般用 fastText 的 lid.176 模型：FineWeb 只留"英文得分 ≥ 0.65"的文档。本章的 `02` 用一个 10 行的替代品：汉字占比 > 30% 算中文，ASCII 字母占比 > 50% 算英文，其余算"其他"丢掉——乱码页一篇不剩全死在这一步。
+**Text extraction** sets the quality of the raw material. Common Crawl gives two formats: WARC (the raw HTML) and WET (plain text that Common Crawl extracted). The FineWeb ablations found that text extracted again from WARC with trafilatura trains clearly better models than WET (WET contains too many navigation bars and menus). Nemotron-CC found that jusText keeps 28.6% more high-quality tokens.
 
-**启发式规则**是一组便宜的统计量加阈值。[`02_heuristic_filter.py`](code/02_heuristic_filter.py) 从零实现了三篇论文里的规则，阈值用原文的值：
+**Language identification** usually uses the fastText model lid.176. FineWeb keeps only documents with "English score ≥ 0.65". Script `02` of this chapter uses a 10-line replacement. More than 30% Chinese characters is Chinese, and more than 50% ASCII letters is English. All else is "other" and goes out. All garbled pages are removed at this step.
+
+**Heuristic rules** are a set of cheap statistics with thresholds. [`02_heuristic_filter.py`](code/02_heuristic_filter.py) implements the rules of three papers from scratch, with the threshold values of the papers:
 
 ```python
 if not 50 <= n <= 100_000:                                   bad.append("gopher_word_count")
 if sum(w.lower() in stop for w in words) < 2:                bad.append("gopher_stop_words")      # the/be/to/of/and/that/have/with
-if sum(c for c in counts.values() if c > 1) / nl > 0.3:     bad.append("gopher_dup_lines")       # 重复行占比
+if sum(c for c in counts.values() if c > 1) / nl > 0.3:     bad.append("gopher_dup_lines")       # fraction of duplicate lines
 if "lorem ipsum" in text.lower() or "{" in text:             bad.append("c4_lorem_or_curly")
 if sum(ln.rstrip().endswith(END_PUNCT) for ln in lines) / nl <= 0.12:  bad.append("fineweb_line_punct")
 ```
 
-中文没有空格分词，一个汉字算一个"词"，停用词换成"的了是在和有也就不都而与之其以"。跑下来：
+Chinese has no spaces between words, so one Chinese character counts as one "word". The stop words become the Chinese function words "的了是在和有也就不都而与之其以". The result:
 
-| 类型 | 过滤前 | 删掉 | 删除率 |
+| Type | Before the filter | Removed | Removal rate |
 |---|---:|---:|---:|
 | good | 1015 | 177 | 17% |
 | contaminated | 16 | 2 | 12% |
@@ -102,41 +106,47 @@ if sum(ln.rstrip().endswith(END_PUNCT) for ln in lines) / nl <= 0.12:  bad.appen
 | nav / spam / garbled | 60 / 40 / 30 | 60 / 40 / 30 | **100%** |
 | salad | 80 | 12 | 15% |
 
-导航页、广告、乱码被规则一网打尽；乱序文本 85% 溜了过去——字符分布、行长、标点都和真文档一样，规则看不出"这不是话"。
+The rules remove all navigation pages, spam, and garbled pages. But 85% of the word salad passes. Its character distribution, line lengths, and punctuation are the same as in real documents, so the rules cannot see that "this is not language".
 
-还有一个值得多看一眼的数字：**好文档被误杀了 17%**，其中 152 篇是莎士比亚。原因是 Gopher 的"重复行"规则：剧本里 `QUEEN MARGARET:` 这样的人名行反复出现，重复行占比很容易超过 30%。这些阈值是在网页上调出来的，用在剧本、诗歌、代码上会误伤——生产级的 `zero/data/quality.py` 在同一批文档上也只保留 1110 篇；而如果把网页规则用在代码上，tiny 语料里的代码会被删掉 96%（没有停用词、行尾没有句号）。所以流水线按来源选规则：网页用 Gopher/C4/FineWeb，代码用 Codex 论文的三条（平均行长 > 100、最长行 > 1000、字母数字占比太低），已经被上游过滤过的数据集（FineWeb-Edu、DCLM）不再重复过滤。Nemotron-CC 甚至发现，对高质量文档关掉启发式规则，MMLU 还能再高 2 分——规则删掉的不全是坏东西。
+One more number deserves a second look: **the rules removed 17% of the good documents by mistake**, and 152 of them are Shakespeare. The cause is the "duplicate lines" rule of Gopher. In a play, name lines such as `QUEEN MARGARET:` occur many times, so the fraction of duplicate lines easily goes above 30%. These thresholds were tuned on web pages, and on plays, poems, and code they remove good documents. The production `zero/data/quality.py` also keeps only 1110 documents of the same set. If you use the web rules on code, they remove 96% of the code in the tiny corpus. (Code has no stop words, and its lines do not end with a period.) Thus the pipeline selects the rules by source:
 
-## 5. 去重：精确哈希 + MinHash LSH
+- Web pages: Gopher/C4/FineWeb.
+- Code: the three rules of the Codex paper (mean line length > 100, longest line > 1000, alphanumeric fraction too low).
+- Data sets that upstream already filtered (FineWeb-Edu, DCLM): no second filter.
 
-网页上重复极多：转载、镜像站、模板页。重复数据浪费算力，让模型"背书"（Lee et al. 2021 发现去重后模型逐字复述训练文本的比例大幅下降），还会放大考题泄漏。去重分两层：
+Nemotron-CC even found that MMLU increases by 2 more points when it turns off the heuristic rules for high-quality documents. Not everything that the rules remove is bad.
 
-1. **精确去重**：规范化空白后算哈希，一样的只留一篇。便宜，但差一个字就认不出来。
-2. **近似去重**：衡量两篇文档有多像，用它们的"字符 5-gram 集合"的 **Jaccard 相似度** `J(A, B) = |A∩B| / |A∪B|`。两两比较是 O(N²)，几十亿篇文档比不过来，于是有了 MinHash 和 LSH。
+## 5. Deduplication: exact hashes + MinHash LSH
 
-**MinHash**：取一个随机哈希函数 h，看集合里哈希值最小的那个元素。A∪B 里哈希最小的元素，以 |A∩B|/|A∪B| 的概率恰好落在交集里——这时两个集合的最小值相等。所以：
+The web has very many duplicates: reposts, mirror sites, and template pages. Duplicate data wastes compute and makes the model "memorize" text. (Lee et al. 2021 found that dedup greatly decreases the fraction of training text that the model repeats word for word.) Duplicates also make test-question leaks larger. Deduplication (dedup) has two levels:
+
+1. **Exact dedup**: normalize the whitespace, calculate a hash, and keep only one document for each hash. This is cheap, but one different character is sufficient to hide a duplicate.
+2. **Near dedup**: measure how similar two documents are with the **Jaccard similarity** of their sets of character 5-grams: `J(A, B) = |A∩B| / |A∪B|`. A comparison of all pairs is O(N²). For billions of documents, this is not possible. MinHash and LSH solve this problem.
+
+**MinHash**: take a random hash function h, and find the element of the set with the smallest hash value. The element with the smallest hash in A∪B is in the intersection with the probability |A∩B|/|A∪B|. In that case, the minimums of the two sets are equal. Thus:
 
 ```
 P( min h(A) = min h(B) ) = J(A, B)
 ```
 
-用 128 个不同的哈希函数，得到 128 个最小值，这就是文档的**签名**；两个签名有多少位相等，就是 Jaccard 的估计。[`03_minhash.py`](code/03_minhash.py) 的核心不到 60 行：
+Use 128 different hash functions to get 128 minimums. These are the **signature** of the document. The fraction of equal positions in two signatures is an estimate of the Jaccard similarity. The core of [`03_minhash.py`](code/03_minhash.py) is less than 60 lines:
 
 ```python
-def signature(self, x):            # x：文档的 5-gram（每个用 crc32 变成整数）
+def signature(self, x):            # x: the 5-grams of a document (crc32 changes each one into an integer)
     return (((x[:, None] * self.a + self.b) % PRIME) & MASK).min(axis=0)
 ```
 
-最后那个 `& MASK`（取低 32 位）不能省：`a·x + b` 没超过素数 p 时，"mod p"什么也没做，哈希值随 x 单调递增，128 个哈希函数会选中同一个最小元素，签名的各位就不再独立。我第一次写的时候就漏了它，结果下面的"实测"和公式对不上：s = 0.3 时实测候选率 0.22，公式只有 0.001。
+The `& MASK` at the end (take the low 32 bits) is necessary. When `a·x + b` is less than the prime p, "mod p" does nothing. Then the hash value increases monotonically with x, and all 128 hash functions select the same minimum element. The positions of the signature are then no longer independent. I forgot this operation in my first version. Then the "measured" values below did not agree with the formula: at s = 0.3, the measured candidate rate was 0.22, but the formula gave only 0.001.
 
-**LSH（局部敏感哈希）**：把 128 位签名切成 b 段、每段 r 行（本章 16 × 8）。只要有一段完全相同，两篇文档就进同一个桶，成为"候选对"，再用签名估计的 Jaccard 复核。相似度为 s 的一对成为候选的概率：
+**LSH (locality-sensitive hashing)**: split the 128-position signature into b bands of r rows each (16 × 8 in this chapter). If one band is completely identical, the two documents go into the same bucket and become a "candidate pair". Then the Jaccard estimate from the signatures checks the pair again. The probability that a pair with similarity s becomes a candidate is:
 
 ```
-P(s) = 1 − (1 − s^r)^b          # 一段全等：s^r；b 段都不全等：(1 − s^r)^b
+P(s) = 1 − (1 − s^r)^b          # one band identical: s^r; no band identical: (1 − s^r)^b
 ```
 
-这是一条 S 形曲线，拐点约在 `(1/b)^(1/r)`：
+This is an S-shaped curve. Its inflection point is at about `(1/b)^(1/r)`:
 
-| s | b=16,r=8（本章/zero） | b=14,r=8（FineWeb） | b=450,r=20（RefinedWeb） | 实测（本章设置，每档 1000 对） |
+| s | b=16, r=8 (this chapter / zero) | b=14, r=8 (FineWeb) | b=450, r=20 (RefinedWeb) | Measured (this chapter's setting, 1000 pairs per row) |
 |---:|---:|---:|---:|---:|
 | 0.5 | 0.061 | 0.053 | 0.000 | 0.069 |
 | 0.6 | 0.237 | 0.211 | 0.016 | 0.202 |
@@ -144,152 +154,166 @@ P(s) = 1 − (1 − s^r)^b          # 一段全等：s^r；b 段都不全等：(
 | 0.8 | 0.947 | 0.924 | 0.995 | 0.949 |
 | 0.9 | 1.000 | 1.000 | 1.000 | 1.000 |
 
-实测和公式吻合。r、b 越大曲线越陡（RefinedWeb 用了 9000 个哈希），代价是要算、要存的哈希越多；FineWeb 为了省算力选了 112 个（14 × 8），它的论文算过：s = 0.75 时 77% 的概率被抓到，s ≥ 0.85 几乎一定。
+The measured values agree with the formula. Larger r and b make the curve steeper (RefinedWeb uses 9000 hashes), but then you must calculate and store more hashes. FineWeb selected 112 hashes (14 × 8) to save compute. Its paper calculates this: a pair with s = 0.75 is caught with a probability of 77%. A pair with s ≥ 0.85 is almost always caught.
 
-用在脏网页上（启发式过滤之后的 1051 篇）：精确去重删到 992 篇，MinHash 再删到 923 篇。按"出处"数多余的副本：去重前 130 份，精确去重后 71 份，MinHash 后只剩 2 份（这两份改动较多，相似度落在阈值以下）；68 个重复簇里没有一个把不同出处的文档误合并。
+On the noisy crawl (1051 documents after the heuristic filter), exact dedup decreases the count to 992 documents, and MinHash decreases it to 923. Count the redundant copies by "origin": 130 before dedup, 71 after exact dedup, and only 2 after MinHash. (These 2 copies have more changes, so their similarity is below the threshold.) None of the 68 duplicate clusters joins documents from different origins by mistake.
 
-FineWeb 的论文里还有一个反直觉的发现：对 96 个 Common Crawl 快照做**全局** MinHash 去重，模型反而没有变好——老快照里"幸存"下来的那 10% 恰恰是更差的数据。改成每个快照内部去重才追上 RefinedWeb。去重的目标是删掉"成千上万份的大簇"，不是追求一份不重。
+The FineWeb paper has one more counter-intuitive finding. **Global** MinHash dedup over 96 Common Crawl snapshots did not make the model better. The 10% of data that "survived" in the old snapshots was the worse data. Only dedup inside each snapshot reached the level of RefinedWeb. The goal of dedup is to remove the "large clusters with thousands of copies". It is not to remove every duplicate.
 
-## 6. 基于模型的质量过滤
+## 6. Model-based quality filtering
 
-规则抓不住"不像话"的文档。主流做法是训练一个便宜的分类器给每篇文档打分：
+Rules cannot catch documents that are "not language". The common method is to train a cheap classifier that gives a score to each document:
 
-- **FineWeb-Edu**：让 Llama-3-70B-Instruct 按"对中小学教育有没有价值"给 46 万个网页打 0–5 分（加性打分提示词），在 41 万条标注上训练一个线性回归头（Snowflake-arctic-embed-m 编码器冻结），给 15T token 全部打分，保留 ≥3 分：删掉 92%，剩 1.3T token，MMLU、ARC 等知识类基准明显提升；阈值再高，HellaSwag、PIQA 反而下降。
-- **DCLM**：fastText 分类器，正例是 OpenHermes 2.5 的指令数据和 ELI5 的高赞回答，负例是随机网页，保留分数最高的约 10%。
-- **Nemotron-CC**：发现 FineWeb-Edu 和 DCLM 两个分类器选出的高质量文档只有 10% 重合，于是集成三个分类器（取最大值）分 20 档，高质量 token 的比例从 9% 提到 25%。
-- **Ultra-FineWeb**（MiniCPM4）：同样是 fastText，但正负样本由小代价的训练实验来挑。
+- **FineWeb-Edu**: Llama-3-70B-Instruct gave a score of 0–5 to 460K web pages for "educational value for primary and secondary school" (with an additive scoring prompt). A linear regression head (on a frozen Snowflake-arctic-embed-m encoder) trained on 410K labels. It scored all 15T tokens, and the pages with scores ≥3 stayed. This removed 92% and left 1.3T tokens. Knowledge benchmarks such as MMLU and ARC improved clearly. With a higher threshold, HellaSwag and PIQA decreased.
+- **DCLM**: a fastText classifier. The positive examples are OpenHermes 2.5 instruction data and highly voted ELI5 answers. The negative examples are random web pages. It keeps about the top 10% by score.
+- **Nemotron-CC**: found that the high-quality documents from the FineWeb-Edu and DCLM classifiers overlap by only 10%. Thus it uses an ensemble of three classifiers (the maximum score) and 20 buckets. This increased the fraction of high-quality tokens from 9% to 25%.
+- **Ultra-FineWeb** (MiniCPM4): also fastText, but low-cost training experiments select the positive and negative examples.
 
-[`04_quality_classifier.py`](code/04_quality_classifier.py) 把 FineWeb-Edu 的做法缩小：请"评审员"标 250 篇，训练逻辑回归（第 5 章），再给其余文档打分。本章没有大模型，"评审员"就用我们手里的真标签代替——这是本脚本唯一"作弊"的地方。8 个手工特征里最有用的是**词对眼熟度**：相邻两个词（中文是两个字）有多少在好文档里出现过——和 CCNet 用 KenLM 困惑度过滤是一个思路。乱序文本的相邻词对几乎都是陌生的。
+[`04_quality_classifier.py`](code/04_quality_classifier.py) makes the FineWeb-Edu method smaller. An "annotator" labels 250 documents, a logistic regression (Chapter 5) trains on them, and then it scores the other documents. This chapter has no large model, so the "annotator" uses the true labels that we have. This is the only "cheat" in the script. The most useful of the 8 hand-made features is **bigram familiarity**: the fraction of adjacent word pairs (in Chinese, two characters) that occur in the good documents. CCNet uses the same idea when it filters with KenLM perplexity. In word salad, almost all adjacent word pairs are unfamiliar.
 
 ```
-权重（标准化后）：词对眼熟度 +3.31，平均词长 +2.01，汉字占比 −0.96，不同词占比 −0.60 …
+Weights (standardized): bigram +3.31, wordlen +2.01, cjk −0.96, unique −0.60 …
 ```
 
-在没标注的 673 篇上，阈值决定了"抓得全"和"误伤少"之间的取舍：
+(`bigram` is the bigram familiarity, `wordlen` is the mean word length, `cjk` is the fraction of Chinese characters, and `unique` is the fraction of distinct words.)
 
-| 阈值 | 抓到差文档 | 漏掉 | 误伤好文档 | 精确率 | 召回率 |
+On the 673 documents without a label, the threshold sets the trade-off between "catch all bad documents" and "remove few good documents":
+
+| Threshold | Bad documents caught | Missed | Good documents removed | Precision | Recall |
 |---:|---:|---:|---:|---:|---:|
 | 0.3 | 27 | 17 | 0 | 1.00 | 0.61 |
 | 0.5 | 31 | 13 | 1 | 0.97 | 0.70 |
 | 0.7 | 37 | 7 | 6 | 0.86 | 0.84 |
 | 0.9 | 41 | 3 | 66 | 0.38 | 0.93 |
 
-取 0.5：923 → 871 篇，乱序文本从 68 篇降到 21 篇，好文档只少了 3 篇。阈值不是拍脑袋定的——FineWeb-Edu 在 2、3、4 之间做了消融，选了 3。
+With 0.5, the count goes from 923 to 871 documents. Word salad decreases from 68 to 21 documents, and only 3 good documents are lost. A threshold is not a guess: FineWeb-Edu ran ablations on 2, 3, and 4 and selected 3.
 
-## 7. 合成改写：让模型把网页"重写一遍"
+## 7. Synthetic rephrasing: let a model "rewrite" the web
 
-好数据会用完。Muennighoff et al.（2023）发现同一份数据重复到 4 遍以内几乎没有损失，再多收益就快速下降。于是出现了**合成改写（rephrasing）**：用一个语言模型把已有文本换个写法重写，得到新的 token。几家的做法：
+Good data runs out. Muennighoff et al. (2023) found that up to 4 repeats of the same data cause almost no loss. With more repeats, the gain decreases quickly. This led to **synthetic rephrasing**: a language model rewrites existing text in a different form, and this gives new tokens. Some teams do it like this:
 
-- **Nemotron-CC**：用 Mistral NeMo 12B，低质量文档改写成"维基百科风格"（去掉噪声和错误），高质量文档生成多样的问答对、精简版、知识抽取、知识列表，一共合成 1.9T token。8B 模型训练 1T token 的对照：改写低质量数据平均 +1.5 分；把高质量数据 8 遍重复中的 4 遍换成合成数据，平均再 +0.9 分。
-- **Kimi K2**：知识类文本按不同风格和视角改写，长文档分块自回归地改写再拼回去，并检查改写与原文是否一致；数学文档改写成"学习笔记"体。同一份维基文本：原文重复 10 遍 SimpleQA 23.76；改写 1 次、重复 10 遍 27.39；**改写 10 次、各看 1 遍 28.94**。
-- **Phi-4**：合成数据占预训练 token 的 40%，另有 15% 是网页改写；消融发现只用合成数据，知识类基准（TriviaQA）明显变差，所以还是要混网页。
-- **Qwen3**：用 Qwen2.5、Qwen2.5-Math、Qwen2.5-Coder 合成了"数万亿 token"的教材、问答、指令和代码片段。
+- **Nemotron-CC**: uses Mistral NeMo 12B. It rewrites low-quality documents in "Wikipedia style" (without the noise and errors). From high-quality documents, it generates varied QA pairs, condensed versions, knowledge extractions, and knowledge lists. In total, it synthesized 1.9T tokens. A controlled experiment trained an 8B model on 1T tokens. Rephrased low-quality data gave +1.5 points on average. When synthetic data replaced 4 of the 8 repeats of high-quality data, the average increased by +0.9 more points.
+- **Kimi K2**: rewrites knowledge text in different styles and from different perspectives. It splits long documents into chunks, rewrites the chunks autoregressively, and joins them again. It also checks if each rewrite agrees with the original. It rewrites math documents as "study notes". On the same Wikipedia text: the original repeated 10 times gave a SimpleQA score of 23.76. One rewrite repeated 10 times gave 27.39. **10 rewrites, each seen 1 time, gave 28.94**.
+- **Phi-4**: synthetic data is 40% of the pretraining tokens, and rewritten web pages are another 15%. Its ablation found that with only synthetic data, knowledge benchmarks (TriviaQA) became clearly worse. Thus it still mixes in web data.
+- **Qwen3**: used Qwen2.5, Qwen2.5-Math, and Qwen2.5-Coder to synthesize "trillions of tokens" of textbooks, QA, instructions, and code snippets.
 
-合成改写不在本章的极简代码里——它需要一个会写字的大模型。风险也要记住：改写可能引入幻觉（Nemotron-CC 在个别任务上看到下降，并说明没有核对改写的事实准确性）；生成改写的模型必须是许可证允许"用输出训练其他模型"的（第 17 章讲教师模型的许可证）。主线模型第一阶段不做大规模合成，改写数据主要放在中期训练（第 15 章），规模按第二步的消融决定。
+Synthetic rephrasing is not in the minimal code of this chapter, because it needs a large model that can write. Also remember the risks. A rewrite can add hallucinations. (Nemotron-CC saw decreases on some tasks, and says that it did not check the factual accuracy of the rewrites.) The license of the model that writes the rewrites must permit "use of the output to train other models" (Chapter 17 discusses the licenses of teacher models). The main-line model does no large-scale synthesis in the first stage. Rephrased data goes mainly into mid-training (Chapter 15), and the ablations of Step 2 set its amount.
 
-## 8. 配比与小规模消融
+## 8. Mixture and small-scale ablations
 
-有了几份干净的数据集，还要决定**配比**：每一步训练里英文网页、中文、代码、数学各占多少。没有公式能直接算出来，大家都靠**小规模对照实验**：
+When we have some clean data sets, we must still decide the **mixture**: the share of English web, Chinese, code, and math in each training step. No formula gives the answer directly. All teams use **small-scale controlled experiments**:
 
-| 谁 | 怎么做 |
+| Who | How |
 |---|---|
-| Llama 3 | 用小模型做 scaling law 实验预测大模型在某个配比下的表现，反复迭代；用"退火"估值小数据集（把训练到一半的 8B 模型在 40B token 上退火，新数据占 30%）。最终：通用知识 50%、数学与推理 25%、代码 17%、多语言 8% |
-| Qwen3 | 给 30T token 按教育价值、领域、安全等维度打标签，用小代理模型做大量消融，在"实例级"优化配比 |
-| OLMo 2 | "微退火（microannealing）"：从预训练好的 checkpoint 分出一小段，比较加不加某个数据集 |
-| MobileLLM-R1 | 留一法：每次去掉一个来源，看代码、数学、知识三类探针集的 loss；再用影响函数估计每个来源的价值，算出配比 |
-| Puro-2B | 从同一个 Qwen3-0.6B checkpoint 续训约 8.4B token，候选数据占比在前 1600 步从 0 线性升到 80%，看 15 项基准的能力向量，再人工定配比 |
+| Llama 3 | Small models run scaling-law experiments that predict the performance of large models with a given mixture, again and again. "Annealing" estimates the value of small data sets (anneal an 8B model, halfway through its training, on 40B tokens with 30% new data). Final mixture: general knowledge 50%, math and reasoning 25%, code 17%, multilingual 8% |
+| Qwen3 | Labels 30T tokens by educational value, domain, safety, and more. Many ablations with small proxy models optimize the mixture "at the instance level" |
+| OLMo 2 | "Microannealing": branch a short run from a pretrained checkpoint, and compare the runs with and without a data set |
+| MobileLLM-R1 | Leave-one-out: remove one source each time, and look at the loss on probe sets for code, math, and knowledge. Then influence functions estimate the value of each source and calculate the mixture |
+| Puro-2B | Continue training from the same Qwen3-0.6B checkpoint for about 8.4B tokens. The share of the candidate data increases linearly from 0 to 80% in the first 1600 steps. Look at the capability vector of 15 benchmarks, then a person sets the mixture |
 
-核心都是一句话：**同样的模型、同样的算力，只换数据，看结果**。本章用约 50 万参数的小模型做两个这样的实验。两个模型用同一个随机种子——同样的初始化、同样的抽样位置——所以它们的差值就是数据带来的（**配对比较**，第 11 章 bootstrap 的思路）。评测指标用 bits-per-byte：
+All of them use one idea: **the same model and the same compute, with only different data; then compare the results**. This chapter runs two such experiments with small models of about 500K parameters. The two models use the same random seed: the same initialization and the same sample positions. Thus their difference comes from the data (a **paired comparison**, the idea of the bootstrap in Chapter 11). The evaluation metric is bits-per-byte:
 
 ```python
-bpb = (nats * (nbytes > 0)).sum() / (math.log(2) * nbytes.sum())   # 06_quality_ablation.py：bpb_by_hand
+bpb = (nats * (nbytes > 0)).sum() / (math.log(2) * nbytes.sum())   # 06_quality_ablation.py: bpb_by_hand
 ```
 
-分子是所有目标 token 的负对数似然（nats），分母是它们覆盖的 UTF-8 字节数乘 ln 2；特殊 token 记 0 字节、不计入。第 7 章讲过，它和分词器无关，换词表也能比。脚本同时调用生产级的 `zero/data/bpb.py`，两者一致（`assert` 对拍）。
+The numerator is the negative log-likelihood (in nats) of all target tokens. The denominator is the number of UTF-8 bytes that these tokens cover, times ln 2. A special token counts as 0 bytes and is not included. Chapter 7 showed that bpb does not depend on the tokenizer, so you can compare models with different vocabularies. The script also calls the production `zero/data/bpb.py`, and the two results are equal (an `assert` parity check).
 
-**消融①：脏数据 vs 过滤后**（[`06_quality_ablation.py`](code/06_quality_ablation.py)）。两个模型各训练 200 步 × 16 × 128 = 409,600 个 token，一个用原样的 1401 篇脏网页，一个用走完 02–05 全部步骤的 856 篇：
+**Ablation 1: noisy data vs. filtered data** ([`06_quality_ablation.py`](code/06_quality_ablation.py)). Each of the two models trains for 200 steps × 16 × 128 = 409,600 tokens. One model uses the 1401 raw noisy pages. The other uses the 856 documents that remain after all steps of 02–05:
 
-| 训练数据 | 文档数 | token 数 | 英文 bpb（种子 0 / 1） | 中文 bpb（种子 0 / 1） | 最后一步的训练 loss（种子 0 / 1） |
+| Training data | Documents | Tokens | English bpb (seed 0 / 1) | Chinese bpb (seed 0 / 1) | Training loss at the last step (seed 0 / 1) |
 |---|---:|---:|---:|---:|---:|
-| 原样脏网页 | 1401 | 1,370,713 | 3.126 / 3.215 | 3.400 / 3.494 | 4.546 / 4.715 |
-| 过滤后 | 856 | 842,535 | 3.086 / 3.187 | 3.316 / 3.412 | 4.659 / 4.779 |
-| **配对差值（脏 − 过滤后）** | | | **0.040 / 0.028** | **0.084 / 0.081** | |
+| Raw noisy crawl | 1401 | 1,370,713 | 3.126 / 3.215 | 3.400 / 3.494 | 4.546 / 4.715 |
+| Filtered | 856 | 842,535 | 3.086 / 3.187 | 3.316 / 3.412 | 4.659 / 4.779 |
+| **Paired difference (noisy − filtered)** | | | **0.040 / 0.028** | **0.084 / 0.081** | |
 
-训练 loss 反而是脏数据那边更低——导航页、广告、重复文档都很好猜——验证集上却是过滤后的更好。**训练 loss 低不等于模型好**，比数据一定要在同一份干净验证集上比。另外注意同一种数据换一个种子，bpb 能差 0.1，比数据带来的差值还大：这正是为什么只能做配对比较，也是为什么真实的消融要用更大的代理模型和多个种子。
+The training loss is lower for the noisy data, because navigation pages, spam, and duplicates are easy to predict. But on the validation set, the filtered data is better. **A low training loss does not mean a good model.** Always compare data on the same clean validation set. Also note that with the same data and a different seed, bpb can differ by 0.1. This is more than the difference that the data makes. This is why only a paired comparison works, and why real ablations use larger proxy models and many seeds.
 
-**消融②：配比**（[`07_mixture_ablation.py`](code/07_mixture_ablation.py)）。同一堆干净数据（英文、中文、代码），三种配比各训练一个模型：
+**Ablation 2: mixture** ([`07_mixture_ablation.py`](code/07_mixture_ablation.py)). Use the same set of clean data (English, Chinese, code), and train one model for each of three mixtures.
 
-每种配比用 2 个种子各训练一次（同一个种子下三种配比的初始化相同，配对比较）：
+Each mixture trains 2 times, one time with each seed. (With the same seed, the three mixtures have the same initialization: a paired comparison.)
 
-| 配比（英/中/代码） | 英文 bpb（种子 0 / 1） | 中文 bpb（种子 0 / 1） | 代码 bpb（种子 0 / 1） | 按均衡权重的平均（两种子平均） |
+| Mixture (en/zh/code) | English bpb (seed 0 / 1) | Chinese bpb (seed 0 / 1) | Code bpb (seed 0 / 1) | Mean with balanced weights (mean of the two seeds) |
 |---|---:|---:|---:|---:|
-| 均衡 0.45/0.45/0.10 | 3.192 / 3.155 | 3.486 / 3.525 | 3.760 / 3.744 | 3.381 |
-| 英文为主 0.80/0.10/0.10 | 2.928 / 3.018 | 3.818 / 4.057 | 3.652 / 3.794 | 3.482 |
-| 代码为主 0.25/0.25/0.50 | 2.928 / 2.943 | 3.316 / 3.348 | 2.576 / 2.612 | 3.080 |
+| Balanced 0.45/0.45/0.10 | 3.192 / 3.155 | 3.486 / 3.525 | 3.760 / 3.744 | 3.381 |
+| English-heavy 0.80/0.10/0.10 | 2.928 / 3.018 | 3.818 / 4.057 | 3.652 / 3.794 | 3.482 |
+| Code-heavy 0.25/0.25/0.50 | 2.928 / 2.943 | 3.316 / 3.348 | 2.576 / 2.612 | 3.080 |
 
-两个种子方向一致的结论有三条：
+Three conclusions have the same direction for both seeds:
 
-- **代码 bpb 对配比最敏感**：代码占 0.50 时代码 bpb 从约 3.75 降到约 2.59（代价是代码被看了 2.37 遍）。
-- **"英文为主"让英文变好、中文明显变差**：英文比均衡低约 0.20，中文高约 0.43（中文只被看了 0.08 遍）。
-- **出乎意料的一条**："代码为主"在英文、中文上也都比"均衡"好（英文约低 0.24，中文约低 0.17），两个种子都是这样。我们没有可靠的解释：可能是代码帮模型更快学会了通用的局部结构（MobileLLM-R1 也发现代码数据对数学有帮助），也可能只是这个规模（50 万参数、40 万 token）特有的现象。**这正是代理实验要谨慎外推的原因**：真实的配比实验要用大得多的代理模型，看的是下游能力而不只是 bpb，并确认结论随规模不变——Puro-2B 就发现代码能力和通用能力此消彼长。
+- **Code bpb is the most sensitive to the mixture.** With 0.50 code, code bpb decreases from about 3.75 to about 2.59. (The cost: the model saw the code 2.37 times.)
+- **"English-heavy" makes English better and Chinese clearly worse.** English is about 0.20 lower than with the balanced mixture, and Chinese is about 0.43 higher. (The model saw the Chinese data only 0.08 times.)
+- **One result was unexpected.** "Code-heavy" is also better than "balanced" on English and on Chinese (English about 0.24 lower, Chinese about 0.17 lower), with both seeds. We have no reliable explanation. Possibly code helps the model learn general local structure faster (MobileLLM-R1 also found that code data helps math). Possibly it is only an effect of this scale (500K parameters, 400K tokens). **This is why we must be careful when we extrapolate proxy experiments.** Real mixture experiments use much larger proxy models. They look at downstream abilities, not only at bpb, and they make sure that the conclusion does not change with scale. Puro-2B found a trade-off between code ability and general ability.
 
-哪个配比"最好"，取决于你给各领域的权重——也就是先要想清楚模型的目标。这也是 Puro-2B 用"能力向量"而不是单一分数来选数据的原因。
+Which mixture is "best" depends on the weight that you give to each domain. Thus you must first decide the goal of the model. This is also why Puro-2B selects data with a "capability vector", not with a single score.
 
-**主线的配比（暂定）**写在 [`configs/main/data.toml`](../../configs/main/data.toml) 里：
+The **main-line mixture (provisional)** is in [`configs/main/data.toml`](../../configs/main/data.toml):
 
-| 类别 | 占比 | 来源 | 理由 |
+| Category | Share | Sources | Reason |
 |---|---:|---|---|
-| 英文网页 | 0.45 | FineWeb-Edu 0.35 + DCLM 0.10 | 开放的高质量数据绝大多数是英文；网页是"胶水"（MobileLLM-R1 的留一法） |
-| 中文网页 | 0.30 | FineWeb-2 中文 0.20 + Ultra-FineWeb 中文 0.10 | 双语目标（C-Eval、CMMLU）；Puro-2B 中文只占 9–12%，但中文不是它的目标 |
-| 代码 | 0.15 | Stack-Edu | 工具调用就是按 schema 生成结构化文本；代码也帮数学（MobileLLM-R1）；Llama 3 约 17% |
-| 数学 | 0.10 | FineMath-3+ | Llama 3 数学与推理 25%；更多的放到中期训练 |
+| English web | 0.45 | FineWeb-Edu 0.35 + DCLM 0.10 | Most open high-quality data is English; web data is the "glue" (the leave-one-out experiment of MobileLLM-R1) |
+| Chinese web | 0.30 | FineWeb-2 Chinese 0.20 + Ultra-FineWeb Chinese 0.10 | Bilingual goal (C-Eval, CMMLU); Puro-2B has only 9–12% Chinese, but Chinese is not its goal |
+| Code | 0.15 | Stack-Edu | A tool call is structured text generated from a schema; code also helps math (MobileLLM-R1); Llama 3 has about 17% |
+| Math | 0.10 | FineMath-3+ | Llama 3 has 25% math and reasoning; more math goes into mid-training |
 
-按约 400B token 的预算算，每个来源最多看 1.2 遍（FineMath-3+），其余都不到 1 遍（逐项见 `configs/main/data.toml` 的注释）。这些比例是**暂定值**：第二步要按上面的方法做代理实验（计划与成本见"主线进度"）再定。
+With a budget of about 400B tokens, the model sees each source at most 1.2 times (FineMath-3+). It sees all other sources less than 1 time (see the comments for each item in `configs/main/data.toml`). These ratios are **provisional**. In Step 2, proxy experiments with the method above will set them (for the plan and the cost, see "Main-line progress").
 
-## 9. 去污染：训练数据不能见过考题
+## 9. Decontamination: the training data must not contain the test questions
 
-如果评测题目出现在训练数据里，分数就不可信。标准做法是 **n-gram 重叠检查**：把每道考题规范化（小写、去标点；中文每个字算一个词）切成 n-gram 放进集合，扫描每篇训练文档，只要有一个 n-gram 命中就删掉整篇。GPT-3 用 13-gram；Llama 3 用 8-gram 做污染分析；Phi-4 用 13-gram 加 7-gram 的混合规则，并把"常见 13-gram"（选择题选项套话）列入白名单。
+If the evaluation questions occur in the training data, the scores are not reliable. The standard method is the **n-gram overlap check**. Normalize each test question (lowercase, remove punctuation; each Chinese character is one word), split it into n-grams, and put them in a set. Then scan each training document. If one n-gram matches, remove the full document. GPT-3 uses 13-grams. Llama 3 uses 8-grams for its contamination analysis. Phi-4 uses a mixed rule with 13-grams and 7-grams, and puts "common 13-grams" (standard phrases of multiple-choice options) on an allowlist.
 
-[`05_decontam.py`](code/05_decontam.py) 的核心只有几行：
+The core of [`05_decontam.py`](code/05_decontam.py) is only a few lines:
 
 ```python
 def find_contaminated(docs, eval_items, n=13):
-    index = build_index(eval_items, n)                      # 考题的 n-gram → 题号
+    index = build_index(eval_items, n)                      # n-gram of a test question → question ids
     for i, d in enumerate(docs):
-        for g in ngrams(norm_tokens(d["text"]), n):        # 文档的每个 n-gram 查一次表
+        for g in ngrams(norm_tokens(d["text"]), n):        # look up each n-gram of the document
             found |= index.get(g, set())
 ```
 
-在质量过滤后的 871 篇上（其中真正夹带考题的 13 篇：原样 10、改大小写标点 2、改写 1），换不同的 n：
+We use the 871 documents after the quality filter. 13 of them really contain a test question: 10 verbatim, 2 with changed case and punctuation, and 1 paraphrased. The results for different n:
 
-| n | 标记的文档 | 原样 | 改大小写标点 | 改写 | 其它命中 |
+| n | Flagged documents | Verbatim | Changed case and punctuation | Paraphrased | Other hits |
 |---:|---:|---:|---:|---:|---:|
 | 5 | 28 | 10/10 | 2/2 | 1/1 | 15 |
 | 8 | 19 | 10/10 | 2/2 | 0/1 | 7 |
 | 13 | 15 | 10/10 | 2/2 | 0/1 | 3 |
 | 20 | 14 | 10/10 | 2/2 | 0/1 | 2 |
 
-三个结论：
+Three conclusions:
 
-1. 规范化让"改大小写和标点"骗不过去；但**改写过的考题 13-gram 抓不到**（每隔几个词换一个词，13 个连续词就再也对不上）。Phi-4 的报告也承认 n-gram 方法挡不住改写。
-2. n 太小会误报：n = 5 时 "me to the sight of" 这样的常见搭配也算命中。
-3. n = 13 的 3 个"其它命中"**不是误报**：宋词《御街行》等 3 首在语料里本来就出现了两次（《宋词三百首》和《全宋词》各一份），考题取自其中一份——这是真泄漏。它还说明了一件事：文档级去重对"两篇不同文档里有同一段文字"无能为力。
+1. Normalization catches the changes in case and punctuation. But **13-grams cannot catch a paraphrased test question**: one word changes in every few words, so no 13 consecutive words match. The Phi-4 report also says that n-gram methods cannot stop paraphrases.
+2. A small n gives false positives. At n = 5, a common phrase such as "me to the sight of" also counts as a hit.
+3. The 3 "other hits" at n = 13 are **not false positives**. 3 Song ci poems, for example 《御街行》 ("Yu Jie Xing"), occur two times in the corpus. One copy is from 《宋词三百首》 ("Three Hundred Song Ci Poems"), and one is from 《全宋词》 ("Complete Song Ci"). The test question came from one of the copies, so this is a real leak. It also shows that document-level dedup cannot find "the same passage in two different documents".
 
-主线的去污染对照第 11 章预注册里的全部基准（BFCL、C-Eval、CMMLU、GSM8K……），外加我们自己的工具调用开发集；工具调用数据还要检查函数名和 schema（GOAL.md 3.2）。命中的考题数量写进模型卡。
+The main-line decontamination checks all benchmarks of the preregistration in Chapter 11 (BFCL, C-Eval, CMMLU, GSM8K, …), plus our own tool-call development set. For tool-call data, it also checks the function names and the schemas (GOAL.md 3.2). The model card reports the number of test questions that matched.
 
-## 10. 训练主线分词器：词表选多大
+## 10. Train the main-line tokenizer: how large is the vocabulary?
 
-第 7 章讲过词表大小的取舍：词表越大，同样的文本切出的 token 越少（字节/token 越大），但 embedding 的参数是 V × d。第 7 章用 2.5MB 的小语料只能扫到 32K；要为主线做决定，需要更像样的语料——最好就是**主线将要训练的那些数据本身**。[`configs/vocab/download.toml`](../../configs/vocab/download.toml) 用第二步的下载器 `zero.data.download` 从主线的预训练来源里各抽一小份：英文是 FineWeb-Edu、DCLM、FineMath，中文是 FineWeb-2（`cmn_Hani`）和 Ultra-FineWeb 中文，代码用 MiniCPM5 的 UltraData-Code-L2（9 种编程语言；主线配置里的 Stack-Edu 只有文件 id，正文要用 AWS 凭证从 Software Heritage 取，这里换成正文直接可下的同类数据），配比和主线一致，6 个数据集都固定到 2026-10-01 的 commit，共 9,361 篇、46MB 正文。[`09_build_vocab_corpus.py`](code/09_build_vocab_corpus.py) 把它们按语言合并、打乱，切出验证集（英 1.75MB、中 0.81MB、代码 1.63MB），其余做训练文本；分词器训练文本按主线配比取（英 55%、中 30%、代码 15%，共 30MB）。训练文本不能太少：只用 12MB 时，出现 2 次以上的相邻对在词表长到约 9 万时就用完了，更大的词表根本训练不出来。下载了什么、各下了多少、每个文件的 sha256，都记在 [runs/2026-10-01-vocab-corpus/](../../runs/2026-10-01-vocab-corpus/README.md)；语料只在本地做测量，不进仓库，也不用于训练。（这一节的第一版用的是从 GitHub 技术文档拼的语料——写书时的构建环境访问不了 Hugging Face；那一版的结果放在下面表格后面，正好用来看"同分布"的影响有多大。）
+Chapter 7 discussed the trade-off of the vocabulary size. With a larger vocabulary, the same text gives fewer tokens (more bytes per token). But the embedding has V × d parameters. Chapter 7 used a small 2.5 MB corpus and could only go up to 32K. To decide for the main line, we need a better corpus. The best corpus is **the data that the main line will train on**.
 
-代价按主线的形状算（`configs/main/pretrain.toml`：28 层、宽 1280、共享 embedding），只换 V：参数 = 非 embedding 605.6M + V × 1280，**总量不能超过 0.8B**；每 token 的训练算力 ≈ 6 × N_matmul（包括 1280 × V 的 lm_head 矩阵乘）+ 注意力。真正要比的是**读完同样多的文本花多少算力**：
+[`configs/vocab/download.toml`](../../configs/vocab/download.toml) uses the downloader of Step 2, `zero.data.download`, to take a small sample from each main-line pretraining source:
+
+- English: FineWeb-Edu, DCLM, and FineMath.
+- Chinese: FineWeb-2 (`cmn_Hani`) and Ultra-FineWeb Chinese.
+- Code: UltraData-Code-L2 of MiniCPM5 (9 programming languages). Stack-Edu in the main-line configuration has only file ids, and its text must come from Software Heritage with AWS credentials. Thus we use similar data whose text you can download directly.
+
+The mixture is the same as in the main line. All 6 data sets are pinned to their commits of 2026-10-01. The sample has 9,361 documents and 46 MB of text in total. [`09_build_vocab_corpus.py`](code/09_build_vocab_corpus.py) merges them by language, shuffles them, and cuts validation sets (English 1.75 MB, Chinese 0.81 MB, code 1.63 MB). The rest is training text.
+
+The tokenizer training text follows the main-line mixture (English 55%, Chinese 30%, code 15%; 30 MB in total). The training text must not be too small. With only 12 MB, the vocabulary stops at about 90K: no adjacent pairs that occur 2 or more times are left. Thus a larger vocabulary cannot train.
+
+[runs/2026-10-01-vocab-corpus/](../../runs/2026-10-01-vocab-corpus/README.md) records what we downloaded, how much of each source, and the sha256 of each file. The corpus is only for local measurement. It is not in the repository, and we do not use it for training. (The first version of this section used a corpus of technical documentation from GitHub. When we wrote the book, the build environment could not access Hugging Face. The results of that version are after the table below. They show how large the effect of "the same distribution" is.)
+
+We calculate the cost with the shape of the main line (`configs/main/pretrain.toml`: 28 layers, width 1280, tied embeddings) and change only V. Parameters = 605.6M non-embedding + V × 1280, and **the total must not be more than 0.8B**. Training compute per token ≈ 6 × N_matmul (this includes the 1280 × V matmul of lm_head) + attention. What we really must compare is **how much compute it takes to read the same amount of text**:
 
 ```
-FLOPs / 字节 = (FLOPs / token) ÷ (字节 / token)
+FLOPs / byte = (FLOPs / token) ÷ (bytes / token)
 ```
 
-`08_vocab_size.py --corpus <目录> --refs --train-mb 30` 的结果（"加权"按英 0.55 / 中 0.30 / 代码 0.15；FLOPs/字节以 V = 65,536 时每 token 的 FLOPs 为单位；CPU 上 16 线程，7 个词表一共训练约 2 分钟）：
+These are the results of `08_vocab_size.py --corpus <dir> --refs --train-mb 30`. ("Weighted" uses English 0.55 / Chinese 0.30 / code 0.15. The unit of FLOPs/byte is the FLOPs per token at V = 65,536. On a CPU with 16 threads, the 7 vocabularies took about 2 minutes to train in total.)
 
-| 分词器 | 词表 V | 英文 | 中文 | 代码 | 加权 字节/token | embedding | 总参数 | 每 token 算力 | **FLOPs / 字节** |
+| Tokenizer | Vocabulary V | English | Chinese | Code | Weighted bytes/token | Embedding | Total parameters | Compute per token | **FLOPs / byte** |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | zero BPE | 16,384 | 3.68 | 3.45 | 3.19 | 3.54 | 21.0M | 626.6M | 6.58 GFLOP | 0.2674 |
 | zero BPE | 32,768 | 3.99 | 3.86 | 3.46 | 3.87 | 41.9M | 647.6M | 6.70 GFLOP | 0.2489 |
@@ -297,26 +321,26 @@ FLOPs / 字节 = (FLOPs / token) ÷ (字节 / token)
 | zero BPE | **65,536** | 4.22 | 4.25 | 3.66 | 4.15 | 83.9M | 689.5M | 6.96 GFLOP | **0.2412** |
 | zero BPE | 98,304 | 4.31 | 4.46 | 3.76 | 4.27 | 125.8M | 731.5M | 7.21 GFLOP | 0.2425 |
 | zero BPE | 131,072 | 4.36 | 4.62 | 3.81 | 4.36 | 167.8M | 773.4M | 7.46 GFLOP | 0.2460 |
-| zero BPE | 151,936 | 4.39 | 4.70 | 3.83 | 4.40 | 194.5M | **800.1M（超线）** | 7.62 GFLOP | 0.2491 |
-| Qwen2/Qwen3 分词器（参考） | 151,936 | 4.39 | 3.90 | 4.00 | 4.18 | 194.5M | 800.1M | 7.62 GFLOP | 0.2618 |
-| Llama 3 分词器（参考） | 128,256 | 4.53 | 3.27 | 4.05 | 4.08 | 164.2M | 769.8M | 7.44 GFLOP | 0.2619 |
+| zero BPE | 151,936 | 4.39 | 4.70 | 3.83 | 4.40 | 194.5M | **800.1M (over the limit)** | 7.62 GFLOP | 0.2491 |
+| Qwen2/Qwen3 tokenizer (reference) | 151,936 | 4.39 | 3.90 | 4.00 | 4.18 | 194.5M | 800.1M | 7.62 GFLOP | 0.2618 |
+| Llama 3 tokenizer (reference) | 128,256 | 4.53 | 3.27 | 4.05 | 4.08 | 164.2M | 769.8M | 7.44 GFLOP | 0.2619 |
 
-（参考分词器由 llama.cpp 的 `ggml-vocab-{qwen2,llama-bpe}.gguf` 重建，用 llama.cpp 自带的测试用例核对过切分，参数与算力按"放在主线形状上"计算。）
+(We rebuilt the reference tokenizers from `ggml-vocab-{qwen2,llama-bpe}.gguf` of llama.cpp. We checked their splits with the test cases that come with llama.cpp. Their parameters and compute are calculated "on the main-line shape".)
 
-怎么读这张表：
+How to read this table:
 
-- **压缩率收益递减**：16K → 32K，加权字节/token 提高 9.5%；64K → 128K 只提高 5.1%。中文涨得最多（中文"词"多，词表大才装得下），英文和代码在 64K 之后涨得很慢。
-- **算力/字节在 64K 最低**，两边都往上走：96K 贵 0.5%，48K 贵 0.8%（词表小，切出的 token 多），128K 贵 2.0%，151,936 贵 3.3%（lm_head 变大）；而且 Qwen 的词表大小放在这个宽度上总参数 800.1M，**超过 0.8B 的上限**。
-- **自己训练的分词器在中文上占优，在代码和英文上不占优**：同样 151,936 的词表，我们的中文 4.70 字节/token，Qwen 只有 3.90（高 20%）；英文两者持平（4.39），代码反而是 Qwen 高 4.5%；Llama 3 的英文和代码也都比我们 128K 的分词器好（高 3.9% 和 6.2%）。Qwen 和 Llama 的分词器是在比我们 30MB 大几个数量级、也杂得多的数据上训练的；我们唯一明显的优势是中文配比高（30%，而 Qwen 要照顾 119 种语言）。
-- **同分布的优势比看上去小**：第一版测量（下面折叠的表）用的是技术文档，训练文本和验证文本来自同一类文档，我们的中文比 Qwen 高 43%、代码也更好；换成真实的网页和代码样本，中文优势缩到 20%，代码优势消失。在什么数据上测，比测得多精细更重要。
-- Tao et al.（2024）的词表 scaling law 给 3B 非词表参数、按 Chinchilla 配比训练的模型推荐的最优词表约 4 万；主线非词表参数约 6 亿，但过训练（约 700 token/参数）会把最优值往上推——和这张表"64K 最省算力"的结论方向一致。
+- **The compression gain becomes smaller.** From 16K to 32K, the weighted bytes/token increases by 9.5%. From 64K to 128K, it increases by only 5.1%. Chinese gains the most (Chinese has many "words", and only a large vocabulary has space for them). English and code gain slowly after 64K.
+- **Compute per byte is lowest at 64K** and increases on both sides. 96K costs 0.5% more and 48K costs 0.8% more (a small vocabulary gives more tokens). 128K costs 2.0% more and 151,936 costs 3.3% more (lm_head becomes larger). Also, the Qwen vocabulary size at this width gives 800.1M total parameters. This is **more than the 0.8B limit**.
+- **Our own tokenizer is better on Chinese, but not on code and English.** With the same vocabulary of 151,936, our tokenizer gives 4.70 bytes/token on Chinese, and Qwen gives only 3.90 (ours is 20% higher). On English, the two are equal (4.39). On code, Qwen is 4.5% higher. Llama 3 is also better than our 128K tokenizer on English and code (3.9% and 6.2% higher). The Qwen and Llama tokenizers trained on data that is orders of magnitude larger than our 30 MB, and much more varied. Our only clear advantage is the high share of Chinese (30%, but Qwen must support 119 languages).
+- **The advantage of the same distribution is smaller than it looks.** The first measurement (the collapsed table below) used technical documentation, so the training text and the validation text came from the same type of documents. There, our Chinese was 43% higher than Qwen, and our code was also better. With real web and code samples, the Chinese advantage decreased to 20%, and the code advantage disappeared. The data that you measure on is more important than the precision of the measurement.
+- The vocabulary scaling law of Tao et al. (2024) recommends an optimal vocabulary of about 40K for a model with 3B non-vocabulary parameters, trained with the Chinchilla ratio. The main line has about 600M non-vocabulary parameters. But overtraining (about 700 tokens/parameter) moves the optimum up. This agrees in direction with the conclusion of the table: "64K uses the least compute".
 
 <details>
-<summary>第一版测量：GitHub 技术文档语料（2026-09，写书时的构建环境访问不了 Hugging Face）</summary>
+<summary>First measurement: a corpus of technical documentation from GitHub (2026-09; the build environment could not access Hugging Face when we wrote the book)</summary>
 
-语料：中文是《动手学深度学习》中文版、Kubernetes 中文文档、JavaGuide、CS-Notes、Python-100-Days（去掉代码块和 HTML 注释里的英文原文），英文是《动手学深度学习》英文版、Kubernetes 英文文档和 CPython 文档，代码是 CPython 的 Python 与 C 源码，约 75MB（来源见本章参考文献；整理脚本没有保留）。验证集：英 1.75MB、中 0.77MB、代码 1.63MB。
+Corpus: Chinese text from the Chinese edition of *Dive into Deep Learning*, the Chinese Kubernetes documentation, JavaGuide, CS-Notes, and Python-100-Days (without the code blocks and the original English text in HTML comments). English text from the English edition of *Dive into Deep Learning*, the English Kubernetes documentation, and the CPython documentation. Code from the Python and C source of CPython. About 75 MB in total (for the sources, see the references of this chapter; we did not keep the preparation script). Validation sets: English 1.75 MB, Chinese 0.77 MB, code 1.63 MB.
 
-| 分词器 | 词表 V | 英文 | 中文 | 代码 | 加权 字节/token | **FLOPs / 字节** |
+| Tokenizer | Vocabulary V | English | Chinese | Code | Weighted bytes/token | **FLOPs / byte** |
 |---|---:|---:|---:|---:|---:|---:|
 | zero BPE | 16,384 | 4.23 | 4.41 | 3.74 | 4.21 | 0.2245 |
 | zero BPE | 32,768 | 4.44 | 4.96 | 3.98 | 4.53 | 0.2129 |
@@ -325,92 +349,105 @@ FLOPs / 字节 = (FLOPs / token) ÷ (字节 / token)
 | zero BPE | 98,304 | 4.60 | 5.66 | 4.21 | 4.86 | 0.2134 |
 | zero BPE | 131,072 | 4.62 | 5.79 | 4.25 | 4.91 | 0.2182 |
 | zero BPE | 151,936 | 4.62 | 5.87 | 4.26 | 4.94 | 0.2217 |
-| Qwen2/Qwen3 分词器（参考） | 151,936 | 4.29 | 4.11 | 4.09 | 4.21 | 0.2603 |
-| Llama 3 分词器（参考） | 128,256 | 4.38 | 3.75 | 4.18 | 4.16 | 0.2568 |
+| Qwen2/Qwen3 tokenizer (reference) | 151,936 | 4.29 | 4.11 | 4.09 | 4.21 | 0.2603 |
+| Llama 3 tokenizer (reference) | 128,256 | 4.38 | 3.75 | 4.18 | 4.16 | 0.2568 |
 
-技术文档比网页"整齐"得多，所有分词器的压缩率都更高；当时的结论是"48K 和 64K 并列最省算力"，这次在主线数据样本上 64K 单独最低，选择不变。
+Technical documentation is much "cleaner" than web pages, so all tokenizers compress it better. The conclusion at that time was "48K and 64K tie for the least compute". This time, on the main-line data sample, 64K alone is the lowest. The choice does not change.
 
 </details>
 
-**主线的词表定为 65,536**（`configs/main/data.toml` 与 `configs/main/pretrain.toml` 已一致；第 7 章写的"暂定"在这里确认）：在主线数据样本上它的算力/字节最低（两次测量都在最低点上），比 48K 多 4.0% 的中文压缩率（中文是我们的弱项数据，token 越省越好），embedding 83.9M 只占总参数的 12%；是 2 的幂次，也是 128 的倍数，GPU 上矩阵乘整齐。第二步正式下载完数据后，用完整的训练语料再测一次；这次的样本只来自各数据集最早的几个分片（2013–2014 年的网页，见 runs 目录的记录），如果结论变了再改。
+**The main-line vocabulary is 65,536.** (`configs/main/data.toml` and `configs/main/pretrain.toml` agree; this confirms the "provisional" value of Chapter 7.) These are the reasons:
 
-**预切分正则**：第 7 章留了一个问题——zero 的正则和 Qwen2/Qwen3 相同，而 Qwen3.5 把字母串从 `\p{L}+` 改成了 `[\p{L}\p{M}]+`。`\p{M}` 是"组合符号"：天城文、泰文的元音符号，阿拉伯文的变音符号。旧正则会在这些符号处把一个词切碎：
+- On the main-line data sample, it has the lowest compute per byte (it is at the lowest point in both measurements).
+- It compresses Chinese 4.0% better than 48K. Chinese is our weak data, so each saved token is valuable.
+- Its embedding of 83.9M is only 12% of the total parameters.
+- It is a power of 2 and a multiple of 128, so the matmuls are regular on a GPU.
 
-| 句子 | qwen2 正则 | qwen3.5 正则 |
+After Step 2 downloads the full data, we will measure again on the full training corpus. This sample comes only from the first few shards of each data set (web pages from 2013–2014; see the record in the runs folder). If the conclusion changes, we will change the choice.
+
+**Pre-tokenization regex**: Chapter 7 left a question open. The regex of zero is the same as the regex of Qwen2/Qwen3, but Qwen3.5 changed the letter sequence from `\p{L}+` to `[\p{L}\p{M}]+`. `\p{M}` is "combining marks": the vowel signs of Devanagari and Thai, and the diacritics of Arabic. At these marks, the old regex cuts a word into pieces:
+
+| Sentence | qwen2 regex | qwen3.5 regex |
 |---|---:|---:|
-| 印地语（世界人权宣言第一条） | 36 块，`सभी` 被切成 `सभ` + `ी` | 14 块 |
-| 泰语 | 16 块 | 1 块 |
-| 中文 / 英文 | 3 / 13 块 | 3 / 13 块（完全相同） |
+| Hindi (Article 1 of the Universal Declaration of Human Rights) | 36 pieces; `सभी` becomes `सभ` + `ी` | 14 pieces |
+| Thai | 16 pieces | 1 piece |
+| Chinese / English | 3 / 13 pieces | 3 / 13 pieces (identical) |
 
-在主线数据样本的验证集上（每种语言取前 20 万字符），英文和代码的词块完全相同；中文只在 4 处不同：2 处是 emoji 后面的变体选择符 U+FE0F（它属于 \p{M}），另 2 处是混在中文网页里的一段泰文——真实网页从来不是纯净的单一语言。用两种正则各训练一个 65,536 词表的分词器，验证集字节/token 在三种语言上完全相同（英 4.217、中 4.254、代码 3.665）。所以**主线采用 qwen3.5 正则**：对中英代码零代价，对其他语言更合理，和最新的 Qwen 一致；llama.cpp 已经支持这个预切分类型（`qwen35`），导出 GGUF 时把 `pre_tokenizer` 参数设成 `qwen35` 即可。这个选择只通过配置生效（`configs/main/data.toml` 的 `pretokenize = "qwen3.5"`），`zero/tokenizer.py` 的默认值不变，已有的测试和 tiny 流水线照旧。
+On the validation set of the main-line data sample (the first 200K characters of each language), the pieces for English and code are identical. Chinese has only 4 differences. 2 of them are the variation selector U+FE0F after an emoji (it belongs to \p{M}). The other 2 are a passage of Thai text in a Chinese web page: real web pages are never pure single-language text. We trained one tokenizer with a vocabulary of 65,536 for each regex. The validation bytes/token is identical for all three languages (English 4.217, Chinese 4.254, code 3.665). Thus **the main line uses the qwen3.5 regex**. It costs nothing for Chinese, English, and code, it is better for other languages, and it agrees with the latest Qwen. llama.cpp already supports this pre-tokenizer type (`qwen35`): when you export GGUF, set the `pre_tokenizer` parameter to `qwen35`. This choice takes effect only through the configuration (`pretokenize = "qwen3.5"` in `configs/main/data.toml`). The default of `zero/tokenizer.py` does not change, so the existing tests and the tiny pipeline work as before.
 
-## 11. 许可证与出处：每一步都要留下记录
+## 11. Licenses and provenance: record each step
 
-数据集是要写进模型卡、要被别人复现的。生产级流水线在每一步都留下记录：
+A data set goes into the model card, and other people must be able to reproduce it. The production pipeline makes a record at each step:
 
-- 下载器（[`zero/data/download.py`](../../zero/data/download.py)）只下 `sources.py` 登记过的来源，许可证"待核实"的默认拒绝；每一行 JSON 带上数据集名、子集、revision、行号和数据集自带的元数据（URL、dump、质量分数、代码文件的 `detected_licenses`）；每个分片记 sha256，可以续传。
-- 流水线（[`zero/data/pipeline.py`](../../zero/data/pipeline.py)）把每一步的中间结果落盘成 JSONL，最后写 `manifest.json`：每个来源每一步剩多少篇、多少字节（漏斗）、删除原因、重复簇数、去污染命中了哪些题、分词器哈希与各来源压缩率、分片 token 数、配比与"按预算要看几遍"、许可证与来源地址、配置哈希和 git commit。
-- 分片的元数据里有分词器哈希（第 7 章），防止拿 A 分词器切的数据训 B 分词器的模型。
+- The downloader ([`zero/data/download.py`](../../zero/data/download.py)) downloads only the sources that are registered in `sources.py`. By default, it refuses a source whose license is "to be verified". Each JSON line contains the data set name, the subset, the revision, the line number, and the metadata of the data set (URL, dump, quality score, `detected_licenses` of code files). The downloader records the sha256 of each shard, and it can resume a download.
+- The pipeline ([`zero/data/pipeline.py`](../../zero/data/pipeline.py)) writes the intermediate result of each step to disk as JSONL. At the end, it writes `manifest.json`. The manifest contains these items:
+  - the documents and bytes of each source after each step (the funnel);
+  - the removal reasons and the number of duplicate clusters;
+  - the test questions that decontamination found;
+  - the tokenizer hash and the compression of each source;
+  - the token counts of the shards, the mixture, and "how many epochs for the budget";
+  - the licenses and source addresses, the configuration hash, and the git commit.
+- The metadata of each shard contains the tokenizer hash (Chapter 7). This prevents training a model with tokenizer B on data that tokenizer A split.
 
-## 12. 小结
+## 12. Summary
 
-- **数据是最大的杠杆**：MobileLLM-R1 用 11.7% 的 token 追平 Qwen3-0.6B 的推理能力，Puro-2B 用公开数据和代理实验以几千美元追上 Qwen2-1.5B。
-- **流水线**：抽取 → 语言识别 → 启发式规则 → 精确 + 近似去重 → 模型打分 →（合成改写）→ 去污染 → 分词分片；便宜的放前面。规则抓格式问题，抓不住"不像话"；规则的阈值依赖领域，要按来源选。
-- **MinHash**：P(签名某位相等) = Jaccard；**LSH**：P(候选) = 1 − (1 − s^r)^b，拐点 (1/b)^(1/r)。
-- **模型打分**：大模型标一小部分，训练便宜的分类器给全部打分；阈值是精确率和召回率的取舍，要靠消融定。
-- **配比**：没有公式，靠代理模型的对照实验；比较时用配对设计和与分词器无关的 bpb。
-- **去污染**：13-gram 抓得住原样和改格式的泄漏，抓不住改写；n 太小会误报。
-- **分词器**：比"算力/字节"，受"总参数 ≤ 0.8B"约束；主线的词表与正则见第 10 节。
+- **Data is the largest lever**: MobileLLM-R1 matches the reasoning ability of Qwen3-0.6B with 11.7% of the tokens. With public data and proxy experiments, Puro-2B matches Qwen2-1.5B for a few thousand US dollars.
+- **Pipeline**: extraction → language identification → heuristic rules → exact + near dedup → model-based scoring → (synthetic rephrasing) → decontamination → tokenization and shards. Put the cheap steps first. Rules catch format problems, but not text that "is not language". The thresholds of the rules depend on the domain, so select them by source.
+- **MinHash**: P(one position of the signature is equal) = Jaccard. **LSH**: P(candidate) = 1 − (1 − s^r)^b, with the inflection point at (1/b)^(1/r).
+- **Model-based scoring**: a large model labels a small part, and a cheap classifier scores all the data. The threshold is a trade-off between precision and recall, and ablations must set it.
+- **Mixture**: there is no formula. Use controlled experiments with proxy models. For comparisons, use a paired design and bpb, which does not depend on the tokenizer.
+- **Decontamination**: 13-grams catch verbatim leaks and leaks with format changes, but not paraphrases. A small n gives false positives.
+- **Tokenizer**: compare "compute per byte", with the constraint "total parameters ≤ 0.8B". For the main-line vocabulary and regex, see Section 10.
 
 ---
 
-## 从极简到生产级
+## From minimal code to production code
 
-| 极简版（`code/`） | 生产级（`zero/`） | 多做了什么、为什么 |
+| Minimal code (`code/`) | Production code (`zero/`) | What it adds, and why |
 |---|---|---|
-| `02` 的 `lang_id`（汉字/字母占比） | `zero/data/pipeline.py` 的 `langid_stage`（同样的粗检）；第二步换 fastText lid.176 | 真实网页有上百种语言，要一个真正的语言识别模型 |
-| `02` 的 `heuristic_reasons`（11 条规则） | `zero/data/quality.py` 的 `quality_check`（`QualityThresholds` 可在 TOML 的 `[quality]` 里覆盖）；`pipeline.py` 的 `code_quality_reasons`（Codex 的三条） | 阈值可配置；按来源选规则（`heuristics = "web" / "code" / "none"`）；删除原因按规则计数写进清单 |
-| `03` 的 `MinHash` / `lsh_candidates` / `near_dedup` | `zero/data/dedup.py` 的 `MinHasher`、`near_dedup`（同样的"取低 32 位"哈希、同样的并查集）+ `exact_dedup` | 可调 `num_perm / bands / ngram / threshold`；来源内去重后可再跨来源去一次；单进程实现，第二步的规模要换分布式 MinHash（如 datatrove）——**尚未在大规模数据上验证** |
-| `04` 的逻辑回归 | `pipeline.py` 的 `score_stage`：数据集自带分数的阈值（`score_field` / `score_min`，如 FineWeb-Edu 的 `int_score`），或任意 `模块:类名` 分类器（`quality.py` 的 `QualityClassifier` 协议） | 主线用上游已经打好的分数；中文质量分类器是第二步的任务 |
-| `05` 的 `find_contaminated` | `zero/data/decontam.py` 的 `NgramIndex`（8 字节哈希存 n-gram，短题用子串匹配）+ `pipeline.py` 的 `decontam_stage` | 评测集从 JSONL 读（默认取全部字符串字段，**包括工具名和 schema**）；命中明细写进清单 |
-| `06` 的 `bpb_by_hand` | `zero/data/bpb.py` 的 `token_byte_lengths`、`evaluate_bpb`、`bpb_stats`（nanochat `evaluate_bpb` 的写法） | 预先算好"token id → 字节数"查找表；特殊 token 与 ignore 位置不计；多卡时分子分母分别 all_reduce |
-| `07` 的逐行按配比抽来源 | `zero/data/mixture.py` 的 `MixtureLoader`（第 14 章） | 抽签只由 (seed, rank, 行号) 决定，续训逐字节一致 |
-| `08` 的 `train_tokenizer(..., "qwen3.5")` | `zero/data/pipeline.py` 的 `train_tokenizer`、`PRETOKENIZE_PRESETS`（`qwen2` 与 `zero/tokenizer.py` 默认完全相同） | 正则只通过配置切换；按配比从各来源采样训练文本（`sample_bytes`） |
-| 无 | `zero/data/download.py` | 第二步的流式下载：许可证闸门、出处字段、分片 sha256、续传、下载量规划（`plan_targets`）——**尚未验证** |
-| 无 | `zero/data/pipeline.py` 的 `run_pipeline` + `configs/{tiny,main}/data.toml` | 一条命令跑完 10 个阶段，每阶段落盘，最后写 `manifest.json` 和可以贴进 `pretrain.toml` 的 `pretrain_sources.toml` |
+| `lang_id` in `02` (fraction of Chinese characters / letters) | `langid_stage` in `zero/data/pipeline.py` (the same rough check); Step 2 changes it to fastText lid.176 | Real web pages have hundreds of languages, so a real language identification model is necessary |
+| `heuristic_reasons` in `02` (11 rules) | `quality_check` in `zero/data/quality.py` (the `[quality]` section of the TOML can override `QualityThresholds`); `code_quality_reasons` in `pipeline.py` (the three Codex rules) | Configurable thresholds; rules selected by source (`heuristics = "web" / "code" / "none"`); the manifest counts the removal reasons for each rule |
+| `MinHash` / `lsh_candidates` / `near_dedup` in `03` | `MinHasher` and `near_dedup` in `zero/data/dedup.py` (the same "low 32 bits" hash, the same union-find) + `exact_dedup` | `num_perm / bands / ngram / threshold` are configurable; after dedup within each source, an optional dedup across sources; a single-process implementation. The scale of Step 2 needs distributed MinHash (for example datatrove). **Not yet verified on large-scale data** |
+| Logistic regression in `04` | `score_stage` in `pipeline.py`: a threshold on a score that the data set provides (`score_field` / `score_min`, for example `int_score` of FineWeb-Edu), or any `module:ClassName` classifier (the `QualityClassifier` protocol in `quality.py`) | The main line uses the scores that upstream already calculated; a Chinese quality classifier is a task of Step 2 |
+| `find_contaminated` in `05` | `NgramIndex` in `zero/data/decontam.py` (stores n-grams as 8-byte hashes; uses substring matching for short questions) + `decontam_stage` in `pipeline.py` | Reads the evaluation sets from JSONL (by default all string fields, **including tool names and schemas**); writes the details of each hit into the manifest |
+| `bpb_by_hand` in `06` | `token_byte_lengths`, `evaluate_bpb`, and `bpb_stats` in `zero/data/bpb.py` (in the style of `evaluate_bpb` of nanochat) | A precalculated "token id → bytes" lookup table; special tokens and ignored positions do not count; with many GPUs, an all_reduce of the numerator and the denominator separately |
+| Line-by-line source sampling by mixture in `07` | `MixtureLoader` in `zero/data/mixture.py` (Chapter 14) | Only (seed, rank, line number) decide the sample, so a resumed run is identical byte for byte |
+| `train_tokenizer(..., "qwen3.5")` in `08` | `train_tokenizer` and `PRETOKENIZE_PRESETS` in `zero/data/pipeline.py` (`qwen2` is identical to the default of `zero/tokenizer.py`) | The regex changes only through the configuration; the training text is sampled from each source by the mixture (`sample_bytes`) |
+| None | `zero/data/download.py` | Streaming download for Step 2: license gate, provenance fields, shard sha256, resume, download planning (`plan_targets`). **Not yet verified** |
+| None | `run_pipeline` in `zero/data/pipeline.py` + `configs/{tiny,main}/data.toml` | One command runs all 10 stages and saves each stage to disk. At the end, it writes `manifest.json` and a `pretrain_sources.toml` that you can paste into `pretrain.toml` |
 
-**对拍与测试**（`uv run pytest tests/test_bpb.py tests/test_pipeline.py tests/test_download.py tests/test_data.py`）：
+**Parity checks and tests** (`uv run pytest tests/test_bpb.py tests/test_pipeline.py tests/test_download.py tests/test_data.py`):
 
-- `test_bpb.py`：手算小例子（4 个 token、logits 全 0 → bpb 正好 1.0；非均匀 logits 的解析值）；均匀模型的不变量 bpb = log2(V) ÷ (字节/token)；特殊 token、ignore_index、负数标签不计入；与普通交叉熵的换算关系；`token_byte_lengths` 逐 token 加起来等于原文 UTF-8 字节数（包括"半个汉字"的 token）。
-- `test_pipeline.py`：各阶段的纯函数；qwen2 预设与 `train_bpe` 的哈希完全相同；qwen3.5 预设的往返、数字逐个切、特殊 token id、存取后正则还在；小语料端到端（文本 + JSONL 两种输入、分数阈值、精确重复、泄漏的考题被删、分片能被 `PackedDataLoader` 读出）。
-- `test_download.py`：用假数据代替网络——出处字段、分片轮换与 sha256、中途停下后续传、Stack-Edu 按 blob_id 取内容、许可证闸门、下载量规划、`configs/main/data.toml` 的下载规格能解析。
-- `06_quality_ablation.py` 每次评估都 `assert` 手算 bpb 与 `zero/data/bpb.py` 一致。
+- `test_bpb.py`: small examples calculated by hand (4 tokens with all logits 0 → bpb exactly 1.0; the analytic value for non-uniform logits); the invariant of a uniform model, bpb = log2(V) ÷ (bytes/token); special tokens, ignore_index, and negative labels do not count; the relation to the normal cross-entropy; the sum of `token_byte_lengths` over all tokens equals the UTF-8 bytes of the original text (also with tokens that contain "half a Chinese character").
+- `test_pipeline.py`: the pure functions of each stage; the qwen2 preset gives the same hash as `train_bpe`; for the qwen3.5 preset: round trip, digits split one by one, special-token ids, and the regex is still there after save and load; end to end on a small corpus (text and JSONL inputs, score threshold, exact duplicates, removal of leaked test questions, shards that `PackedDataLoader` can read).
+- `test_download.py`: fake data replaces the network. It tests the provenance fields, shard rotation and sha256, resume after a stop, Stack-Edu content by blob_id, the license gate, download planning, and the parsing of the download specs in `configs/main/data.toml`.
+- `06_quality_ablation.py` does an `assert` at each evaluation: the bpb by hand equals the bpb of `zero/data/bpb.py`.
 
-**接进训练循环**（已接入 `zero/train/trainer.py`）：`Trainer` 用分词器算一次 `token_byte_lengths`；`Trainer.evaluate` 把同一批验证 batch 交给 `bpb_stats`，把 `val_bpb` 和 `val_loss` 一起写进日志（SFT 格式的数据或没有分词器时跳过）。tiny 配置上的一次运行记录到 `val_bpb 3.997`（极小配置演示）。
+**Connection to the training loop** (already in `zero/train/trainer.py`): `Trainer` uses the tokenizer to calculate `token_byte_lengths` one time. `Trainer.evaluate` gives the same validation batches to `bpb_stats`, and writes `val_bpb` together with `val_loss` to the log. (It skips this step for SFT-format data or when there is no tokenizer.) One run on the tiny configuration recorded `val_bpb 3.997` (tiny-configuration demo).
 
 ---
 
-## 主线进度
+## Main-line progress
 
-### 极小配置演示（CPU，`configs/tiny/data.toml`，assets/tiny_corpus）
+### Tiny-configuration demo (CPU, `configs/tiny/data.toml`, assets/tiny_corpus)
 
-> 以下是**极小配置演示**：只说明生产级流水线的每一步都真的在工作，2.5MB 的玩具语料上的比例不代表真实网页数据。
+> The following is a **tiny-configuration demo**. It shows only that each step of the production pipeline really works. The ratios on the 2.5 MB toy corpus do not represent real web data.
 
 ```bash
 uv run python -m zero.data.pipeline --config configs/tiny/data.toml
 ```
 
-本机一次运行（CPU 时间约 10 秒；机器繁忙时墙钟 48 秒）的漏斗，每格是该步之后剩下的文档数：
+This is the funnel of one run on this machine (about 10 s of CPU time; 48 s of wall-clock time on a busy machine). Each cell is the number of documents that remain after the step:
 
-| 来源（许可证） | 读取 | 清洗 | 语言 | 规则 | 打分 | 去重 | 去污染 | 训练 / 验证文档 | 训练 token | 验证集字节/token |
+| Source (license) | Read | Clean | Language | Rules | Score | Dedup | Decontamination | Train / validation documents | Train tokens | Validation bytes/token |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| shakespeare（公有领域） | 615 | 615 | 615 | 528 | 528 | 528 | 528 | 502 / 26 | 351,245 | 2.62 |
-| chinese_poetry（MIT） | 225 | 225 | 225 | 211 | 211 | 211 | 211 | 201 / 10 | 422,715 | 2.52 |
-| code（待核实：仓库许可证未定） | 81 | 81 | 81 | 81 | 81 | 81 | 81 | 77 / 4 | 73,511 | 2.01 |
+| shakespeare (public domain) | 615 | 615 | 615 | 528 | 528 | 528 | 528 | 502 / 26 | 351,245 | 2.62 |
+| chinese_poetry (MIT) | 225 | 225 | 225 | 211 | 211 | 211 | 211 | 201 / 10 | 422,715 | 2.52 |
+| code (to be verified: the repository license is not decided) | 81 | 81 | 81 | 81 | 81 | 81 | 81 | 77 / 4 | 73,511 | 2.01 |
 
-- 规则删掉的原因写在清单里：莎士比亚是重复行 70、行尾标点 13、短行 4；诗词是重复行 8、"含字母的词"不到 80% 6 篇（中文按字切词后，每个标点也算一个"词"，短句多的词牌标点密度高）；代码用 Codex 规则，一篇没删。
-- 去重和去污染都是 0：tiny 语料本身没有重复文档（第 9 节那三首重复的宋词分在不同的"文档"里，文档级去重看不出来），也不含工具调用开发集 `tool_dev.jsonl` 的内容（100 道题，含函数名与 schema）。
-- 分词器 2048 词表（qwen2 正则），哈希写进每个分片的元数据；`out/tiny/data_pipeline/pretrain_sources.toml` 可以直接贴进 tiny 预训练配置。用它训练 20 步（`zero.train.pretrain`，1.31M 参数）验证 loss 6.80；再用 `zero/data/bpb.py` 在三个来源的验证分片上评估，得到 bpb：莎士比亚 3.553、诗词 3.749、代码 5.146（只训练了 20 步，数字只说明接口通了）：
+- The manifest records the removal reasons of the rules. Shakespeare: duplicate lines 70, line-end punctuation 13, short lines 4. Poems: duplicate lines 8, and 6 documents with less than 80% "words with a letter". (After the split of Chinese into characters, each punctuation mark also counts as a "word". Ci tunes with many short lines have a high density of punctuation.) Code uses the Codex rules, and no code document was removed.
+- Dedup and decontamination both removed 0 documents. The tiny corpus has no duplicate documents. (The three repeated Song ci poems of Section 9 are in different "documents", so document-level dedup cannot see them.) It also does not contain the content of the tool-call development set `tool_dev.jsonl` (100 questions, with function names and schemas).
+- The tokenizer has a vocabulary of 2048 (qwen2 regex), and its hash is in the metadata of each shard. You can paste `out/tiny/data_pipeline/pretrain_sources.toml` directly into the tiny pretraining configuration. With it, a 20-step training run (`zero.train.pretrain`, 1.31M parameters) gave a validation loss of 6.80. Then `zero/data/bpb.py` evaluated bpb on the validation shards of the three sources: Shakespeare 3.553, poems 3.749, code 5.146. (Only 20 training steps, so the numbers show only that the interfaces work.)
 
 ```python
 tb = token_byte_lengths(Tokenizer.load("out/tiny/data_pipeline/shards/tokenizer.json"))
@@ -418,102 +455,102 @@ val = PackedDataLoader("out/tiny/data_pipeline/shards/code_val_*.bin", seq_len=1
 print(bpb_stats(model, val, tb, steps=8).bpb)
 ```
 
-### 待 GPU 训练后补充
+### To be added after GPU training
 
-- 第二步用真实数据跑 `download.py`（先 `--max-docs 1000` 核对字段）和 `pipeline.py`（第 5 步换分布式 MinHash），把真实的漏斗、删除原因、去污染命中写到这里；
-- 配比的代理实验：起点是第 12 章阶梯实验 `configs/ladder/l150m.toml` 的中途 checkpoint，每个候选续训约 2B token、候选占比 0 → 80% 线性升上去，看各领域开发集的 bpb 和小基准；先比来源，再比 3–4 个配比，最后定 FineWeb-2 中文分类器的阈值。单个实验 `zero.tools.estimate_cost` 估算 1.8 卡时、约 $4（H100、MFU 0.4、$2.5/卡时的假设，**尚未在 GPU 上验证**），计划 20–30 个，连同评测约 $100–200，在 GOAL.md 3.4 的"第 12–13 章小规模实验 ~$1,200"之内；
-- 在真实样本上重测第 10 节的词表表格，确认 V；定稿后同步 `configs/main/pretrain.toml` 的 `model.vocab_size`；
-- 许可证待核实的三项（Ultra-FineWeb 中文的上游、Stack-Edu、DCLM 的"仅供研究"）核实结果；
-- 最终数据集的清单（`manifest.json`）随模型卡发布。
-
----
-
-## 前沿观察
-
-- **自动化的配比优化**：DoReMi、RegMix（用小模型拟合"配比 → loss"的回归）、MobileLLM-R1 用影响函数（AutoMixer）直接算出配比。它们在各自论文里有效，但头部开源模型的技术报告里，最终配比大多仍是"代理实验 + 人工决定"（Llama 3、Puro-2B 都这么写），Qwen3 只说用了代理模型做实例级优化、没公开方法，所以还不算共识。
-- **按质量排序的课程学习**：Puro-2B 把每个来源内部按质量分从低到高排序，越好的越靠后，配合检查点平均；这和第 15 章"中期训练换上最好的数据"是一个方向，更细的排序方式还在探索中。
-- **语义去重**：用句向量聚类去掉"意思相同、字面不同"的文档（SemDeDup）。Llama 3 在后训练数据上用了，预训练数据上还没有看到多家采用。
+- Step 2: run `download.py` on real data (first with `--max-docs 1000` to check the fields) and `pipeline.py` (change step 5 to distributed MinHash). Write the real funnel, the removal reasons, and the decontamination hits here.
+- Proxy experiments for the mixture: start from a checkpoint halfway through the Chapter 12 ladder experiment `configs/ladder/l150m.toml`. Continue training each candidate for about 2B tokens, with the candidate share increasing linearly from 0 to 80%. Look at the bpb on the development set of each domain and at small benchmarks. First compare the sources, then compare 3–4 mixtures, and last set the threshold of the FineWeb-2 Chinese classifier. `zero.tools.estimate_cost` estimates 1.8 GPU hours and about $4 per experiment (assumptions: H100, MFU 0.4, $2.5/GPU hour; **not yet verified on a GPU**). We plan 20–30 experiments. With evaluation, they cost about $100–200. This is within the "small-scale experiments for Chapters 12–13: ~$1,200" of GOAL.md 3.4.
+- Measure the vocabulary table of Section 10 again on real samples, and confirm V. After the final decision, update `model.vocab_size` in `configs/main/pretrain.toml`.
+- The results of the three license checks that are still open (the upstream sources of Ultra-FineWeb Chinese, Stack-Edu, and "research only" of DCLM).
+- The manifest of the final data set (`manifest.json`) is released with the model card.
 
 ---
 
-## 采用方与来源
+## Frontier notes
 
-| 技术 | 采用方（主力版本） | 来源 |
+- **Automatic mixture optimization**: DoReMi, RegMix (small models fit a regression from "mixture → loss"), and MobileLLM-R1 with influence functions (AutoMixer) calculate the mixture directly. They work in their own papers. But in the technical reports of the leading open models, the final mixture still comes mostly from "proxy experiments + a human decision" (Llama 3 and Puro-2B both say this). Qwen3 says only that it used proxy models for instance-level optimization, and it does not publish the method. Thus this is not yet a consensus.
+- **Curriculum learning sorted by quality**: Puro-2B sorts each source by quality score from low to high, so the best data comes last, together with checkpoint averaging. This has the same direction as "change to the best data in mid-training" in Chapter 15. Finer sorting methods are still under research.
+- **Semantic dedup**: cluster sentence embeddings and remove documents that "have the same meaning but different words" (SemDeDup). Llama 3 used it on post-training data. We have not yet seen many teams use it on pretraining data.
+
+---
+
+## Adopters and sources
+
+| Technique | Adopters (main versions) | Sources |
 |---|---|---|
-| 去重（精确 + MinHash 近似） | Llama 3（URL 级、全局 MinHash 文档级、行级）；Nemotron（全局模糊去重 + 精确子串去重，NeMo Curator）；SmolLM（FineWeb / FineWeb-Edu：每个 dump 内 MinHash，5-gram，14 × 8）；OLMo 2（DCLM-baseline：Bloom 过滤器去重）；Puro-2B（来源内 MinHash）；MiniCPM（Ultra-FineWeb-L1） | [Llama 3 §3.1.1](https://arxiv.org/abs/2407.21783)；[Nemotron-CC §2.1](https://arxiv.org/abs/2412.02595)；[FineWeb §3.4、附录 E](https://arxiv.org/abs/2406.17557)；[DCLM 数据集卡](https://huggingface.co/datasets/mlfoundations/dclm-baseline-1.0)；[OLMo 2 §2.4](https://arxiv.org/abs/2501.00656)；[Puro-2B §3.6.2](https://www.alphaxiv.org/abs/2608.27370)；[Ultra-FineWeb 数据集卡](https://huggingface.co/datasets/openbmb/Ultra-FineWeb) |
-| 基于模型的质量过滤 | Llama 3（Llama 2 标注 → DistilRoberta 质量、代码、推理分类器）；Qwen3（30T token 按教育价值等多维度打标签）；SmolLM2（FineWeb-Edu、Stack-Edu、FineMath 分类器）；OLMo 2（DCLM fastText + FineWeb-Edu 分类器筛 Dolmino）；Nemotron（三分类器集成）；MiniCPM4（Ultra-FineWeb fastText）；Phi-4（~10⁶ 条 LLM 标注训练的小分类器） | [Llama 3 §3.1.1](https://arxiv.org/abs/2407.21783)；[Qwen3 §3.1](https://arxiv.org/abs/2505.09388)；[SmolLM2](https://arxiv.org/abs/2502.02737)；[OLMo 2 §4.3](https://arxiv.org/abs/2501.00656)；[Nemotron-CC §2.2](https://arxiv.org/abs/2412.02595)；[Ultra-FineWeb](https://arxiv.org/abs/2505.05427)；[Phi-4 §2.3](https://arxiv.org/abs/2412.08905) |
-| 合成改写 / 合成数据 | Kimi K2（知识改写、数学"学习笔记"改写）；Nemotron（Nemotron-CC 的 1.9T 合成 token）；Qwen3（Qwen2.5 系列合成数万亿 token）；Phi-4（合成 40% + 网页改写 15%）；OLMo 2（Dolmino 里 MIND 改写的 TinyGSM）；MiniCPM（Ultra-FineWeb-L3 问答生成与多风格改写） | [Kimi K2 §2.2](https://arxiv.org/abs/2507.20534)；[Nemotron-CC §2.3](https://arxiv.org/abs/2412.02595)；[Qwen3 §3.1](https://arxiv.org/abs/2505.09388)；[Phi-4 §3.2](https://arxiv.org/abs/2412.08905)；[OLMo 2 §4.4](https://arxiv.org/abs/2501.00656)；[Ultra-FineWeb 数据集卡](https://huggingface.co/datasets/openbmb/Ultra-FineWeb) |
-| 去污染（n-gram 重叠） | Llama 3（8-gram 污染分析；后训练数据与基准提示精确匹配去重）；Phi-4（13-gram + 7-gram 混合）；OLMo 2（FLAN 与评测集 n-gram 重叠 ≥10% 删除）；Puro-2B（SFT 数据 13-gram）；GPT-3（13-gram，方法的出处） | [Llama 3 §5.1、§5.2](https://arxiv.org/abs/2407.21783)；[Phi-4 附录 B](https://arxiv.org/abs/2412.08905)；[OLMo 2 §4.3](https://arxiv.org/abs/2501.00656)；[Puro-2B §3.5](https://www.alphaxiv.org/abs/2608.27370)；[GPT-3 附录 C](https://arxiv.org/abs/2005.14165) |
-| 用小规模实验定配比 | Llama 3（scaling law 实验 + 退火估值）；Qwen3（小代理模型）；OLMo 2（微退火）；Phi-4（1T token、7B 规模的配比消融）；MobileLLM-R1（留一法 + 影响函数）；Puro-2B（Qwen3-0.6B 代理续训） | [Llama 3 §3.1.2–3.1.3](https://arxiv.org/abs/2407.21783)；[Qwen3 §3.1](https://arxiv.org/abs/2505.09388)；[OLMo 2 §4.4](https://arxiv.org/abs/2501.00656)；[Phi-4 §3.2](https://arxiv.org/abs/2412.08905)；[MobileLLM-R1 §2](https://arxiv.org/abs/2509.24945)；[Puro-2B §3.6.1](https://www.alphaxiv.org/abs/2608.27370) |
-| 启发式规则（Gopher / C4 / FineWeb） | FineWeb（SmolLM 的数据）；DCLM（RefinedWeb 规则，OLMo 2 的数据）；Llama 3（重复 n-gram、脏词、token 分布 KL）；Nemotron（只用在低质量部分） | [Gopher 附录 A](https://arxiv.org/abs/2112.11446)；[C4](https://arxiv.org/abs/1910.10683)；[FineWeb §3.3–3.6](https://arxiv.org/abs/2406.17557)；[Llama 3 §3.1.1](https://arxiv.org/abs/2407.21783) |
+| Dedup (exact + MinHash near dedup) | Llama 3 (URL level, global MinHash at document level, line level); Nemotron (global fuzzy dedup + exact substring dedup, NeMo Curator); SmolLM (FineWeb / FineWeb-Edu: MinHash within each dump, 5-grams, 14 × 8); OLMo 2 (DCLM-baseline: Bloom filter dedup); Puro-2B (MinHash within each source); MiniCPM (Ultra-FineWeb-L1) | [Llama 3 §3.1.1](https://arxiv.org/abs/2407.21783); [Nemotron-CC §2.1](https://arxiv.org/abs/2412.02595); [FineWeb §3.4, Appendix E](https://arxiv.org/abs/2406.17557); [DCLM data set card](https://huggingface.co/datasets/mlfoundations/dclm-baseline-1.0); [OLMo 2 §2.4](https://arxiv.org/abs/2501.00656); [Puro-2B §3.6.2](https://www.alphaxiv.org/abs/2608.27370); [Ultra-FineWeb data set card](https://huggingface.co/datasets/openbmb/Ultra-FineWeb) |
+| Model-based quality filtering | Llama 3 (Llama 2 labels → DistilRoberta classifiers for quality, code, and reasoning); Qwen3 (30T tokens labeled in many dimensions, such as educational value); SmolLM2 (FineWeb-Edu, Stack-Edu, and FineMath classifiers); OLMo 2 (DCLM fastText + FineWeb-Edu classifier select Dolmino); Nemotron (ensemble of three classifiers); MiniCPM4 (Ultra-FineWeb fastText); Phi-4 (small classifiers trained on ~10⁶ LLM labels) | [Llama 3 §3.1.1](https://arxiv.org/abs/2407.21783); [Qwen3 §3.1](https://arxiv.org/abs/2505.09388); [SmolLM2](https://arxiv.org/abs/2502.02737); [OLMo 2 §4.3](https://arxiv.org/abs/2501.00656); [Nemotron-CC §2.2](https://arxiv.org/abs/2412.02595); [Ultra-FineWeb](https://arxiv.org/abs/2505.05427); [Phi-4 §2.3](https://arxiv.org/abs/2412.08905) |
+| Synthetic rephrasing / synthetic data | Kimi K2 (knowledge rephrasing, math rephrasing as "study notes"); Nemotron (the 1.9T synthetic tokens of Nemotron-CC); Qwen3 (trillions of tokens synthesized with the Qwen2.5 series); Phi-4 (40% synthetic + 15% rewritten web); OLMo 2 (TinyGSM rewritten with MIND in Dolmino); MiniCPM (Ultra-FineWeb-L3 QA generation and rephrasing in many styles) | [Kimi K2 §2.2](https://arxiv.org/abs/2507.20534); [Nemotron-CC §2.3](https://arxiv.org/abs/2412.02595); [Qwen3 §3.1](https://arxiv.org/abs/2505.09388); [Phi-4 §3.2](https://arxiv.org/abs/2412.08905); [OLMo 2 §4.4](https://arxiv.org/abs/2501.00656); [Ultra-FineWeb data set card](https://huggingface.co/datasets/openbmb/Ultra-FineWeb) |
+| Decontamination (n-gram overlap) | Llama 3 (8-gram contamination analysis; exact-match dedup of post-training data against benchmark prompts); Phi-4 (mix of 13-grams + 7-grams); OLMo 2 (remove FLAN items with an n-gram overlap ≥10% with the evaluation sets); Puro-2B (13-grams on SFT data); GPT-3 (13-grams, the origin of the method) | [Llama 3 §5.1, §5.2](https://arxiv.org/abs/2407.21783); [Phi-4 Appendix B](https://arxiv.org/abs/2412.08905); [OLMo 2 §4.3](https://arxiv.org/abs/2501.00656); [Puro-2B §3.5](https://www.alphaxiv.org/abs/2608.27370); [GPT-3 Appendix C](https://arxiv.org/abs/2005.14165) |
+| Mixture from small-scale experiments | Llama 3 (scaling-law experiments + annealing evaluation); Qwen3 (small proxy models); OLMo 2 (microannealing); Phi-4 (mixture ablations at 1T tokens and 7B scale); MobileLLM-R1 (leave-one-out + influence functions); Puro-2B (continued training of a Qwen3-0.6B proxy) | [Llama 3 §3.1.2–3.1.3](https://arxiv.org/abs/2407.21783); [Qwen3 §3.1](https://arxiv.org/abs/2505.09388); [OLMo 2 §4.4](https://arxiv.org/abs/2501.00656); [Phi-4 §3.2](https://arxiv.org/abs/2412.08905); [MobileLLM-R1 §2](https://arxiv.org/abs/2509.24945); [Puro-2B §3.6.1](https://www.alphaxiv.org/abs/2608.27370) |
+| Heuristic rules (Gopher / C4 / FineWeb) | FineWeb (the data of SmolLM); DCLM (RefinedWeb rules, the data of OLMo 2); Llama 3 (duplicated n-grams, dirty words, KL of the token distribution); Nemotron (only on the low-quality part) | [Gopher Appendix A](https://arxiv.org/abs/2112.11446); [C4](https://arxiv.org/abs/1910.10683); [FineWeb §3.3–3.6](https://arxiv.org/abs/2406.17557); [Llama 3 §3.1.1](https://arxiv.org/abs/2407.21783) |
 
-待核实：FineWeb-2 中文子集的 token 数（数据集卡只给了文档数和 parquet 大小）；Nemotron-CC-v2 的具体许可条款原文（只读到了 Puro-2B 论文的转述和 HF 页面的 `license: other`）；DCLM 数据集卡"仅供研究"与 CC-BY-4.0 的关系；Codex 论文第 3.1 节里"字母数字占比太低"的具体阈值（本章取 0.25，论文原文未给数字，待核实）。
-
----
-
-## 引导问题
-
-带着这些问题去问 Claude Code，直到你能用自己的话讲清楚：
-
-1. FineWeb 发现对 96 个快照做全局去重反而更差。为什么"更彻底的去重"会让数据变差？如果你只有一个快照，这个问题还存在吗？
-2. `03_minhash.py` 用 128 个哈希、16 × 8。如果改成 32 × 4，S 曲线的拐点移到哪里？对"转载时改了几个词"的文档和"两篇不同但主题相近的文章"分别会怎样？
-3. 本章的质量分类器最有用的特征是"词对眼熟度"。如果评审员标注的 250 篇里全是莎士比亚、没有宋词，分类器会怎么对待中文文档？真实的 FineWeb-Edu 分类器有没有类似的偏向（提示：阈值再高，HellaSwag 反而下降）？
-4. 两个消融实验只训练了几十万 token。这么小的实验能不能用来决定主线的配比？Puro-2B 和 Llama 3 用什么办法让代理实验更可信？
-5. 13-gram 去污染抓不到改写过的考题。除了减小 n，还有什么办法？（提示：Phi-4 的"新题"评测、第 11 章的自建开发集。）
-6. 词表从 64K 加到 128K，主线模型的推理速度和 GGUF 文件大小会怎样变？对"在笔记本上跑的工具调用助手"这个目标，哪一边更重要？
-
-## 动手任务
-
-每个任务都要真的运行代码、看到结果。
-
-**任务 1（基础）**：在 `02_heuristic_filter.py` 里把 Gopher 的重复行阈值从 0.3 改成 0.5，重新跑，看莎士比亚的误杀率和导航页的删除率各变成多少。再想想：为什么不能只为莎士比亚调阈值？
-
-**任务 2（核心）**：在 `03_minhash.py` 里把 `near_dedup` 的 `bands` 改成 8、32 两种（`num_perm` 保持 128），重新跑，对照 S 曲线表解释"多余副本"和"误合并"的变化。再在 `01_noisy_crawl.py` 的 `near_copy` 里把改词比例从 1/60 调到 1/10，看 MinHash 还能不能抓到。
-
-**任务 3（挑战）**：给 `05_decontam.py` 加上 Phi-4 的"白名单"思路：先在训练文档里统计出现次数最多的 13-gram（比如出现在 5 篇以上的），检查时跳过它们；再把 n 降到 8，看"其它命中"能不能降下来而原样泄漏仍然全部抓到。然后用 `06_quality_ablation.py` 的框架，比较"去污染前 / 后"训练的两个模型在考题上的 bpb——泄漏到底让模型在考题上"好"了多少？
+To be verified: the token count of the Chinese subset of FineWeb-2 (the data set card gives only the document count and the parquet size); the original text of the license terms of Nemotron-CC-v2 (we read only the summary in the Puro-2B paper and `license: other` on the HF page); the relation between "research only" on the DCLM data set card and CC-BY-4.0; the exact threshold of "alphanumeric fraction too low" in Section 3.1 of the Codex paper (this chapter uses 0.25; the paper gives no number, to be verified).
 
 ---
 
-## 想深入：CS336
+## Guided questions
 
-本章对应斯坦福 CS336（Spring 2026）<https://cs336.stanford.edu/>：
+Ask Claude Code these questions. Continue until you can explain the answers in your own words:
 
-- **第 13 讲：数据（来源与数据集）**。Common Crawl、网页抽取、各个开放数据集是怎么来的，以及数据的版权与许可问题——本章第 2 节的展开。
-- **第 14 讲：数据（过滤、去重、配比、合成数据）**。语言识别、质量分类器、MinHash/LSH、配比与合成数据，和本章第 4–9 节同一条线，讲得更系统。
-- **作业 4（Data）**：从 Common Crawl 的原始数据出发，自己实现 HTML 抽取、语言识别、PII 脱敏、有害内容过滤、质量分类器、精确与 MinHash 去重，再用过滤后的数据训练模型、在排行榜上比验证集 loss。本章的 `02`–`05` 是它的缩小版热身。作业仓库：<https://github.com/stanford-cs336/assignment4-data>
+1. FineWeb found that global dedup over 96 snapshots made the data worse. Why can "more complete dedup" make the data worse? If you have only one snapshot, does this problem still occur?
+2. `03_minhash.py` uses 128 hashes, 16 × 8. If you change to 32 × 4, where does the inflection point of the S-curve move? What happens to "reposts with some changed words", and to "two different articles on similar topics"?
+3. The most useful feature of the quality classifier in this chapter is "bigram familiarity". If all 250 documents that the annotator labels are Shakespeare and none are Song ci, how does the classifier treat Chinese documents? Does the real FineWeb-Edu classifier have a similar bias? (Hint: with a higher threshold, HellaSwag decreases.)
+4. The two ablation experiments trained on only a few hundred thousand tokens. Can such small experiments decide the main-line mixture? What do Puro-2B and Llama 3 do to make proxy experiments more reliable?
+5. 13-gram decontamination cannot catch paraphrased test questions. What other methods are there, other than a smaller n? (Hint: the "new questions" evaluation of Phi-4, and the own development set of Chapter 11.)
+6. If the vocabulary increases from 64K to 128K, how do the inference speed and the GGUF file size of the main-line model change? For the goal "a tool-call assistant that runs on a laptop", which side is more important?
+
+## Hands-on tasks
+
+For each task, run the code and look at the result.
+
+**Task 1 (basic)**: In `02_heuristic_filter.py`, change the Gopher duplicate-line threshold from 0.3 to 0.5, and run the script again. Record the false-removal rate of Shakespeare and the removal rate of navigation pages. Then think: why can you not tune the threshold only for Shakespeare?
+
+**Task 2 (core)**: In `03_minhash.py`, change `bands` of `near_dedup` to 8, and then to 32 (keep `num_perm` at 128). Run the script again for each value. Use the S-curve table to explain the changes in "redundant copies" and "wrong merges". Then in `near_copy` of `01_noisy_crawl.py`, change the fraction of changed words from 1/60 to 1/10. Can MinHash still catch the copies?
+
+**Task 3 (challenge)**: Add the "allowlist" idea of Phi-4 to `05_decontam.py`. First, count the 13-grams that occur most often in the training documents (for example, in more than 5 documents), and skip them in the check. Then decrease n to 8. Do the "other hits" decrease, while the check still catches all verbatim leaks? Then use the framework of `06_quality_ablation.py` to compare two models, trained "before / after decontamination", by their bpb on the test questions. How much "better" does the leak make the model on the test questions?
 
 ---
 
-## 本章参考文献
+## Go deeper: CS336
 
-- Zhao et al. *MobileLLM-R1: Exploring the Limits of Sub-Billion Language Model Reasoners with Open Training Recipes*，ICLR 2026：<https://arxiv.org/abs/2509.24945>
-- Luo et al. *PuRo-2B: Poor Lab's Qwen2-1.5B Trained on RTX 5090 within $5090*，2026：<https://www.alphaxiv.org/abs/2608.27370>
-- Penedo et al. *The FineWeb Datasets: Decanting the Web for the Finest Text Data at Scale*，2024：<https://arxiv.org/abs/2406.17557>；FineWeb-Edu 数据集卡：<https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu>
-- Penedo et al. *FineWeb2: One Pipeline to Scale Them All — Adapting Pre-Training Data Processing to Every Language*，2025：<https://arxiv.org/abs/2506.20920>；数据集卡：<https://huggingface.co/datasets/HuggingFaceFW/fineweb-2>
-- Li et al. *DataComp-LM: In search of the next generation of training sets for language models*，2024：<https://arxiv.org/abs/2406.11794>；数据集卡：<https://huggingface.co/datasets/mlfoundations/dclm-baseline-1.0>
-- Su et al. *Nemotron-CC: Transforming Common Crawl into a Refined Long-Horizon Pretraining Dataset*，ACL 2025：<https://arxiv.org/abs/2412.02595>
-- Wang et al. *Ultra-FineWeb: Efficient Data Filtering and Verification for High-Quality LLM Training Data*，2025：<https://arxiv.org/abs/2505.05427>；数据集卡：<https://huggingface.co/datasets/openbmb/Ultra-FineWeb>
-- Allal et al. *SmolLM2: When Smol Goes Big — Data-Centric Training of a Small Language Model*（Stack-Edu、FineMath），2025：<https://arxiv.org/abs/2502.02737>；<https://huggingface.co/datasets/HuggingFaceTB/stack-edu>、<https://huggingface.co/datasets/HuggingFaceTB/finemath>
-- Llama Team. *The Llama 3 Herd of Models*，2024：<https://arxiv.org/abs/2407.21783>
-- Qwen Team. *Qwen3 Technical Report*，2025：<https://arxiv.org/abs/2505.09388>
-- Kimi Team. *Kimi K2: Open Agentic Intelligence*，2025：<https://arxiv.org/abs/2507.20534>
-- Abdin et al. *Phi-4 Technical Report*，2024：<https://arxiv.org/abs/2412.08905>
-- OLMo Team. *2 OLMo 2 Furious*，2025：<https://arxiv.org/abs/2501.00656>
-- Maini et al. *Rephrasing the Web (WRAP)*，2024：<https://arxiv.org/abs/2401.16380>
-- Rae et al. *Scaling Language Models: Methods, Analysis & Insights from Training Gopher*（附录 A 的质量规则），2021：<https://arxiv.org/abs/2112.11446>
-- Raffel et al. *Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer*（C4），2019：<https://arxiv.org/abs/1910.10683>
-- Wenzek et al. *CCNet: Extracting High Quality Monolingual Datasets from Web Crawl Data*，2019：<https://arxiv.org/abs/1911.00359>
-- Lee et al. *Deduplicating Training Data Makes Language Models Better*，2021：<https://arxiv.org/abs/2107.06499>
-- Broder. *On the resemblance and containment of documents*（MinHash），1997
-- Brown et al. *Language Models are Few-Shot Learners*（GPT-3，附录 C 的 13-gram 去污染），2020：<https://arxiv.org/abs/2005.14165>
-- Chen et al. *Evaluating Large Language Models Trained on Code*（Codex，第 3.1 节的代码过滤规则），2021：<https://arxiv.org/abs/2107.03374>
-- Muennighoff et al. *Scaling Data-Constrained Language Models*，2023：<https://arxiv.org/abs/2305.16264>
-- Tao et al. *Scaling Laws with Vocabulary: Larger Models Deserve Larger Vocabularies*，NeurIPS 2024：<https://arxiv.org/abs/2407.13623>
-- Karpathy. nanochat（`nanochat/loss_eval.py` 的 `evaluate_bpb`）：<https://github.com/karpathy/nanochat>
-- Qwen3.5-0.8B 的 `tokenizer.json`（预切分正则，2026-09 读取）：<https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/tokenizer.json>
-- llama.cpp 的预切分类型 `qwen35` 与 vocab 测试文件：<https://github.com/ggml-org/llama.cpp>（`src/llama-vocab.cpp`、`models/ggml-vocab-*.gguf`）
-- 第 10 节词表测量用的语料（2026-10，主线预训练来源的样本，记录见 [runs/2026-10-01-vocab-corpus](../../runs/2026-10-01-vocab-corpus/README.md)）：[FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu)（`sample-10BT`）、[DCLM-baseline 1.0](https://huggingface.co/datasets/mlfoundations/dclm-baseline-1.0)、[FineMath](https://huggingface.co/datasets/HuggingFaceTB/finemath)（`finemath-3plus`）、[FineWeb-2](https://huggingface.co/datasets/HuggingFaceFW/fineweb-2)（`cmn_Hani`）、[Ultra-FineWeb](https://huggingface.co/datasets/openbmb/Ultra-FineWeb)（`zh`）、[UltraData-Code](https://huggingface.co/datasets/openbmb/UltraData-Code)（`UltraData-Code-L2`，MiniCPM5 的代码数据）
-- 第 10 节第一版词表测量用的语料：[d2l-ai/d2l-zh](https://github.com/d2l-ai/d2l-zh)、[d2l-ai/d2l-en](https://github.com/d2l-ai/d2l-en)、[kubernetes/website](https://github.com/kubernetes/website)（`content/{zh-cn,en}/docs`）、[Snailclimb/JavaGuide](https://github.com/Snailclimb/JavaGuide)、[CyC2018/CS-Notes](https://github.com/CyC2018/CS-Notes)、[jackfrued/Python-100-Days](https://github.com/jackfrued/Python-100-Days)、[python/cpython](https://github.com/python/cpython)（`Lib`、`Objects`、`Doc`）——只在本地做测量，不进仓库，也不用于训练
-- CS336 作业 4 仓库：<https://github.com/stanford-cs336/assignment4-data>
+This chapter matches Stanford CS336 (Spring 2026) <https://cs336.stanford.edu/>:
 
-**下一章**：数据和分词器都有了，下一步是把几千亿个 token 真正喂进 8 张 GPU——混合精度、FlashAttention、数据并行与 FSDP、MFU、loss spike 和断点续训。第 14 章，预训练工程。
+- **Lecture 13: Data (sources and data sets)**. Common Crawl, web extraction, how each open data set was made, and the copyright and license questions of data. This lecture expands Section 2 of this chapter.
+- **Lecture 14: Data (filtering, dedup, mixture, synthetic data)**. Language identification, quality classifiers, MinHash/LSH, mixtures, and synthetic data. This lecture follows the same line as Sections 4–9 of this chapter, in a more systematic way.
+- **Assignment 4 (Data)**: start from raw Common Crawl data. Implement HTML extraction, language identification, PII masking, harmful-content filtering, quality classifiers, and exact and MinHash dedup yourself. Then train a model on the filtered data and compare the validation loss on a leaderboard. Scripts `02`–`05` of this chapter are a small warm-up for it. Assignment repository: <https://github.com/stanford-cs336/assignment4-data>
+
+---
+
+## References
+
+- Zhao et al. *MobileLLM-R1: Exploring the Limits of Sub-Billion Language Model Reasoners with Open Training Recipes*, ICLR 2026: <https://arxiv.org/abs/2509.24945>
+- Luo et al. *PuRo-2B: Poor Lab's Qwen2-1.5B Trained on RTX 5090 within $5090*, 2026: <https://www.alphaxiv.org/abs/2608.27370>
+- Penedo et al. *The FineWeb Datasets: Decanting the Web for the Finest Text Data at Scale*, 2024: <https://arxiv.org/abs/2406.17557>; FineWeb-Edu data set card: <https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu>
+- Penedo et al. *FineWeb2: One Pipeline to Scale Them All — Adapting Pre-Training Data Processing to Every Language*, 2025: <https://arxiv.org/abs/2506.20920>; data set card: <https://huggingface.co/datasets/HuggingFaceFW/fineweb-2>
+- Li et al. *DataComp-LM: In search of the next generation of training sets for language models*, 2024: <https://arxiv.org/abs/2406.11794>; data set card: <https://huggingface.co/datasets/mlfoundations/dclm-baseline-1.0>
+- Su et al. *Nemotron-CC: Transforming Common Crawl into a Refined Long-Horizon Pretraining Dataset*, ACL 2025: <https://arxiv.org/abs/2412.02595>
+- Wang et al. *Ultra-FineWeb: Efficient Data Filtering and Verification for High-Quality LLM Training Data*, 2025: <https://arxiv.org/abs/2505.05427>; data set card: <https://huggingface.co/datasets/openbmb/Ultra-FineWeb>
+- Allal et al. *SmolLM2: When Smol Goes Big — Data-Centric Training of a Small Language Model* (Stack-Edu, FineMath), 2025: <https://arxiv.org/abs/2502.02737>; <https://huggingface.co/datasets/HuggingFaceTB/stack-edu>, <https://huggingface.co/datasets/HuggingFaceTB/finemath>
+- Llama Team. *The Llama 3 Herd of Models*, 2024: <https://arxiv.org/abs/2407.21783>
+- Qwen Team. *Qwen3 Technical Report*, 2025: <https://arxiv.org/abs/2505.09388>
+- Kimi Team. *Kimi K2: Open Agentic Intelligence*, 2025: <https://arxiv.org/abs/2507.20534>
+- Abdin et al. *Phi-4 Technical Report*, 2024: <https://arxiv.org/abs/2412.08905>
+- OLMo Team. *2 OLMo 2 Furious*, 2025: <https://arxiv.org/abs/2501.00656>
+- Maini et al. *Rephrasing the Web (WRAP)*, 2024: <https://arxiv.org/abs/2401.16380>
+- Rae et al. *Scaling Language Models: Methods, Analysis & Insights from Training Gopher* (the quality rules in Appendix A), 2021: <https://arxiv.org/abs/2112.11446>
+- Raffel et al. *Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer* (C4), 2019: <https://arxiv.org/abs/1910.10683>
+- Wenzek et al. *CCNet: Extracting High Quality Monolingual Datasets from Web Crawl Data*, 2019: <https://arxiv.org/abs/1911.00359>
+- Lee et al. *Deduplicating Training Data Makes Language Models Better*, 2021: <https://arxiv.org/abs/2107.06499>
+- Broder. *On the resemblance and containment of documents* (MinHash), 1997
+- Brown et al. *Language Models are Few-Shot Learners* (GPT-3; the 13-gram decontamination in Appendix C), 2020: <https://arxiv.org/abs/2005.14165>
+- Chen et al. *Evaluating Large Language Models Trained on Code* (Codex; the code filter rules in Section 3.1), 2021: <https://arxiv.org/abs/2107.03374>
+- Muennighoff et al. *Scaling Data-Constrained Language Models*, 2023: <https://arxiv.org/abs/2305.16264>
+- Tao et al. *Scaling Laws with Vocabulary: Larger Models Deserve Larger Vocabularies*, NeurIPS 2024: <https://arxiv.org/abs/2407.13623>
+- Karpathy. nanochat (`evaluate_bpb` in `nanochat/loss_eval.py`): <https://github.com/karpathy/nanochat>
+- `tokenizer.json` of Qwen3.5-0.8B (the pre-tokenization regex, read in 2026-09): <https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/tokenizer.json>
+- The pre-tokenizer type `qwen35` and the vocab test files of llama.cpp: <https://github.com/ggml-org/llama.cpp> (`src/llama-vocab.cpp`, `models/ggml-vocab-*.gguf`)
+- The corpus for the vocabulary measurement in Section 10 (2026-10, samples of the main-line pretraining sources; record in [runs/2026-10-01-vocab-corpus](../../runs/2026-10-01-vocab-corpus/README.md)): [FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu) (`sample-10BT`), [DCLM-baseline 1.0](https://huggingface.co/datasets/mlfoundations/dclm-baseline-1.0), [FineMath](https://huggingface.co/datasets/HuggingFaceTB/finemath) (`finemath-3plus`), [FineWeb-2](https://huggingface.co/datasets/HuggingFaceFW/fineweb-2) (`cmn_Hani`), [Ultra-FineWeb](https://huggingface.co/datasets/openbmb/Ultra-FineWeb) (`zh`), [UltraData-Code](https://huggingface.co/datasets/openbmb/UltraData-Code) (`UltraData-Code-L2`, the code data of MiniCPM5)
+- The corpus for the first vocabulary measurement in Section 10: [d2l-ai/d2l-zh](https://github.com/d2l-ai/d2l-zh), [d2l-ai/d2l-en](https://github.com/d2l-ai/d2l-en), [kubernetes/website](https://github.com/kubernetes/website) (`content/{zh-cn,en}/docs`), [Snailclimb/JavaGuide](https://github.com/Snailclimb/JavaGuide), [CyC2018/CS-Notes](https://github.com/CyC2018/CS-Notes), [jackfrued/Python-100-Days](https://github.com/jackfrued/Python-100-Days), [python/cpython](https://github.com/python/cpython) (`Lib`, `Objects`, `Doc`). Used only for local measurement; not in the repository and not used for training
+- CS336 Assignment 4 repository: <https://github.com/stanford-cs336/assignment4-data>
+
+**Next chapter**: Now we have the data and the tokenizer. The next step is to really feed hundreds of billions of tokens into 8 GPUs. Chapter 14, pretraining engineering, covers mixed precision, FlashAttention, data parallelism and FSDP, MFU, loss spikes, and resuming from checkpoints.

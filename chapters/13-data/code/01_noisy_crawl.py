@@ -1,8 +1,11 @@
-"""造一份"脏网页"：真实文档 + 重复 + 导航页 + 广告 + 乱码 + 乱序文本 + 泄漏的考题。
+"""Make a "noisy crawl": real documents + duplicates + navigation pages + spam + garbled text
++ word salad + leaked test questions.
 
-真实网页数据下载不了（也太大），所以本章用 assets/tiny_corpus 里的莎士比亚和古诗词当"好文档"，
-再按网页上常见的几类垃圾，自己往里掺坏东西。每篇文档都带一个标签 kind，后面几个脚本用它来
-检查每一步过滤到底删对了没有——真实世界里没有这个标签，这正是数据工作难的地方。
+We cannot download real web data here (and it is too large). Thus this chapter uses Shakespeare
+and classical Chinese poetry from assets/tiny_corpus as the "good documents". Then it adds the
+types of junk that are common on web pages. Each document has a label `kind`. The scripts after
+this one use the label to check if each filter step removed the correct documents. The real
+world has no such label. This is why data work is difficult.
 
     uv run python chapters/13-data/code/01_noisy_crawl.py
 """
@@ -21,7 +24,10 @@ DOC_CHARS = 1500
 
 
 def split_docs(text: str, doc_chars: int = DOC_CHARS) -> list[str]:
-    """按空行切段，再把相邻段落拼成约 doc_chars 长的"文档"。"""
+    """Split the text into paragraphs at empty lines.
+
+    Then join adjacent paragraphs into "documents" of about doc_chars characters.
+    """
     paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     docs, cur = [], ""
     for p in paras:
@@ -40,7 +46,7 @@ def load_real() -> dict[str, list[str]]:
 
 
 # ---------------------------------------------------------------------------
-# 几类垃圾
+# Types of junk
 # ---------------------------------------------------------------------------
 
 NAV_EN = ["Home", "About Us", "Contact", "Login", "Sign up", "Privacy Policy", "Terms of Use",
@@ -70,7 +76,8 @@ def spam_page(rng: random.Random, lang: str) -> str:
 
 
 def garble(rng: random.Random, doc: str) -> str:
-    """两种常见的乱码：UTF-8 字节被当成 Latin-1 解码（mojibake，只对非 ASCII 的中文有效），或者一堆符号。"""
+    """Two common types of garbled text: UTF-8 bytes decoded as Latin-1 (mojibake; this works only
+    on non-ASCII Chinese text), or a block of random symbols."""
     if not doc.isascii() and rng.random() < 0.7:
         return doc.encode("utf-8").decode("latin-1")
     sym = "#@$%^&*~<>{}[]|\\/=+_0123456789"
@@ -78,8 +85,10 @@ def garble(rng: random.Random, doc: str) -> str:
 
 
 def word_salad(rng: random.Random, doc: str, lang: str) -> str:
-    """把一篇真文档每行里的词（中文按字）打乱，行尾的标点留在原位：
-    字符统计、标点、行长几乎都不变，启发式规则很难发现，但已经不是话了。"""
+    """Shuffle the words in each line of a real document (for Chinese, the characters).
+    The punctuation at the end of each line stays in place. The character statistics, the
+    punctuation, and the line lengths almost do not change, so heuristic rules cannot easily
+    find this text. But the text is no longer language."""
     lines = doc.split("\n")
     out = []
     for ln in lines:
@@ -91,7 +100,7 @@ def word_salad(rng: random.Random, doc: str, lang: str) -> str:
 
 
 def near_copy(rng: random.Random, doc: str, lang: str) -> str:
-    """转载：改几个词，前后加上站点的页眉页脚。"""
+    """A repost: change some words, and add the header and footer of the site."""
     toks = list(doc) if lang == "zh" else doc.split(" ")
     for _ in range(max(1, len(toks) // 60)):
         i = rng.randrange(len(toks))
@@ -103,17 +112,19 @@ def near_copy(rng: random.Random, doc: str, lang: str) -> str:
 
 
 def exact_copy(rng: random.Random, doc: str) -> str:
-    """原样转载：只有空白不同（Windows 换行、行尾空格），规范化之后与原文完全相同。"""
+    """An exact repost: only the whitespace is different (Windows line ends, spaces at line ends).
+    After normalization, the text is identical to the original."""
     return doc.replace("\n", "  \r\n") if rng.random() < 0.5 else doc + "\n\n"
 
 
 # ---------------------------------------------------------------------------
-# 考题（评测集）与泄漏
+# Test questions (the evaluation set) and leaks
 # ---------------------------------------------------------------------------
 
 
 def make_eval_items(rng: random.Random, heldout: dict[str, list[str]], n_per_lang: int = 30) -> list[dict]:
-    """从留出的文档里摘一段当"考题"（填空题的题干）：英文约 30 个词，中文约 40 个字。"""
+    """Take a passage from the held-out documents as a "test question" (the stem of a fill-in
+    question): about 30 words in English, about 40 characters in Chinese."""
     items = []
     for lang, docs in heldout.items():
         for k in range(n_per_lang):
@@ -131,7 +142,7 @@ def make_eval_items(rng: random.Random, heldout: dict[str, list[str]], n_per_lan
 
 
 def paraphrase(rng: random.Random, q: str, lang: str) -> str:
-    """"改写"：每隔几个词换一个，13-gram 就再也对不上了。"""
+    """A "paraphrase": replace one word in every few words. Then no 13-gram matches any more."""
     toks = list(q) if lang == "zh" else q.split(" ")
     for i in range(3, len(toks), 6):
         toks[i] = "之" if lang == "zh" else "thus"
@@ -139,10 +150,10 @@ def paraphrase(rng: random.Random, q: str, lang: str) -> str:
 
 
 def build_crawl(seed: int = SEED) -> dict:
-    """返回 {"docs": [{"text", "kind", "lang"}], "eval": [考题], "heldout": {lang: [文档]}}。
+    """Return {"docs": [{"text", "kind", "lang"}], "eval": [questions], "heldout": {lang: [docs]}}.
 
-    kind：good（好文档）、contaminated（好文档里夹了一道考题）、exact_dup、near_dup、nav、spam、
-    garbled、salad。
+    kind: good (a good document), contaminated (a good document that contains a test question),
+    exact_dup, near_dup, nav, spam, garbled, salad.
     """
     rng = random.Random(seed)
     real = load_real()
@@ -150,16 +161,18 @@ def build_crawl(seed: int = SEED) -> dict:
     for lang, docs in real.items():
         docs = docs[:]
         rng.shuffle(docs)
-        n_hold = len(docs) // 10  # 10% 留出：既是考题的来源，也是后面训练小模型时的验证集
+        # Hold out 10%: the source of the test questions, and later the validation set
+        n_hold = len(docs) // 10
         heldout[lang], pool[lang] = docs[:n_hold], docs[n_hold:]
     eval_items = make_eval_items(rng, heldout)
 
     out = [{"text": d, "kind": "good", "lang": lang} for lang, docs in pool.items() for d in docs]
     for i, d in enumerate(out):
-        d["origin"] = i  # 内容的"出处"：副本的 origin 等于原文的 origin，去重统计用
+        d["origin"] = i  # A copy gets the "origin" of its original; the dedup statistics use it
     goods = [d for d in out if d["kind"] == "good"]
 
-    # 泄漏：把 16 道考题塞进 16 篇好文档中间（12 道原样，2 道改了大小写和标点，2 道改写过）
+    # Leaks: put 16 test questions into the middle of 16 good documents
+    # (12 verbatim, 2 with changed case and punctuation, 2 paraphrased)
     leaked = rng.sample(range(len(eval_items)), 16)
     for j, ei in enumerate(leaked):
         item = eval_items[ei]
@@ -177,7 +190,7 @@ def build_crawl(seed: int = SEED) -> dict:
         d["kind"] = "contaminated"
         d["leak"] = {"eval_id": item["id"], "variant": variant}
 
-    goods = [d for d in out if d["kind"] == "good"]  # 垃圾只从没泄漏考题的好文档里造
+    goods = [d for d in out if d["kind"] == "good"]  # make junk only from documents without a leak
     junk = []
     for _ in range(80):
         src = rng.choice(goods)
@@ -218,13 +231,13 @@ def main() -> None:
     crawl = build_crawl()
     docs = crawl["docs"]
     c = kind_table(docs)
-    print(f"脏网页一共 {len(docs)} 篇，{sum(len(d['text'].encode()) for d in docs) / 1e6:.2f} MB")
-    print(f"{'类型':<14}{'篇数':>6}  例子（前 60 个字符）")
+    print(f"Noisy crawl: {len(docs)} documents, {sum(len(d['text'].encode()) for d in docs) / 1e6:.2f} MB")
+    print(f"{'Type':<14}{'Docs':>6}  Example (first 60 characters)")
     for k in KINDS:
         ex = next(d for d in docs if d["kind"] == k)["text"][:60].replace("\n", "⏎")
         print(f"{k:<14}{c[k]:>6}  {ex}")
-    print(f"考题：{len(crawl['eval'])} 道（英文、中文各 30），其中 16 道泄漏进了训练数据")
-    print(f"留出的干净文档（验证集）：英文 {len(crawl['heldout']['en'])} 篇，中文 {len(crawl['heldout']['zh'])} 篇")
+    print(f"Test questions: {len(crawl['eval'])} (30 English, 30 Chinese); 16 of them leaked into the training data")
+    print(f"Held-out clean documents (validation set): {len(crawl['heldout']['en'])} English, {len(crawl['heldout']['zh'])} Chinese")
 
 
 if __name__ == "__main__":

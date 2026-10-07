@@ -1,4 +1,4 @@
-"""本地 demo：工具执行、文件搜索限制在根目录内、生成 → 解析 → 执行 → 喂回的循环（第 20 章）。"""
+"""Local demo: tool execution, file search confined to the root, and the loop generate → parse → run → send back (Chapter 20)."""
 
 from __future__ import annotations
 
@@ -55,4 +55,4 @@ def test_demo_cli_runs_with_tiny_model(tiny_ckpt, capsys) -> None:  # noqa: ANN0
 
     main(["--model", str(tiny_ckpt), "--once", "你好", "--max-new-tokens", "8", "--max-turns", "2"])
     out = capsys.readouterr().out
-    assert "你：你好" in out and "助手：" in out
+    assert "You: 你好" in out and "Assistant: " in out

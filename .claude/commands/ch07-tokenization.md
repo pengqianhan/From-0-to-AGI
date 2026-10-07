@@ -1,57 +1,59 @@
 ---
-description: 第 7 章自我检验：语言建模与分词（链式法则、字节级 BPE、bigram、bits-per-byte）
+description: "Chapter 7 self-check: language modeling and tokenization — chain rule, byte-level BPE, bigram, bits-per-byte (第 7 章自检：语言建模与分词——链式法则、字节级 BPE、bigram、bits-per-byte)"
 ---
 
-# 第 7 章自我检验：语言建模与分词
+# Chapter 7 self-check: language modeling and tokenization
 
-用户调用了 `/ch07-tokenization`，说明他们刚学完第 7 章（`chapters/07-tokenization-language-model/`）。你的任务是帮他们检验自己是否真正理解了，而不是告诉他们答案。
+The learner typed `/ch07-tokenization`. They finished Chapter 7 (`chapters/07-tokenization-language-model/`). Help them check if they understand it. Do not give them the answers.
 
-**检验方式**：逐一提问下面的问题，等用户用自己的话回答后，再给出反馈——哪里说对了，哪里还有偏差，以及如何深化理解。不要一次性把所有问题都抛出去。
+**Language**: Use the language of the learner. If the learner writes in Chinese, ask the questions and give feedback in Chinese. The Chinese text of the chapter is in `README.zh.md`. Write short, clear sentences (see `docs/STYLE_GUIDE.md`).
 
----
-
-## 检验问题（按难度递进）
-
-**第一关：概念**
-
-问用户：
-> 用一句话说出"语言模型"在做什么，并写出把一整段文本的概率拆开的那个公式。bigram 模型在这个公式的哪一步做了近似？
-
-期望回答：语言模型给定前文预测下一个 token 的概率分布（在词表上做分类）；链式法则 `p(x_1…x_T) = Π p(x_t | x_<t)` 是恒等式；bigram 把 `p(x_t | x_<t)` 近似成 `p(x_t | x_{t−1})`，只看前 1 个 token。训练目标是每个位置正确 token 的交叉熵。如果用户说"链式法则是近似"，要纠正。
+**Method**: Ask the questions below one at a time. Wait for the learner to answer in their own words. Then give feedback: tell them what is correct, what is not correct, and how to make their understanding deeper. Do not ask all the questions at the same time.
 
 ---
 
-**第二关：直觉**
+## Questions (from easy to difficult)
 
-问用户：
-> 手写 BPE 在中英代码混合语料上学到的第一个合并是 `\xef\xbc`，不是任何一个完整的字。为什么？"学而时习之"里的"习"在 1024 词表下被切成了两个 token，这会不会丢信息？
+**Level 1: concepts**
 
-期望回答：BPE 只看字节对的出现频率。全角标点（，：；等）的 UTF-8 编码共享前两个字节 `ef bc`，加起来出现次数最多，所以先被合并；同理，很多汉字共享两字节前缀。"习"没被学成整字时退回字节片段（`\xe4\xb9` + `\xa0`），256 个字节都在词表里，解码时字节拼回去就能还原，不丢信息——这正是 byte-level 相对字符级（会出现 `<unk>`）的好处。
+Ask the learner:
+> In one sentence, what does a language model do? Write the formula that splits the probability of a full text into parts. At which step of this formula does the bigram model make an approximation?
 
----
-
-**第三关：发现问题**
-
-问用户：
-> 同一段英文验证集上，字节级 bigram 的困惑度是 12.7，BPE bigram 是 37.0。有人据此说"字节级模型更好"。这个结论错在哪？应该怎么比？
-
-期望回答：困惑度（和 loss）是"每个 token"的，BPE 的一个 token 平均覆盖约 1.76 个字节，每个 token 本来就更难猜，不能直接比。应该比 bits-per-byte：`bpb = 总 nats / (ln2 × 总字节数) = (bits/token) ÷ (bytes/token)`，同一段文本的字节数与分词器无关。本章实测 BPE 的 bpb 是 2.956，字节级是 3.669，BPE 反而好约 19%。能说出"nanochat 的 val_bpb 就是这么算的、特殊 token 不计入"是加分项。
+Expected answer: a language model gives the probability distribution of the next token from the earlier text (it is a classification over the vocabulary). The chain rule `p(x_1…x_T) = Π p(x_t | x_<t)` is an identity. The bigram model approximates `p(x_t | x_<t)` with `p(x_t | x_{t−1})`: it looks only at the previous token. The training objective is the cross-entropy of the correct token at each position. If the learner says "the chain rule is an approximation", correct them.
 
 ---
 
-**第四关：迁移**
+**Level 2: intuition**
 
-问用户：
-> 你要给一个总参数不超过 0.8B、宽度 d = 1280 的中英双语小模型选词表。一个同学说"就用 Qwen3.5 的 248K 词表吧，压缩率最好"。你怎么回应？至少说出两个代价，以及你会怎么做实验来定词表大小。
+Ask the learner:
+> On a mixed corpus of Chinese, English, and code, the first merge of the hand-written BPE is `\xef\xbc`. It is not a full character. Why? In the example text `学而时习之`, the BPE with a vocabulary of 1024 splits the character `习` ("practice") into two tokens. Does this lose information?
 
-期望回答：embedding 参数 = V × d，248,320 × 1280 ≈ 3.2 亿，占掉 0.8B 预算的很大一块，挤占 Transformer 层的参数；词表越大、每个 token 训练样本越少，罕见 token 学不好；输出 softmax 更贵。压缩率随词表增大收益递减（本章实测 16K→32K 只让序列短 7%）。实验：在真实的中英代码数据上训练几个不同 V 的分词器，测 bytes/token，再用同样的算力训练小模型、比较验证集 **bpb**（不是 loss），同时核算 embedding 参数——这正是第 13 章要做的事，本课主线暂定 65,536。
+Expected answer: BPE looks only at how often a pair of bytes occurs. The UTF-8 encodings of the full-width punctuation marks (`，`, `：`, `；`, and others) share the first two bytes `ef bc`. Together they occur most often, so BPE merges them first. For the same reason, many Chinese characters share a 2-byte prefix. When BPE did not learn `习` as a full character, the character falls back to byte pieces (`\xe4\xb9` + `\xa0`). All 256 bytes are in the vocabulary, so decoding joins the bytes again and restores the text. No information is lost. This is the advantage of the byte level over the character level, which has `<unk>`.
 
 ---
 
-## 反馈原则
+**Level 3: find the error**
 
-- 答对了：认可，然后追问一个更深的"为什么"（比如：trigram 的表有多大？为什么存不下？）。
-- 答错了：不要直接给答案，给一个提示（比如让他们去改 `code/02_bpe.py` 的 `vocab_size`，或在 `code/03_bigram.py` 里打印 bits/token 和 bytes/token），让他们重新思考。
-- 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
+Ask the learner:
+> On the same English validation set, the byte-level bigram has a perplexity of 12.7, and the BPE bigram has 37.0. Someone says: "So the byte-level model is better." What is wrong with this conclusion? How must we compare the two models?
 
-四关都通过后，告诉用户可以进入第 8 章（`chapters/08-attention/`，注意力：让每个位置都能看到前面所有 token）。
+Expected answer: perplexity (and the loss) is "per token". One BPE token covers about 1.76 bytes on average, so each token is harder to predict. We cannot compare the two numbers directly. Compare bits-per-byte: `bpb = total nats / (ln2 × total bytes) = (bits/token) ÷ (bytes/token)`. The number of bytes of the same text does not depend on the tokenizer. In this chapter, we measured a bpb of 2.956 for BPE and 3.669 for the byte level: BPE is about 19% better. Extra credit: "nanochat calculates `val_bpb` in this way and does not count special tokens".
+
+---
+
+**Level 4: transfer**
+
+Ask the learner:
+> You must choose a vocabulary for a small bilingual (Chinese and English) model with at most 0.8B parameters and a width of d = 1280. A classmate says: "Use the 248K vocabulary of Qwen3.5. It has the best compression." What do you tell the classmate? Name at least two costs. Also tell how you would design an experiment to decide the vocabulary size.
+
+Expected answer: embedding parameters = V × d, and 248,320 × 1280 ≈ 320M. This takes a large part of the 0.8B budget, and the Transformer layers lose these parameters. With a larger vocabulary, each token has fewer training examples, so the model does not learn rare tokens well. The output softmax also becomes more expensive. The gain in compression decreases as the vocabulary grows (in this chapter, from 16K to 32K, the sequences became only 7% shorter). The experiment: train tokenizers with several values of V on real Chinese, English, and code data, and measure bytes/token. Then train small models with the same compute and compare the validation **bpb** (not the loss). At the same time, calculate the embedding parameters. Chapter 13 does exactly this. The main line of this course uses 65,536 for now.
+
+---
+
+## Rules for feedback
+
+- If the answer is correct: say so. Then ask a deeper "why" question (for example: how large is the table of a trigram model? Why can we not store it?).
+- If the answer is not correct: do not give the answer. Give a hint. For example, ask the learner to change `vocab_size` in `code/02_bpe.py`, or to print bits/token and bytes/token in `code/03_bigram.py`. Then let them think again.
+- If the learner says "I do not know": ask them to guess first. A wrong guess is better than no guess.
+
+When the learner passes all four levels, tell them to continue to Chapter 8 (`chapters/08-attention/`, attention: each position can see all earlier tokens). After Chapter 8, they can check themselves with `/ch08-attention`.

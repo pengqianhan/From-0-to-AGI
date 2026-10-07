@@ -1,4 +1,8 @@
-"""DPO：损失与手算一致；序列 log 概率只算回复部分；端到端几步（第 18 章）。"""
+"""DPO (Chapter 18).
+
+The loss is equal to a hand calculation. The sequence log probability counts only the response.
+A few steps end to end.
+"""
 
 from __future__ import annotations
 
@@ -20,13 +24,13 @@ def test_dpo_loss_hand_computed() -> None:
     rc = torch.tensor([-1.5, -2.0])
     rr = torch.tensor([-1.5, -2.0])
     loss, m = dpo_loss(pc, pr, rc, rr, beta=0.5)
-    # 第 1 对：β·((−1+1.5) − (−2+1.5)) = 0.5 → −log σ(0.5)；第 2 对：β·((−3+2) − (−1+2)) = −1 → −log σ(−1)
+    # pair 1: β·((−1+1.5) − (−2+1.5)) = 0.5 → −log σ(0.5); pair 2: β·((−3+2) − (−1+2)) = −1 → −log σ(−1)
     hand = (math.log(1 + math.exp(-0.5)) + math.log(1 + math.exp(1.0))) / 2
     assert loss.item() == pytest.approx(hand, abs=1e-6)
     assert m["acc"] == 0.5
     assert m["margin"] == pytest.approx((0.5 - 1.0) / 2)
     assert m["chosen_reward"] == pytest.approx((0.25 - 0.5) / 2)
-    # policy == ref 时损失为 log 2，梯度推动 chosen 上升、rejected 下降
+    # with policy == ref, the loss is log 2; the gradient pushes chosen up and rejected down
     x = torch.zeros(3, requires_grad=True)
     y = torch.zeros(3, requires_grad=True)
     loss, _ = dpo_loss(x, y, torch.zeros(3), torch.zeros(3), beta=0.1)
@@ -83,6 +87,6 @@ def test_run_dpo_end_to_end(
         train={"max_steps": 3},
     )
     hist = run_dpo(d, log=lambda _: None)
-    assert hist[0]["loss"] == pytest.approx(math.log(2), abs=1e-5)  # 第一步 policy == ref
+    assert hist[0]["loss"] == pytest.approx(math.log(2), abs=1e-5)  # first step: policy == ref
     assert hist[-1]["step"] == 3 and hist[-1]["loss"] < hist[0]["loss"]
     assert (tmp_path / "run" / "ckpt" / "latest").exists()

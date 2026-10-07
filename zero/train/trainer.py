@@ -1,18 +1,26 @@
-"""通用训练循环（对应第 6、12、14、15 章）。
+"""The general training loop (Chapters 6, 12, 14, and 15).
 
-预训练和中期训练共用这一个循环，区别只在配置（数据混合、学习率调度、序列长度、RoPE）和
-是否从已有权重开始（`train.init_from`）。一步训练做的事：
+Pretraining and mid-training use this one loop. They differ only in two things:
+the config (data mixture, learning-rate schedule, sequence length, RoPE), and
+whether the training starts from existing weights (`train.init_from`).
+One training step does these things:
 
-1. 按调度设置学习率；
-2. 梯度累积：连续取 grad_accum_steps 个 micro-batch，各自前向 + 反向，梯度累加
-   （每个 loss 先除以累积步数，累加结果等于大 batch 的平均梯度）。DDP 下只在最后一个 micro-batch
-   做梯度同步（`no_sync`），省掉多余的通信；
-3. 梯度裁剪：全局梯度范数超过 grad_clip 就整体按比例缩小，防止偶发的大梯度把训练带崩；
-4. AdamW 更新。权重衰减只作用于矩阵权重，RMSNorm 的权重不衰减（衰减会把它们往 0 拉，
-   等于削弱归一化）；embedding 默认也不衰减（decay_embeddings 可改）；
-5. 定期：打印/记录日志（loss、学习率、token 数、吞吐、MFU），算验证 loss，存 checkpoint。
+1. Set the learning rate from the schedule.
+2. Gradient accumulation: take grad_accum_steps micro-batches in sequence. Do a forward pass and
+   a backward pass for each one, and add the gradients. The code divides each loss by the number
+   of accumulation steps first, so the sum is the mean gradient of the large batch.
+   With DDP, only the last micro-batch synchronizes the gradients (`no_sync`).
+   This removes communication that is not necessary.
+3. Gradient clipping: if the global gradient norm is more than grad_clip, scale all gradients down
+   by the same factor. This prevents a rare large gradient from breaking the training.
+4. AdamW update. Weight decay applies only to matrix weights. RMSNorm weights get no decay:
+   decay pulls them toward 0, and that makes the normalization weaker.
+   By default, the embedding also gets no decay (decay_embeddings changes this).
+5. At regular intervals: print and record the log (loss, learning rate, tokens, throughput, MFU),
+   compute the validation loss, and save a checkpoint.
 
-精度：CUDA 上用 BF16 autocast（矩阵乘在 BF16 里算，参数和优化器状态保持 FP32）；CPU 上默认 FP32。
+Precision: on CUDA, use BF16 autocast. Matrix multiplications run in BF16, and the parameters
+and the optimizer state stay in FP32. On CPU, the default is FP32.
 """
 
 from __future__ import annotations
@@ -47,7 +55,10 @@ def seed_everything(seed: int) -> None:
 
 
 def build_optimizer(model: nn.Module, cfg: Any, device: torch.device) -> torch.optim.AdamW:
-    """AdamW，按"是否做权重衰减"分两组参数。optim.name = "muon" 时改用 Muon（第 12 章）。"""
+    """Make AdamW with two parameter groups: with weight decay and without weight decay.
+
+    If optim.name = "muon", use Muon instead (Chapter 12).
+    """
     if getattr(cfg, "name", "adamw") == "muon":
         from .muon import build_muon_optimizer
 
@@ -67,7 +78,7 @@ def build_optimizer(model: nn.Module, cfg: Any, device: torch.device) -> torch.o
     ]
     kwargs: dict[str, Any] = {}
     if device.type == "cuda":
-        # fused AdamW 内核：已在单张 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）
+        # Fused AdamW kernel: verified on one RTX 3090 (2026-10, see runs/2026-10-01-gpu0-check/).
         kwargs["fused"] = True
     return torch.optim.AdamW(groups, lr=cfg.lr, betas=(cfg.beta1, cfg.beta2), eps=cfg.eps, **kwargs)
 
@@ -78,7 +89,8 @@ def build_train_loader(
     d = cfg.train.data
     bsz = cfg.train.micro_batch_size
     if d.format == "sft":
-        # SFT：对话窗口 + loss mask（第 16 章）；多个来源直接拼在一起（权重不起作用）
+        # SFT: conversation windows + loss mask (Chapter 16). The loader concatenates all sources;
+        # their weights have no effect.
         return MaskedWindowLoader(
             [s.path for s in d.sources],
             d.seq_len,
@@ -90,7 +102,7 @@ def build_train_loader(
             device=info.device,
         )
     if d.format != "packed":
-        raise ValueError(f"[data] format={d.format!r} 的数据不由通用训练循环读取")
+        raise ValueError(f"[data] format={d.format!r}: the general training loop does not read this data format")
     common = dict(
         seq_len=d.seq_len,
         rank=info.rank,
@@ -129,7 +141,7 @@ class Trainer:
         tc = cfg.train
         if tc.cpu_threads > 0:
             torch.set_num_threads(tc.cpu_threads)
-        seed_everything(tc.seed)  # 所有 rank 用同一个种子初始化模型，参数一开始就相同
+        seed_everything(tc.seed)  # All ranks use the same seed, so the initial parameters are the same.
         self.device = self.info.device
 
         model = Transformer(cfg.model).to(self.device)
@@ -137,12 +149,14 @@ class Trainer:
         self.init_meta: dict[str, Any] | None = None
         resume_path = find_latest(tc.checkpoint_dir) if tc.checkpoint.resume else None
         if tc.init_from and resume_path is None:
-            # 中期训练：只加载权重。RoPE 的 cos/sin 是非持久 buffer，按新配置（新 theta / YaRN）重新计算
+            # Mid-training: load only the weights. The RoPE cos/sin are non-persistent buffers,
+            # so the model computes them again from the new config (new theta / YaRN).
             self.init_meta = load_model_weights(tc.init_from, model)
-            self.log(f"从 {tc.init_from} 加载模型权重（step {self.init_meta.get('step')}）")
+            self.log(f"Loaded model weights from {tc.init_from} (step {self.init_meta.get('step')})")
         self.raw_model = model
         if tc.compile:
-            # 单卡与 2 卡 DDP 组合已在 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）；与 FSDP 的组合尚未在 GPU 上验证
+            # Verified with 1 GPU and with 2-GPU DDP on RTX 3090 (2026-10, see runs/2026-10-01-gpu0-check/).
+            # The combination with FSDP is not verified on GPU yet.
             model = torch.compile(model)  # type: ignore[assignment]
         self.model = wrap_model(model, self.info, tc.parallel)
         self.optimizer = build_optimizer(self.model, tc.optim, self.device)
@@ -165,7 +179,7 @@ class Trainer:
             )
             self.step = int(meta["step"])
             self.tokens_seen = int(meta.get("tokens_seen", 0))
-            self.log(f"从 {meta['path']} 续训（step {self.step}）")
+            self.log(f"Resumed training from {meta['path']} (step {self.step})")
 
         self.tokens_per_step = (
             tc.micro_batch_size * tc.grad_accum_steps * self.info.world_size * tc.data.seq_len
@@ -173,7 +187,7 @@ class Trainer:
         self.flops_per_token = unwrap_model(self.raw_model).flops_per_token(tc.data.seq_len)  # type: ignore[operator]
         self.peak_flops = self._peak_flops()
 
-    # ---- 工具 ----
+    # ---- Helpers ----
     def log(self, msg: str) -> None:
         if self.info.is_main:
             self._print(msg)
@@ -186,7 +200,7 @@ class Trainer:
 
             t = peak_tflops_for_device_name(torch.cuda.get_device_name(self.device))
             return t * 1e12 if t else None
-        return None  # CPU 上不报 MFU
+        return None  # No MFU on CPU.
 
     def _write_jsonl(self, record: dict[str, Any]) -> None:
         if not self.info.is_main:
@@ -197,7 +211,7 @@ class Trainer:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     def extra_metrics(self) -> dict[str, Any]:
-        """子类（如蒸馏）要额外记进日志的指标。"""
+        """Return extra metrics for the log. Subclasses (for example, distillation) override this."""
         return {}
 
     def _forward_loss(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
@@ -205,7 +219,7 @@ class Trainer:
             logits = self.model(x)
         return cross_entropy_loss(logits, y)
 
-    # ---- 评估 ----
+    # ---- Evaluation ----
     @torch.no_grad()
     def evaluate(self) -> float | None:
         d = self.cfg.train.data
@@ -236,9 +250,11 @@ class Trainer:
         return float(loss.item())
 
     def _val_bpb(self, batches) -> float | None:
-        """验证集 bits-per-byte（第 7、13 章）：与分词器无关的指标，便于比较不同词表。
+        """Validation bits per byte (Chapters 7 and 13).
 
-        只有预训练格式的数据、并且配置里给了 tokenizer 路径时才计算；否则返回 None。
+        This metric does not depend on the tokenizer, so you can compare different vocabularies.
+        Compute it only for pretraining-format data when the config gives a tokenizer path.
+        Otherwise, return None.
         """
         d = self.cfg.train.data
         if d.format == "sft" or not d.tokenizer:
@@ -270,10 +286,14 @@ class Trainer:
             keep_last=tc.checkpoint.keep_last,
         )
 
-    # ---- 主循环 ----
+    # ---- Main loop ----
     def train(self, stop_at: int | None = None) -> list[dict[str, Any]]:
-        """训练到 max_steps。stop_at 用于测试"训练到一半被打断"：到这一步就返回（不额外存 checkpoint）。
-        没传 stop_at 时用配置里的 train.stop_step（0 = 不提前停）。"""
+        """Train until max_steps.
+
+        stop_at is for tests of "the training stops halfway": at this step, return
+        (and do not save an extra checkpoint). If stop_at is not given, use train.stop_step
+        from the config (0 = do not stop early).
+        """
         tc = self.cfg.train
         if stop_at is None and tc.stop_step > 0:
             stop_at = tc.stop_step
@@ -283,8 +303,8 @@ class Trainer:
         if self.step == 0 and self.info.is_main:
             m = self.raw_model
             self.log(
-                f"模型参数 {m.num_params() / 1e6:.2f}M（非 embedding {m.num_params(non_embedding=True) / 1e6:.2f}M），"
-                f"每步 {self.tokens_per_step} token，共 {tc.max_steps} 步，设备 {self.device}，world_size={self.info.world_size}"
+                f"Model parameters {m.num_params() / 1e6:.2f}M (non-embedding {m.num_params(non_embedding=True) / 1e6:.2f}M), "
+                f"{self.tokens_per_step} tokens per step, {tc.max_steps} steps, device {self.device}, world_size={self.info.world_size}"
             )
         t_last = time.perf_counter()
         steps_since_log = 0
@@ -351,8 +371,8 @@ class Trainer:
                     if getattr(self, "last_val_bpb", None) is not None:
                         record["val_bpb"] = self.last_val_bpb
                 if not math.isfinite(loss_val):
-                    self.log(f"step {self.step}: loss 变成 {loss_val}，停止训练")
-                    raise FloatingPointError(f"loss 发散：{loss_val}")
+                    self.log(f"step {self.step}: loss is {loss_val}, training stops")
+                    raise FloatingPointError(f"Loss diverged: {loss_val}")
                 self.history.append(record)
                 self._write_jsonl(record)
                 msg = (
@@ -372,13 +392,13 @@ class Trainer:
             every = tc.checkpoint.every
             if (every > 0 and self.step % every == 0) or is_last:
                 path = self.save()
-                self.log(f"checkpoint 已保存：{path}")
+                self.log(f"checkpoint saved: {path}")
                 t_last = time.perf_counter()
         return self.history
 
 
 def run_training(cfg: Config, log: Callable[[str], None] | None = None) -> list[dict[str, Any]]:
-    """入口脚本用：初始化分布式 → 准备数据（仅 rank 0）→ 训练 → 清理。"""
+    """Entry point for scripts: init distributed → prepare data (rank 0 only) → train → clean up."""
     from zero.data.prepare import prepare_data
     from zero.train.dist import barrier, cleanup
 

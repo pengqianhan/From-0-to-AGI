@@ -1,10 +1,11 @@
-"""第 2 章 · 极简代码 5：循环版 vs 向量化版，到底差多少？
+"""Chapter 2 · Minimal code 5: loop version vs vectorized version. How large is the difference?
 
-两个对比，结果都先核对一致，再比速度：
-1. 一次前向 Y = X @ W：Python 三重循环 vs 每行一次 np.dot vs 一次 X @ W。
-2. 多元线性回归（5000 套房子）训练 200 步：逐样本、逐特征循环算梯度 vs 矩阵形式 2/N·Xᵀ(ŷ − y)。
-计时结果取决于机器，每次运行也会略有不同；看数量级即可。
-运行：uv run python chapters/02-from-scalar-to-matrix/code/05_loop_vs_vectorized.py
+Two comparisons. For each one, the script first makes sure that the results agree. Then it compares the speed:
+1. One forward pass Y = X @ W: three nested Python loops vs one np.dot for each row vs one X @ W.
+2. Multivariate linear regression (5000 houses), 200 training steps: a loop over samples and features
+   to calculate the gradient vs the matrix form 2/N·Xᵀ(ŷ − y).
+The times depend on the machine and change a little from run to run. Look only at the order of magnitude.
+Run: uv run python chapters/02-from-scalar-to-matrix/code/05_loop_vs_vectorized.py
 """
 
 import importlib.util
@@ -26,7 +27,7 @@ reg = _load("multivariate_regression", "04_multivariate_regression.py")
 
 
 def best_time(fn, repeat: int) -> float:
-    """跑 repeat 次，取最快一次（秒），减少系统抖动的影响。"""
+    """Run repeat times and return the fastest time (seconds). This decreases the effect of system noise."""
     best = float("inf")
     for _ in range(repeat):
         t0 = time.perf_counter()
@@ -35,24 +36,24 @@ def best_time(fn, repeat: int) -> float:
     return best
 
 
-# ── 对比 1：前向 Y = X @ W ─────────────────────────────────────────────────
+# ── Comparison 1: forward pass Y = X @ W ───────────────────────────────────
 
 def forward_loop(X_list, W_list):
-    return mm.matmul(X_list, W_list)                        # 三重循环，全在 Python 里
+    return mm.matmul(X_list, W_list)                        # three nested loops, all in Python
 
 
 def forward_rows(X, W):
-    return np.stack([X[i] @ W for i in range(len(X))])      # 只循环样本，每行交给 NumPy
+    return np.stack([X[i] @ W for i in range(len(X))])      # loop only over samples; NumPy does each row
 
 
 def forward_vec(X, W):
-    return X @ W                                            # 一次矩阵乘法
+    return X @ W                                            # one matrix multiplication
 
 
-# ── 对比 2：训练 200 步 ────────────────────────────────────────────────────
+# ── Comparison 2: 200 training steps ───────────────────────────────────────
 
 def gradients_loop(W, b, X, y):
-    """和 reg.gradients 算同一个东西，但逐样本、逐特征地累加。"""
+    """Calculates the same values as reg.gradients, but adds them one sample and one feature at a time."""
     n, k = len(X), len(X[0])
     grad_W = [0.0] * k
     grad_b = 0.0
@@ -86,7 +87,7 @@ def run_benchmarks():
     rng = np.random.default_rng(0)
     results = {}
 
-    # 对比 1：batch = 1000 个样本，100 个输入特征，10 个输出
+    # Comparison 1: batch = 1000 samples, 100 input features, 10 outputs
     X = rng.standard_normal((1000, 100))
     W = rng.standard_normal((100, 10))
     X_list, W_list = X.tolist(), W.tolist()
@@ -100,7 +101,7 @@ def run_benchmarks():
         "vec": best_time(lambda: forward_vec(X, W), 200),
     }
 
-    # 对比 2：用第 4 个脚本的造数据方法，换成 5000 套房子（3 个特征，标准化后）
+    # Comparison 2: use the data function of script 04, with 5000 houses (3 features, standardized)
     Xh, yh = reg.make_data(n=5000)
     Xs, _, _ = reg.standardize(Xh)
     Xs_list, y_list = Xs.tolist(), yh.ravel().tolist()
@@ -119,13 +120,13 @@ def run_benchmarks():
 if __name__ == "__main__":
     r = run_benchmarks()
     f = r["forward"]
-    print(f"对比 1：一次前向 Y = X @ W，X {f['shape'][0]}，W {f['shape'][1]}（三种写法结果一致）")
-    print(f"  Python 三重循环      {f['loop'] * 1e3:10.2f} ms")
-    print(f"  每行一次 np.dot       {f['rows'] * 1e3:10.2f} ms   比三重循环快 {f['loop'] / f['rows']:6.0f} 倍")
-    print(f"  一次 X @ W           {f['vec'] * 1e3:10.3f} ms   比三重循环快 {f['loop'] / f['vec']:6.0f} 倍")
+    print(f"Comparison 1: one forward pass Y = X @ W, X {f['shape'][0]}, W {f['shape'][1]} (the three versions agree)")
+    print(f"  Three Python loops   {f['loop'] * 1e3:10.2f} ms")
+    print(f"  np.dot for each row  {f['rows'] * 1e3:10.2f} ms   faster than three loops by {f['loop'] / f['rows']:6.0f}×")
+    print(f"  One X @ W            {f['vec'] * 1e3:10.3f} ms   faster than three loops by {f['loop'] / f['vec']:6.0f}×")
 
     t = r["train"]
-    print(f"\n对比 2：多元线性回归训练 200 步，X {t['shape']}")
-    print(f"  循环算梯度           {t['loop'] * 1e3:10.2f} ms")
-    print(f"  矩阵形式 2/N·Xᵀ(ŷ−y) {t['vec'] * 1e3:10.2f} ms   快 {t['loop'] / t['vec']:6.0f} 倍")
-    print(f"  两种写法学到的参数最大差 = {t['max_diff']:.1e}")
+    print(f"\nComparison 2: multivariate linear regression, 200 training steps, X {t['shape']}")
+    print(f"  Gradient with loops  {t['loop'] * 1e3:10.2f} ms")
+    print(f"  Matrix 2/N·Xᵀ(ŷ−y)   {t['vec'] * 1e3:10.2f} ms   faster by {t['loop'] / t['vec']:6.0f}×")
+    print(f"  Maximum difference between the parameters of the two versions = {t['max_diff']:.1e}")

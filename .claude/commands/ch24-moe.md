@@ -1,57 +1,59 @@
 ---
-description: 第 24 章自我检验：混合专家 MoE（总参数与激活参数、路由与 top-k、负载坍缩、辅助损失、无辅助损失偏置均衡、细粒度与共享专家、为什么小模型少用）
+description: "Chapter 24 self-check: mixture of experts (MoE) — total and active parameters, routing and top-k, load collapse, auxiliary loss, auxiliary-loss-free bias balancing, fine-grained and shared experts, why small models seldom use MoE (第 24 章自检：混合专家 MoE——总参数与激活参数、路由与 top-k、负载坍缩、辅助损失、无辅助损失偏置均衡、细粒度与共享专家、为什么小模型少用)"
 ---
 
-# 第 24 章自我检验：混合专家（MoE）
+# Chapter 24 self-check: mixture of experts (MoE)
 
-用户调用了 `/ch24-moe`，说明他们刚学完第 24 章（`chapters/24-mixture-of-experts/`）。你的任务是帮他们检验自己是否真正理解了，而不是告诉他们答案。
+The learner typed `/ch24-moe`. They finished Chapter 24 (`chapters/24-mixture-of-experts/`). Help them check if they understand it. Do not give them the answers.
 
-**检验方式**：逐一提问下面的问题，等用户用自己的话回答后，再给出反馈——哪里说对了，哪里还有偏差，以及如何深化理解。不要一次性把所有问题都抛出去。
+**Language**: Use the language of the learner. If the learner writes in Chinese, ask the questions and give feedback in Chinese. The Chinese text of the chapter is in `README.zh.md`. Write short, clear sentences (see `docs/STYLE_GUIDE.md`).
 
----
-
-## 检验问题（按难度递进）
-
-**第一关：概念——总参数与激活参数**
-
-问用户：
-> DeepSeek-V3 号称"671B 参数、每个 token 激活 37B"。这两个数分别决定了什么成本？如果把它和一个 37B 的稠密模型比，哪些成本相同、哪些不同？
-
-期望回答：激活参数决定每个 token 的计算量（训练和推理的 FLOPs ≈ 2 × 激活参数/每 token 前向）；总参数决定要存多少权重（显存/内存）以及训练时的优化器状态。和 37B 稠密比：每 token 算力相近，但显存需要装下全部 671B；通信（专家并行的 all-to-all）也是额外成本。能说出"路由专家占 DeepSeek-V3 总参数 97%"或用 `01_param_ledger.py` 的数字是加分项。
+**Method**: Ask the questions below one at a time. Wait for the learner to answer in their own words. Then give feedback: tell them what is correct, what is not correct, and how to make their understanding deeper. Do not ask all the questions at the same time.
 
 ---
 
-**第二关：直觉——路由为什么会坍缩，两种均衡怎么纠正**
+## Questions (from easy to difficult)
 
-问用户：
-> 不加任何负载均衡，训练一开始某个专家分到的 token 稍多一点，接下来会发生什么？辅助损失和 DeepSeek-V3 的偏置法分别是怎么把它拉回来的？两者最大的区别是什么？
+**Level 1: concept — total parameters and active parameters**
 
-期望回答：富者愈富——分到的 token 多，这个专家被训练得更好，路由器更爱选它，最后少数专家包揽大部分 token，其余专家闲置（本章小实验里"MoE-无均衡"就是这样）。辅助损失 L = α·Σ f_i·P_i 通过梯度压低过载专家的路由概率，但这个梯度会和语言模型的梯度"打架"；偏置法给每个专家一个不吃梯度的偏置 b_i，只加在"选谁"上，每步后过载的减 γ、欠载的加 γ，门控权重仍用原始分数，所以不干扰主损失。能指出 DeepSeek-V3 仍保留一个极小的序列级辅助损失（α = 0.0001），以及报告 4.5.3 节发现"按整个 batch 均衡"是收益的关键，是加分项。
+Ask the learner:
+> DeepSeek-V3 has "671B parameters, with 37B activated for each token". Which cost does each of these two numbers set? Compare the model with a dense model of 37B. Which costs are the same, and which are different?
 
----
-
-**第三关：发现问题——小实验的结论能不能当真**
-
-问用户：
-> 本章小实验里，MoE（8 专家选 2）和"同激活参数"的稠密-384、"同总参数"的稠密-1536 比，验证 loss 排在哪？如果有人据此说"MoE 在小模型上没用"或"MoE 一定更好"，你会怎么反驳？
-
-期望回答：请用户先去看 README 实验表里的真实数字再回答（不要替他们编）。要点：百万参数、几百步、字符级数据，每 token 的 FFN 很小，路由器也几乎没学到东西；种子之间的波动要和方案之间的差距比较；MoE 的优势在"同算力下参数更多"，要在数据量足够大、训练足够久时才体现；大规模的证据要看 DeepSeekMoE、Qwen3 报告表 5（30B-A3B ≈ 14B 稠密）、Kimi K2 的稀疏度 scaling law。结论应该是"这个规模下看不出/差距在噪声内"，而不是外推。
+Expected answer: the active parameters set the compute for each token (the FLOPs of training and inference: the forward pass needs about 2 × active parameters for each token). The total parameters set how many weights the model must store (GPU memory or memory), and the optimizer state during training. Compared with a dense model of 37B: the compute for each token is about the same, but the memory must hold all 671B. The communication (the all-to-all of expert parallelism) is also an extra cost. Extra credit: the learner says that the routed experts are 97% of the total parameters of DeepSeek-V3, or uses the numbers from `01_param_ledger.py`.
 
 ---
 
-**第四关：迁移——为主线模型做决策**
+**Level 2: intuition — why routing collapses, and how the two balancing methods correct it**
 
-问用户：
-> 主线模型约 0.7B、目标是端侧的工具调用。如果有人建议"改成 8 专家选 2 的 MoE，总参数 0.7B"或者"改成激活 0.7B、总参数 4B 的 MoE"，你分别怎么评估？结合 `04_small_vs_large.py` 的几笔账回答。
+Ask the learner:
+> There is no load balancing. At the start of training, one expert gets a few more tokens than the others. What happens next? How does the auxiliary loss bring the load back to a balance? How does the bias method of DeepSeek-V3 do it? What is the largest difference between the two methods?
 
-期望回答：总参数 0.7B 的 MoE：显存一样，但每 token 只用约四分之一的 FFN，按 Qwen3 的经验 MoE 的质量更接近"同激活"的稠密，而不是"同总参"的稠密，所以质量大概率不如 0.7B 稠密；激活 0.7B、总 4B：质量可能更好，但端侧内存要装下 4B（4-bit 约 2 GB），违背"同尺寸比较"（对手清单按总参数算，GOAL.md 3.2），也超出 0.8B 的尺寸约束。另外小批量推理时 MoE 读的权重少（batch 1 只读激活的专家），这是它在本地推理的优势，但前提是内存装得下。结论：主线保持稠密（GOAL.md 3.3），MoE 留给大规模、集群部署的场景。
+Expected answer: a positive feedback loop. The expert gets more tokens, so it trains better, and the router selects it more often. At the end, a few experts get most of the tokens, and the other experts are idle. (The "MoE-no-balance" variant in the small experiment of the chapter shows this.) The auxiliary loss L = α·Σ f_i·P_i uses the gradient to push down the routing probability of overloaded experts. But this gradient works against the gradient of the language model. The bias method gives each expert a bias b_i that gets no gradient. The bias changes only "which experts the router selects". After each step, the method subtracts γ for an overloaded expert and adds γ for an underloaded expert. The gate weights still use the original scores, so the bias does not disturb the main loss. Extra credit: the learner says that DeepSeek-V3 still keeps a very small sequence-level auxiliary loss (α = 0.0001). Also extra credit: Section 4.5.3 of the report found that "balance over the full batch" is the key to the gain.
 
 ---
 
-## 反馈原则
+**Level 3: find the problem — can we trust the conclusions of the small experiment?**
 
-- 答对了：认可，然后追问一个更深的"为什么"（例如：为什么 sigmoid 打分配合偏置更自然？为什么 Qwen3 不用共享专家也能做得很好？）。
-- 答错了：不要直接给答案，给一个提示（比如让他们去跑 `code/02_moe_layer.py` 的第 4 部分，或改 `03_train_compare.py` 的 γ、α 看负载直方图怎么变），让他们重新思考。
-- 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
+Ask the learner:
+> In the small experiment of this chapter, compare the validation loss of the MoE (select 2 of 8 experts) with Dense-384 ("the same active parameters") and with Dense-1536 ("the same total parameters"). What is the order? Someone uses this result to say "MoE is useless for small models" or "MoE is always better". How do you answer them?
 
-四关都通过后，告诉用户可以进入第 25 章（`chapters/25-mtp-speculative-decoding/`，多 token 预测与推测解码，学完后用 `/ch25-speculative` 自检）。
+Expected answer: ask the learner to look at the real numbers in the experiment table in the README first, and then answer. Do not invent numbers for them. The key points: the experiment has a million parameters, some hundred steps, and character-level data. The FFN for each token is very small, and the router learns almost nothing. Compare the variation between seeds with the difference between the variants. The advantage of MoE is "more parameters at the same compute". This advantage appears only with enough data and long enough training. For evidence at a large scale, see DeepSeekMoE, Table 5 of the Qwen3 report (30B-A3B ≈ dense 14B), and the sparsity scaling law of Kimi K2. The correct conclusion is "at this scale, we cannot see a difference; the difference is within the noise". Do not extrapolate.
+
+---
+
+**Level 4: transfer — make a decision for the main-line model**
+
+Ask the learner:
+> The main-line model has about 0.7B parameters. Its goal is tool calling on a device. Someone suggests one of two changes: "an MoE with 8 experts, select 2, and 0.7B total parameters", or "an MoE with 0.7B active parameters and 4B total parameters". How do you evaluate each one? Use the ledgers of `04_small_vs_large.py` in your answer.
+
+Expected answer: the MoE with 0.7B total parameters uses the same memory, but each token uses only about one fourth of the FFN. The experience of Qwen3 shows that the quality of an MoE is closer to a dense model with "the same active parameters" than to a dense model with "the same total parameters". Thus its quality is probably lower than the dense 0.7B model. The MoE with 0.7B active and 4B total parameters can give better quality. But the device memory must hold 4B (about 2 GB at 4-bit). This breaks the rule "compare at the same size" (the list of competitors uses total parameters, GOAL.md 3.2). It is also above the size limit of 0.8B. Also, with a small batch in inference, an MoE reads fewer weights (batch 1 reads only the active experts). This is its advantage for local inference, but only if the memory can hold the model. Conclusion: the main-line model stays dense (GOAL.md 3.3). MoE is for large-scale deployment on clusters.
+
+---
+
+## Rules for feedback
+
+- If the answer is correct: say so. Then ask a deeper "why" question. For example: why do sigmoid scores fit the bias method better? Why can Qwen3 get good results without shared experts?
+- If the answer is not correct: do not give the answer. Give a hint. For example, ask the learner to run part 4 of `code/02_moe_layer.py`, or to change γ and α in `03_train_compare.py` and look at how the load histogram changes. Then let them think again.
+- If the learner says "I do not know": ask them to guess first. A wrong guess is better than no guess.
+
+When the learner passes all four levels, tell them to continue to Chapter 25 (`chapters/25-mtp-speculative-decoding/`, multi-token prediction and speculative decoding). After Chapter 25, they can check themselves with `/ch25-speculative`.

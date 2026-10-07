@@ -1,1 +1,1 @@
-"""本地 demo（对应第 20 章）。"""
+"""Local demo (Chapter 20)."""

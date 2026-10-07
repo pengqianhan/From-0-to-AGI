@@ -1,14 +1,20 @@
-"""第 2 章 · GPU 实测：矩阵乘法搬到 GPU 上，到底快多少？
+"""Chapter 2 · GPU measurement: how much faster is matrix multiplication on a GPU?
 
-第 8 节说"每次交给底层库的活越大，向量化的优势越明显"，又说 GPU 最擅长的恰恰是矩阵乘法。
-这个脚本把同一个方阵乘法 C = A @ B（A、B 都是 N×N）分别放在 CPU 和 GPU 上算，N 从 64 扫到 8192：
-- 一次 N×N 矩阵乘法有 N³ 次乘加 = 2N³ 次浮点运算（FLOP）；TFLOPS = 2N³ / 耗时 / 10¹²。
-- CPU 和 GPU 都用 float32（GPU 关掉 TF32，是真正的单精度）；最后一列是 GPU 上的 BF16（张量核）。
-- 计时：先预热，再重复多次取中位数。GPU 每次都 torch.cuda.synchronize()，测的是
-  "从 Python 发起一次矩阵乘，到结果算完"的时间，包含启动 GPU 计算的固定开销。
-- 数据事先放好在各自的内存/显存里，不算 CPU 和 GPU 之间来回拷贝的时间。
-没有 CUDA GPU 时直接退出。CPU 线程数固定为 CPU_THREADS。
-运行：uv run python chapters/02-from-scalar-to-matrix/code/07_gpu_matmul.py
+Section 8 says: "The more work each call gives to the low-level library, the larger the advantage of
+vectorization." It also says that a GPU is best at matrix multiplication.
+This script calculates the same square matrix multiplication C = A @ B (A and B are both N×N)
+on the CPU and on the GPU, for N from 64 to 8192:
+- One N×N matrix multiplication has N³ multiply-adds = 2N³ floating-point operations (FLOP).
+  TFLOPS = 2N³ / time / 10¹².
+- The CPU and the GPU both use float32 (TF32 is off on the GPU, so it is true single precision).
+  The last column is BF16 on the GPU (tensor cores).
+- Timing: first a warmup, then many repeats; the result is the median. After each GPU call, the script
+  calls torch.cuda.synchronize(). Thus it measures the time "from the start of one matrix multiplication
+  in Python to the finished result". This time includes the fixed cost to start a GPU calculation.
+- The data is already in CPU memory or GPU memory before the timing starts.
+  The timing does not include copies between the CPU and the GPU.
+Without a CUDA GPU, the script stops immediately. The number of CPU threads is fixed at CPU_THREADS.
+Run: uv run python chapters/02-from-scalar-to-matrix/code/07_gpu_matmul.py
 """
 
 import platform
@@ -18,12 +24,12 @@ import time
 
 import torch
 
-CPU_THREADS = 8                                      # CPU 用几个线程：普通台式机大约这么多核
+CPU_THREADS = 8                                      # number of CPU threads: about the number of cores in a usual desktop computer
 SIZES = [64, 128, 256, 512, 1024, 2048, 4096, 8192]
 
 
 def median_time(fn, repeat: int, warmup: int = 3, sync: bool = False) -> float:
-    """先预热 warmup 次，再跑 repeat 次，返回耗时的中位数（秒）。sync=True 时每次都等 GPU 算完。"""
+    """Run warmup times first, then run repeat times. Return the median time (seconds). With sync=True, wait for the GPU to finish each time."""
     for _ in range(warmup):
         fn()
     if sync:
@@ -33,7 +39,7 @@ def median_time(fn, repeat: int, warmup: int = 3, sync: bool = False) -> float:
         t0 = time.perf_counter()
         fn()
         if sync:
-            torch.cuda.synchronize()                 # GPU 是异步的：不等它算完，计时就是假的
+            torch.cuda.synchronize()                 # The GPU is asynchronous: if we do not wait for it, the time is wrong
         times.append(time.perf_counter() - t0)
     return statistics.median(times)
 
@@ -46,7 +52,7 @@ def cpu_name() -> str:
                     return line.split(":", 1)[1].strip()
     except OSError:
         pass
-    return platform.processor() or "未知 CPU"
+    return platform.processor() or "unknown CPU"
 
 
 def fmt_time(t: float) -> str:
@@ -54,12 +60,12 @@ def fmt_time(t: float) -> str:
 
 
 def sweep():
-    """扫描矩阵规模。返回 [(N, CPU 秒, GPU FP32 秒, GPU BF16 秒)]。"""
+    """Sweep the matrix size. Return [(N, CPU seconds, GPU FP32 seconds, GPU BF16 seconds)]."""
     rows = []
     for n in SIZES:
-        a = torch.randn(n, n)                        # (N, N)，float32，在 CPU 上
+        a = torch.randn(n, n)                        # (N, N), float32, on the CPU
         b = torch.randn(n, n)
-        a_gpu, b_gpu = a.cuda(), b.cuda()            # 同样的数据拷一份到显存
+        a_gpu, b_gpu = a.cuda(), b.cuda()            # copy the same data to GPU memory
         a_bf, b_bf = a_gpu.bfloat16(), b_gpu.bfloat16()
 
         big = n >= 4096
@@ -67,7 +73,8 @@ def sweep():
         t_gpu = median_time(lambda a=a_gpu, b=b_gpu: a @ b, repeat=20, sync=True)
         t_bf = median_time(lambda a=a_bf, b=b_bf: a @ b, repeat=20, sync=True)
 
-        # 对拍：CPU、GPU float32、GPU BF16 算的是同一个矩阵乘法（BF16 只有约 3 位有效数字，只看误差量级）
+        # Parity check: CPU, GPU float32, and GPU BF16 calculate the same matrix multiplication
+        # (BF16 has only about 3 significant digits, so we check only the order of magnitude of the error)
         ref = a @ b
         scale = ref.abs().max().item()
         err32 = ((a_gpu @ b_gpu).cpu() - ref).abs().max().item() / scale
@@ -79,22 +86,22 @@ def sweep():
 
 def main() -> None:
     if not torch.cuda.is_available():
-        print("本脚本需要 CUDA GPU；没有 GPU 可以跳过，正文里贴了一次 RTX 3090 上的结果。")
+        print("This script needs a CUDA GPU. Without a GPU, skip it. The chapter text shows the results of one run on an RTX 3090.")
         sys.exit(0)
 
     torch.manual_seed(0)
     torch.set_num_threads(CPU_THREADS)
-    torch.set_float32_matmul_precision("highest")    # 不用 TF32：GPU 这一列是真正的 float32
-    print(f"GPU：{torch.cuda.get_device_name(0)}；PyTorch {torch.__version__}，CUDA {torch.version.cuda}")
-    print(f"CPU：{cpu_name()}，用 {torch.get_num_threads()} 个线程")
-    torch.ones(1).cuda()                             # 先把 CUDA 初始化掉，不算进计时
+    torch.set_float32_matmul_precision("highest")    # no TF32: the GPU column is true float32
+    print(f"GPU: {torch.cuda.get_device_name(0)}; PyTorch {torch.__version__}, CUDA {torch.version.cuda}")
+    print(f"CPU: {cpu_name()}, {torch.get_num_threads()} threads")
+    torch.ones(1).cuda()                             # initialize CUDA first, so that the timing does not include it
 
     rows = sweep()
-    print("\n方阵乘法 (N, N) @ (N, N)，每次 2N³ 次浮点运算；耗时取中位数")
-    print("      N    CPU float32    GPU float32   GPU 比 CPU 快   CPU TFLOPS  GPU TFLOPS  GPU BF16 TFLOPS")
+    print("\nSquare matrix multiplication (N, N) @ (N, N), 2N³ floating-point operations each; median time")
+    print("      N    CPU float32    GPU float32   GPU vs CPU   CPU TFLOPS  GPU TFLOPS  GPU BF16 TFLOPS")
     for n, t_cpu, t_gpu, t_bf in rows:
         flop = 2 * n**3
-        print(f"  {n:>5}  {fmt_time(t_cpu)}   {fmt_time(t_gpu)}   {t_cpu / t_gpu:9.2f} 倍"
+        print(f"  {n:>5}  {fmt_time(t_cpu)}   {fmt_time(t_gpu)}   {t_cpu / t_gpu:9.2f}×"
               f"   {flop / t_cpu / 1e12:10.3f}  {flop / t_gpu / 1e12:10.2f}  {flop / t_bf / 1e12:15.2f}")
 
 

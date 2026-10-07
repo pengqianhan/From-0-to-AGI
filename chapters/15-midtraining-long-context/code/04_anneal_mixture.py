@@ -1,14 +1,19 @@
-"""第 15 章 · 极简代码 4：退火——在 WSD 的衰减段换数据，比一比
+"""Chapter 15 · Minimal code 4: annealing. Change the data in the decay stage of WSD, and compare.
 
-第 6 章做过"分叉衰减"：一条恒定学习率的主干，随时可以分出一小段衰减得到一个"训练完成"的模型。
-这里在同一个分叉点分出 4 条支路，只改两件事：学习率衰不衰减 × 数据配比换不换。
+Chapter 6 showed "branched decay": from a trunk with a constant learning rate, you can branch off a
+short decay at any time and get a "finished" model. Here, 4 branches start from the same branch
+point. They change only two things: decay the learning rate or not × change the data mixture or not.
 
-  数据：三个"来源"——英文（莎士比亚）、中文（古诗词）、代码，按字节建模（词表 256）。
-  主干：配比 英 0.45 / 中 0.45 / 代码 0.10（代码是"少而想补强"的那一类，好比 OLMo 2 里的数学）。
-  支路的新配比：英 0.25 / 中 0.25 / 代码 0.50（把目标能力的数据上采样）。
+  Data: three "sources": English (Shakespeare), Chinese (classical poetry), and code.
+        The model works on bytes (vocabulary 256).
+  Trunk: mixture English 0.45 / Chinese 0.45 / code 0.10. Code is the data that is "rare, and we
+         want more of the skill", like math in OLMo 2.
+  New mixture of the branches: English 0.25 / Chinese 0.25 / code 0.50 (upsample the data of the
+         target skill).
 
-运行：uv run python chapters/15-midtraining-long-context/code/04_anneal_mixture.py
-      （单线程约 8 分钟 CPU 时间，机器繁忙时墙钟更长；结果缓存在 code/out/anneal_mixture.pt，视频直接读它；加 --fresh 重跑）
+Run: uv run python chapters/15-midtraining-long-context/code/04_anneal_mixture.py
+     (about 8 min of CPU time on one thread; the wall time is longer on a busy machine. The results
+     are cached in code/out/anneal_mixture.pt, and the video reads this file. Add --fresh to run again.)
 """
 
 import argparse
@@ -31,6 +36,13 @@ _spec = importlib.util.spec_from_file_location(
 tt = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(tt)
 
+# The names of the sources and branches stay in Chinese. They are keys in the result cache, and the
+# video of this chapter reads these keys. NAME_EN gives the English names for the printed output.
+NAME_EN = {
+    "英文": "English", "中文": "Chinese", "代码": "code", "平均": "mean",
+    "A 恒定 + 原配比": "A const + old mix", "B 衰减 + 原配比": "B decay + old mix",
+    "C 恒定 + 新配比": "C const + new mix", "D 衰减 + 新配比": "D decay + new mix",
+}
 SOURCES = {"英文": "shakespeare.txt", "中文": "chinese_poetry.txt", "代码": "code.txt"}
 MIX_PRETRAIN = {"英文": 0.45, "中文": 0.45, "代码": 0.10}
 MIX_ANNEAL = {"英文": 0.25, "中文": 0.25, "代码": 0.50}
@@ -48,7 +60,8 @@ def load_sources():
 
 
 class MixedStream:
-    """每条序列先按配比抽一个来源，再在该来源里随机取一段。配比可以中途更换。"""
+    """For each sequence, pick a source by the mixture, then take a random piece of that source.
+    The mixture can change during training."""
 
     def __init__(self, data: dict, mix: dict, seed: int):
         self.data, self.g = data, torch.Generator().manual_seed(seed)
@@ -85,7 +98,7 @@ def train_steps(model, opt, stream, lrs):
 
 @torch.no_grad()
 def evaluate(model, val: dict, n=96) -> dict:
-    """每个来源的验证 bits-per-byte（固定的 n 个片段）。"""
+    """Validation bits-per-byte of each source (on n fixed pieces)."""
     out = {}
     for name, d in val.items():
         g = torch.Generator().manual_seed(11)
@@ -106,15 +119,16 @@ def run(fresh: bool = False) -> dict:
     opt = torch.optim.AdamW(model.parameters(), lr=PEAK_LR, betas=(0.9, 0.95), weight_decay=0.1)
     stream = MixedStream(train_data, MIX_PRETRAIN, seed=3)
     t0 = time.time()
-    # 主干：warmup 后恒定学习率（WSD 的 W + S）
+    # Trunk: a constant learning rate after warmup (the W + S of WSD)
     trunk_lrs = [PEAK_LR * min(1.0, (s + 1) / WARMUP) for s in range(TRUNK_STEPS)]
     train_steps(model, opt, stream, trunk_lrs)
     trunk_eval = evaluate(model, val_data)
-    print(f"主干 {TRUNK_STEPS} 步（恒定学习率）用时 {time.time() - t0:.0f}s")
+    print(f"trunk {TRUNK_STEPS} steps (constant learning rate), time {time.time() - t0:.0f}s")
 
-    decay = [PEAK_LR * (1 - (s + 1) / BRANCH_STEPS) for s in range(BRANCH_STEPS)]   # 线性降到 0
+    decay = [PEAK_LR * (1 - (s + 1) / BRANCH_STEPS) for s in range(BRANCH_STEPS)]   # linear decay to 0
     const = [PEAK_LR] * BRANCH_STEPS
     branches = {
+        # 恒定 = constant, 衰减 = decay, 原配比 = old mixture, 新配比 = new mixture
         "A 恒定 + 原配比": (const, MIX_PRETRAIN),
         "B 衰减 + 原配比": (decay, MIX_PRETRAIN),
         "C 恒定 + 新配比": (const, MIX_ANNEAL),
@@ -123,7 +137,7 @@ def run(fresh: bool = False) -> dict:
     out = {}
     for name, (lrs, mix) in branches.items():
         t0 = time.time()
-        # 从同一个点分叉：复制模型、优化器状态（m、v）和数据流的随机数状态
+        # Branch from the same point: copy the model, the optimizer state (m, v), and the RNG state of the data stream
         m = copy.deepcopy(model)
         o = torch.optim.AdamW(m.parameters(), lr=PEAK_LR, betas=(0.9, 0.95), weight_decay=0.1)
         o.load_state_dict(copy.deepcopy(opt.state_dict()))
@@ -131,7 +145,7 @@ def run(fresh: bool = False) -> dict:
         st.g.set_state(stream.g.get_state())
         train_steps(m, o, st, lrs)
         out[name] = evaluate(m, val_data)
-        print(f"支路 {name} 用时 {time.time() - t0:.0f}s")
+        print(f"branch {NAME_EN[name]} time {time.time() - t0:.0f}s")
     res = {"trunk": trunk_eval, "branches": out, "trunk_lrs": trunk_lrs, "decay_lrs": decay,
            "trunk_steps": TRUNK_STEPS, "branch_steps": BRANCH_STEPS}
     CACHE.parent.mkdir(exist_ok=True)
@@ -141,20 +155,20 @@ def run(fresh: bool = False) -> dict:
 
 def report(r: dict) -> None:
     cols = ["英文", "中文", "代码", "平均"]
-    print(f"\n验证 bits-per-byte（越低越好）。主干 {r['trunk_steps']} 步，每条支路再训 {r['branch_steps']} 步")
-    print(f"   {'':<16}" + "".join(f"{c:>8}" for c in cols))
-    print(f"   {'分叉点（主干）':<14}" + "".join(f"{r['trunk'][c]:>8.3f}" for c in cols))
+    print(f"\nValidation bits-per-byte (lower is better). Trunk {r['trunk_steps']} steps, then {r['branch_steps']} more steps on each branch")
+    print(f"   {'':<20}" + "".join(f"{NAME_EN[c]:>8}" for c in cols))
+    print(f"   {'trunk: branch point':<20}" + "".join(f"{r['trunk'][c]:>8.3f}" for c in cols))
     for name, ev in r["branches"].items():
-        print(f"   {name:<14}" + "".join(f"{ev[c]:>8.3f}" for c in cols))
+        print(f"   {NAME_EN.get(name, name):<20}" + "".join(f"{ev[c]:>8.3f}" for c in cols))
     b = r["branches"]
-    print("\n拆开看（代码的 bits-per-byte 下降多少）：")
-    print(f"   只衰减（B − A）：{b['A 恒定 + 原配比']['代码'] - b['B 衰减 + 原配比']['代码']:+.3f}")
-    print(f"   只换数据（C − A）：{b['A 恒定 + 原配比']['代码'] - b['C 恒定 + 新配比']['代码']:+.3f}")
-    print(f"   两者一起（D − A）：{b['A 恒定 + 原配比']['代码'] - b['D 衰减 + 新配比']['代码']:+.3f}")
+    print("\nOne effect at a time (how much the bits-per-byte of code decreases):")
+    print(f"   decay only (B − A):       {b['A 恒定 + 原配比']['代码'] - b['B 衰减 + 原配比']['代码']:+.3f}")
+    print(f"   new data only (C − A):    {b['A 恒定 + 原配比']['代码'] - b['C 恒定 + 新配比']['代码']:+.3f}")
+    print(f"   both together (D − A):    {b['A 恒定 + 原配比']['代码'] - b['D 衰减 + 新配比']['代码']:+.3f}")
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--fresh", action="store_true", help="忽略缓存，重新训练")
+    ap.add_argument("--fresh", action="store_true", help="ignore the cache and train again")
     args = ap.parse_args()
     report(run(fresh=args.fresh))

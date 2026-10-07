@@ -45,7 +45,7 @@ ls "$OUT/kill/ckpt"
 
 echo "== 同一条命令重跑（自动续训）"
 run "$OUT/kill" > "$OUT.kill2.log" 2>&1
-grep -E "续训|step +$STEPS/" "$OUT.kill2.log" | head -5 || true
+grep -E "Resumed training|step +$STEPS/" "$OUT.kill2.log" | head -5 || true
 
 uv run python - "$OUT" "$STEPS" "$EVERY" "$KILL_AT" <<'EOF'
 import json, sys

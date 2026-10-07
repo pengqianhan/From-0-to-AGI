@@ -1,4 +1,8 @@
-"""SFT：loss mask 与手算一致、打包不切断对话、窗口加载器可续训、端到端几步训练（第 16 章）。"""
+"""SFT (Chapter 16).
+
+The loss mask is equal to a hand calculation. Packing does not cut a conversation. The window loader
+can resume. A few training steps end to end.
+"""
 
 from __future__ import annotations
 
@@ -17,7 +21,7 @@ from zero.post.sft import encode_example, env_conversations, pack_examples, run_
 
 
 def test_masked_loss_matches_hand_computation() -> None:
-    """y 里 -100 的位置不算：loss = 助手位置上 -log p 的平均。"""
+    """The positions with -100 in y do not count: loss = mean of -log p at the assistant positions."""
     torch.manual_seed(0)
     m = Transformer(
         ModelConfig(
@@ -49,11 +53,11 @@ def test_pack_examples_keeps_conversations_whole() -> None:
         and stats["examples"] == 3
     )
     assert toks.shape == (2, 10)
-    # 第一个窗口：5 个 1 + 4 个 3 + 1 个填充；第二个窗口：7 个 2 + 3 个填充
+    # first window: 5 × 1 + 4 × 3 + 1 padding; second window: 7 × 2 + 3 padding
     assert toks[0].tolist() == [1] * 5 + [3] * 4 + [0]
     assert masks[0].tolist() == [0, 1, 1, 1, 1, 0, 0, 1, 1, 0]
     assert toks[1].tolist() == [2] * 7 + [0] * 3
-    for row in toks:  # 同一条对话的 token 全在一个窗口里
+    for row in toks:  # all tokens of one conversation are in one window
         for v in (1, 2, 3):
             assert (row == v).sum() in (0, {1: 5, 2: 7, 3: 4}[v])
 
@@ -110,7 +114,7 @@ def test_run_sft_end_to_end_and_resume(tmp_path: Path, chat_tok, chat_tok_path, 
         hist[-1]["step"] == 2 and np.isfinite(hist[-1]["loss"]) and hist[-1]["val_loss"] is not None
     )
     assert (tmp_path / "data" / "train.mask").exists()
-    # 续训：同一目录把 max_steps 调到 3，只多训 1 步
+    # resume: same folder, max_steps set to 3, so only 1 more step
     d["train"]["max_steps"] = 3
     hist2 = run_sft(d, log=lambda _: None)
     assert [h["step"] for h in hist2] == [3]

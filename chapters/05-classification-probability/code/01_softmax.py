@@ -1,22 +1,24 @@
-"""第 5 章 · 极简代码 1：softmax —— 把一组分数变成概率分布
+"""Chapter 5 · Minimal code 1: softmax changes a set of scores into a probability distribution.
 
-只用 NumPy，CPU 上瞬间跑完。
-运行：uv run python chapters/05-classification-probability/code/01_softmax.py
+Uses only NumPy. It runs almost at once on a CPU.
+Run: uv run python chapters/05-classification-probability/code/01_softmax.py
 """
 
 import numpy as np
 
 
 def softmax_naive(z: np.ndarray) -> np.ndarray:
-    """按定义写：p_k = exp(z_k) / Σ_j exp(z_j)。logits 一大就溢出。"""
+    """Softmax from the definition: p_k = exp(z_k) / Σ_j exp(z_j). It overflows when the logits are large."""
     e = np.exp(z)
     return e / e.sum(axis=-1, keepdims=True)
 
 
 def softmax(z: np.ndarray, temperature: float = 1.0) -> np.ndarray:
-    """数值稳定版：先减去最大值，再取 exp。
-    softmax(z) = softmax(z − c) 对任意常数 c 成立，取 c = max(z) 让最大的指数恰好是 e⁰ = 1。
-    temperature（温度）T：先把 logits 除以 T。T < 1 更尖锐，T > 1 更平坦（第 10 章采样会用）。
+    """Numerically stable softmax: subtract the maximum first, then apply exp.
+
+    softmax(z) = softmax(z − c) for all constants c. With c = max(z), the largest exponential is exactly e⁰ = 1.
+    temperature T: divide the logits by T first. T < 1 makes the distribution sharper.
+    T > 1 makes it flatter (sampling in Chapter 10 uses this).
     """
     z = np.asarray(z, dtype=np.float64) / temperature
     z = z - z.max(axis=-1, keepdims=True)
@@ -24,27 +26,31 @@ def softmax(z: np.ndarray, temperature: float = 1.0) -> np.ndarray:
     return e / e.sum(axis=-1, keepdims=True)
 
 
-# 本章贯穿的例子：一张图该归到 猫 / 狗 / 鸟 哪一类？模型输出三个分数（logits）
+# The example for the whole chapter: does an image show a cat, a dog, or a bird?
+# The model outputs three scores (logits).
+# The class names (cat, dog, bird) stay in Chinese because the Chinese video imports CLASSES.
 CLASSES = ["猫", "狗", "鸟"]
+CLASSES_EN = {"猫": "cat", "狗": "dog", "鸟": "bird"}  # display names for the printed output
 LOGITS = np.array([2.0, 1.0, -1.0])
 
 
 if __name__ == "__main__":
     np.set_printoptions(precision=4, suppress=True)
     p = softmax(LOGITS)
-    print("logits（任意实数）   :", LOGITS)
+    print("logits (real numbers):", LOGITS)
     print("exp(logits)          :", np.exp(LOGITS))
-    print("softmax（概率）      :", p, " 求和 =", p.sum())
-    print("朴素版算 logits + 100:", softmax_naive(LOGITS + 100), "（加同一个常数，结果不变）")
+    print("softmax (probability):", p, " sum =", p.sum())
+    print("naive on logits + 100:", softmax_naive(LOGITS + 100),
+          "(add one constant to all logits: the result does not change)")
 
-    print("\n—— 数值稳定性 ——")
+    print("\n—— Numerical stability ——")
     big = LOGITS * 500  # [1000, 500, -500]
     with np.errstate(over="ignore", invalid="ignore"):
-        print("朴素版 softmax([1000, 500, -500]) =", softmax_naive(big), " ← exp(1000) 溢出成 inf")
-    print("稳定版 softmax([1000, 500, -500]) =", softmax(big))
-    print("float64 能表示的最大 exp 指数约为", np.log(np.finfo(np.float64).max).round(1),
-          "；float32 约为", np.log(np.finfo(np.float32).max).round(1))
+        print("naive  softmax([1000, 500, -500]) =", softmax_naive(big), " ← exp(1000) overflows to inf")
+    print("stable softmax([1000, 500, -500]) =", softmax(big))
+    print("Largest x before exp(x) overflows: float64 about", np.log(np.finfo(np.float64).max).round(1),
+          "; float32 about", np.log(np.finfo(np.float32).max).round(1))
 
-    print("\n—— 温度 T：logits 先除以 T ——")
+    print("\n—— Temperature T: divide the logits by T first ——")
     for t in [0.5, 1.0, 2.0, 10.0]:
-        print(f"T = {t:>4}：", softmax(LOGITS, temperature=t))
+        print(f"T = {t:>4}:", softmax(LOGITS, temperature=t))

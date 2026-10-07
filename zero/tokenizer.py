@@ -1,29 +1,34 @@
-"""分词器：byte-level BPE（对应第 7、13 章）。
+"""Tokenizer: byte-level BPE (Chapters 7 and 13).
 
-基于 Hugging Face 的 `tokenizers` 库（Rust 实现，训练 GB 级语料也只要几分钟）。设计与 GPT-4 / Qwen
-系列一致：
+It uses the Hugging Face `tokenizers` library (written in Rust; training on GBs of text takes only
+a few minutes). The design is the same as in GPT-4 and the Qwen series:
 
-1. **规范化**：Unicode NFC（把"é = e + ◌́"这类组合字符合成一个码位）；
-2. **预切分**：先用正则把文本切成"词"（字母串、单个数字、标点串、空白），BPE 合并不跨越这些边界。
-   数字按单个切（`\\p{N}`），这对算术有帮助（Qwen、Llama 3 都这么做）；
-3. **字节级**：每个"词"先变成 UTF-8 字节，256 个字节都在初始词表里，所以任何文本都能编码，
-   永远不会出现 [UNK]；
-4. **BPE 合并**：反复把语料里最常见的相邻两个符号合成一个新符号，直到词表达到 vocab_size。
+1. **Normalization**: Unicode NFC (it combines characters such as "é = e + ◌́" into one code point).
+2. **Pre-tokenization**: a regex splits the text into "words" (runs of letters, single digits,
+   runs of punctuation, whitespace). BPE merges do not cross these boundaries.
+   Each digit is a separate piece (`\\p{N}`). This helps arithmetic (Qwen and Llama 3 do the same).
+3. **Byte level**: each "word" becomes UTF-8 bytes first. All 256 bytes are in the initial
+   vocabulary, so the tokenizer can encode any text. [UNK] never occurs.
+4. **BPE merges**: again and again, merge the most frequent pair of adjacent symbols in the corpus
+   into a new symbol, until the vocabulary reaches vocab_size.
 
-特殊 token（对话、工具调用、预留位）放在词表最前面，id 固定：
+The special tokens (chat, tool calls, reserved slots) are at the start of the vocabulary, with
+fixed ids:
 
-    0 <|endoftext|>  文档分隔 / 预训练的 EOS
-    1 <|im_start|>   2 <|im_end|>          对话模板（ChatML，与 Qwen 一致）
-    3 <tool_call>    4 </tool_call>        工具调用
-    5 <tool_response> 6 </tool_response>   工具返回
-    7 <think>        8 </think>            思考
-    9–15 <|reserved_0|> … <|reserved_6|>  预留，以后要加新特殊 token 时不用改词表大小
+    0 <|endoftext|>  document separator / EOS of pretraining
+    1 <|im_start|>   2 <|im_end|>          chat template (ChatML, the same as Qwen)
+    3 <tool_call>    4 </tool_call>        tool call
+    5 <tool_response> 6 </tool_response>   tool response
+    7 <think>        8 </think>            thinking
+    9–15 <|reserved_0|> … <|reserved_6|>  reserved for new special tokens (no change of vocabulary size)
 
-注意：特殊 token 在 encode 时会从原文里直接匹配出来（`tokenizers` 的行为）。预训练网页里偶尔会出现
-"<|endoftext|>" 这样的字面字符串，数据清洗时应当先去掉（见 zero/data/clean.py）。
+Note: encode matches the special tokens directly in the input text (the behavior of `tokenizers`).
+Pretraining web pages sometimes contain literal strings such as "<|endoftext|>". The data cleaning
+must remove them first (see zero/data/clean.py).
 
-`bytes_per_token(texts)` 统计压缩率：平均每个 token 覆盖多少个 UTF-8 字节，越大说明越省 token，
-第 13 章用它比较不同词表大小在中文、英文、代码上的表现。
+`bytes_per_token(texts)` measures the compression: the mean number of UTF-8 bytes per token.
+A larger value means fewer tokens. Chapter 13 uses it to compare vocabulary sizes on Chinese,
+English, and code.
 """
 
 from __future__ import annotations
@@ -60,7 +65,7 @@ DEFAULT_SPECIAL_TOKENS: list[str] = [
     THINK_END,
 ] + [f"<|reserved_{i}|>" for i in range(NUM_RESERVED)]
 
-# 与 Qwen2/Qwen3 分词器相同的预切分正则（来自其 tokenizer.json）
+# The same pre-tokenization regex as the Qwen2/Qwen3 tokenizers (from their tokenizer.json)
 PRETOKENIZE_REGEX = (
     r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*"
     r"|\s*[\r\n]+|\s+(?!\S)|\s+"
@@ -81,7 +86,7 @@ def _build_empty_bpe() -> HFTokenizer:
 
 
 class Tokenizer:
-    """对 `tokenizers.Tokenizer` 的薄封装：只暴露本课需要的接口。"""
+    """A thin wrapper around `tokenizers.Tokenizer`: it shows only the interface that this course needs."""
 
     def __init__(self, hf_tokenizer: HFTokenizer) -> None:
         self._tok = hf_tokenizer
@@ -89,12 +94,12 @@ class Tokenizer:
             t.content: i for i, t in hf_tokenizer.get_added_tokens_decoder().items() if t.special
         }
 
-    # ---- 编解码 ----
+    # ---- Encode and decode ----
     def encode(self, text: str) -> list[int]:
         return self._tok.encode(text, add_special_tokens=False).ids
 
     def encode_with_offsets(self, text: str) -> tuple[list[int], list[tuple[int, int]]]:
-        """编码并返回每个 token 在原文里的字符区间 [start, end)（对话模板算 loss mask 用）。"""
+        """Encode, and return the character span [start, end) of each token in the text (the chat template uses it for the loss mask)."""
         enc = self._tok.encode(text, add_special_tokens=False)
         return enc.ids, [tuple(o) for o in enc.offsets]  # type: ignore[misc]
 
@@ -112,7 +117,7 @@ class Tokenizer:
 
     def special_id(self, token: str) -> int:
         if token not in self.special_tokens:
-            raise KeyError(f"不是特殊 token：{token}（已有：{list(self.special_tokens)}）")
+            raise KeyError(f"Not a special token: {token} (special tokens: {list(self.special_tokens)})")
         return self.special_tokens[token]
 
     @property
@@ -121,12 +126,12 @@ class Tokenizer:
 
     @property
     def eot_id(self) -> int:
-        """<|endoftext|>：预训练文档之间的分隔符。"""
+        """<|endoftext|>: the separator between pretraining documents."""
         return self.special_id(ENDOFTEXT)
 
     @property
     def eos_id(self) -> int:
-        """Base 模型的生成结束符（与 Qwen3 Base 一致用 <|endoftext|>；对话模型用 <|im_end|>）。"""
+        """End-of-generation token of the base model (<|endoftext|>, as in Qwen3 Base; a chat model uses <|im_end|>)."""
         return self.eot_id
 
     @property
@@ -137,21 +142,25 @@ class Tokenizer:
     def im_end_id(self) -> int:
         return self.special_id(IM_END)
 
-    # ---- 统计 ----
+    # ---- Statistics ----
     def bytes_per_token(self, texts: Iterable[str]) -> float:
-        """压缩率：总 UTF-8 字节数 / 总 token 数。"""
+        """Compression: total UTF-8 bytes / total tokens."""
         texts = list(texts)
         n_bytes = sum(len(t.encode("utf-8")) for t in texts)
         n_tokens = sum(len(ids) for ids in self.encode_batch(texts))
         return n_bytes / max(n_tokens, 1)
 
     def hash(self) -> str:
-        """分词器内容的哈希（写进分片元数据，防止拿 A 分词器切的数据去训 B 分词器的模型）。"""
+        """Hash of the tokenizer content.
+
+        The shard metadata stores it. This prevents training a model for tokenizer B on data that
+        tokenizer A made.
+        """
         return hashlib.sha256(self._tok.to_str().encode("utf-8")).hexdigest()[:16]
 
-    # ---- 存取 ----
+    # ---- Save and load ----
     def save(self, path: str | os.PathLike) -> Path:
-        """存成 tokenizer.json。path 是目录时写到 path/tokenizer.json。"""
+        """Save as tokenizer.json. If path is a directory, write path/tokenizer.json."""
         p = Path(path)
         if p.suffix != ".json":
             p.mkdir(parents=True, exist_ok=True)
@@ -175,10 +184,12 @@ class Tokenizer:
         eos_token: str = ENDOFTEXT,
         chat_template: str | None = None,
     ) -> None:
-        """写出 transformers 的 `AutoTokenizer` 能直接读的文件。
+        """Write the files that `AutoTokenizer` of transformers can read directly.
 
-        chat_template：Jinja 对话模板（见 zero/post/chat.py 的 CHAT_TEMPLATE），写进 tokenizer_config.json，
-        `tokenizer.apply_chat_template(...)`、vLLM、llama.cpp 转换脚本都从这里读。"""
+        chat_template: the Jinja chat template (see CHAT_TEMPLATE in zero/post/chat.py). It goes
+        into tokenizer_config.json. `tokenizer.apply_chat_template(...)`, vLLM, and the llama.cpp
+        conversion script read it from there.
+        """
         out = Path(out_dir)
         self.save(out / "tokenizer.json")
         added = {
@@ -220,18 +231,18 @@ def train_bpe(
     special_tokens: Sequence[str] | None = None,
     min_frequency: int = 2,
 ) -> Tokenizer:
-    """训练 byte-level BPE。
+    """Train a byte-level BPE tokenizer.
 
-    texts_or_files：可迭代对象，元素是 `pathlib.Path`（当作文本文件读）或 `str`（当作文本本身）。
-    vocab_size：最终词表大小（含 256 个字节和特殊 token）。
-    special_tokens：默认 `DEFAULT_SPECIAL_TOKENS`，放在词表最前面。
+    texts_or_files: an iterable of `pathlib.Path` (read as a text file) or `str` (the text itself).
+    vocab_size: the final vocabulary size (includes the 256 bytes and the special tokens).
+    special_tokens: default `DEFAULT_SPECIAL_TOKENS`; they go at the start of the vocabulary.
     """
     special = list(special_tokens) if special_tokens is not None else list(DEFAULT_SPECIAL_TOKENS)
     if ENDOFTEXT not in special:
         special = [ENDOFTEXT, *special]
     if vocab_size < 256 + len(special):
         raise ValueError(
-            f"vocab_size={vocab_size} 太小，至少要 256 个字节 + {len(special)} 个特殊 token"
+            f"vocab_size={vocab_size} is too small; it must be at least 256 bytes + {len(special)} special tokens"
         )
 
     tok = _build_empty_bpe()
@@ -247,7 +258,7 @@ def train_bpe(
         for item in texts_or_files:
             if isinstance(item, os.PathLike):
                 with open(item, encoding="utf-8") as f:
-                    # 按块读，避免一次把大文件读进内存
+                    # Read in chunks, so a large file does not go into memory at once
                     while chunk := f.read(1 << 20):
                         yield chunk
             else:

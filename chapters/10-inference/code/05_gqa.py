@@ -1,11 +1,16 @@
-"""第 10 章 · 极简代码 5：GQA / MQA——让多个查询头共享一组 K/V
+"""Chapter 10 · Minimal code 5: GQA / MQA (several query heads share one set of K/V)
 
-同一个小模型（4 个查询头），只改 n_kv_heads：
-  4 = MHA（每个查询头有自己的 K/V）；2 = GQA（每 2 个查询头共享一组）；1 = MQA（全部共享一组）。
-用同样的种子、同样的数据顺序、同样的 600 步训练，比较：验证 loss、参数量、KV cache 大小、生成速度。
-另外用 MHA 换一个随机种子再训一次，看看"只是换个种子" loss 会差多少——小于这个数的差别不能当真。
-第一次运行要训练 3 个新模型（单线程约 4–5 分钟），之后从 code/out/ 加载，几十秒跑完。
-运行：uv run python chapters/10-inference/code/05_gqa.py
+The same small model (4 query heads). Only n_kv_heads changes:
+  4 = MHA (each query head has its own K/V); 2 = GQA (each 2 query heads share one set);
+  1 = MQA (all query heads share one set).
+All variants use the same seed, the same data order, and the same 600 training steps.
+The script compares the validation loss, the number of parameters, the KV cache size,
+and the generation speed.
+It also trains MHA again with a different random seed. This shows how much the loss changes
+"only because of a new seed". Do not trust a difference that is smaller than this number.
+The first run trains 3 new models (about 4–5 minutes on 1 thread). After that, the script
+loads them from code/out/ and finishes in some tens of seconds.
+Run: uv run python chapters/10-inference/code/05_gqa.py
 """
 
 from __future__ import annotations
@@ -49,12 +54,13 @@ def run():
 if __name__ == "__main__":
     rows, noise = run()
     mha = rows[0]
-    print(f"4 个查询头，head_dim 32，训练 600 步；KV cache 在生成 {GEN} 个字符后测量（FP32）")
-    print("  方案  KV头  验证loss  注意力参数  总参数    KV cache       生成512字(秒)")
+    print(f"4 query heads, head_dim 32, 600 training steps; attention / total = parameter counts; "
+          f"KV cache measured after {GEN} generated characters (FP32)")
+    print("  scheme KV  val loss  attention     total  KV cache      512 chars (s)")
     for r in rows:
         print(f"  {r['name']}   {r['kv']:3d}   {r['val']:7.3f}   {r['attn']:8,d}  {r['total']:8,d}  "
               f"{r['cache']:9,d} B ({r['cache'] / mha['cache']:.2f}×)   {r['time']:5.2f}")
-    print(f"  对照：MHA 换随机种子 1 重训，验证 loss {noise:.3f}"
-          f"（和种子 0 差 {abs(noise - mha['val']):.3f}）")
+    print(f"  control: MHA trained again with random seed 1, validation loss {noise:.3f}"
+          f" (difference from seed 0: {abs(noise - mha['val']):.3f})")
     for r in rows:
-        print(f"  {r['name']} 贪心生成开头：{r['sample']!r}")
+        print(f"  {r['name']} start of the greedy generation: {r['sample']!r}")

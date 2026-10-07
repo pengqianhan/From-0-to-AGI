@@ -1,16 +1,19 @@
-"""第 8 章 · 极简代码 4：在小语料上训练一个单层注意力模型，看它到底在"看"哪里
+"""Chapter 8 · Minimal code 4: train a one-layer attention model on a small corpus,
+and see where it "looks"
 
-三个模型，结构只差"怎么混合前面的 token"这一步，其余完全相同（字符级，Tiny Shakespeare）：
+Three models. They differ only in one step: how they mix the earlier tokens. All else is the same
+(character level, Tiny Shakespeare):
 
-    bigram     h = emb(x) + pos                 只看当前字符（第 7 章的 bigram 加上位置）
-    average    h = h + Wo · 均匀平均(Wv h)       前缀平均：看得到前文，但每个字一样重要
-    attention  h = h + MultiHeadAttention(h)    权重由 Q·K 决定（本章）
+    bigram     h = emb(x) + pos                   only the current character (Chapter 7 bigram + position)
+    average    h = h + Wo · uniform_mean(Wv h)    prefix average: sees the context, all characters equal
+    attention  h = h + MultiHeadAttention(h)      Q·K sets the weights (this chapter)
     logits = lm_head(h)
 
-每个模型在 CPU 上训练约 20–40 秒。训练完打印验证集损失（nats 和 bits-per-byte），
-再把注意力模型在一段文本上的注意力矩阵画成字符热力图，并统计每个头平均看向哪里。
+Each model trains in about 20–40 seconds on the CPU. After training, the script prints the
+validation loss (nats and bits-per-byte). Then it draws the attention matrix of the attention model
+on a sample text as a character heat map, and measures where each head looks on average.
 
-运行：uv run python chapters/08-attention/code/04_train_attention.py
+Run: uv run python chapters/08-attention/code/04_train_attention.py
 """
 
 from __future__ import annotations
@@ -27,16 +30,17 @@ from torch import nn
 HERE = Path(__file__).resolve().parent
 CORPUS = HERE.parents[2] / "assets" / "tiny_corpus" / "shakespeare.txt"
 
-# 这么小的模型，单线程反而最快（多线程的调度开销比计算还大，机器忙时尤其明显）
+# For a model this small, one thread is fastest. The overhead of thread scheduling is larger
+# than the computation, especially when the machine is busy
 torch.set_num_threads(1)
 
 _spec = importlib.util.spec_from_file_location("attn02", HERE / "02_attention_from_scratch.py")
 attn02 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(attn02)
 
-BLOCK = 64  # 上下文长度 T
-C = 64  # 通道数
-HEADS = 4  # 头数，每头 d = 16
+BLOCK = 64  # context length T
+C = 64  # channels
+HEADS = 4  # number of heads; d = 16 per head
 BATCH = 32
 STEPS = 2000
 LR = 3e-3
@@ -64,7 +68,7 @@ class TinyLM(nn.Module):
         super().__init__()
         self.mode = mode
         self.tok = nn.Embedding(vocab, C)
-        self.pos = nn.Embedding(BLOCK, C)  # 位置向量（第 9 章换成 RoPE）
+        self.pos = nn.Embedding(BLOCK, C)  # position vectors (Chapter 9 replaces them with RoPE)
         if mode == "attention":
             self.mix = attn02.MultiHeadAttention(C, HEADS)
         elif mode == "average":
@@ -78,10 +82,10 @@ class TinyLM(nn.Module):
         w = None
         if self.mode == "attention":
             out, w = self.mix(h, return_weights=True)
-            h = h + out  # 残差连接（第 6 章）
+            h = h + out  # residual connection (Chapter 6)
         elif self.mode == "average":
             W = torch.tril(torch.ones(T, T))
-            W = W / W.sum(1, keepdim=True)  # 固定的均匀权重
+            W = W / W.sum(1, keepdim=True)  # fixed uniform weights
             h = h + self.wo(W @ self.wv(h))
         logits = self.head(h)
         return (logits, w) if return_weights else logits
@@ -90,7 +94,7 @@ class TinyLM(nn.Module):
 @torch.no_grad()
 def evaluate(model: TinyLM, data: torch.Tensor, batches: int = 40) -> float:
     model.eval()
-    g = torch.Generator().manual_seed(1234)  # 三个模型用同一批验证数据
+    g = torch.Generator().manual_seed(1234)  # all three models use the same validation batches
     losses = []
     for _ in range(batches):
         x, y = get_batch(data, g)
@@ -121,7 +125,7 @@ def train(mode: str, steps: int = STEPS, seed: int = 0, log_every: int = 500):
 
 @torch.no_grad()
 def attention_on(model: TinyLM, text: str) -> torch.Tensor:
-    """返回注意力权重 (H, T, T)。"""
+    """Return the attention weights (H, T, T)."""
     _, stoi, _, _ = load_data()
     idx = torch.tensor([[stoi[c] for c in text]])
     model.eval()
@@ -131,16 +135,19 @@ def attention_on(model: TinyLM, text: str) -> torch.Tensor:
 
 @torch.no_grad()
 def head_profile(model: TinyLM, data: torch.Tensor, batches: int = 20) -> torch.Tensor:
-    """每个头平均把多少权重放在"往前数 k 个"的位置上：返回 (H, 4)，列是 k = 0, 1, 2, ≥3。"""
+    """How much weight each head puts on average on the position k steps back.
+
+    Returns (H, 4). The columns are k = 0, 1, 2, ≥3.
+    """
     model.eval()
     g = torch.Generator().manual_seed(99)
     acc = torch.zeros(HEADS, 4)
     T = BLOCK
-    offset = torch.arange(T)[:, None] - torch.arange(T)[None, :]  # 查询位置 − 键位置
+    offset = torch.arange(T)[:, None] - torch.arange(T)[None, :]  # query position − key position
     for _ in range(batches):
         x, _ = get_batch(data, g)
         _, w = model(x, return_weights=True)  # (B, H, T, T)
-        w = w[:, :, 8:, :].mean(0)  # 跳过开头 8 个位置（前文太短）
+        w = w[:, :, 8:, :].mean(0)  # skip the first 8 positions (their context is too short)
         off = offset[8:]
         for k in range(3):
             acc[:, k] += (w * (off == k)).sum(-1).mean(-1)
@@ -153,7 +160,10 @@ def show_char(c: str) -> str:
 
 
 def heatmap(w: torch.Tensor, text: str) -> str:
-    """把 (T, T) 权重画成字符热力图：行 = 查询（当前位置），列 = 键（被看的位置）。"""
+    """Draw (T, T) weights as a character heat map.
+
+    Row = query (current position), column = key (attended position).
+    """
     shades = " .:-=+*#%@"
     lines = ["    " + "".join(show_char(c) for c in text)]
     for i, c in enumerate(text):
@@ -167,8 +177,8 @@ def heatmap(w: torch.Tensor, text: str) -> str:
 def main() -> None:
     chars, _, _, val_data = load_data()
     print(
-        f"语料：Tiny Shakespeare，{len(chars)} 种字符（全是 ASCII，1 字符 = 1 字节）；"
-        f"上下文 T={BLOCK}，C={C}，H={HEADS}，训练 {STEPS} 步 × batch {BATCH}\n"
+        f"Corpus: Tiny Shakespeare, {len(chars)} distinct characters (all ASCII, 1 character = 1 byte); "
+        f"context T={BLOCK}, C={C}, H={HEADS}, training {STEPS} steps × batch {BATCH}\n"
     )
     models, results = {}, []
     for mode in ("bigram", "average", "attention"):
@@ -180,17 +190,17 @@ def main() -> None:
         n_params = sum(p.numel() for p in model.parameters())
         results.append((mode, n_params, final, final / math.log(2), dt))
         curve = "  ".join(f"{s}:{v:.3f}" for s, v in hist)
-        print(f"[{mode:>9}] 验证损失（步数:nats）{curve}   用时 {dt:.0f}s")
+        print(f"[{mode:>9}] validation loss (step:nats) {curve}   time {dt:.0f}s")
 
-    print("\n| 模型 | 参数量 | 验证损失（nats/字符） | bits-per-byte |")
+    print("\n| Model | Parameters | Validation loss (nats/char) | bits-per-byte |")
     print("|---|---:|---:|---:|")
     for mode, n, loss, bpb, _ in results:
         print(f"| {mode} | {n:,} | {loss:.3f} | {bpb:.3f} |")
 
     model = models["attention"]
     prof = head_profile(model, val_data)
-    print("\n注意力模型：每个头平均把权重放在哪里（验证集，查询位置 ≥ 8）")
-    print("| 头 | 自己 (k=0) | 前 1 个 | 前 2 个 | 更早 (k≥3) |")
+    print("\nAttention model: where each head puts its weight on average (validation set, query positions ≥ 8)")
+    print("| Head | Self (k=0) | 1 back | 2 back | Earlier (k≥3) |")
     print("|---|---:|---:|---:|---:|")
     for h in range(HEADS):
         print(f"| {h} | " + " | ".join(f"{v:.2f}" for v in prof[h]) + " |")
@@ -199,18 +209,19 @@ def main() -> None:
     text = SAMPLE
     for h in range(HEADS):
         print(
-            f"\n头 {h} 在样例文本上的注意力（行 = 当前字符，列 = 被看的字符；越深越重，␣ 是空格，⏎ 是换行）"
+            f"\nHead {h} on the sample text (row = current character, column = attended character; "
+            "denser symbol = more weight, ␣ is a space, ⏎ is a newline)"
         )
-        print(heatmap(w[h, 15:, 15:], text[15:]))  # 只画第二行，保持宽度可读
-    # 几个具体位置：看得最重的前 3 个字符
-    # 逐个位置：头 1、头 0 在最后 16 个字符上权重最大的位置（"k 前" = 往前数 k 个）
+        print(heatmap(w[h, 15:, 15:], text[15:]))  # draw only the second line, so the width stays readable
+    # Position by position: where heads 1 and 0 put the largest weight in the last 16 characters
+    # ("k back" = k positions back)
     for h in (1, 0):
-        print(f"\n头 {h} 在 {text[-16:]!r} 上每个位置权重最大的字符：")
+        print(f"\nHead {h} on {text[-16:]!r}: the character with the largest weight at each position:")
         items = []
         for i in range(len(text) - 16, len(text)):
             j = int(torch.argmax(w[h, i, : i + 1]))
             items.append(
-                f"{show_char(text[i])}→{i - j}前「{show_char(text[j])}」{float(w[h, i, j]):.2f}"
+                f"{show_char(text[i])}→{i - j} back '{show_char(text[j])}' {float(w[h, i, j]):.2f}"
             )
         for k in range(0, 16, 4):
             print("  " + "   ".join(items[k : k + 4]))

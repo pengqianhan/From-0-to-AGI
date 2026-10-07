@@ -1,15 +1,17 @@
-"""从原始文本一步做出"分词器 + 训练/验证分片"（对应第 13、14 章；主要给 tiny 冒烟用）。
+"""Make "tokenizer + training/validation shards" from raw text in one step (Chapters 13 and 14; mainly for the tiny smoke test).
 
-正式训练的数据流水线是：下载 → clean → dedup → quality → decontam → shard，每步单独跑、单独检查。
-tiny 配置为了"一条命令就能训练"，把这些步骤串成 `prepare_data(cfg.train.data)`：
+The data pipeline for real training is: download → clean → dedup → quality → decontam → shard.
+Each step runs and is checked separately. The tiny configuration must "train with one command",
+so `prepare_data(cfg.train.data)` joins these steps:
 
-1. 读 `[data.prepare] raw_files` 里的每个文本文件（文件名 = 来源名），按空行切段拼成文档；
-2. 清洗、精确去重；
-3. `data.tokenizer` 不存在时，用全部原始文件训练一个 byte-level BPE；
-4. 每个来源按固定种子打乱文档，切出 val_fraction 做验证集，写成
-   `<out_dir>/<来源>_train_*.bin` 和 `<out_dir>/<来源>_val_*.bin`。
+1. Read each text file in `[data.prepare] raw_files` (file name = source name). Split it at blank
+   lines and join the paragraphs into documents.
+2. Clean, and do exact deduplication.
+3. If `data.tokenizer` does not exist, train a byte-level BPE on all raw files.
+4. For each source, shuffle the documents with a fixed seed. Use the val_fraction part as the
+   validation set. Write `<out_dir>/<source>_train_*.bin` and `<out_dir>/<source>_val_*.bin`.
 
-分片已经存在时直接跳过（分词器哈希不一致会报错）。
+If the shards already exist, skip them (if the tokenizer hash is different, raise an error).
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ def _raw_files(patterns: list[str]) -> list[Path]:
     for pat in patterns:
         matches = sorted(glob.glob(pat))
         if not matches:
-            raise FileNotFoundError(f"[data.prepare] raw_files 找不到：{pat}")
+            raise FileNotFoundError(f"[data.prepare] raw_files not found: {pat}")
         files.extend(Path(m) for m in matches)
     return files
 
@@ -47,10 +49,10 @@ def prepare_data(cfg: DataConfig, seed: int = 0, log: Callable[[str], None] = pr
     if tok_path.exists():
         tok = Tokenizer.load(tok_path)
     else:
-        log(f"[prepare] 训练分词器 vocab_size={p.vocab_size}，语料 {[f.name for f in files]}")
+        log(f"[prepare] training the tokenizer, vocab_size={p.vocab_size}, corpus {[f.name for f in files]}")
         tok = train_bpe(files, vocab_size=p.vocab_size)
         tok.save(tok_path)
-        log(f"[prepare] 分词器已保存到 {tok_path}")
+        log(f"[prepare] tokenizer saved to {tok_path}")
 
     for f in files:
         name = f.stem
@@ -58,7 +60,7 @@ def prepare_data(cfg: DataConfig, seed: int = 0, log: Callable[[str], None] = pr
         if meta_path.exists() and (out / f"{name}_val.json").exists():
             meta = load_metadata(meta_path)
             if meta["tokenizer_hash"] != tok.hash():
-                raise ValueError(f"{meta_path} 是用另一个分词器切的，请删掉 {out} 后重新生成")
+                raise ValueError(f"{meta_path} was made with a different tokenizer. Delete {out} and make it again")
             continue
         docs = [
             d
@@ -73,4 +75,4 @@ def prepare_data(cfg: DataConfig, seed: int = 0, log: Callable[[str], None] = pr
         val, train = docs[:n_val], docs[n_val:]
         write_shards(train, tok, out, f"{name}_train", source=str(f))
         write_shards(val, tok, out, f"{name}_val", source=str(f))
-        log(f"[prepare] {name}: {len(train)} 篇训练文档, {len(val)} 篇验证文档")
+        log(f"[prepare] {name}: {len(train)} training documents, {len(val)} validation documents")

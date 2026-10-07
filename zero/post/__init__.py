@@ -1,1 +1,1 @@
-"""后训练：对话模板、SFT、蒸馏、DPO、GRPO 与工具调用环境（对应第 16–19 章）。"""
+"""Post-training: chat template, SFT, distillation, DPO, GRPO, and the tool-calling environment (Chapters 16–19)."""

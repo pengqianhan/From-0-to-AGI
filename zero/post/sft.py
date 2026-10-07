@@ -1,25 +1,29 @@
-"""监督微调 SFT：对话数据 → token + loss mask → 打包 → 训练（对应第 16 章）。
+"""Supervised fine-tuning (SFT): conversations → tokens + loss mask → packing → training (Chapter 16).
 
     uv run python -m zero.post.sft --config configs/tiny/sft.toml
     uv run torchrun --standalone --nproc_per_node=8 -m zero.post.sft --config configs/main/sft.toml
-    # nproc_per_node=1 已在单张 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）；8 卡尚未在 GPU 上验证
+    # nproc_per_node=1 was verified on one RTX 3090 (2026-10, see runs/2026-10-01-gpu0-check/). 8 GPUs are not verified yet.
 
-流程：
+Steps:
 
-1. **数据**：JSONL，每行 `{"messages": [...], "tools": [...]}`（格式见 zero/DESIGN.md）。
-   配置 `[sft] generate_train = N` 且文件不存在时，用 `zero/post/envs/tool_env.py` 生成 N 条
-   工具调用对话（标准解答轨迹）作为玩具数据；
-2. **渲染 + loss mask**：`zero.post.chat.render(..., tokenizer=tok)` 给出 ids 和逐 token 的 mask，
-   只有助手的输出（含工具调用和 `<|im_end|>`）mask=1；
-3. **打包（packing）**：把多条对话装进长度 seq_len+1 的窗口，**不把一条对话切开**（首次适配，
-   first-fit），窗口剩余位置用 `<|endoftext|>` 填充、mask=0；超过窗口长度的对话直接丢弃并计数。
-   打包省掉了大量 padding；代价是同一窗口里的几条对话彼此"看得见"（没有做 document masking，
-   与 nanochat 等实现一致；第二步可以换 FlashAttention 的 varlen 接口做隔离，尚未在 GPU 上验证）；
-4. **训练**：直接复用预训练的 `Trainer`（`[data] format = "sft"` 让它读 `MaskedWindowLoader`），
-   mask=0 的目标位置是 -100，交叉熵自动忽略；`[train] init_from` 指向中期训练的 checkpoint。
+1. **Data**: JSONL, one `{"messages": [...], "tools": [...]}` on each line (format: see zero/DESIGN.md).
+   If the config sets `[sft] generate_train = N` and the file does not exist, `zero/post/envs/tool_env.py`
+   generates N tool-calling conversations (gold solution trajectories) as toy data.
+2. **Rendering + loss mask**: `zero.post.chat.render(..., tokenizer=tok)` gives the ids and a mask with
+   one value per token. Only the assistant output (with tool calls and `<|im_end|>`) has mask=1.
+3. **Packing**: put several conversations into windows of length seq_len+1. **Do not cut a
+   conversation** (first-fit). The rest of the window is `<|endoftext|>` padding with mask=0. A
+   conversation that is longer than the window is dropped and counted.
+   Packing removes most of the padding. The cost: the conversations in one window can "see" each other
+   (there is no document masking, the same as nanochat and other implementations). In Step 2, the
+   varlen interface of FlashAttention can isolate them. This is not verified on a GPU yet.
+4. **Training**: use the pretraining `Trainer` again (`[data] format = "sft"` makes it read
+   `MaskedWindowLoader`). The targets with mask=0 are -100, and the cross-entropy ignores them.
+   `[train] init_from` points to the mid-training checkpoint.
 
-注意：梯度累积时每个 micro-batch 各自按"本 batch 的助手 token 数"求平均，再在 micro-batch 之间平均，
-与"整个大 batch 按 token 数加权平均"略有差别（常见实现都这么做，影响很小）。
+Note: with gradient accumulation, each micro-batch takes the mean over its own assistant tokens, and
+then the result is the mean over the micro-batches. This is a little different from "a mean over the
+full batch, weighted by the token count". Common implementations do the same, and the effect is small.
 """
 
 from __future__ import annotations
@@ -42,25 +46,25 @@ from zero.tokenizer import Tokenizer
 
 @dataclass
 class SFTConfig:
-    train_jsonl: str = ""  # 训练对话 JSONL
-    val_jsonl: str = ""  # 验证对话 JSONL（可空）
-    shard_dir: str = ""  # 打包后的窗口写到这里（<shard_dir>/train.bin/.mask、val.bin/.mask）
-    generate_train: int = 0  # >0 且 train_jsonl 不存在时，用 tool_env 生成这么多条对话
+    train_jsonl: str = ""  # training conversations, JSONL
+    val_jsonl: str = ""  # validation conversations, JSONL (can be empty)
+    shard_dir: str = ""  # the packed windows go here (<shard_dir>/train.bin/.mask, val.bin/.mask)
+    generate_train: int = 0  # if >0 and train_jsonl does not exist, tool_env generates this many conversations
     generate_val: int = 0
     env_seed: int = 0
     enable_thinking: bool = False
-    overwrite: bool = False  # 已有窗口文件时是否重新打包
+    overwrite: bool = False  # pack again if the window files already exist
 
 
 # ---------------------------------------------------------------------------
-# 编码与打包
+# Encoding and packing
 # ---------------------------------------------------------------------------
 
 
 def encode_example(
     example: dict[str, Any], tok: Tokenizer, enable_thinking: bool = False
 ) -> tuple[list[int], list[bool]]:
-    """一条对话 → (ids, mask)，末尾加一个 <|endoftext|>（mask=0）作分隔。"""
+    """One conversation → (ids, mask), with one <|endoftext|> (mask=0) at the end as a separator."""
     ids, mask = render(
         example["messages"], example.get("tools"), tokenizer=tok, enable_thinking=enable_thinking
     )
@@ -73,10 +77,11 @@ def pack_examples(
     pad_id: int,
     lookback: int = 64,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, int]]:
-    """首次适配打包：返回 tokens (N, window) uint32、mask (N, window) uint8、统计。
+    """First-fit packing. Return tokens (N, window) uint32, mask (N, window) uint8, and statistics.
 
-    每条样本放进最近 `lookback` 个还没满的窗口里第一个放得下的；都放不下就开新窗口。
-    没有助手 token 的样本、比窗口还长的样本丢弃。"""
+    Each sample goes into the first window that has space, among the last `lookback` windows that are
+    not full. If no window has space, start a new window. Drop the samples without assistant tokens and
+    the samples that are longer than the window."""
     bins: list[tuple[list[int], list[bool]]] = []
     open_idx: list[int] = []
     stats = {"examples": 0, "dropped_too_long": 0, "dropped_no_target": 0}
@@ -129,7 +134,7 @@ def build_sft_shards(
     enc = (encode_example(r, tok, enable_thinking) for r in rows)
     tokens, masks, stats = pack_examples(enc, seq_len + 1, tok.eot_id)
     if len(tokens) == 0:
-        raise ValueError(f"{jsonl}: 打包后没有任何窗口（样本都太长？seq_len={seq_len}）")
+        raise ValueError(f"{jsonl}: no windows after packing (are all samples too long? seq_len={seq_len})")
     write_windows(tokens, masks, out_bin)
     meta = {"source": str(jsonl), "tokenizer_hash": tok.hash(), "seq_len": seq_len, **stats}
     out_bin.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
@@ -137,7 +142,10 @@ def build_sft_shards(
 
 
 def env_conversations(n: int, seed: int, split: str) -> list[dict[str, Any]]:
-    """用工具环境生成 n 条标准解答对话（SFT 玩具数据）。train / dev 互不重叠。"""
+    """Use the tool environment to generate n gold-solution conversations (SFT toy data).
+
+    train and dev do not overlap.
+    """
     from zero.post.envs.tool_env import make_splits, reference_messages
 
     train, dev = make_splits(n if split == "train" else 0, n if split != "train" else 0, seed)
@@ -146,7 +154,7 @@ def env_conversations(n: int, seed: int, split: str) -> list[dict[str, Any]]:
 
 
 def prepare_sft_data(cfg: Config, sft: SFTConfig, log: Callable[[str], None] = print) -> None:
-    """生成（可选）→ 编码打包 → 把窗口路径填进 cfg.train.data。"""
+    """Generate (optional) → encode and pack → write the window paths into cfg.train.data."""
     d = cfg.train.data
     tok = Tokenizer.load(d.tokenizer)
     shard_dir = Path(sft.shard_dir or Path(cfg.train.out_dir) / "data")
@@ -158,16 +166,16 @@ def prepare_sft_data(cfg: Config, sft: SFTConfig, log: Callable[[str], None] = p
             continue
         if not Path(jsonl).exists():
             if n <= 0:
-                raise FileNotFoundError(f"[sft] 找不到 {jsonl}，也没有设置 generate_{split}")
+                raise FileNotFoundError(f"[sft] {jsonl} not found, and generate_{split} is not set")
             rows = env_conversations(n, sft.env_seed, "train" if split == "train" else "dev")
             write_jsonl(jsonl, rows)
-            log(f"[sft] 用 tool_env 生成了 {len(rows)} 条 {split} 对话 → {jsonl}")
+            log(f"[sft] tool_env generated {len(rows)} {split} conversations → {jsonl}")
         out_bin = shard_dir / f"{split}.bin"
         if out_bin.exists() and not sft.overwrite:
             meta = json.loads(out_bin.with_suffix(".json").read_text())
             if meta["tokenizer_hash"] != tok.hash() or meta["seq_len"] != d.seq_len:
                 raise ValueError(
-                    f"{out_bin} 与当前分词器或 seq_len 不符，设 [sft] overwrite = true 重新打包"
+                    f"{out_bin} does not match the current tokenizer or seq_len. Set [sft] overwrite = true to pack again"
                 )
         else:
             stats = build_sft_shards(jsonl, tok, d.seq_len, out_bin, sft.enable_thinking)
@@ -177,7 +185,7 @@ def prepare_sft_data(cfg: Config, sft: SFTConfig, log: Callable[[str], None] = p
         else:
             d.val = str(out_bin)
     if not d.sources:
-        raise ValueError("[sft] 需要 train_jsonl")
+        raise ValueError("[sft] needs train_jsonl")
 
 
 def run_sft(
@@ -190,14 +198,14 @@ def run_sft(
 
     cfg, sec = load_post_config(src, {"sft": SFTConfig}, overrides)
     if cfg.train.data.format != "sft":
-        raise ValueError('SFT 配置需要 [data] format = "sft"')
+        raise ValueError('The SFT config needs [data] format = "sft"')
     info = init_distributed(cfg.train.device)
     try:
         if info.is_main:
             prepare_sft_data(cfg, sec["sft"], log or print)
         barrier()
         if not info.is_main:
-            prepare_sft_data(cfg, sec["sft"], lambda _: None)  # 只是填路径（文件已存在）
+            prepare_sft_data(cfg, sec["sft"], lambda _: None)  # only fills in the paths (the files exist already)
         os.makedirs(cfg.train.out_dir, exist_ok=True)
         return Trainer(cfg, info, log).train()
     finally:
@@ -205,7 +213,7 @@ def run_sft(
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description="SFT（第 16 章）")
+    ap = argparse.ArgumentParser(description="SFT (Chapter 16)")
     ap.add_argument("--config", required=True)
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
     args = ap.parse_args(argv)

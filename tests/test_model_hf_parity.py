@@ -1,7 +1,8 @@
-"""zero.Transformer 与 Hugging Face 官方 Qwen3ForCausalLM 的 logits 对拍（GOAL.md 9.1）。
+"""Parity check of the logits: zero.Transformer vs the official Hugging Face Qwen3ForCausalLM (GOAL.md 9.1).
 
-随机初始化一个很小的 Qwen3（GQA + QK-Norm + SwiGLU + RMSNorm + RoPE），把权重搬进 zero，
-同一批输入的 logits 必须一致。覆盖：共享/不共享 embedding、默认 RoPE、YaRN 缩放、head_dim != dim/n_heads。
+Randomly initialize a very small Qwen3 (GQA + QK-Norm + SwiGLU + RMSNorm + RoPE) and move the
+weights into zero. For the same inputs, the logits must be the same. Cases: shared / not shared
+embedding, default RoPE, YaRN scaling, head_dim != dim/n_heads.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ CASES = {
     ),
     "mha_big_head": dict(
         num_key_value_heads=4, head_dim=48
-    ),  # 无 GQA，且 n_heads*head_dim != hidden
+    ),  # no GQA, and n_heads*head_dim != hidden
 }
 
 
@@ -55,7 +56,7 @@ def make_hf(**overrides) -> Qwen3ForCausalLM:
     kw.update(overrides)
     torch.manual_seed(0)
     model = Qwen3ForCausalLM(Qwen3Config(**kw)).eval()
-    # 随机化所有权重（包括 RMSNorm），让对拍更严格
+    # Randomize all weights (also RMSNorm), so the parity check is stricter
     with torch.no_grad():
         for p in model.parameters():
             if p.dim() > 1:
@@ -90,7 +91,7 @@ def test_loss_matches_hf() -> None:
     zero_model = load_from_hf_qwen3(hf).eval()
     tokens = torch.randint(0, 211, (2, 40), generator=torch.Generator().manual_seed(2))
     with torch.no_grad():
-        ref = hf(tokens, labels=tokens).loss  # HF 内部会把 labels 右移一位
+        ref = hf(tokens, labels=tokens).loss  # HF shifts the labels by one position internally
         ours = zero_model.loss(tokens[:, :-1], tokens[:, 1:])
     torch.testing.assert_close(ours, ref, rtol=1e-5, atol=1e-5)
 

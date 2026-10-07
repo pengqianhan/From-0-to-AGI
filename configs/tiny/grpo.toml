@@ -1,8 +1,10 @@
-# tiny GRPO 配置（第 19 章"极小配置演示"）：在 tiny DPO 之后的权重上，用 tool_env 的可验证奖励做 GRPO。
+# Tiny GRPO config (Chapter 19, "Tiny-configuration demo"): GRPO with the verifiable rewards of tool_env,
+# on the weights after tiny DPO.
 #   uv run python -m zero.post.grpo --config configs/tiny/grpo.toml
-# 极小模型的奖励大多是 -1（格式错）或很低，曲线只说明"代码能跑通"，不说明方法的效果。
+# Most rewards of a tiny model are -1 (wrong format) or very low. The curves show only that "the code runs".
+# They do not show how well the method works.
 
-[model]                  # 与 SFT 的 checkpoint 形状一致
+[model]                  # Same shape as the SFT checkpoint
 vocab_size = 2048
 dim = 128
 n_layers = 4
@@ -31,11 +33,11 @@ seq_len = 1024
 
 [grpo]
 group_size = 8           # G
-prompts_per_step = 4     # 每步 4 个任务 × 8 个回复 = 32 条
+prompts_per_step = 4     # 4 tasks × 8 responses = 32 per step
 max_new_tokens = 64
 temperature = 1.0
 clip_eps = 0.2
-kl_coef = 0.02           # 小的 KL 约束，演示参考模型的用法
+kl_coef = 0.02           # A small KL constraint, to show how the reference model is used
 ppo_epochs = 1
 loss_agg = "token_mean"
 scale_rewards = true

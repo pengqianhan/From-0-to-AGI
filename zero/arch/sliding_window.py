@@ -1,30 +1,35 @@
-"""滑动窗口注意力与局部-全局交替（对应第 22 章）。第五部分的实验模块，**不用于主线模型**。
+"""Sliding window attention and local-global interleaving (Chapter 22).
+Experiment module for Part 5. **The main-line model does not use it.**
 
-三样东西：
+Three parts:
 
-- `sliding_window_mask(...)`：布尔掩码。全局位置 p 的查询只能看见位置 j 满足
-  `p - window < j <= p` 的键（window=None 表示普通因果掩码）。和 Hugging Face
-  （Mistral / Gemma / gpt-oss 的 `sliding_window` 字段）的约定一致：窗口**包含自己**，
-  每个 token 最多看见 window 个位置。
-- `make_layer_types(n_layers, global_every)`：生成每层的类型列表，取值与 HF `config.layer_types`
-  相同（"sliding_attention" / "full_attention"）。`global_every=6` 就是 Gemma 3 的 5 局部 : 1 全局，
-  `global_every=2` 是 Gemma 2 / gpt-oss 的 1:1 交替，`global_every=4` 是 OLMo 3 的 3:1。
-- `SlidingWindowAttention`：继承 `zero.model.Attention`（参数名完全相同，可以直接搬权重），
-  只改掩码；配套的 `SlidingWindowKVCache` 对滑动窗口层只保留最近 window 个位置（环形缓冲区），
-  所以这些层的 KV cache 不随序列长度增长。
+- `sliding_window_mask(...)`: a boolean mask. A query at global position p can see only the keys
+  at positions j with `p - window < j <= p` (window=None gives the normal causal mask).
+  The convention is the same as in Hugging Face (the `sliding_window` field of
+  Mistral / Gemma / gpt-oss): the window **includes the token itself**, and each token sees
+  a maximum of window positions.
+- `make_layer_types(n_layers, global_every)`: makes the list of layer types. The values are the same
+  as in HF `config.layer_types` ("sliding_attention" / "full_attention"). `global_every=6` is the
+  Gemma 3 ratio of 5 local : 1 global. `global_every=2` is the 1:1 interleaving of Gemma 2 / gpt-oss.
+  `global_every=4` is the 3:1 ratio of OLMo 3.
+- `SlidingWindowAttention`: a subclass of `zero.model.Attention`. The parameter names are identical,
+  so you can copy the weights directly. Only the mask changes. The matching `SlidingWindowKVCache`
+  keeps only the latest window positions for sliding window layers (a ring buffer).
+  Thus the KV cache of these layers does not grow with the sequence length.
 
-用法：
+Usage:
 
     model = Transformer(cfg)
     layer_types = make_layer_types(cfg.n_layers, global_every=4)
-    convert_to_sliding_window(model, layer_types, window=128)   # 原地替换每层的注意力
+    convert_to_sliding_window(model, layer_types, window=128)   # replace the attention of each layer in place
     cache = SlidingWindowKVCache.from_model(model, batch_size=1, max_seq_len=4096)
     out = generate_greedy(model, prompt, 100, cache=cache)
 
-在 CPU 上用 PyTorch SDPA + 自定义布尔掩码实现。生产推理的对应物（均**尚未在 GPU 上验证**）：
-FlashAttention 2/3 的 `flash_attn_func(..., causal=True, window_size=(window - 1, 0))`；
-PyTorch FlexAttention 的 `sliding_window` mask_mod；vLLM / transformers 读取 `sliding_window` 与
-`layer_types` 后自动选择对应 kernel 和分层缓存。`tests/test_arch_sliding_window.py` 负责对拍。
+The CPU implementation uses PyTorch SDPA + a custom boolean mask. The equivalents for production
+inference (all **not verified on GPU yet**): `flash_attn_func(..., causal=True,
+window_size=(window - 1, 0))` of FlashAttention 2/3; the `sliding_window` mask_mod of PyTorch
+FlexAttention; vLLM / transformers read `sliding_window` and `layer_types`, then automatically select
+the matching kernel and per-layer cache. `tests/test_arch_sliding_window.py` does the parity checks.
 """
 
 from __future__ import annotations
@@ -43,16 +48,18 @@ FULL = "full_attention"
 
 
 # ---------------------------------------------------------------------------
-# 掩码与层类型
+# Mask and layer types
 # ---------------------------------------------------------------------------
 
 
 def sliding_window_mask(
     q_pos: torch.Tensor, k_pos: torch.Tensor, window: int | None
 ) -> torch.Tensor:
-    """q_pos: (Tq,) 查询的全局位置；k_pos: (Tk,) 键的全局位置（可以乱序，负数表示空槽）。
+    """q_pos: (Tq,) global positions of the queries; k_pos: (Tk,) global positions of the keys
+    (any order; a negative value is an empty slot).
 
-    返回 (Tq, Tk) 的布尔掩码，True = 可以看见。条件：`0 <= k <= q` 且（有窗口时）`q - k < window`。
+    Return a (Tq, Tk) boolean mask, True = visible. Condition: `0 <= k <= q` and
+    (with a window) `q - k < window`.
     """
     q = q_pos[:, None]
     k = k_pos[None, :]
@@ -65,35 +72,38 @@ def sliding_window_mask(
 def make_layer_types(
     n_layers: int, global_every: int | None = None, all_sliding: bool = False
 ) -> list[str]:
-    """每层是滑动窗口还是全注意力。
+    """Return the type of each layer: sliding window or full attention.
 
-    - `global_every=k`：第 k、2k、3k……层（从 1 数）是全注意力，其余是滑动窗口，
-      与 HF Gemma 3 的 `(i + 1) % sliding_window_pattern == 0` 约定一致；
-    - `all_sliding=True`：全部是滑动窗口（Mistral 7B v0.1 的做法）；
-    - 都不给：全部是全注意力。
+    - `global_every=k`: layers k, 2k, 3k, ... (counted from 1) are full attention, all others are
+      sliding window. This is the same convention as `(i + 1) % sliding_window_pattern == 0` in HF Gemma 3.
+    - `all_sliding=True`: all layers are sliding window (as in Mistral 7B v0.1).
+    - Neither argument: all layers are full attention.
     """
     if all_sliding:
         return [SLIDING] * n_layers
     if global_every is None:
         return [FULL] * n_layers
     if global_every < 1:
-        raise ValueError(f"global_every 必须 >= 1，当前 {global_every}")
+        raise ValueError(f"global_every must be >= 1, got {global_every}")
     return [FULL if (i + 1) % global_every == 0 else SLIDING for i in range(n_layers)]
 
 
 # ---------------------------------------------------------------------------
-# KV cache：滑动窗口层用环形缓冲区
+# KV cache: sliding window layers use a ring buffer
 # ---------------------------------------------------------------------------
 
 
 class SlidingWindowKVCache:
-    """分层的 KV cache：全注意力层按 max_seq_len 预分配，滑动窗口层只分配 window 个槽位。
+    """A per-layer KV cache. Full attention layers preallocate max_seq_len positions.
+    Sliding window layers allocate only window slots.
 
-    环形缓冲区：位置 p 的 K/V 写进槽位 `p % window`，覆盖掉 window 步之前的旧值。
-    因为 K 在写入前已经做过 RoPE（位置信息已经"转"进向量里），注意力对键的排列顺序不敏感，
-    所以槽位乱序没关系；只需要额外记住每个槽位现在存的是哪个位置（`pos`，空槽为 -1），用来构造掩码。
+    Ring buffer: the K/V of position p go into slot `p % window`. They overwrite the old values
+    from window steps before. K already has RoPE before the write (the position information is
+    already "rotated" into the vector), and attention does not depend on the order of the keys.
+    Thus the slot order is not important. The cache only records which position each slot holds now
+    (`pos`, -1 for an empty slot). The mask uses this information.
 
-    `update` 的返回值比 `zero.kv_cache.KVCache` 多一个 `k_pos`（每个键的全局位置）。
+    `update` returns one more value than `zero.kv_cache.KVCache`: `k_pos` (the global position of each key).
     """
 
     def __init__(
@@ -147,15 +157,17 @@ class SlidingWindowKVCache:
     def update(
         self, layer_idx: int, start_pos: int, k: torch.Tensor, v: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """写入位置 [start_pos, start_pos+T) 的新 K/V，返回 (K, V, k_pos) 供本次注意力使用。
+        """Write the new K/V for positions [start_pos, start_pos+T). Return (K, V, k_pos) for this attention call.
 
-        滑动窗口层：返回"缓存里的旧值 + 这次的新值"（新值还没写进环形缓冲区之前先拼上，
-        这样一次喂进超过 window 个 token 的分块 prefill 也正确），然后只把最后 window 个写回。
+        Sliding window layers: return "old values in the cache + new values of this call".
+        The code concatenates the new values before it writes them into the ring buffer. Thus a
+        chunked prefill with more than window tokens in one chunk is also correct. Then the code
+        writes back only the last window values.
         """
         bsz, _, t, _ = k.shape
         end = start_pos + t
         if end > self.max_seq_len:
-            raise ValueError(f"KV cache 溢出：需要 {end} 个位置，max_seq_len={self.max_seq_len}")
+            raise ValueError(f"KV cache overflow: needs {end} positions, max_seq_len={self.max_seq_len}")
         new_pos = torch.arange(start_pos, end, device=k.device)
         ck, cv, cpos = self.k[layer_idx], self.v[layer_idx], self.pos[layer_idx]
         k = k.to(ck.dtype)
@@ -171,7 +183,7 @@ class SlidingWindowKVCache:
         k_all = torch.cat([ck[:bsz][:, :, valid], k], dim=2)
         v_all = torch.cat([cv[:bsz][:, :, valid], v], dim=2)
         pos_all = torch.cat([cpos[valid], new_pos])
-        keep = slice(max(0, t - slots), t)  # 只有最后 slots 个新位置需要留下来
+        keep = slice(max(0, t - slots), t)  # Only the last `slots` new positions must stay.
         idx = new_pos[keep] % slots
         ck[:bsz, :, idx] = k[:, :, keep]
         cv[:bsz, :, idx] = v[:, :, keep]
@@ -179,19 +191,19 @@ class SlidingWindowKVCache:
         return k_all, v_all, pos_all
 
     def nbytes(self) -> int:
-        """K 和 V 合计占用的字节数（滑动窗口层只有 window 个槽位）。"""
+        """Total bytes of K and V (sliding window layers have only window slots)."""
         return sum(t.numel() * t.element_size() for t in self.k + self.v)
 
 
 # ---------------------------------------------------------------------------
-# 注意力
+# Attention
 # ---------------------------------------------------------------------------
 
 
 class SlidingWindowAttention(Attention):
-    """与 `zero.model.Attention` 相同的参数（wq/wk/wv/wo/q_norm/k_norm），只多一个窗口。
+    """The same parameters as `zero.model.Attention` (wq/wk/wv/wo/q_norm/k_norm), plus a window.
 
-    window=None 时就是普通的全注意力层（局部-全局交替模型里的"全局层"）。
+    With window=None, this is a normal full attention layer (a "global layer" in a local-global model).
     """
 
     def __init__(self, config: ModelConfig, window: int | None) -> None:
@@ -218,7 +230,7 @@ class SlidingWindowAttention(Attention):
         q_pos = torch.arange(start_pos, start_pos + seqlen, device=x.device)
         if isinstance(kv_cache, SlidingWindowKVCache):
             k, v, k_pos = kv_cache.update(layer_idx, start_pos, k, v)
-        elif kv_cache is not None:  # 普通 KVCache：键的位置就是 0..kv_len-1
+        elif kv_cache is not None:  # Normal KVCache: the key positions are 0..kv_len-1.
             k, v = kv_cache.update(layer_idx, start_pos, k, v)
             k_pos = torch.arange(k.shape[2], device=x.device)
         else:
@@ -226,9 +238,10 @@ class SlidingWindowAttention(Attention):
         k, v = k.to(q.dtype), v.to(q.dtype)
 
         mask = sliding_window_mask(q_pos, k_pos, self.window)
-        # 自定义布尔掩码走 SDPA 的通用路径（CUDA 上能跑，但带掩码用不了 Flash 内核，RTX 3090 上训练吞吐只有
-        # 同尺寸全注意力的一半左右，2026-10）；GPU 上用 FlashAttention 的 window_size 或
-        # FlexAttention 才能真正跳过窗口外的块（尚未在 GPU 上验证）
+        # A custom boolean mask uses the generic SDPA path. It runs on CUDA, but with a mask the Flash
+        # kernel is not available: on RTX 3090 the training throughput was about half of full attention
+        # with the same size (2026-10). To really skip the blocks outside the window on GPU, use the
+        # window_size of FlashAttention or FlexAttention (not verified on GPU yet).
         out = F.scaled_dot_product_attention(
             q, k, v, attn_mask=mask, enable_gqa=self.n_kv_heads != self.n_heads
         )
@@ -239,14 +252,17 @@ class SlidingWindowAttention(Attention):
 def convert_to_sliding_window(
     model: Transformer, layer_types: Sequence[str], window: int
 ) -> Transformer:
-    """原地把 model 每一层的注意力换成 SlidingWindowAttention（保留原有权重），返回 model。"""
+    """Replace the attention of each layer of model with SlidingWindowAttention in place.
+
+    Keep the existing weights. Return model.
+    """
     if len(layer_types) != len(model.layers):
-        raise ValueError(f"layer_types 有 {len(layer_types)} 项，模型有 {len(model.layers)} 层")
+        raise ValueError(f"layer_types has {len(layer_types)} items, but the model has {len(model.layers)} layers")
     if window < 1:
-        raise ValueError(f"window 必须 >= 1，当前 {window}")
+        raise ValueError(f"window must be >= 1, got {window}")
     for block, t in zip(model.layers, layer_types, strict=True):
         if t not in (SLIDING, FULL):
-            raise ValueError(f"未知的层类型 {t!r}，可用 {SLIDING!r} / {FULL!r}")
+            raise ValueError(f"Unknown layer type {t!r}, use {SLIDING!r} / {FULL!r}")
         old = block.attn
         new = SlidingWindowAttention(model.config, window if t == SLIDING else None)
         new.load_state_dict(old.state_dict())
@@ -256,7 +272,10 @@ def convert_to_sliding_window(
 
 
 def get_layer_types(model: Transformer) -> tuple[list[str], int | None]:
-    """读出每层的类型和（滑动窗口层的）窗口大小；没转换过的层算全注意力。"""
+    """Read the type of each layer and the window size (of the sliding window layers).
+
+    A layer that is not converted counts as full attention.
+    """
     types, window = [], None
     for block in model.layers:
         w = getattr(block.attn, "window", None)
@@ -266,7 +285,7 @@ def get_layer_types(model: Transformer) -> tuple[list[str], int | None]:
 
 
 # ---------------------------------------------------------------------------
-# 生成（贪心；用来对拍"有界缓存"和"不用缓存"）
+# Generation (greedy; for the parity check of "bounded cache" against "no cache")
 # ---------------------------------------------------------------------------
 
 
@@ -277,7 +296,10 @@ def generate_greedy(
     max_new_tokens: int,
     cache: SlidingWindowKVCache | None = None,
 ) -> list[int]:
-    """贪心生成 max_new_tokens 个新 token。cache=None 时每步把整段序列重新过一遍模型。"""
+    """Generate max_new_tokens new tokens greedily.
+
+    With cache=None, run the full sequence through the model again at each step.
+    """
     was_training = model.training
     model.eval()
     try:
@@ -309,7 +331,9 @@ def kv_cache_bytes(
     bytes_per_elem: int = 2,
     batch_size: int = 1,
 ) -> int:
-    """KV cache 的理论字节数：全注意力层存 seq_len 个位置，滑动窗口层存 min(window, seq_len) 个。"""
+    """Theoretical KV cache bytes: full attention layers store seq_len positions,
+    sliding window layers store min(window, seq_len) positions.
+    """
     per_pos = 2 * n_kv_heads * head_dim * bytes_per_elem * batch_size
     positions = sum(seq_len if t == FULL else min(window, seq_len) for t in layer_types)
     return positions * per_pos

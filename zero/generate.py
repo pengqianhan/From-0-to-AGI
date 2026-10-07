@@ -1,11 +1,14 @@
-"""文本生成：采样 + 带 KV cache 的自回归解码（对应第 10 章）。
+"""Text generation: sampling + autoregressive decoding with a KV cache (Chapter 10).
 
-- `sample_next(logits, temperature, top_p)`：从最后一个位置的 logits 里选下一个 token。
-  temperature=0 表示贪心（取最大值）；top_p < 1 表示 nucleus 采样：按概率从大到小排，
-  只在累计概率刚好达到 top_p 的那一小撮 token 里抽。
-- `generate(model, prompt_ids, max_new_tokens, ...)`：先把整段提示词喂进去（prefill），
-  之后每步只喂一个新 token（decode），K/V 从缓存里读。`use_cache=False` 时每一步都重算整段序列，
-  速度慢但逻辑最简单——`tests/test_kv_cache.py` 用它来验证缓存版的输出完全一致。
+- `sample_next(logits, temperature, top_p)`: select the next token from the logits of the last
+  position. temperature=0 means greedy (take the maximum). top_p < 1 means nucleus sampling: sort
+  the tokens by probability, from high to low, and sample only from the small set of tokens whose
+  cumulative probability just reaches top_p.
+- `generate(model, prompt_ids, max_new_tokens, ...)`: first send the full prompt (prefill). After
+  that, send only one new token at each step (decode), and read the K/V from the cache.
+  With `use_cache=False`, each step computes the full sequence again. This is slow but has the
+  simplest logic. `tests/test_kv_cache.py` uses it to verify that the cached version gives
+  exactly the same output.
 """
 
 from __future__ import annotations
@@ -24,14 +27,15 @@ def sample_next(
     top_p: float = 1.0,
     generator: torch.Generator | None = None,
 ) -> torch.Tensor:
-    """logits: (B, V) → 下一个 token 的 id，形状 (B,)。"""
+    """logits: (B, V) → id of the next token, shape (B,)."""
     if temperature <= 0:
         return logits.argmax(dim=-1)
     probs = torch.softmax(logits.float() / temperature, dim=-1)
     if top_p < 1.0:
         sorted_probs, sorted_idx = torch.sort(probs, dim=-1, descending=True)
         cum = torch.cumsum(sorted_probs, dim=-1)
-        # 保留"加上自己之前的累计概率 < top_p"的 token：保证至少留下概率最大的那个
+        # Keep the tokens whose "cumulative probability before this token" is < top_p.
+        # This always keeps at least the token with the highest probability.
         keep = (cum - sorted_probs) < top_p
         sorted_probs = sorted_probs * keep
         sorted_probs = sorted_probs / sorted_probs.sum(dim=-1, keepdim=True)
@@ -62,7 +66,10 @@ def generate_stream(
     eos_id: int | None = None,
     seed: int | None = None,
 ) -> Iterator[torch.Tensor]:
-    """逐步产出新 token（形状 (B,)），适合命令行里边生成边打印。遇到 eos（batch=1 时）停止。"""
+    """Yield the new tokens step by step (shape (B,)), so a command line can print while it generates.
+
+    Stop at eos (when batch=1).
+    """
     device = next(model.parameters()).device
     tokens, _ = _as_batch(prompt_ids, device)
     bsz, prompt_len = tokens.shape
@@ -120,9 +127,10 @@ def generate(
     eos_id: int | None = None,
     seed: int | None = None,
 ) -> list[int] | list[list[int]]:
-    """生成并返回**新 token**（不含提示词，也不含 eos）。
+    """Generate and return the **new tokens** (without the prompt and without eos).
 
-    prompt_ids 是 list[int] 或一维张量时返回 list[int]；是 (B, T) 张量时返回 list[list[int]]。
+    If prompt_ids is a list[int] or a 1D tensor, return list[int]. If it is a (B, T) tensor,
+    return list[list[int]].
     """
     _, single = _as_batch(prompt_ids, torch.device("cpu"))
     steps = list(

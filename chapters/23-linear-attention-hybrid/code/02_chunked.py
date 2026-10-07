@@ -1,14 +1,16 @@
-"""第 23 章 · 极简代码 2：衰减门 + 分块并行（chunkwise）形式
+"""Chapter 23 · Minimal code 2: decay gate + chunkwise parallel form
 
-递推形式适合推理（每步 O(1)），但训练时要一次处理整段序列：逐 token 的 for 循环没法并行，
-GPU 会闲着。完全并行的形式又要算 T×T 的矩阵。折中办法是**分块**：
-  - 块内（长度 C）：用并行形式，一次矩阵乘法；
-  - 块间：把前面所有块压缩成的状态 S 传下去。
-这里同时加上**衰减门**（RetNet / GLA / Mamba-2 一族的共同骨架）：
+The recurrent form is good for inference (O(1) per step). But training processes a full sequence at once.
+A token-by-token for loop cannot run in parallel, so the GPU waits.
+The fully parallel form calculates a T×T matrix. The compromise is the **chunkwise** form:
+  - In a chunk (length C): use the parallel form, one matrix multiplication.
+  - Between chunks: pass on the state S, which compresses all earlier chunks.
+The script also adds a **decay gate** (the common skeleton of RetNet / GLA / Mamba-2):
     S_t = α_t S_{t-1} + v_t k_tᵀ,   α_t = exp(g_t) ∈ (0, 1]
-α_t 越小，旧信息忘得越快。验证三种算法数值相等，再比一比速度。
+A smaller α_t forgets old information faster.
+The script makes sure that the three algorithms give the same numbers. Then it compares their speed.
 
-运行：uv run python chapters/23-linear-attention-hybrid/code/02_chunked.py
+Run: uv run python chapters/23-linear-attention-hybrid/code/02_chunked.py
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ torch.set_num_threads(1)
 
 
 def recurrent(q, k, v, g):
-    """q, k: (T, d_k)；v: (T, d_v)；g: (T,) 对数衰减 ≤ 0。状态 S: (d_v, d_k)。"""
+    """q, k: (T, d_k); v: (T, d_v); g: (T,) log decay ≤ 0. State S: (d_v, d_k)."""
     S = torch.zeros(v.shape[1], q.shape[1])
     out = torch.empty_like(v)
     for t in range(q.shape[0]):
@@ -31,26 +33,27 @@ def recurrent(q, k, v, g):
 
 
 def parallel(q, k, v, g):
-    """完全并行：O = (Q Kᵀ ⊙ D) V，D_ij = α_{j+1}···α_i = exp(b_i − b_j)（j ≤ i），b = cumsum(g)。"""
+    """Fully parallel: O = (Q Kᵀ ⊙ D) V, D_ij = α_{j+1}···α_i = exp(b_i − b_j) (j ≤ i), b = cumsum(g)."""
     b = g.cumsum(0)
     D = (b[:, None] - b[None, :]).masked_fill(~torch.ones(len(g), len(g)).tril().bool(), -torch.inf)
     return ((q @ k.T) * D.exp()) @ v
 
 
 def chunked(q, k, v, g, C: int = 64):
-    """分块：块内并行、块间递推。T 需是 C 的整数倍（生产版会补零）。"""
+    """Chunkwise: parallel in a chunk, recurrent between chunks.
+    T must be a multiple of C (the production version pads with zeros)."""
     T = q.shape[0]
     S = torch.zeros(v.shape[1], q.shape[1])
     out = torch.empty_like(v)
     mask = torch.ones(C, C).tril().bool()
     for s in range(0, T, C):
         qc, kc, vc = q[s : s + C], k[s : s + C], v[s : s + C]
-        b = g[s : s + C].cumsum(0)  # 块内累计对数衰减
+        b = g[s : s + C].cumsum(0)  # cumulative log decay in the chunk
         D = (b[:, None] - b[None, :]).masked_fill(~mask, -torch.inf).exp()
-        inter = (qc * b.exp()[:, None]) @ S.T  # 读块开始时的状态（衰减到位置 i）
-        intra = ((qc @ kc.T) * D) @ vc  # 块内的并行注意力
+        inter = (qc * b.exp()[:, None]) @ S.T  # read the state from the chunk start (decayed to position i)
+        intra = ((qc @ kc.T) * D) @ vc  # parallel attention in the chunk
         out[s : s + C] = inter + intra
-        S = b[-1].exp() * S + vc.T @ (kc * (b[-1] - b).exp()[:, None])  # 把整块压进状态
+        S = b[-1].exp() * S + vc.T @ (kc * (b[-1] - b).exp()[:, None])  # compress the full chunk into the state
     return out
 
 
@@ -65,27 +68,27 @@ def timed(fn, *args, reps: int = 3) -> tuple[torch.Tensor, float]:
 def main() -> None:
     torch.manual_seed(0)
     d = 64
-    print("== 三种算法数值一致（T=512, d=64，q/k 做了 L2 归一化）==")
+    print("== The three algorithms give the same numbers (T=512, d=64, q/k L2-normalized) ==")
     T = 512
     q = torch.nn.functional.normalize(torch.randn(T, d), dim=-1)
     k = torch.nn.functional.normalize(torch.randn(T, d), dim=-1)
     v = torch.randn(T, d)
     g = -torch.rand(T) * 0.1  # α_t ∈ (0.905, 1]
     r, p, c = recurrent(q, k, v, g), parallel(q, k, v, g), chunked(q, k, v, g)
-    print(f"max|递推 − 并行| = {(r - p).abs().max():.1e}   max|递推 − 分块| = {(r - c).abs().max():.1e}")
+    print(f"max|recurrent − parallel| = {(r - p).abs().max():.1e}   max|recurrent − chunked| = {(r - c).abs().max():.1e}")
 
-    print("\n== 衰减门的效果：一个 token 写入后，被读出的强度随距离的变化 ==")
+    print("\n== Effect of the decay gate: read strength of one written token as the distance grows ==")
     qq = torch.zeros(T, d)
-    qq[:, 0] = 1.0  # 每一步都用同一个 query 去读
+    qq[:, 0] = 1.0  # each step reads with the same query
     kk, vv = torch.zeros(T, d), torch.zeros(T, 1)
-    kk[0, 0], vv[0, 0] = 1.0, 1.0  # 只在第 0 步写入一次：key = e₀，value = 1
+    kk[0, 0], vv[0, 0] = 1.0, 1.0  # write only once, at step 0: key = e₀, value = 1
     for alpha in (1.0, 0.99, 0.9):
         o = recurrent(qq, kk, vv, torch.full((T,), float(torch.tensor(alpha).log())))
-        print(f"α = {alpha:<5}：距离 10 / 100 / 500 处读出 {o[10, 0]:.3f} / {o[100, 0]:.3f} / "
-              f"{o[500, 0]:.3f}（理论值 α^距离）")
+        print(f"α = {alpha:<5}: read at distance 10 / 100 / 500 = {o[10, 0]:.3f} / {o[100, 0]:.3f} / "
+              f"{o[500, 0]:.3f} (theory: α^distance)")
 
-    print("\n== 速度（单头 d=64，CPU 单线程，毫秒；并行形式要算 T×T 矩阵）==")
-    print(f"{'T':>6} | {'递推(逐 token)':>14} | {'分块 C=64':>10} | {'完全并行':>8}")
+    print("\n== Speed (one head d=64, one CPU thread, ms; the parallel form calculates a T×T matrix) ==")
+    print(f"{'T':>6} | {'Recurrent':>14} | {'Chunk C=64':>10} | {'Parallel':>8}")
     for T in (256, 1024, 4096):
         q = torch.nn.functional.normalize(torch.randn(T, d), dim=-1)
         k = torch.nn.functional.normalize(torch.randn(T, d), dim=-1)

@@ -1,16 +1,19 @@
-"""第 14 章 · 极简代码 5：训练时显存里装了什么 —— 数出来，而不是背公式
+"""Chapter 14 · Minimal code 5: what is in GPU memory during training? Count it, do not memorize a formula.
 
-训练一步，显存里有四类东西：
-  参数（FP32 主权重 4 字节）+ 梯度（4 字节）+ AdamW 的 m 和 v（各 4 字节）= 每个参数 16 字节，
-  再加上前向时为反向保存的激活值（activations），它和 micro batch × 序列长度成正比。
+One training step keeps four types of data in memory:
+  parameters (FP32 master weights, 4 bytes) + gradients (4 bytes) + AdamW m and v (4 bytes each)
+  = 16 bytes per parameter,
+  plus the activations that the forward pass saves for the backward pass.
+  The activations are proportional to micro batch × sequence length.
 
-这个脚本在 CPU 上用 zero 的真实模型（tiny 形状）把它们一项项数出来：
-  ① 走一步 AdamW 之后，统计参数、梯度、优化器状态各占多少字节；
-  ② 用 torch.autograd.graph.saved_tensors_hooks 记录反向要用的每个张量，
-     比较 FP32、BF16 autocast、BF16 + 激活检查点（activation checkpointing）三种情况；
-  ③ 把同样的账算到主线模型（689.5M，configs/main/pretrain.toml）上，看 micro batch 怎么选。
+This script counts each item on the CPU with the real model of zero (tiny shape):
+  ① after one AdamW step, count the bytes of the parameters, the gradients, and the optimizer state;
+  ② record each tensor that the backward pass needs with torch.autograd.graph.saved_tensors_hooks.
+     Compare three cases: FP32, BF16 autocast, and BF16 + activation checkpointing ("ckpt");
+  ③ do the same calculation for the main-line model (689.5M, configs/main/pretrain.toml)
+     and see how to select the micro batch.
 
-运行：uv run python chapters/14-pretraining-engineering/code/05_memory.py   （几秒）
+Run: uv run python chapters/14-pretraining-engineering/code/05_memory.py   (a few seconds)
 """
 
 import sys
@@ -21,7 +24,7 @@ from torch import nn
 from torch.utils.checkpoint import checkpoint
 
 ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(ROOT))  # 让 `import zero` 在仓库任意位置运行都能找到
+sys.path.insert(0, str(ROOT))  # so that `import zero` works from any folder of the repository
 
 from zero.config import ModelConfig, load_model_config  # noqa: E402
 from zero.model import Transformer, count_params, cross_entropy_loss  # noqa: E402
@@ -37,7 +40,10 @@ def nbytes(ts) -> int:
 
 
 def saved_activation_bytes(model: nn.Module, tokens: torch.Tensor, autocast: bool) -> int:
-    """前向时，autograd 为反向保存了哪些张量？按存储去重，不算参数和 buffer 本身。"""
+    """Which tensors does autograd save for the backward pass during the forward pass?
+
+    Count each storage once. Do not count the parameters and buffers.
+    """
     own = {p.untyped_storage().data_ptr() for p in model.parameters()}
     own |= {b.untyped_storage().data_ptr() for b in model.buffers()}
     seen = {}
@@ -57,7 +63,10 @@ def saved_activation_bytes(model: nn.Module, tokens: torch.Tensor, autocast: boo
 
 
 class CheckpointedBlock(nn.Module):
-    """激活检查点：前向只存这一块的输入，反向时把整块重算一遍。"""
+    """Activation checkpointing: the forward pass saves only the input of the block.
+
+    The backward pass calculates the full block again.
+    """
 
     def __init__(self, block):
         super().__init__()
@@ -74,48 +83,48 @@ def main():
     P = sum(p.numel() for p in model.parameters())
     tokens = torch.randint(0, TINY.vocab_size, (B, T))
 
-    print(f"① 参数 + 梯度 + 优化器状态（tiny：{P:,} 个参数，走一步 AdamW 之后）")
+    print(f"① Parameters + gradients + optimizer state (tiny: {P:,} parameters, after one AdamW step)")
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
     cross_entropy_loss(model(tokens), tokens).backward()
     opt.step()
     rows = [
-        ("参数（FP32）", nbytes(model.parameters())),
-        ("梯度（FP32）", nbytes(p.grad for p in model.parameters())),
-        ("AdamW m（FP32）", nbytes(s["exp_avg"] for s in opt.state.values())),
-        ("AdamW v（FP32）", nbytes(s["exp_avg_sq"] for s in opt.state.values())),
+        ("parameter (FP32)", nbytes(model.parameters())),
+        ("gradient (FP32)", nbytes(p.grad for p in model.parameters())),
+        ("AdamW m (FP32)", nbytes(s["exp_avg"] for s in opt.state.values())),
+        ("AdamW v (FP32)", nbytes(s["exp_avg_sq"] for s in opt.state.values())),
     ]
     for name, b in rows:
-        print(f"  {name:<16} {b:>12,} 字节   {b / P:.0f} 字节/参数")
+        print(f"  {name:<16} {b:>12,} bytes   {b / P:.0f} bytes/parameter")
     total = sum(b for _, b in rows)
-    print(f"  {'合计':<16} {total:>12,} 字节   {total / P:.0f} 字节/参数")
+    print(f"  {'total':<16} {total:>12,} bytes   {total / P:.0f} bytes/parameter")
     opt.zero_grad(set_to_none=True)
 
-    print(f"\n② 为反向保存的激活（micro batch {B} × 序列 {T} = {B * T} 个 token，{TINY.n_layers} 层）")
+    print(f"\n② Activations saved for the backward pass (micro batch {B} × sequence {T} = {B * T} tokens, {TINY.n_layers} layers)")
     cases = [("FP32", model, False), ("BF16 autocast", model, True)]
     ckpt_model = Transformer(TINY)
     ckpt_model.load_state_dict(model.state_dict())
     ckpt_model.layers = nn.ModuleList([CheckpointedBlock(b) for b in ckpt_model.layers])
-    cases.append(("BF16 + 激活检查点", ckpt_model, True))
+    cases.append(("BF16 + ckpt", ckpt_model, True))
     base = None
     for name, m, ac in cases:
         b = saved_activation_bytes(m, tokens, ac)
         base = base or b
-        print(f"  {name:<18} {b:>11,} 字节 = {b / (B * T):>8,.0f} 字节/token   ({b / base:.0%})")
-    print("  BF16 autocast 里还包括前向转出的 BF16 权重副本；激活检查点每层只剩块的输入（4·dim 字节/token），")
-    print("  代价是反向时每层多算一遍前向（约多 1/3 的计算量）")
+        print(f"  {name:<18} {b:>11,} bytes = {b / (B * T):>8,.0f} bytes/token   ({b / base:.0%})")
+    print("  BF16 autocast also includes the BF16 weight copies that the forward pass makes. With activation checkpointing (ckpt),")
+    print("  each layer keeps only the block input (4·dim bytes/token). The cost: in the backward pass, each layer does its forward pass again (about 1/3 more compute)")
 
-    print("\n③ 同样的账算到主线模型（8×H100 80GB，BF16，seq 4096；zero/tools/memory_calc.py）")
+    print("\n③ The same calculation for the main-line model (8×H100 80GB, BF16, seq 4096; zero/tools/memory_calc.py)")
     main_cfg = load_model_config(ROOT / "configs/main/pretrain.toml")
     Pm = count_params(main_cfg)["total"]
-    print(f"  参数 {Pm / 1e6:.1f}M × 16 字节 = {16 * Pm / GiB:.1f} GiB（每张卡都存一份：DDP）")
-    print(f"  {'micro batch':>11} {'激活':>8} {'DDP 合计':>9} {'FSDP 合计':>10} {'DDP + 检查点':>12}")
+    print(f"  Parameters {Pm / 1e6:.1f}M × 16 bytes = {16 * Pm / GiB:.1f} GiB (each GPU stores a full copy: DDP)")
+    print(f"  {'micro batch':>11} {'activ.':>8} {'DDP total':>9} {'FSDP total':>10} {'DDP + ckpt':>12}")
     for mb in (1, 2, 4, 8):
         ddp = estimate_memory(main_cfg, mb, 4096, num_gpus=8, strategy="ddp")
         fsdp = estimate_memory(main_cfg, mb, 4096, num_gpus=8, strategy="fsdp")
         ck = estimate_memory(main_cfg, mb, 4096, num_gpus=8, strategy="ddp", checkpointing=True)
         print(f"  {mb:>11} {ddp.activations / GiB:>7.1f}G {ddp.total / GiB:>8.1f}G "
               f"{fsdp.total / GiB:>9.1f}G {ck.total / GiB:>11.1f}G")
-    print("  （保守上界，eager 模式；GPU 上尚未验证。micro batch 8 超过 80 GB → 用梯度累积凑大 batch）")
+    print("  (Conservative upper bound, eager mode, not verified on a GPU. Micro batch 8 needs more than 80 GB → use gradient accumulation to make a large batch)")
 
 
 if __name__ == "__main__":

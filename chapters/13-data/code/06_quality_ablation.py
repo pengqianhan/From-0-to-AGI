@@ -1,10 +1,13 @@
-"""数据消融①：同样的模型、同样的步数，只换数据——脏网页原样 vs 走完整条过滤流水线。
+"""Data ablation 1: the same model and the same number of steps; only the data changes.
+The raw noisy crawl vs. the output of the full filter pipeline.
 
-两个小模型（约 50 万参数，zero 的 Transformer）各训练 200 步、看同样多的 token，
-在同一份留出的干净文本（英文、中文）上比较 bits-per-byte。每种数据用 2 个随机种子各训练一次，
-看差距是否大于种子带来的波动。bpb 用本章的公式手算一遍，再和生产级的 zero/data/bpb.py 对拍。
+Two small models (about 500K parameters, the zero Transformer) train for 200 steps each and see
+the same number of tokens. We compare their bits-per-byte on the same held-out clean text
+(English, Chinese). Each data set trains with 2 random seeds. Then we can see if the difference
+is larger than the variation from the seed. We calculate bpb by hand with the formula of this
+chapter, and do a parity check with the production code zero/data/bpb.py.
 
-    uv run python chapters/13-data/code/06_quality_ablation.py     # 单线程约 3 分钟 CPU 时间
+    uv run python chapters/13-data/code/06_quality_ablation.py     # about 3 min of CPU time on one thread
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-torch.set_num_threads(1)  # 构建环境里多个任务共享 CPU（读者本机可以删掉这行）
+torch.set_num_threads(1)  # many jobs share the CPU in the build environment (you can remove this line on your computer)
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[2]))
@@ -39,6 +42,8 @@ def _load(name: str):
 
 SEQ, BATCH, STEPS, LR = 128, 16, 200, 3e-3
 SEEDS = (0, 1)
+# Display names for the printed output. The data names in run() stay in Chinese (see there).
+DATA_EN = {"原样脏网页": "noisy", "过滤后": "filtered"}
 MODEL = dict(dim=96, n_layers=3, n_heads=4, n_kv_heads=2, head_dim=24, ffn_dim=256,
              max_seq_len=SEQ, tie_embeddings=False)
 
@@ -48,7 +53,8 @@ def make_tokenizer(texts: list[str], vocab: int = 1024) -> Tokenizer:
 
 
 def pack(tok: Tokenizer, docs: list[str]) -> np.ndarray:
-    """文档分词后首尾相接，每篇后面加 <|endoftext|>（和 zero/data/shard.py 一样）。"""
+    """Tokenize the documents and join them end to end, with <|endoftext|> after each document
+    (the same as zero/data/shard.py)."""
     ids: list[int] = []
     for d in docs:
         ids += tok.encode(d) + [tok.eot_id]
@@ -56,7 +62,10 @@ def pack(tok: Tokenizer, docs: list[str]) -> np.ndarray:
 
 
 def bpb_by_hand(model: torch.nn.Module, x: torch.Tensor, y: torch.Tensor, tb: torch.Tensor) -> float:
-    """bpb = Σ(−ln p(目标 token)) / (ln 2 × Σ 目标 token 的字节数)；特殊 token 0 字节，不计入。"""
+    """bpb = Σ(−ln p(target token)) / (ln 2 × Σ bytes of the target tokens).
+
+    A special token has 0 bytes and does not count.
+    """
     with torch.no_grad():
         nats = F.cross_entropy(model(x).flatten(0, 1), y.flatten(), reduction="none")
     nbytes = tb[y.flatten()]
@@ -64,7 +73,7 @@ def bpb_by_hand(model: torch.nn.Module, x: torch.Tensor, y: torch.Tensor, tb: to
 
 
 def val_batches(arr: np.ndarray, n_max: int = 48) -> list[tuple[torch.Tensor, torch.Tensor]]:
-    """验证集：不重叠地切成长度 SEQ+1 的片段，每批 BATCH 条。"""
+    """Validation set: split into windows of length SEQ+1 with no overlap, BATCH windows per batch."""
     n = min((len(arr) - 1) // SEQ, n_max * BATCH)
     w = np.stack([arr[i * SEQ : i * SEQ + SEQ + 1] for i in range(n)])
     t = torch.from_numpy(w)
@@ -80,7 +89,8 @@ def train(
     log_every: int = 50,
     tag: str = "",
 ) -> tuple[Transformer, list[tuple[int, float]]]:
-    """按配比逐行抽来源、随机取窗口，训练 steps 步（AdamW + warmup + 余弦衰减）。"""
+    """For each row, sample a source by the mixture weights and take a random window. Train for
+    `steps` steps (AdamW + warmup + cosine decay)."""
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     model = Transformer(ModelConfig(vocab_size=vocab, **MODEL))
@@ -115,11 +125,11 @@ def evaluate(model: Transformer, val: dict[str, np.ndarray], tb: torch.Tensor) -
     out = {}
     for name, arr in val.items():
         batches = val_batches(arr)
-        prod = bpb_stats(model, batches, tb).bpb  # 生产级实现
+        prod = bpb_stats(model, batches, tb).bpb  # production code
         x = torch.cat([b[0] for b in batches])
         y = torch.cat([b[1] for b in batches])
         mine = bpb_by_hand(model, x, y, tb)
-        assert abs(prod - mine) < 1e-4, (prod, mine)  # 对拍：手算与 zero/data/bpb.py 一致
+        assert abs(prod - mine) < 1e-4, (prod, mine)  # parity check: the bpb by hand equals zero/data/bpb.py
         out[name] = prod
     return out
 
@@ -134,22 +144,25 @@ def run() -> dict:
     hits = dc.find_contaminated(cleaned, crawl["eval"], 13)
     cleaned = [d for i, d in enumerate(cleaned) if i not in hits]
 
-    # 分词器：在过滤后的训练文本上训练（主线也是这样），两个模型共用
+    # Tokenizer: train it on the filtered training text (the main line does the same).
+    # The two models use the same tokenizer.
     tok = make_tokenizer([d["text"] for d in cleaned])
     tb = token_byte_lengths(tok)
     val = {lang: pack(tok, docs) for lang, docs in crawl["heldout"].items()}
     res: dict = {"tokens": {}, "bpb": {}, "curves": {}}
+    # The names stay in Chinese ("raw noisy crawl", "filtered"): they are keys in the JSON that
+    # video/scenes.py reads.
     for name, docs in [("原样脏网页", raw), ("过滤后", cleaned)]:
         arr = pack(tok, [d["text"] for d in docs])
         res["tokens"][name] = len(arr)
         runs = []
         for seed in SEEDS:
             model, curve = train({"all": arr}, {"all": 1.0}, tok.vocab_size, seed=seed,
-                                 tag=f"{name} seed {seed}")
+                                 tag=f"{DATA_EN[name]} seed {seed}")
             runs.append(evaluate(model, val, tb))
             if seed == SEEDS[0]:
                 res["curves"][name] = curve[::5]
-        res["bpb"][name] = {k: [r[k] for r in runs] for k in runs[0]}  # 每个种子一个值
+        res["bpb"][name] = {k: [r[k] for r in runs] for k in runs[0]}  # one value per seed
     res["docs"] = {"原样脏网页": len(raw), "过滤后": len(cleaned)}
     return res
 
@@ -159,27 +172,28 @@ def main() -> None:
     import json
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--json", type=Path, default=None, help="把结果另存成 JSON（视频用，写到 video/out/ 下）")
+    ap.add_argument("--json", type=Path, default=None, help="also save the results as JSON (for the video; write it under video/out/)")
     args = ap.parse_args()
     res = run()
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)
         args.json.write_text(json.dumps(res, ensure_ascii=False, indent=1))
-    print(f"\n{'训练数据':<10}{'文档数':>7}{'token 数':>11}{'英文 bpb（种子 0 / 1）':>24}{'中文 bpb（种子 0 / 1）':>24}")
+    print(f"\n{'Data':<10}{'Docs':>7}{'Tokens':>11}{'EN bpb (seed 0 / 1)':>24}{'ZH bpb (seed 0 / 1)':>24}")
     for name in res["bpb"]:
         b = res["bpb"][name]
         en = " / ".join(f"{v:.3f}" for v in b["en"])
         zh = " / ".join(f"{v:.3f}" for v in b["zh"])
-        print(f"{name:<10}{res['docs'][name]:>7}{res['tokens'][name]:>11,}{en:>24}{zh:>24}")
+        print(f"{DATA_EN.get(name, name):<10}{res['docs'][name]:>7}{res['tokens'][name]:>11,}{en:>24}{zh:>24}")
     a, b = res["bpb"]["原样脏网页"], res["bpb"]["过滤后"]
-    # 配对比较：同一个种子下两种数据的初始化和抽样位置相同，差值才是"数据"带来的
+    # Paired comparison: with the same seed, the two data sets have the same initialization and
+    # the same sample positions. Thus the difference comes from the data.
     d_en = [x - y for x, y in zip(a["en"], b["en"])]
     d_zh = [x - y for x, y in zip(a["zh"], b["zh"])]
-    print(f"\n同样训练 {STEPS} 步 × {BATCH} × {SEQ} = {STEPS * BATCH * SEQ:,} 个 token，"
-          "过滤后的数据让 bpb 降低（配对差值，种子 0 / 1）：")
-    print(f"  英文 {d_en[0]:.3f} / {d_en[1]:.3f}，中文 {d_zh[0]:.3f} / {d_zh[1]:.3f}")
-    print(f"  对照：同一种数据换种子，bpb 最多差 {max(abs(v[0] - v[1]) for r in res['bpb'].values() for v in r.values()):.3f}"
-          "——所以只能比较同一个种子下的两次训练（配对），不能拿不同种子的结果互相比")
+    print(f"\nThe same training of {STEPS} steps × {BATCH} × {SEQ} = {STEPS * BATCH * SEQ:,} tokens. "
+          "The filtered data decreases bpb by (paired difference, seed 0 / 1):")
+    print(f"  English {d_en[0]:.3f} / {d_en[1]:.3f}, Chinese {d_zh[0]:.3f} / {d_zh[1]:.3f}")
+    print(f"  Reference: with the same data and a different seed, bpb differs by up to {max(abs(v[0] - v[1]) for r in res['bpb'].values() for v in r.values()):.3f}."
+          " Thus compare only two runs with the same seed (paired). Do not compare results from different seeds")
 
 if __name__ == "__main__":
     main()

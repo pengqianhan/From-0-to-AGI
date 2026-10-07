@@ -1,10 +1,14 @@
-"""语言识别 + 启发式过滤：几条便宜的统计规则，干掉"明显不是正常文章"的页面。
+"""Language identification + heuristic filters: some cheap statistical rules remove the pages
+that are clearly not normal text.
 
-规则来自三篇论文（阈值用原文的值）：
-- Gopher（Rae et al. 2021，附录 A）：词数、平均词长、符号比例、含字母的词占比、停用词、重复行、重复 2-gram；
-- C4（Raffel et al. 2020）：含 "lorem ipsum" 或花括号的页面整篇丢掉；
-- FineWeb（Penedo et al. 2024，第 3.6 节）：以标点结尾的行 ≤ 12%、重复行字符 ≥ 10%、短行 ≥ 67%。
-中文没有空格分词：一个汉字算一个"词"，停用词换成中文虚词。
+The rules come from three papers (the thresholds are the values in the papers):
+- Gopher (Rae et al. 2021, Appendix A): word count, mean word length, symbol ratio, fraction of
+  words with a letter, stop words, duplicate lines, top 2-gram;
+- C4 (Raffel et al. 2020): remove the full page if it contains "lorem ipsum" or a curly bracket;
+- FineWeb (Penedo et al. 2024, Section 3.6): lines that end with punctuation ≤ 12%, characters
+  in duplicate lines ≥ 10%, short lines ≥ 67%.
+Chinese has no spaces between words. Thus one Chinese character counts as one "word", and the
+stop words are Chinese function words.
 
     uv run python chapters/13-data/code/02_heuristic_filter.py
 """
@@ -18,7 +22,7 @@ from collections import Counter
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parents[2]))  # 仓库根目录，才能 import zero
+sys.path.insert(0, str(HERE.parents[2]))  # the repository root, so that we can import zero
 
 
 def _load(name: str):
@@ -32,14 +36,15 @@ crawl_mod = _load("01_noisy_crawl")
 
 CJK = re.compile(r"[一-鿿]")
 WORD = re.compile(r"[一-鿿]|[^\s一-鿿]+")
-EN_STOP = {"the", "be", "to", "of", "and", "that", "have", "with"}  # Gopher 的 8 个停用词
+EN_STOP = {"the", "be", "to", "of", "and", "that", "have", "with"}  # the 8 stop words of Gopher
 ZH_STOP = set("的了是在和有也就不都而与之其以")
 END_PUNCT = tuple(".!?\"'。！？”’…」』")
 
 
 def lang_id(text: str) -> str:
-    """极简语言识别：汉字占比 > 30% 是中文，ASCII 字母占比 > 50% 是英文，否则"其他"。
-    （FineWeb 用 fastText 的 lid.176 模型，英文得分 ≥ 0.65 才保留。）"""
+    """Minimal language identification: more than 30% Chinese characters is Chinese, more than
+    50% ASCII letters is English, all else is "other".
+    (FineWeb uses the fastText lid.176 model and keeps a page only if the English score ≥ 0.65.)"""
     chars = [c for c in text if not c.isspace()]
     n = max(len(chars), 1)
     if sum(bool(CJK.match(c)) for c in chars) / n > 0.3:
@@ -50,14 +55,14 @@ def lang_id(text: str) -> str:
 
 
 def heuristic_reasons(text: str) -> list[str]:
-    """返回这篇文档违反的规则（空列表 = 通过）。"""
+    """Return the rules that this document breaks (an empty list = the document passes)."""
     words = WORD.findall(text)
     n = len(words)
     lines = [ln for ln in text.split("\n") if ln.strip()]
     nl = max(len(lines), 1)
     is_zh = lang_id(text) == "zh"
     bad = []
-    # ---- Gopher 质量规则 ----
+    # ---- Gopher quality rules ----
     if not 50 <= n <= 100_000:
         bad.append("gopher_word_count")
     if not is_zh and n and not 3 <= sum(map(len, words)) / n <= 10:
@@ -69,7 +74,7 @@ def heuristic_reasons(text: str) -> list[str]:
     stop = ZH_STOP if is_zh else EN_STOP
     if sum(w.lower() in stop for w in words) < 2:
         bad.append("gopher_stop_words")
-    # ---- Gopher 重复规则 ----
+    # ---- Gopher repetition rules ----
     counts = Counter(lines)
     if sum(c for c in counts.values() if c > 1) / nl > 0.3:
         bad.append("gopher_dup_lines")
@@ -92,7 +97,7 @@ def heuristic_reasons(text: str) -> list[str]:
 
 
 def heuristic_filter(docs: list[dict]) -> tuple[list[dict], Counter, Counter]:
-    """返回 (保留的文档, 按"第一条违反的规则"计的删除数, 按类型计的删除数)。"""
+    """Return (kept documents, removed count per "first broken rule", removed count per type)."""
     kept, by_rule, by_kind = [], Counter(), Counter()
     for d in docs:
         reasons = ["lang_other"] if lang_id(d["text"]) == "other" else heuristic_reasons(d["text"])
@@ -108,25 +113,25 @@ def main() -> None:
     docs = crawl_mod.build_crawl()["docs"]
     kept, by_rule, by_kind = heuristic_filter(docs)
     before = crawl_mod.kind_table(docs)
-    print(f"启发式过滤：{len(docs)} → {len(kept)} 篇\n")
-    print(f"{'类型':<14}{'过滤前':>6}{'删掉':>6}{'删除率':>8}")
+    print(f"Heuristic filter: {len(docs)} → {len(kept)} documents\n")
+    print(f"{'Type':<14}{'Before':>6}{'Drop':>6}{'Rate':>8}")
     for k in crawl_mod.KINDS:
         print(f"{k:<14}{before[k]:>6}{by_kind[k]:>6}{by_kind[k] / before[k]:>8.0%}")
-    print("\n按第一条违反的规则计：")
+    print("\nCount by the first broken rule:")
     for rule, c in by_rule.most_common():
         print(f"  {rule:<24}{c:>5}")
-    # 误杀的好文档长什么样
+    # Show a good document that the rules removed by mistake
     bad_good = [d for d in docs if d["kind"] == "good" and d not in kept]
     lang = Counter(d["lang"] for d in bad_good)
-    print(f"\n被误杀的好文档 {len(bad_good)} 篇（英文 {lang['en']}，中文 {lang['zh']}），例如：")
+    print(f"\nGood documents removed by mistake: {len(bad_good)} ({lang['en']} English, {lang['zh']} Chinese). Example:")
     ex = next(d for d in bad_good if d["lang"] == "en")
-    print("  规则：", heuristic_reasons(ex["text"]))
+    print("  Rules:", heuristic_reasons(ex["text"]))
     print("  " + ex["text"][:160].replace("\n", "⏎"))
 
-    from zero.data.quality import quality_check  # 生产级实现，同一批文档上对照
+    from zero.data.quality import quality_check  # the production code, on the same documents
 
     n_prod = sum(lang_id(d["text"]) != "other" and quality_check(d["text"]).keep for d in docs)
-    print(f"\n对照：zero/data/quality.py 的 quality_check 在同一批文档上保留 {n_prod} 篇")
+    print(f"\nReference: quality_check in zero/data/quality.py keeps {n_prod} documents of the same set")
 
 
 if __name__ == "__main__":

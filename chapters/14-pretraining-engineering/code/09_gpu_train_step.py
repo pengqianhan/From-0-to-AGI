@@ -1,18 +1,23 @@
-"""第 14 章 · 极简代码 9（GPU 实测）：主线模型在一张 GPU 上训练一步 —— 显存、激活检查点、MFU
+"""Chapter 14 · Minimal code 9 (GPU measurement): one training step of the main-line model on one GPU. Memory, activation checkpointing, and MFU.
 
-正文第 2 节用 zero/tools/memory_calc.py 估算主线模型的显存，第 6 节定义了 MFU，
-这两处的主线数字都是公式估算。这里把主线模型（689.5M，configs/main/pretrain.toml，
-zero 的 Transformer + fused AdamW，和 zero 的训练循环一样）放到一张 GPU 上真的训练几步：
-  ① 显存，micro batch 1：FP32、BF16 autocast、BF16 + 激活检查点三种设置，T = 1024 和 4096。
-     量"前向结束时多出来的显存"（为反向保存的激活 + autocast 的 BF16 权重副本）和整步的峰值显存，
-     和 memory_calc 的公式（单卡，没有 DDP 通信桶）对照；
-  ② 速度：每步耗时（预热后 CUDA event 计时，取中位数）→ 吞吐 → MFU = 吞吐 × 每 token FLOPs / 规格峰值。
-     激活检查点多算的那一遍前向不计入 MFU，另算 HFU；再按"因果掩码的上三角其实没算"换算一次；
-  ③ T = 4096、打开激活检查点时，一张卡最多放得下几条序列：公式的预测 vs 实际。
+Section 2 of the chapter estimates the memory of the main-line model with zero/tools/memory_calc.py,
+and Section 6 defines MFU. In both places, the main-line numbers are estimates from formulas.
+Here, the script puts the main-line model (689.5M, configs/main/pretrain.toml, the zero Transformer +
+fused AdamW, the same as in the zero training loop) on one GPU and really trains some steps:
+  ① Memory, micro batch 1: three settings, FP32, BF16 autocast, and BF16 + activation checkpointing
+     ("ckpt"), at T = 1024 and 4096. It measures "the memory added at the end of the forward pass"
+     (activations saved for the backward pass + the BF16 weight copies of autocast) and the peak memory
+     of the full step. It compares them with the formulas of memory_calc (one GPU, no DDP communication buckets);
+  ② Speed: time per step (CUDA event timing after warmup, median) → throughput →
+     MFU = throughput × FLOPs per token / spec peak.
+     MFU does not count the extra forward pass of activation checkpointing; HFU counts it.
+     The last column calculates the utilization again with the attention term halved
+     ("causal-halved"), because the causal mask skips the upper triangle;
+  ③ At T = 4096 with activation checkpointing: how many sequences fit on one GPU, formula vs measurement.
 
-输入是随机 token（loss 的数值没有意义，显存和耗时与真实数据相同）。
+The inputs are random tokens. (The loss values have no meaning. The memory and the time are the same as with real data.)
 
-运行：uv run python chapters/14-pretraining-engineering/code/09_gpu_train_step.py   （需要约 24 GB 显存的 CUDA GPU，RTX 3090 上约 1 分钟）
+Run: uv run python chapters/14-pretraining-engineering/code/09_gpu_train_step.py   (needs a CUDA GPU with about 24 GB of memory; about 1 min on an RTX 3090)
 """
 
 import contextlib
@@ -24,33 +29,33 @@ from pathlib import Path
 import torch
 
 ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(ROOT))  # 让 `import zero` 在仓库任意位置运行都能找到
+sys.path.insert(0, str(ROOT))  # so that `import zero` works from any folder of the repository
 
 from zero.config import load_model_config  # noqa: E402
 from zero.model import Transformer, count_params, estimate_flops_per_token  # noqa: E402
 from zero.tools import memory_calc as mc  # noqa: E402
 from zero.tools.estimate_cost import peak_tflops_for_device_name  # noqa: E402
 
-SPEC_BF16 = {"3090": 71.0}  # RTX 3090 规格表的 BF16 Tensor Core 稠密峰值（TFLOPS，FP32 累加）
+SPEC_BF16 = {"3090": 71.0}  # dense BF16 Tensor Core peak of the RTX 3090 from the spec sheet (TFLOPS, FP32 accumulation)
 GiB = mc.GiB
-SETTINGS = {"FP32": (False, False), "BF16 autocast": (True, False), "BF16 + 检查点": (True, True)}
+SETTINGS = {"FP32": (False, False), "BF16 autocast": (True, False), "BF16 + ckpt": (True, True)}
 
 
 def main():
     if not torch.cuda.is_available():
-        print("本脚本需要 CUDA GPU；没有 GPU 可以跳过，正文里贴了一次 RTX 3090 上的结果。")
+        print("This script needs a CUDA GPU. Without a GPU, skip it: the chapter shows one result from an RTX 3090.")
         sys.exit(0)
     name = torch.cuda.get_device_name()
     total_gib = torch.cuda.get_device_properties(0).total_memory / GiB
     peak = next((v for k, v in SPEC_BF16.items() if k in name), None) or peak_tflops_for_device_name(name)
-    print(f"GPU：{name}，{total_gib:.1f} GiB；PyTorch {torch.__version__}，CUDA {torch.version.cuda}")
+    print(f"GPU: {name}, {total_gib:.1f} GiB; PyTorch {torch.__version__}, CUDA {torch.version.cuda}")
 
     def pct(tflops):
         return f"{tflops / peak:.1%}" if peak else "—"
 
     cfg = load_model_config(ROOT / "configs/main/pretrain.toml")
     P = count_params(cfg)["total"]
-    per_layer, _ = mc.matmul_params(cfg)          # 每层参与矩阵乘的参数
+    per_layer, _ = mc.matmul_params(cfg)          # parameters in matmuls in each layer
     torch.manual_seed(0)
     with torch.device("cuda"):
         model = Transformer(cfg)
@@ -69,17 +74,20 @@ def main():
         opt.step()
         opt.zero_grad(set_to_none=True)
 
-    step(*batch(1, 512), True, False)            # 第一步：让 AdamW 建好 m、v
+    step(*batch(1, 512), True, False)            # first step: AdamW creates m and v
     torch.cuda.synchronize()
     static = torch.cuda.memory_allocated()
-    print(f"\n主线模型 {P / 1e6:.1f}M 参数。参数 + AdamW 的 m、v 常驻显存 {static / GiB:.2f} GiB"
-          f"（按 12 字节/参数算是 {12 * P / GiB:.2f} GiB）；梯度只在反向到更新之间存在，另 4 字节/参数")
+    print(f"\nMain-line model, {P / 1e6:.1f}M parameters. Parameters + AdamW m and v stay in memory: {static / GiB:.2f} GiB"
+          f" ({12 * P / GiB:.2f} GiB at 12 bytes/parameter). Gradients exist only from the backward pass to the update: 4 more bytes/parameter")
 
     def measure(mb, T, bf16, ckpt, reps=5):
-        """返回 (前向结束时新增的显存, 整步峰值显存, 每步秒数)；显存不够返回 None。"""
+        """Return (memory added at the end of the forward pass, peak memory of the full step, seconds per step).
+
+        Return None if there is not sufficient memory.
+        """
         x, y = batch(mb, T)
         try:
-            for _ in range(2):                   # 预热
+            for _ in range(2):                   # warmup
                 step(x, y, bf16, ckpt)
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats()
@@ -116,31 +124,31 @@ def main():
         for label, (bf16, ckpt) in SETTINGS.items():
             results[T, label] = measure(1, T, bf16, ckpt)
 
-    print("\n① 显存，micro batch 1：实测 vs memory_calc 的公式（单卡，G = GiB）")
-    print(f"  {'T':>5} {'设置':<14} {'前向后新增':>9} {'公式':>7} {'整步峰值':>8} {'公式':>7}")
+    print("\n① Memory, micro batch 1: measured vs the formulas of memory_calc (one GPU, G = GiB)")
+    print(f"  {'T':>5} {'setting':<14} {'fwd added':>9} {'formula':>7} {'peak':>8} {'formula':>7}")
     for (T, label), r in results.items():
         bf16, ckpt = SETTINGS[label]
         est = mc.estimate_memory(cfg, 1, T, num_gpus=1, strategy="ddp",
                                  dtype="bf16" if bf16 else "fp32", checkpointing=ckpt)
         est_saved = est.activations + est.weight_copies
         if r is None:
-            print(f"  {T:>5} {label:<14} {'显存不够':>8} {est_saved / GiB:>6.2f}G {'显存不够':>7} {est.total / GiB:>6.2f}G")
+            print(f"  {T:>5} {label:<14} {'OOM':>8} {est_saved / GiB:>6.2f}G {'OOM':>7} {est.total / GiB:>6.2f}G")
         else:
             print(f"  {T:>5} {label:<14} {r[0] / GiB:>8.2f}G {est_saved / GiB:>6.2f}G "
                   f"{r[1] / GiB:>7.2f}G {est.total / GiB:>6.2f}G")
-    print("  （前向后新增 = 前向算完 loss 那一刻比开始时多出的显存；公式 = memory_calc 的激活 + BF16 权重副本。")
-    print("   整步峰值 = 前向 + 反向 + 更新里 memory_allocated 的最高点；公式 = memory_calc 的合计。）")
+    print("  (fwd added = the extra memory at the moment when the forward pass has calculated the loss; formula = activations + BF16 weight copies of memory_calc.")
+    print("   peak = the highest memory_allocated in forward + backward + update; formula = total of memory_calc. OOM = out of memory.)")
 
-    print(f"\n② 速度，micro batch 1（MFU 按 BF16 峰值 {peak} TFLOPS）")
-    print(f"  {'T':>5} {'设置':<14} {'每步':>8} {'token/s':>8} {'MFU':>7} {'HFU':>7} {'因果减半后的利用率':>14}")
+    print(f"\n② Speed, micro batch 1 (MFU from the BF16 peak of {peak} TFLOPS)")
+    print(f"  {'T':>5} {'setting':<14} {'per step':>8} {'token/s':>8} {'MFU':>7} {'HFU':>7} {'causal-halved':>14}")
     for (T, label), r in results.items():
         if r is None:
             continue
         _, ckpt = SETTINGS[label]
         tps = T / r[2]
-        fpt = estimate_flops_per_token(cfg, T)                  # 6N + 12·L·q_dim·T（zero / PaLM 口径）
-        real = fpt - 6 * cfg.n_layers * cfg.q_dim * T          # 因果掩码的上三角不用算：注意力项减半
-        # 激活检查点：反向前每层再做一遍前向（2·N_层 + 4·L·q_dim·T）
+        fpt = estimate_flops_per_token(cfg, T)                  # 6N + 12·L·q_dim·T (the convention of zero / PaLM)
+        real = fpt - 6 * cfg.n_layers * cfg.q_dim * T          # the causal mask skips the upper triangle: halve the attention term
+        # activation checkpointing: before the backward pass, each layer does its forward pass again (2·N_layer + 4·L·q_dim·T)
         hfu = pct(tps * (fpt + 2 * cfg.n_layers * per_layer + 4 * cfg.n_layers * cfg.q_dim * T) / 1e12) \
             if ckpt else ""
         print(f"  {T:>5} {label:<14} {r[2] * 1e3:>6.0f}ms {tps:>8,.0f} {pct(tps * fpt / 1e12):>7} "
@@ -148,14 +156,14 @@ def main():
 
     T = 4096
     pred = mc.max_micro_batch(cfg, T, total_gib, num_gpus=1, strategy="ddp", checkpointing=True)
-    print(f"\n③ T = {T}、BF16 + 激活检查点：memory_calc 预测 {total_gib:.1f} GiB 的卡最多放 {pred} 条")
-    print(f"  {'micro batch':>11} {'整步峰值':>8} {'公式':>7} {'每步':>8} {'token/s':>8} {'MFU':>7}")
+    print(f"\n③ T = {T}, BF16 + activation checkpointing: memory_calc predicts that a {total_gib:.1f} GiB GPU holds at most {pred} sequences")
+    print(f"  {'micro batch':>11} {'peak':>8} {'formula':>7} {'per step':>8} {'token/s':>8} {'MFU':>7}")
     fpt = estimate_flops_per_token(cfg, T)
     for mb in range(1, pred + 3):
         est = mc.estimate_memory(cfg, mb, T, num_gpus=1, strategy="ddp", checkpointing=True)
-        r = results.get((T, "BF16 + 检查点")) if mb == 1 else measure(mb, T, True, True, reps=3)
+        r = results.get((T, "BF16 + ckpt")) if mb == 1 else measure(mb, T, True, True, reps=3)
         if r is None:
-            print(f"  {mb:>11} {'显存不够':>7} {est.total / GiB:>6.2f}G")
+            print(f"  {mb:>11} {'OOM':>7} {est.total / GiB:>6.2f}G")
             break
         tps = mb * T / r[2]
         print(f"  {mb:>11} {r[1] / GiB:>7.2f}G {est.total / GiB:>6.2f}G {r[2] * 1e3:>6.0f}ms "

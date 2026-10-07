@@ -1,115 +1,121 @@
-# 第 8 章：注意力 —— 让每个位置自己决定看哪里
+# Chapter 8: Attention — Each position decides where to look
 
-> **一句话目标**：读完这一章，你能从"对前面的词取加权平均"出发，一步步推出缩放点积注意力 `softmax(QKᵀ/√d)V`，说清楚 Q、K、V、除以 √d、因果 mask、多头各自解决什么问题，写出每一步张量的形状，并亲手实现一个和 PyTorch 官方函数逐位一致的因果多头注意力。
+**English** · [中文](README.zh.md)
 
-📺 **本章视频**：待发布（本地渲染：`bash chapters/08-attention/video/build.sh`）
-🧪 **本章自检**：学完后在 Claude Code 里输入 `/ch08-attention`
+> **Goal**: After this chapter, you can start from "a weighted average of the earlier words" and derive scaled dot-product attention `softmax(QKᵀ/√d)V` step by step. You can explain which problem each part solves: Q, K, V, the division by √d, the causal mask, and multiple heads. You can write the tensor shape after each step. You can also implement causal multi-head attention yourself, with the same output as the official PyTorch function.
+
+📺 **Video**: Not published yet. To render it on your computer, run `bash chapters/08-attention/video/build.sh`.
+🧪 **Self-check**: After the chapter, type `/ch08-attention` in Claude Code.
 
 ---
 
-上一章我们把文字变成了 token，训练了一个 bigram 语言模型，并用 bits-per-byte 衡量它猜得有多好。bigram 有一个根本的局限：**它猜下一个 token 时只看前一个 token**。这一章要解决的问题是：**怎么让模型看见整段前文，并且自己决定该看哪里？** 答案就是注意力（Attention），今天所有大语言模型的核心部件。
+In the last chapter, we changed text into tokens and trained a bigram language model. We used bits-per-byte to measure how well it predicts. A bigram model has a basic limit: **to predict the next token, it looks only at the previous token**. This chapter solves this problem: **how can the model see all of the earlier text, and decide by itself where to look?** The answer is attention. Attention is the core part of every large language model today.
 
-## 1. 问题：只看前一个 token 不够
+## 1. The problem: the previous token is not sufficient
 
-想猜 `hear me speak` 后面是什么，只看最后一个字母 `k` 显然不够。第 7 章的 bigram 只记得"k 后面常跟什么"，而前面的 `hear me` 告诉我们有人在说话、在请求什么。
+To predict what comes after `hear me speak`, the last letter `k` alone is not sufficient. The bigram model of Chapter 7 remembers only "what often comes after k". But the earlier words `hear me` tell us that a person speaks and asks for something.
 
-难点在于：前文的长度不固定，但后面的预测层（第 5 章的 softmax 分类器）只接受一个固定长度的向量。怎么把"任意长的前文"变成"一个向量"？
+The difficulty is this: the length of the earlier text (the context) is not fixed. But the prediction layer after it (the softmax classifier of Chapter 5) accepts only a vector of fixed length. How do we change a context of any length into one vector?
 
-**以前的做法：循环神经网络（Recurrent Neural Network, RNN）。** RNN 从左往右读，每读一个 token，就把它和上一步的状态揉成新状态：`h_t = f(h_{t−1}, x_t)`。这里只把它当动机讲，因为它有两个麻烦，正是注意力要解决的：
+**The earlier method: the recurrent neural network (RNN).** An RNN reads from left to right. At each token, it combines the token with the state of the last step into a new state: `h_t = f(h_{t−1}, x_t)`. Here we use the RNN only as a motivation. It has two problems, and attention solves both of them:
 
-1. **口袋是固定大小的**：前文再长，都得挤进同一个大小的 `h`，早期信息容易被冲掉。Bahdanau 等人（2014）在机器翻译里就指出，把整句压成一个固定长度的向量是瓶颈。
-2. **只能一步一步算**：第 10 个 token 必须等前 9 个算完。《Attention Is All You Need》（Vaswani 等人，2017）开篇就说，这种"天生的顺序性"让训练没法在序列内部并行。
+1. **The state has a fixed size.** All of the context, however long, must go into an `h` of the same size. Early information is easily lost. In machine translation, Bahdanau et al. (2014) showed that a fixed-length vector for the full sentence is a bottleneck.
+2. **It calculates only one step at a time.** Token 10 must wait until the first 9 tokens are done. *Attention Is All You Need* (Vaswani et al., 2017) says at its start that this "inherently sequential nature" prevents parallel training within a sequence.
 
-注意力换了个思路：**不压缩。每个位置直接去看前面所有位置，按需取用。**
+Attention uses a different idea: **do not compress. Each position looks directly at all earlier positions and takes what it needs.**
 
-## 2. 最朴素的办法：把前面的向量取平均
+## 2. The simplest method: average the earlier vectors
 
-先做最简单的事。设有 T 个 token，每个已经通过 embedding 查表变成 C 维向量，排成矩阵 `X`（形状 `(T, C)`）。让位置 t 的输出等于前 t+1 个向量（含自己，不含未来）的平均：
+Start with the simplest thing. We have T tokens. An embedding lookup has changed each token into a C-dimensional vector. Put these vectors in the rows of a matrix `X` (shape `(T, C)`). Let the output at position t be the mean of the first t+1 vectors (position t itself is included, future positions are not):
 
 ```
 out_t = (x_0 + x_1 + … + x_t) / (t + 1)
 ```
 
-有一个经典技巧：把平均的系数排成一个**下三角矩阵** `W`，第 t 行前 t+1 个位置是 `1/(t+1)`，其余是 0。那么一次矩阵乘法 `W @ X` 就同时算出了所有位置的平均——第 2 章说过，矩阵乘法就是"每一行和每一列做点积"，这里 `W` 的第 t 行正好是"前 t+1 个各取 1/(t+1)"。
+A classic trick does this for all positions. Put the averaging coefficients in a **lower-triangular matrix** `W`. In row t, the first t+1 entries are `1/(t+1)`, and the other entries are 0. Then one matrix multiplication `W @ X` gives the averages at all positions at the same time. Chapter 2 showed that matrix multiplication is "a dot product of each row with each column". Here, row t of `W` is exactly "take 1/(t+1) of each of the first t+1 vectors".
 
 ```bash
 uv run python chapters/08-attention/code/01_average_to_attention.py
 ```
 
-[`code/01_average_to_attention.py`](code/01_average_to_attention.py) 用 5 个 2 维向量（假装是"我 爱 吃 苹 果"）演示：
+[`code/01_average_to_attention.py`](code/01_average_to_attention.py) shows this with 5 vectors of 2 dimensions. We pretend that they are the Chinese tokens "我 爱 吃 苹 果" ("I love eating apples"):
 
 ```python
 def uniform_weights(T):
-    w = np.tril(np.ones((T, T)))                 # 下三角全 1
-    return w / w.sum(axis=1, keepdims=True)      # 每行除以行和 → 每行和为 1
+    w = np.tril(np.ones((T, T)))                 # lower triangle of ones
+    return w / w.sum(axis=1, keepdims=True)      # divide each row by its sum → each row sums to 1
 
-mat = uniform_weights(T) @ x                     # 一次矩阵乘法 = 所有位置的前缀平均
+mat = uniform_weights(T) @ x                     # one matrix multiplication = prefix averages at all positions
 ```
 
-输出：
+The output is:
 
 ```
-① 均匀权重矩阵 W（下三角，每行和为 1）：
+① Uniform weight matrix W (lower-triangular, each row sums to 1):
 [[1.   0.   0.   0.   0.  ]
  [0.5  0.5  0.   0.   0.  ]
  [0.33 0.33 0.33 0.   0.  ]
  [0.25 0.25 0.25 0.25 0.  ]
  [0.2  0.2  0.2  0.2  0.2 ]]
-② W @ x 与循环版的最大差： 2.0e-17
-③ softmax(全 0 分数 + 因果 mask) 与 W 的最大差： 0.0e+00
+② Max difference between W @ x and the loop version: 2.0e-17
+③ Max difference between softmax(all-zero scores + causal mask) and W: 0.0e+00
 ```
 
-第③行值得多看一眼：同一个 `W` 还可以这样得到——先给每对位置一个分数（这里全是 0），把上三角（未来）的分数填成 `−∞`，再对每一行做第 5 章的 softmax。`e^{−∞} = 0`，所以未来位置的权重恰好是 0；其余位置分数相同，于是均分。**这个"分数 → mask → softmax → 加权平均"的骨架，就是注意力的全部结构。** 剩下的问题只是：分数该怎么算？
+Look again at line ③. The same `W` also comes from a different method.
 
-## 3. 让权重由数据决定：点积相似度
+First, give each pair of positions a score (here, all scores are 0). Fill the scores in the upper triangle (the future) with `−∞`. Then apply the softmax of Chapter 5 to each row. Because `e^{−∞} = 0`, the weights of the future positions are exactly 0. The other positions have the same score, so they share the weight equally.
 
-平均的毛病是每个 token 一样重要。实际上，有的 token 很关键，有的无关紧要。那就让分数由数据决定：两个位置越"相关"，分数越高。
+**This skeleton, "scores → mask → softmax → weighted average", is the full structure of attention.** Only one question is left: how do we calculate the scores?
 
-第 2 章讲过点积的几何意义：两个向量方向越一致，点积越大。所以最直接的分数就是 `x_t · x_s`，一次算完就是 `X @ Xᵀ`（形状 `(T, T)`）：
+## 3. Let the data set the weights: dot-product similarity
+
+The problem with the average is that all tokens have the same importance. In real text, some tokens are important and some are not. So let the data set the scores: when two positions are more "related", their score is higher.
+
+Chapter 2 gave the geometric meaning of the dot product: when two vectors point in more similar directions, their dot product is larger. So the most direct score is `x_t · x_s`. For all pairs at once, the scores are `X @ Xᵀ` (shape `(T, T)`):
 
 ```python
 def dot_product_weights(x):
     scores = x @ x.T                   # scores[t, s] = x_t · x_s
-    return causal_softmax(scores)      # 上三角填 −∞，再按行 softmax
+    return causal_softmax(scores)      # fill the upper triangle with −∞, then softmax on each row
 ```
 
-输出（同一组 5 个向量）：
+The output (the same 5 vectors) is:
 
 ```
-   因果 mask + softmax 后的权重（每行和为 1）：
+   Weights after causal mask + softmax (each row sums to 1):
 [[1.   0.   0.   0.   0.  ]
  [0.41 0.59 0.   0.   0.  ]
  [0.28 0.23 0.48 0.   0.  ]
  [0.06 0.14 0.04 0.76 0.  ]
  [0.1  0.05 0.09 0.01 0.75]]
-   5/5 个位置权重最大的都是自己：x·x = |x|² 往往最大，所以要用 Q、K 两个不同的投影
+   5/5 positions give the largest weight to themselves: x·x = |x|² is often the largest, so we need two different projections, Q and K
 ```
 
-权重不再均匀了，这一步方向是对的。但出现了一个新问题：**每个位置最关注的都是自己**。原因很简单，`x·x = |x|²`，一个向量和自己的方向总是完全一致。可是预测下一个 token 时，我们往往需要找的恰恰是"和我不一样、但对我有用"的 token。
+The weights are not uniform now, so this step goes in the correct direction. But a new problem occurs: **each position gives the most attention to itself**. The reason is `x·x = |x|²`: a vector always points in exactly the same direction as itself. But to predict the next token, we often need a token that is "different from me, but useful to me".
 
-## 4. Q、K、V：同一个输入，三个角色
+## 4. Q, K, V: one input, three roles
 
-解决办法是：给每个 token 准备三个不同的向量，都用第 2 章的线性变换 `y = XW` 得到：
+The solution is to give each token three different vectors. Each vector comes from the linear transformation `y = XW` of Chapter 2:
 
 ```
-Q = X W_q     查询（query）：我在找什么
-K = X W_k     键（key）：我有什么特征，供别人匹配
-V = X W_v     值（value）：如果你关注我，我交给你什么
+Q = X W_q     query: what am I looking for?
+K = X W_k     key: which features do I have, for others to match?
+V = X W_v     value: what do I give you if you attend to me?
 ```
 
-位置 t 对位置 s 的分数改成 **t 的查询和 s 的键的点积** `q_t · k_s`；加权平均的对象也从 `x` 换成 `v`。`W_q`、`W_k`、`W_v` 都是训练出来的参数（形状 `(C, C)`），模型可以学会"元音去找前面的辅音""空格后的字母去找上一个词"之类的匹配规则，而不再只能找自己。
+The score of position t for position s becomes **the dot product of the query of t and the key of s**, `q_t · k_s`. The weighted average also changes: it averages `v`, not `x`. `W_q`, `W_k`, and `W_v` are parameters that training learns (shape `(C, C)`). The model can learn matching rules such as "a vowel looks for the consonant before it" or "a letter after a space looks for the previous word". It no longer finds only itself.
 
-一个类比：Q 是你在搜索框里输入的关键词，K 是每篇文章的标签，V 是文章正文。关键词和标签越匹配，你从那篇文章里拿走的内容越多。只不过这里的"匹配"是软的：每篇文章都拿一点，比例由 softmax 决定。
+An analogy: Q is the keyword that you type in a search box. K is the tag of each article, and V is the text of the article. When the keyword and a tag match better, you take more content from that article. But here the "match" is soft: you take a little from every article, and softmax sets the proportions.
 
-## 5. 缩放点积注意力，以及为什么除以 √d
+## 5. Scaled dot-product attention, and why we divide by √d
 
-把所有查询和所有键一次算完，就是 `Q Kᵀ`。整个注意力写成一行（Vaswani 等人 2017，式 1）：
+Calculate all queries against all keys at the same time: the result is `Q Kᵀ`. Then the full attention fits in one line (Vaswani et al. 2017, Equation 1):
 
 ```
 Attention(Q, K, V) = softmax( Q Kᵀ / √d + mask ) V
 ```
 
-`d` 是 q、k 的维度。代码只有几行（[`code/02_attention_from_scratch.py`](code/02_attention_from_scratch.py)）：
+`d` is the dimension of q and k. The code has only a few lines ([`code/02_attention_from_scratch.py`](code/02_attention_from_scratch.py)):
 
 ```python
 def attention(q, k, v, causal=True):
@@ -118,127 +124,135 @@ def attention(q, k, v, causal=True):
     if causal:
         T = q.shape[-2]
         future = torch.triu(torch.ones(T, T, dtype=torch.bool), diagonal=1)
-        scores = scores.masked_fill(future, float("-inf"))      # 未来位置 → −∞
-    weights = torch.softmax(scores, dim=-1)                     # 每行和为 1
-    return weights @ v, weights                                 # 加权平均 V
+        scores = scores.masked_fill(future, float("-inf"))      # future positions → −∞
+    weights = torch.softmax(scores, dim=-1)                     # each row sums to 1
+    return weights @ v, weights                                 # weighted average of V
 ```
 
-**为什么要除以 √d？** 原论文的解释是：假设 q、k 的每个分量都是均值 0、方差 1 的独立随机数，那么 `q·k = Σ q_i k_i` 是 d 个方差为 1 的项相加，方差就是 d。d 越大，分数之间差得越开，softmax 就越接近 one-hot（几乎只看一个位置），梯度也越小。除以 √d，方差回到 1。
+**Why do we divide by √d?** The original paper gives this explanation. Assume that each component of q and k is an independent random number with mean 0 and variance 1. Then `q·k = Σ q_i k_i` is a sum of d terms with variance 1, so its variance is d. When d is larger, the scores spread farther apart, and softmax comes closer to one-hot (it looks at almost only one position). The gradient also becomes smaller. Division by √d brings the variance back to 1.
 
-[`code/03_why_sqrt_d.py`](code/03_why_sqrt_d.py) 直接测：每个查询面对 16 个键，重复 2000 次。
+[`code/03_why_sqrt_d.py`](code/03_why_sqrt_d.py) measures this directly. Each query has 16 keys, and the test runs 2000 times.
 
 ```bash
 uv run python chapters/08-attention/code/03_why_sqrt_d.py
 ```
 
-| d | 不缩放：分数方差 | 最大权重 | 有效个数 | 梯度大小 | 缩放后：分数方差 | 最大权重 | 有效个数 | 梯度大小 |
+| d | No scaling: score variance | Max weight | Effective count | Gradient size | With scaling: score variance | Max weight | Effective count | Gradient size |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 16 | 15.9 | 0.672 | 2.91 | 0.285 | 1.0 | 0.241 | 10.93 | 0.303 |
 | 64 | 64.7 | 0.842 | 1.66 | 0.176 | 1.0 | 0.243 | 10.81 | 0.304 |
 | 256 | 254.4 | 0.921 | 1.29 | 0.102 | 1.0 | 0.248 | 10.73 | 0.305 |
 | 1024 | 1026.8 | 0.957 | 1.14 | 0.058 | 1.0 | 0.245 | 10.75 | 0.305 |
 
-- "有效个数"是 `e^熵`：权重均匀分给 16 个位置时是 16，全压在一个位置上时是 1。
-- "梯度大小"是 softmax 雅可比矩阵 `diag(p) − ppᵀ` 的 Frobenius 范数，衡量分数上的梯度能有多少传过 softmax。
+- The "effective count" is `e^entropy`. It is 16 when the weights are spread evenly over 16 positions, and 1 when all the weight is on one position.
+- The "gradient size" is the Frobenius norm of the softmax Jacobian `diag(p) − ppᵀ`. It measures how much of the gradient on the scores can pass through softmax.
 
-不缩放时，d = 1024 的分数方差约 1027，和理论值 d 吻合；最大权重 0.957，有效个数 1.14，几乎只看一个位置，梯度大小只剩缩放后的五分之一左右。缩放后，四种 d 的数字几乎一样——**除以 √d 让注意力的"软硬程度"和头的维度无关**。真实模型的 head_dim 通常是 64 或 128（例如 gpt-oss 每个头 64 维、DeepSeek-V3 每个头 128 维），这一步必不可少。
+Without scaling, the score variance at d = 1024 is about 1027, which agrees with the theoretical value d. The max weight is 0.957 and the effective count is 1.14: attention looks at almost only one position. The gradient size is only about one fifth of the value with scaling. With scaling, the numbers for the four values of d are almost the same. **Division by √d makes the "softness" of attention independent of the head dimension.** In real models, head_dim is usually 64 or 128 (for example, gpt-oss uses 64 dimensions per head, and DeepSeek-V3 uses 128 dimensions per head). Thus this step is necessary.
 
-## 6. 因果 mask：不许偷看答案
+## 6. Causal mask: do not look at the answer
 
-语言模型的任务是用前文预测下一个 token。训练时我们把整段序列一次喂进去，同时让每个位置预测它的下一个 token（第 7 章）。如果位置 t 能看到位置 t+1，它就直接"抄到了答案"。所以每个位置只能看自己和之前的位置：把分数矩阵的上三角填成 `−∞`，这叫**因果 mask（causal mask）**。原论文的说法是"masking out (setting to −∞) all values in the input of the softmax which correspond to illegal connections"。
+The task of a language model is to predict the next token from the earlier text. In training, we give the full sequence to the model at one time, and each position predicts its next token at the same time (Chapter 7). If position t can see position t+1, it can "copy the answer" directly. So each position can see only itself and the earlier positions.
 
-`02_attention_from_scratch.py` 里做了一个因果性检验：把一段序列最后 3 个位置的输入换成别的随机数，前 5 个位置的输出必须一字不变。
+We fill the upper triangle of the score matrix with `−∞`. This is the **causal mask**. The original paper describes it as "masking out (setting to −∞) all values in the input of the softmax which correspond to illegal connections".
+
+`02_attention_from_scratch.py` does a causality test. It replaces the inputs at the last 3 positions of a sequence with other random numbers. The outputs at the first 5 positions must not change at all.
 
 ```
-改掉位置 5–7 的输入后，位置 0–4 输出的最大变化：0.0e+00；位置 5–7 的最大变化：0.35
+New inputs at positions 5–7: max output change at positions 0–4: 0.0e+00; at positions 5–7: 0.35
 ```
 
-## 7. 多头注意力：同时有几种看法
+## 7. Multi-head attention: several views at the same time
 
-一组注意力权重只能表达一种"看法"：每个位置按一种规则分配注意力。但一个 token 可能同时需要"前一个字是什么"和"这个词从哪开始"两种信息。**多头注意力（multi-head attention）**把 C 维切成 H 份，每份 `d = C / H` 维，各自独立做一遍注意力，最后拼回来，再乘一个输出矩阵 `W_o`：
+One set of attention weights can express only one "view": each position distributes its attention by one rule. But a token can need two kinds of information at the same time, for example "what is the previous character" and "where does this word start". **Multi-head attention** splits the C dimensions into H parts of `d = C / H` dimensions. Each part does attention independently. Then we concatenate the parts and multiply the result by an output matrix `W_o`:
 
 ```python
 q = q.view(B, T, self.H, self.d).transpose(1, 2)    # (B, T, C) → (B, H, T, d)
-out, w = attention(q, k, v, causal=True)            # 每个头各算各的
-out = out.transpose(1, 2).reshape(B, T, C)          # 拼回去
-out = self.wo(out)                                  # 输出投影
+out, w = attention(q, k, v, causal=True)            # each head calculates on its own
+out = out.transpose(1, 2).reshape(B, T, C)          # concatenate the heads again
+out = self.wo(out)                                  # output projection
 ```
 
-把"头"这个维度挪到前面，当成批的一部分，所有头就能在一次矩阵乘法里并行算完。每一步的形状（B = 2，T = 8，C = 32，H = 4，脚本实际打印）：
+Move the "head" dimension to the front and treat it as part of the batch. Then all heads run in parallel in one matrix multiplication. The table gives the shape after each step (B = 2, T = 8, C = 32, H = 4, as the script prints them):
 
-| 步骤 | 形状 | 含义 |
+| Step | Shape | Meaning |
 |---|---|---|
-| 输入 `x` | (2, 8, 32) | (B, T, C) |
+| Input `x` | (2, 8, 32) | (B, T, C) |
 | `q = x @ Wq` | (2, 8, 32) | (B, T, C) |
-| 切头 | (2, 4, 8, 8) | (B, H, T, d) |
-| 权重 `softmax(QKᵀ/√d)` | (2, 4, 8, 8) | (B, H, T, T) |
-| 每个头的输出 `w @ v` | (2, 4, 8, 8) | (B, H, T, d) |
-| 拼接各头 | (2, 8, 32) | (B, T, C) |
-| 输出 `@ Wo` | (2, 8, 32) | (B, T, C) |
+| Split into heads | (2, 4, 8, 8) | (B, H, T, d) |
+| Weights `softmax(QKᵀ/√d)` | (2, 4, 8, 8) | (B, H, T, T) |
+| Output of each head `w @ v` | (2, 4, 8, 8) | (B, H, T, d) |
+| Concatenate the heads | (2, 8, 32) | (B, T, C) |
+| Output `@ Wo` | (2, 8, 32) | (B, T, C) |
 
-（这里 T 和 d 恰好都是 8，别看混了：权重是 T × T，每个头的输出是 T × d。）
+(Here T and d are both 8. Do not mix them up: the weights are T × T, and the output of each head is T × d.)
 
-参数量是 `4 × C² = 4096`（Wq、Wk、Wv、Wo 各 C × C），**和切成几个头无关**：多头不增加参数，只是换了一种组织方式。原论文用 8 个头，每头 64 维。
+The number of parameters is `4 × C² = 4096` (Wq, Wk, Wv, and Wo are each C × C). **It does not depend on the number of heads.** Multiple heads do not add parameters; they only organize the parameters in a different way. The original paper uses 8 heads with 64 dimensions per head.
 
-## 8. 对拍：和 PyTorch 官方实现逐位一致
+## 8. Parity check: the same output as the official PyTorch implementation
 
 ```bash
 uv run python chapters/08-attention/code/02_attention_from_scratch.py
 ```
 
-脚本把同一组权重分别交给我们手写的 `attention` 和 PyTorch 的 `F.scaled_dot_product_attention(q, k, v, is_causal=True)`：
+The script gives the same weights to our handwritten `attention` and to PyTorch's `F.scaled_dot_product_attention(q, k, v, is_causal=True)`:
 
 ```
-和 F.scaled_dot_product_attention(is_causal=True) 的最大差：9.7e-08
-参数量：4096 = 4 × C² = 4 × 32²（Wq、Wk、Wv、Wo，和头数无关）
+Max difference from F.scaled_dot_product_attention(is_causal=True): 9.7e-08
+Parameters: 4096 = 4 × C² = 4 × 32² (Wq, Wk, Wv, Wo; does not depend on the number of heads)
 ```
 
-差在 10⁻⁷ 量级，就是 float32 的舍入误差。确认两者一致之后，后面的代码就可以放心地用官方函数——它在 GPU 上还有快得多的实现（见"从极简到生产级"）。
+The difference is of the order of 10⁻⁷. This is float32 rounding error. Now we know that the two implementations agree, so the later code can use the official function with confidence. On the GPU, the official function also has much faster implementations (see "From minimal code to production code").
 
-## 9. 训练一个单层注意力模型，看它到底在看哪里
+## 9. Train a one-layer attention model and see where it looks
 
-公式推完了，来真的训练一下。[`code/04_train_attention.py`](code/04_train_attention.py) 在 Tiny Shakespeare（`assets/tiny_corpus/shakespeare.txt`，约 1.1MB，65 种字符，全是 ASCII，所以 1 字符 = 1 字节）上训练三个字符级模型。它们只差"怎么混合前文"这一步，其余完全相同：同样的 embedding（加一个可学习的位置向量，第 9 章换成 RoPE）、同样的输出层、同样的 AdamW、同样的 2000 步、同样的数据顺序。
+We have derived the formulas. Now we train a real model. [`code/04_train_attention.py`](code/04_train_attention.py) trains three character-level models on Tiny Shakespeare (`assets/tiny_corpus/shakespeare.txt`, about 1.1 MB, 65 distinct characters, all ASCII, so 1 character = 1 byte).
+
+The models differ in only one step: how they mix the earlier text. All other parts are the same. The models use the same embedding (plus a learnable position vector; Chapter 9 replaces it with RoPE) and the same output layer. They also use the same AdamW, the same 2000 steps, and the same data order.
 
 ```python
 h = self.tok(idx) + self.pos(torch.arange(T))
 if self.mode == "attention":
-    out, w = self.mix(h, return_weights=True)      # 本章的 MultiHeadAttention
-    h = h + out                                    # 残差连接（第 6 章）
+    out, w = self.mix(h, return_weights=True)      # MultiHeadAttention from this chapter
+    h = h + out                                    # residual connection (Chapter 6)
 elif self.mode == "average":
     W = torch.tril(torch.ones(T, T))
-    W = W / W.sum(1, keepdim=True)                 # 固定的均匀权重
+    W = W / W.sum(1, keepdim=True)                 # fixed uniform weights
     h = h + self.wo(W @ self.wv(h))
 logits = self.head(h)
 ```
 
 ```bash
-uv run python chapters/08-attention/code/04_train_attention.py     # CPU 单线程约 1 分钟
+uv run python chapters/08-attention/code/04_train_attention.py     # about 1 minute on one CPU thread
 ```
 
-（脚本里有一行 `torch.set_num_threads(1)`：这么小的模型，多线程的调度开销比计算本身还大。在我们的构建机上，机器繁忙时 4 线程每步比单线程慢了约 100 倍。）
+(The script has the line `torch.set_num_threads(1)`. For a model this small, the overhead of thread scheduling is larger than the computation itself. On our build machine, when the machine was busy, each step with 4 threads was about 100 times slower than with one thread.)
 
-| 模型 | 参数量 | 验证损失（nats/字符） | bits-per-byte |
+| Model | Parameters | Validation loss (nats/character) | bits-per-byte |
 |---|---:|---:|---:|
-| bigram（只看当前字符 + 位置） | 12,481 | 2.487 | 3.588 |
-| 均匀平均（前缀平均） | 20,673 | 2.463 | 3.553 |
-| 注意力（4 头，每头 16 维） | 28,865 | 2.083 | 3.005 |
+| bigram (only the current character + position) | 12,481 | 2.487 | 3.588 |
+| uniform average (prefix average) | 20,673 | 2.463 | 3.553 |
+| attention (4 heads, 16 dimensions per head) | 28,865 | 2.083 | 3.005 |
 
-bits-per-byte 就是第 7 章的指标：损失除以 ln 2（这里 1 字符 = 1 字节）。几点观察：
+Bits-per-byte is the metric of Chapter 7: the loss divided by ln 2 (here 1 character = 1 byte). Look at these results:
 
-- **均匀平均几乎没用**：多了 8192 个参数，损失只从 2.487 降到 2.463。看得见前文，但每个字一样重要，模型没法从一锅"平均汤"里挑出有用的信息。
-- **注意力降到 2.083**：参数只再多 8192 个，每个字节少用 0.58 个比特。看得见前文还不够，**关键是会挑**。
-- 注意力模型 2000 步时损失还在下降（1500 步 2.111 → 2000 步 2.083），多训一会儿还会更好；这里只是为了一分钟跑完。
+- **The uniform average helps almost nothing.** It adds 8192 parameters, but the loss decreases only from 2.487 to 2.463. The model can see the context, but every character has the same weight. The model cannot pick the useful information out of an even mix of all characters.
+- **Attention decreases the loss to 2.083.** It adds only 8192 more parameters, and it uses 0.58 fewer bits per byte. To see the context is not sufficient. **The important thing is to select.**
+- At step 2000, the loss of the attention model still decreases (2.111 at step 1500 → 2.083 at step 2000). More training would make it better. We stop here only so that the script finishes in one minute.
 
-**它到底在看哪里？** 脚本统计了验证集上每个头平均把权重放在"往前数 k 个"位置上的比例：
+**Where does it really look?** On the validation set, the script measures the mean fraction of weight that each head puts on the position "k steps back":
 
-| 头 | 自己 (k=0) | 前 1 个 | 前 2 个 | 更早 (k≥3) |
+| Head | Self (k=0) | 1 back | 2 back | Earlier (k≥3) |
 |---|---:|---:|---:|---:|
 | 0 | 0.10 | 0.17 | 0.50 | 0.23 |
 | 1 | 0.21 | 0.62 | 0.09 | 0.08 |
 | 2 | 0.14 | 0.32 | 0.26 | 0.28 |
 | 3 | 0.23 | 0.57 | 0.10 | 0.10 |
 
-四个头自己分了工：头 1 和头 3 主要看前 1 个字符，头 0 主要看前 2 个字符，头 2 分散得最开。没有人告诉模型要这样做。多个头合起来，它相当于自己拼出了一个"看前两三个字符"的模型（有点像 trigram），而且权重还会随内容变化。脚本还把注意力矩阵画成了字符热力图，下面是头 1 在 `First Citizen:\nBefore we proceed any further, hear me speak.` 最后一段上的节选（行 = 当前字符，列 = 被看的字符；符号越密权重越大：` .:-=+*#%@` 依次对应 0–0.1、0.1–0.2……0.9–1.0；`␣` 是空格）：
+The four heads divide the work among themselves. Heads 1 and 3 look mainly at the previous character. Head 0 looks mainly at the character 2 positions back. Head 2 spreads its weight the most.
+
+Nobody told the model to do this. Together, the heads make a model that "looks at the previous two or three characters" (a little like a trigram). The weights of this model also change with the content.
+
+The script also draws each attention matrix as a character heat map. Below is an excerpt for head 1 on the last part of `First Citizen:\nBefore we proceed any further, hear me speak.` A row is the current character, and a column is the attended character. A denser symbol means a larger weight: ` .:-=+*#%@` stand for 0–0.1, 0.1–0.2, …, 0.9–1.0. `␣` is a space.
 
 ```
     Before␣we␣proceed␣any␣further,␣hear␣me␣speak.
@@ -260,85 +274,97 @@ bits-per-byte 就是第 7 章的指标：损失除以 ln 2（这里 1 字符 = 1
   .                                           .#
 ```
 
-大部分行的 `@` 都落在对角线左边一格：头 1 是一个"看前一个字符"的头。但它不是死板的固定偏移，脚本逐个位置打印了权重最大的字符（`→k前` 表示往前数 k 个）：
+In most rows, the `@` is one column left of the diagonal: head 1 is a "look at the previous character" head. But it does not use a rigid fixed offset. For each position, the script prints the character with the largest weight (`→k back` means k positions back):
 
 ```
-头 1 在 ', hear me speak.' 上每个位置权重最大的字符：
-  ,→1前「r」1.00   ␣→0前「␣」0.94   h→1前「␣」0.96   e→1前「h」0.60
-  a→1前「e」0.90   r→1前「a」0.99   ␣→0前「␣」0.89   m→1前「␣」0.99
-  e→1前「m」0.99   ␣→0前「␣」0.93   s→1前「␣」1.00   p→1前「s」0.79
-  e→1前「p」0.70   a→1前「e」0.37   k→1前「a」0.50   .→1前「k」0.76
+Head 1 on ', hear me speak.': the character with the largest weight at each position:
+  ,→1 back 'r' 1.00   ␣→0 back '␣' 0.94   h→1 back '␣' 0.96   e→1 back 'h' 0.60
+  a→1 back 'e' 0.90   r→1 back 'a' 0.99   ␣→0 back '␣' 0.89   m→1 back '␣' 0.99
+  e→1 back 'm' 0.99   ␣→0 back '␣' 0.93   s→1 back '␣' 1.00   p→1 back 's' 0.79
+  e→1 back 'p' 0.70   a→1 back 'e' 0.37   k→1 back 'a' 0.50   .→1 back 'k' 0.76
 
-头 0 在 ', hear me speak.' 上每个位置权重最大的字符：
-  ,→43前「i」0.89   ␣→7前「u」0.28   h→2前「,」0.66   e→2前「␣」0.50
-  a→2前「h」0.38   r→0前「r」0.36   ␣→2前「a」0.27   m→3前「a」0.61
-  e→1前「m」0.83   ␣→6前「e」0.27   s→2前「e」0.54   p→0前「p」0.77
-  e→2前「s」0.87   a→2前「p」0.99   k→1前「a」0.61   .→56前「s」0.32
+Head 0 on ', hear me speak.': the character with the largest weight at each position:
+  ,→43 back 'i' 0.89   ␣→7 back 'u' 0.28   h→2 back ',' 0.66   e→2 back '␣' 0.50
+  a→2 back 'h' 0.38   r→0 back 'r' 0.36   ␣→2 back 'a' 0.27   m→3 back 'a' 0.61
+  e→1 back 'm' 0.83   ␣→6 back 'e' 0.27   s→2 back 'e' 0.54   p→0 back 'p' 0.77
+  e→2 back 's' 0.87   a→2 back 'p' 0.99   k→1 back 'a' 0.61   .→56 back 's' 0.32
 ```
 
-- **头 1 的规则随内容变化**：在字母上，它几乎只看前一个字符（`r→a` 0.99、`m→␣` 0.99）；可一到**空格**，它就改看空格自己（0.94、0.89、0.93）。同一个头、同样的相对位置，权重却不同——这正是"由数据决定权重"。
-- **头 0 大多看前 2 个字符**（`e→s` 0.87、`a→p` 0.99），但在逗号和句号上，它把大部分权重放在了序列开头附近（逗号 → 43 个字符之前 `First` 里的 `i`，0.89）。标点处它似乎没什么可取的，就把权重"倒"在开头。这和"前沿观察"里提到的 attention sink 现象看起来很像，但在这个小模型上我们没有进一步验证。
+- **The rule of head 1 changes with the content.** On letters, it looks almost only at the previous character (`r→a` 0.99, `m→␣` 0.99). But at a **space**, it looks at the space itself (0.94, 0.89, 0.93). The head is the same and the relative position is the same, but the weights are different. This is exactly what "the data sets the weights" means.
+- **Head 0 mostly looks 2 characters back** (`e→s` 0.87, `a→p` 0.99). But on the comma and the period, it puts most of its weight near the start of the sequence. For the comma, the top weight (0.89) is on the `i` in `First`, 43 characters back. At punctuation, the head seems to have nothing useful to take, so it puts the weight on the start. This looks similar to the attention sink in "Frontier notes". But we did not examine it further on this small model.
 
-视频里用紫色热力图展示了头 1 和头 0 在 `further, hear me speak.` 上的完整矩阵。
+In the video, purple heat maps show the full matrices of heads 1 and 0 on `further, hear me speak.`.
 
-也要说清楚这个模型的局限：单层、没有前馈网络、只训练了一分钟，它学不到语法，更谈不上理解。它只发现了一件事：离得近的字符最有用。第 9 章把注意力放进完整的 Transformer 块、叠很多层之后，才会出现更复杂的模式。
+We must also state the limits of this model. It has one layer, no feed-forward network, and only one minute of training. It cannot learn grammar, and it does not understand the text. It found only one fact: nearby characters are the most useful. In Chapter 9, we put attention into a full Transformer block and stack many layers. Only then do more complex patterns appear.
 
-## 10. 小结
+## 10. Summary
 
-- **问题**：bigram 只看前一个 token；RNN 把前文压进固定大小的状态、且只能顺序计算。
-- **骨架**：输出 = 前文向量的加权平均。下三角矩阵乘法一次算完所有位置；分数 → 因果 mask（上三角 −∞）→ softmax → 加权平均。
-- **Q、K、V**：三个线性投影。分数 = 查询和键的点积，平均的对象是值。
-- **缩放**：`q·k` 的方差约为 d，除以 √d 后约为 1，softmax 不再退化成 one-hot。
-- **多头**：C 维切成 H 份各算注意力，拼回来乘 `W_o`；形状 `(B,T,C) → (B,H,T,d) → (B,H,T,T) → (B,T,C)`；参数量 4C² 与头数无关。
-- **实测**：从零实现与官方 SDPA 最大差 9.7e-08；单层注意力把验证损失从 2.487（bigram）降到 2.083，均匀平均只到 2.463。
+- **Problem**: A bigram model looks only at the previous token. An RNN compresses the context into a state of fixed size, and it can only calculate in sequence.
+- **Skeleton**: The output is a weighted average of the context vectors. One lower-triangular matrix multiplication calculates all positions at once. The steps are: scores → causal mask (−∞ in the upper triangle) → softmax → weighted average.
+- **Q, K, V**: Three linear projections. The score is the dot product of a query and a key. The average is over the values.
+- **Scaling**: The variance of `q·k` is about d. After division by √d, it is about 1, and softmax no longer becomes one-hot.
+- **Multi-head**: Split C into H parts and run attention on each part. Concatenate the results and multiply by `W_o`. The shapes are `(B,T,C) → (B,H,T,d) → (B,H,T,T) → (B,T,C)`. The parameter count 4C² does not depend on the number of heads.
+- **Measurements**: The max difference between the from-scratch implementation and the official SDPA is 9.7e-08. One attention layer decreases the validation loss from 2.487 (bigram) to 2.083. The uniform average reaches only 2.463.
 
 ---
 
-## GPU 实测（单张 RTX 3090）
+## GPU measurements (one RTX 3090)
 
-> 上面正文里的数字都来自 CPU 运行。本节换到一张 NVIDIA GeForce RTX 3090（24 GB 显存，Ampere 架构；规格表：BF16 张量核稠密峰值约 71 TFLOPS，FP32 约 35.6 TFLOPS，显存带宽约 936 GB/s）上实测，环境：PyTorch 2.11.0+cu128、CUDA 12.8，2026 年 10 月。这张卡的功耗上限被服务器设成了 240 W（出厂默认 350 W），持续满载时会降频，所以算力、带宽的绝对值比满功耗的 3090 偏低，看相对关系更可靠。没有 GPU 可以跳过本节。
+> All numbers in the text above come from CPU runs. In this section, we measure on one NVIDIA GeForce RTX 3090 (24 GB of GPU memory, Ampere architecture). Its data sheet gives a dense BF16 tensor-core peak of about 71 TFLOPS, FP32 of about 35.6 TFLOPS, and a memory bandwidth of about 936 GB/s.
+>
+> Environment: PyTorch 2.11.0+cu128, CUDA 12.8, October 2026. The server sets the power limit of this card to 240 W (the factory default is 350 W). Under a continuous full load, the card lowers its clock. Thus the absolute compute and bandwidth are lower than on a 3090 at full power, and the relative values are more reliable. If you do not have a GPU, skip this section.
 
-运行：
+Run:
 
 ```bash
 uv run python chapters/08-attention/code/06_gpu_sdpa_backends.py
 ```
 
-形状取主线模型的注意力：batch 1、16 个查询头、head_dim 128、BF16、因果 mask。"手写"就是第 5 节那个 `attention` 函数，原样搬到 GPU 上；另外三列是 `F.scaled_dot_product_attention` 用 `sdpa_kernel` 分别锁定 math、efficient、flash 三个后端。耗时是 CUDA event 计时的中位数（毫秒）：
+The shapes are those of the attention in the main-line model: batch 1, 16 query heads, head_dim 128, BF16, causal mask. "Handwritten" is the `attention` function from Section 5, moved to the GPU without changes. The other three columns use `F.scaled_dot_product_attention`, with `sdpa_kernel` locked to the math, efficient, or flash backend. The times are medians of CUDA event timing (milliseconds):
 
-| T | 手写 `attention` | SDPA math | SDPA efficient | SDPA flash |
+| T | Handwritten `attention` | SDPA math | SDPA efficient | SDPA flash |
 |---:|---:|---:|---:|---:|
 | 512 | 0.22 | 0.50 | 0.09 | 0.08 |
 | 1K | 0.59 | 1.59 | 0.23 | 0.18 |
 | 2K | 2.56 | 6.74 | 0.70 | 0.42 |
 | 4K | 11.06 | 28.19 | 1.73 | 1.36 |
 | 8K | 44.36 | 110.76 | 6.60 | 4.96 |
-| 16K | 170.74 | 显存不够 | 29.21 | 23.50 |
-| 32K | 显存不够 | 显存不够 | 119.55 | 102.95 |
+| 16K | 170.74 | out of memory | 29.21 | 23.50 |
+| 32K | out of memory | out of memory | 119.55 | 102.95 |
 
-同一次运行的峰值额外显存（MiB，调用过程中比调用前多占的最高值，不含 q、k、v 本身）。第二列是 16 个头的 T × T 分数矩阵按 BF16 存有多大，作为参照：
+The next table gives the peak extra GPU memory in the same run (MiB). This is the highest memory use during the call, minus the memory use before the call; it does not include q, k, v. The second column is a reference: the size of the T × T score matrices of 16 heads in BF16.
 
-| T | T × T 分数矩阵 | 手写 `attention` | SDPA math | SDPA efficient | SDPA flash |
+| T | T × T score matrices | Handwritten `attention` | SDPA math | SDPA efficient | SDPA flash |
 |---:|---:|---:|---:|---:|---:|
 | 512 | 8 | 18 | 53 | 2 | 2 |
 | 1K | 32 | 69 | 180 | 4 | 4 |
 | 2K | 128 | 268 | 656 | 8 | 8 |
 | 4K | 512 | 1,056 | 2,496 | 16 | 16 |
 | 8K | 2,048 | 4,192 | 9,728 | 32 | 33 |
-| 16K | 8,192 | 16,704 | 显存不够 | 64 | 65 |
-| 32K | 32,768 | 显存不够 | 显存不够 | 128 | 130 |
+| 16K | 8,192 | 16,704 | out of memory | 64 | 65 |
+| 32K | 32,768 | out of memory | out of memory | 128 | 130 |
 
-脚本最后换成 GQA 的形状（16 个查询头共享 8 组 K/V，T = 4096），打开 `enable_gqa=True`：flash 能跑，和"先把 K/V 复制成 16 份再算"的结果最大差 7.8e-03（BF16 舍入量级），额外显存 16 MiB，先复制 K/V 要 48 MiB；efficient 不能跑（`No available kernel`，PyTorch 给的原因是它要求 q、k、v 的头数相同）；math 能跑。不指定后端时，MHA 和 GQA 默认选的都是 flash。
+At the end, the script changes to a GQA shape (16 query heads share 8 K/V groups, T = 4096) and sets `enable_gqa=True`. Flash runs. Its max difference from "first copy K/V to 16 heads, then calculate" is 7.8e-03 (BF16 rounding level). Its extra memory is 16 MiB, but the version that copies K/V first needs 48 MiB.
 
-第二张表就是引导问题 2 里那个 `T × T` 的实物。手写版多占的显存几乎正好是分数矩阵的两倍（`QKᵀ/√d` 和 softmax 的结果各存一份），T 翻一倍它就涨 4 倍：16K 时 16.3 GiB，照这个比例 32K 要 64 GiB，24 GB 的卡放不下；efficient 和 flash 只多占"输出"那么一点（16K 时 64 MiB），随 T 线性增长，因为它们分块算，从不把 T × T 的矩阵写进显存。但 FlashAttention 并没有少算：T 翻一倍，flash 的耗时照样涨约 4 倍，计算量还是 T²；它在 16K 比手写版快 7 倍多（23.5 ms 对 170.7 ms），省下的是把 T × T 矩阵写进显存再读出来的来回（原理在第 14 章）。出乎意料的是 SDPA 的 math 后端比我们手写的还慢、还费显存（4K 时 28 ms、2.4 GiB，手写 11 ms、1.0 GiB）：它先把 BF16 输入转成 float32 再算，换来的是精度（脚本开头的对拍里，它和 flash 与 float32 参考的最大差都是 7.3e-03，手写的 BF16 版是 1.6e-02）。下面表格里"SDPA 在 CUDA 上会自动选用 FlashAttention-2"这一条，在这张卡、BF16 下成立，GQA 也一样走 flash，不用真的复制 K/V。
+Efficient does not run (`No available kernel`; the reason from PyTorch is that it needs the same number of heads for q, k, and v). Math runs. With no backend given, the default for both MHA and GQA is flash.
 
-## 从极简到生产级
+The second table shows the real size of the `T × T` term from guided question 2. The extra memory of the handwritten version is almost exactly two times the score matrix. It keeps one copy of `QKᵀ/√d` and one copy of the softmax result. When T doubles, this memory becomes 4 times larger. At 16K, it is 16.3 GiB. At this rate, 32K needs 64 GiB, which does not fit on a 24 GB card.
 
-主线模型的注意力在 [`zero/model.py`](../../zero/model.py) 的 `Attention` 类里。骨架和本章的 `MultiHeadAttention` 一模一样：三个投影 `wq`、`wk`、`wv`，缩放点积，因果 mask，多头，输出投影 `wo`，参数名都相同。`Attention.forward` 的核心（省略了 transpose，几行稍作合并）：
+Efficient and flash use only a little more memory, about the size of the output (64 MiB at 16K). This memory grows linearly with T. The reason is that they calculate in blocks and never write the T × T matrix to GPU memory.
+
+But FlashAttention does not calculate less. When T doubles, the time of flash still grows about 4 times, because the computation is still T². At 16K, flash is more than 7 times faster than the handwritten version (23.5 ms vs 170.7 ms). It saves the round trip: writing the T × T matrix to GPU memory and reading it back (Chapter 14 explains how).
+
+A surprise: the SDPA math backend is slower than our handwritten version, and it uses more memory. At 4K, math needs 28 ms and 2.4 GiB, and the handwritten version needs 11 ms and 1.0 GiB. Math first converts the BF16 inputs to float32, and this gives more precision. In the parity check at the start of the script, math and flash both have a max difference of 7.3e-03 from the float32 reference. The handwritten BF16 version has 1.6e-02.
+
+The table below says that "SDPA automatically selects FlashAttention-2 on CUDA". On this card with BF16, this statement is true, and GQA also uses flash with no real copy of K/V.
+
+## From minimal code to production code
+
+The attention of the main-line model is the `Attention` class in [`zero/model.py`](../../zero/model.py). Its skeleton is the same as the `MultiHeadAttention` of this chapter: three projections `wq`, `wk`, `wv`, scaled dot product, causal mask, multiple heads, and the output projection `wo`. The parameter names are also the same. This is the core of `Attention.forward` (without the transposes, and with a few lines merged):
 
 ```python
 q = self.q_norm(self.wq(x).view(bsz, seqlen, self.n_heads, self.head_dim))      # QK-Norm
-k = self.k_norm(self.wk(x).view(bsz, seqlen, self.n_kv_heads, self.head_dim))   # GQA：K/V 头更少
+k = self.k_norm(self.wk(x).view(bsz, seqlen, self.n_kv_heads, self.head_dim))   # GQA: fewer K/V heads
 v = self.wv(x).view(bsz, seqlen, self.n_kv_heads, self.head_dim)
 q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)                          # RoPE
 if kv_cache is not None:
@@ -348,103 +374,103 @@ out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=is_
 return self.wo(out.reshape(bsz, seqlen, self.n_heads * self.head_dim))
 ```
 
-| 极简版（本章） | 生产级（`zero/model.py` 的 `Attention`） | 为什么 |
+| Minimal code (this chapter) | Production code (`Attention` in `zero/model.py`) | Why |
 |---|---|---|
-| `wq`、`wk`、`wv` 三个 `nn.Linear(C, C)` | 同样是三个独立的投影（不是融合成一个大矩阵），但 `wk`、`wv` 的输出是 `kv_dim = n_kv_heads × head_dim`；全部无 bias | 参数名和形状与 Hugging Face 的 Qwen3 一一对应，才能直接加载官方权重对拍；不用 bias：Qwen3 去掉了 Qwen2 的 QKV bias，OLMo 2 也不用任何 bias |
-| 头数 H，每头 `d = C/H` | `n_heads` 个查询头，`n_kv_heads` 个 K/V 头；`head_dim` 可以不等于 `dim / n_heads` | **GQA**（分组查询注意力）：几个查询头共用一组 K/V，KV cache 按比例变小。第 10 章讲 |
-| 直接用 q、k | `q_norm`、`k_norm`：对每个头的 q、k 在 head_dim 上做 RMSNorm | **QK-Norm**：防止注意力分数过大导致训练发散（Qwen3、OLMo 2、Gemma 3 都用）。第 9 章讲 |
-| 可学习的位置向量加在输入上（`04` 里） | `apply_rope`：对 q、k 做旋转位置编码 | **RoPE**：位置信息直接进入 q·k，只和相对距离有关。第 9 章讲 |
-| 手写 `softmax(QKᵀ/√d)` + `masked_fill` | `F.scaled_dot_product_attention(..., is_causal=..., enable_gqa=...)` | 在 CUDA 上 BF16/FP16 会自动选用 FlashAttention-2 内核，不把 T × T 的权重矩阵写进显存；`enable_gqa` 让 SDPA 自己广播 K/V 头，不用复制（memory-efficient 内核不支持 GQA，所以 GQA 只能走 Flash；FP32 时退回 math 后端）。已在 RTX 3090 上验证：BF16 + `enable_gqa=True` 默认就走 Flash（见本章"GPU 实测"与 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 1 节）；CPU 上用的是 PyTorch 的 C++ 参考实现 |
-| 一次处理整段序列 | 可选 `kv_cache`：推理时把算过的 K/V 存起来；有历史时按 `start_pos` 构造 mask（单个新 token 不需要 mask，分块 prefill 用显式布尔 mask） | 生成时每步只算新 token 的 q/k/v。第 10 章讲 |
+| Three `nn.Linear(C, C)`: `wq`, `wk`, `wv` | Also three separate projections (not fused into one large matrix), but the output of `wk` and `wv` is `kv_dim = n_kv_heads × head_dim`. No bias anywhere | The parameter names and shapes match Qwen3 in Hugging Face one to one, so we can load the official weights directly for a parity check. No bias: Qwen3 removed the QKV bias of Qwen2, and OLMo 2 uses no bias at all |
+| H heads, `d = C/H` per head | `n_heads` query heads and `n_kv_heads` K/V heads. `head_dim` can be different from `dim / n_heads` | **GQA** (grouped-query attention): several query heads share one K/V group, so the KV cache becomes smaller in proportion. See Chapter 10 |
+| Uses q and k directly | `q_norm`, `k_norm`: RMSNorm on the q and k of each head, over head_dim | **QK-Norm**: prevents attention scores that are too large and make training diverge (Qwen3, OLMo 2, and Gemma 3 use it). See Chapter 9 |
+| A learnable position vector, added to the input (in `04`) | `apply_rope`: rotary position embedding on q and k | **RoPE**: the position information goes directly into q·k and depends only on the relative distance. See Chapter 9 |
+| Handwritten `softmax(QKᵀ/√d)` + `masked_fill` | `F.scaled_dot_product_attention(..., is_causal=..., enable_gqa=...)` | On CUDA with BF16/FP16, SDPA automatically selects the FlashAttention-2 kernel, which does not write the T × T weight matrix to GPU memory. `enable_gqa` lets SDPA broadcast the K/V heads itself, with no copy. (The memory-efficient kernel does not support GQA, so GQA can only use Flash. With FP32, SDPA falls back to the math backend.) Verified on an RTX 3090: BF16 + `enable_gqa=True` uses Flash by default (see "GPU measurements" in this chapter and Section 1 of [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md)). On the CPU, SDPA uses the PyTorch C++ reference implementation |
+| Processes the full sequence at one time | Optional `kv_cache`: during inference, it stores the K/V that it has already calculated. With history, it builds the mask from `start_pos` (one new token needs no mask; chunked prefill uses an explicit Boolean mask) | During generation, each step calculates q/k/v only for the new token. See Chapter 10 |
 
-**对拍**：[`code/05_zero_parity.py`](code/05_zero_parity.py) 把本章 `MultiHeadAttention` 的权重原样加载进 `zero.model.Attention`（关掉 QK-Norm，传入 `cos = 1、sin = 0` 让 RoPE 变成恒等变换），再打开 GQA 和"手工复制 K/V"比较：
+**Parity check**: [`code/05_zero_parity.py`](code/05_zero_parity.py) loads the weights of this chapter's `MultiHeadAttention` without changes into `zero.model.Attention`. It turns off QK-Norm and passes `cos = 1, sin = 0`, which makes RoPE the identity transformation. Then it turns on GQA and compares it with a manual copy of K/V:
 
 ```bash
 uv run python chapters/08-attention/code/05_zero_parity.py
 ```
 
 ```
-① 极简 MultiHeadAttention vs zero.model.Attention（关掉 QK-Norm 和 RoPE）最大差：8.9e-08
-② GQA 的 Wk 形状 (16, 32)（MHA 是 (32, 32)）：K/V 投影和 KV cache 都只有一半大
-   zero 的 GQA vs 手工"复制 K/V 再做多头注意力" 最大差：8.9e-08
-   注意力参数量：MHA 4096，GQA 3072
+① Minimal MultiHeadAttention vs zero.model.Attention (QK-Norm and RoPE off), max difference: 8.9e-08
+② GQA Wk shape (16, 32) (MHA: (32, 32)): the K/V projections and the KV cache are half the size
+   zero GQA vs manual "copy K/V, then multi-head attention", max difference: 8.9e-08
+   Attention parameters: MHA 4096, GQA 3072
 ```
 
-整个模型层面，[`tests/test_model_hf_parity.py`](../../tests/test_model_hf_parity.py) 随机初始化一个小的 Hugging Face `Qwen3ForCausalLM`（GQA 4 个查询头 / 2 个 K/V 头 + QK-Norm + RoPE，也覆盖无 GQA、YaRN、`head_dim ≠ dim / n_heads` 的情形），把权重搬进 `zero`，要求 logits 在 1e-5 以内一致（`uv run pytest tests/test_model_hf_parity.py`）。所以"本章极简版 ↔ zero 的 Attention ↔ 官方 Qwen3 实现"三者是一条对得上的链。
+For the full model, [`tests/test_model_hf_parity.py`](../../tests/test_model_hf_parity.py) randomly initializes a small Hugging Face `Qwen3ForCausalLM`. It uses GQA with 4 query heads / 2 K/V heads, QK-Norm, and RoPE. The test also covers no GQA, YaRN, and `head_dim ≠ dim / n_heads`. The test moves the weights into `zero` and requires the logits to agree within 1e-5 (`uv run pytest tests/test_model_hf_parity.py`). Thus "the minimal version of this chapter ↔ the zero `Attention` ↔ the official Qwen3 implementation" is a chain in which each link agrees.
 
 ---
 
-## 前沿观察
+## Frontier notes
 
-**注意力 sink / softmax 分母里的可学习偏置**：标准 softmax 强制每行权重加起来等于 1，哪怕当前位置其实"什么都不需要看"。gpt-oss 给每个头的 softmax 分母加了一个可学习的偏置，让注意力可以"不看任何 token"（模型卡 §2.2，引用了 "Attention is off by one" 和 attention sinks 的工作）。本章核实过的其他家族（Qwen3、Llama 3、OLMo 2、Gemma 3、DeepSeek-V3）的报告里没有这一项，所以只在这里提一句，正文仍讲标准 softmax。
+**Attention sink / a learnable bias in the softmax denominator**: The standard softmax forces the weights of each row to sum to 1, even when the current position does not need to look at anything. gpt-oss adds a learnable bias to the softmax denominator of each head, so attention can "look at no token" (model card §2.2, which cites "Attention is off by one" and the work on attention sinks). The reports of the other families that this chapter checked (Qwen3, Llama 3, OLMo 2, Gemma 3, DeepSeek-V3) do not include this item. So we only mention it here, and the main text still uses the standard softmax.
 
 ---
 
-## 采用方与来源
+## Adopters and sources
 
-多头缩放点积因果注意力是所有 decoder-only 大模型的基本部件，差别只在变体（GQA、MLA、局部/全局交替等，在第 10、21–23 章讲）。以下均为技术报告或模型卡里的明确表述。
+Multi-head scaled dot-product causal attention is a basic part of all decoder-only large models. The models differ only in the variants (GQA, MLA, alternating local/global attention, and others; see Chapters 10 and 21–23). All the items below are explicit statements in technical reports or model cards.
 
-| 技术 | 采用方 | 来源 |
+| Technique | Adopters | Source |
 |---|---|---|
-| 缩放点积注意力 `softmax(QKᵀ/√d_k)V`、多头 + 输出投影、解码器里用 −∞ 屏蔽未来位置 | 提出者：Transformer（h = 8，d_k = 64） | [Vaswani et al. 2017 §3.2](https://arxiv.org/abs/1706.03762) |
-| 多头因果自注意力（GQA 形式） | Qwen3（"Grouped Query Attention"，如 Qwen3-0.6B 为 16 个查询头 / 8 个 KV 头）；Llama 3（"standard, dense Transformer"，GQA 8 个 KV 头，8B 为 32 个注意力头）；Gemma 3（"decoder-only transformer … Grouped-Query Attention"）；gpt-oss（每层 64 个 64 维查询头，GQA 8 个 KV 头） | [Qwen3 §2 表 1](https://arxiv.org/abs/2505.09388)、[Llama 3 §3.2 表 3](https://arxiv.org/abs/2407.21783)、[Gemma 3 §2](https://arxiv.org/abs/2503.19786)、[gpt-oss 模型卡 §2.2](https://arxiv.org/abs/2508.10925) |
-| 多头因果自注意力（标准 MHA 形式） | OLMo 2 7B / 13B（32/32、40/40 "MHA"；32B 换成 GQA 40/8） | [OLMo 2 §2.1 表 3](https://arxiv.org/abs/2501.00656) |
-| 多头因果自注意力（MLA 形式） | DeepSeek-V3：128 个头，每头 128 维，输出仍是 `Σ_j softmax_j(q·k/√(d_h + d_h^R)) v`，再乘 `W_O` | [DeepSeek-V3 §2.1.1 式 (10)(11)、§4.2](https://arxiv.org/abs/2412.19437) |
-| QK-Norm（本章只预告） | Qwen3（"introduce QK-Norm … to ensure stable training"）；OLMo 2；Gemma 3（"replace the soft-capping of Gemma 2 with QK-norm"） | 同上 |
-| FlashAttention（通过 SDPA 使用，行业标准） | gpt-oss（"leverage the Flash Attention algorithms"）；PyTorch SDPA 在 CUDA 上自动选用 FlashAttention-2 | [gpt-oss 模型卡 §2.4](https://arxiv.org/abs/2508.10925)、[Dao et al. 2022](https://arxiv.org/abs/2205.14135)、PyTorch `scaled_dot_product_attention` 文档 |
+| Scaled dot-product attention `softmax(QKᵀ/√d_k)V`, multiple heads + output projection, −∞ to mask future positions in the decoder | Proposed by: Transformer (h = 8, d_k = 64) | [Vaswani et al. 2017 §3.2](https://arxiv.org/abs/1706.03762) |
+| Multi-head causal self-attention (GQA form) | Qwen3 ("Grouped Query Attention"; for example, Qwen3-0.6B has 16 query heads / 8 KV heads); Llama 3 ("standard, dense Transformer", GQA with 8 KV heads, 32 attention heads for 8B); Gemma 3 ("decoder-only transformer … Grouped-Query Attention"); gpt-oss (64 query heads of 64 dimensions per layer, GQA with 8 KV heads) | [Qwen3 §2 Table 1](https://arxiv.org/abs/2505.09388), [Llama 3 §3.2 Table 3](https://arxiv.org/abs/2407.21783), [Gemma 3 §2](https://arxiv.org/abs/2503.19786), [gpt-oss model card §2.2](https://arxiv.org/abs/2508.10925) |
+| Multi-head causal self-attention (standard MHA form) | OLMo 2 7B / 13B (32/32 and 40/40 "MHA"; 32B changes to GQA 40/8) | [OLMo 2 §2.1 Table 3](https://arxiv.org/abs/2501.00656) |
+| Multi-head causal self-attention (MLA form) | DeepSeek-V3: 128 heads, 128 dimensions per head. The output is still `Σ_j softmax_j(q·k/√(d_h + d_h^R)) v`, multiplied by `W_O` | [DeepSeek-V3 §2.1.1 Eq. (10)(11), §4.2](https://arxiv.org/abs/2412.19437) |
+| QK-Norm (only a preview in this chapter) | Qwen3 ("introduce QK-Norm … to ensure stable training"); OLMo 2; Gemma 3 ("replace the soft-capping of Gemma 2 with QK-norm") | Same as above |
+| FlashAttention (used through SDPA; industry standard) | gpt-oss ("leverage the Flash Attention algorithms"); PyTorch SDPA automatically selects FlashAttention-2 on CUDA | [gpt-oss model card §2.4](https://arxiv.org/abs/2508.10925), [Dao et al. 2022](https://arxiv.org/abs/2205.14135), PyTorch `scaled_dot_product_attention` documentation |
 
-待核实：无。
-
----
-
-## 引导问题
-
-带着这些问题去问 Claude Code，直到你能用自己的话讲清楚：
-
-1. 如果去掉因果 mask 直接训练语言模型，训练损失会怎样？验证时（真的一个个生成时）又会怎样？为什么？可以让 Claude Code 帮你在 `04_train_attention.py` 里加一个开关试试。
-2. 注意力的计算量里有一项是 `T × T`。上下文从 4K 扩到 128K，这一项涨多少倍？这和第 14 章的 FlashAttention、第 22–23 章的滑动窗口和线性注意力有什么关系？
-3. 注意力本身对输入顺序是"无感"的：把前文打乱，同一个查询得到的加权平均一样吗？那模型是怎么知道顺序的？（`04` 里的 `self.pos` 是干什么的？第 9 章的 RoPE 为什么更好？）
-4. 为什么多头注意力的参数量和头数无关？如果头数多到每头只有 1 维，会发生什么？（提示：原论文表 3 的 (A) 行做过这个实验。）
-5. `05_zero_parity.py` 里 GQA 把 K/V 头从 4 个减到 2 个。省下来的是哪些参数？推理时省下来的又是什么？（第 10 章会算这笔账。）
-
-## 动手任务
-
-每个任务都要真的运行代码、看到结果。
-
-**任务 1（基础）**：在 `01_average_to_attention.py` 里，把点积分数换成"先分别乘两个不同的随机矩阵 `Wq`、`Wk` 再做点积"（`(x @ Wq) @ (x @ Wk).T`），再看一次"有几个位置最关注自己"。结果变了吗？这说明了 Q、K 分开的什么好处？
-
-**任务 2（核心）**：在 `02_attention_from_scratch.py` 的 `attention` 函数里去掉 `/ math.sqrt(d)`，把 `C` 改成 256、`H` 改成 1（单头 256 维），打印第一个头的权重矩阵。每行最大的权重大约是多少？和第 5 节的表格对得上吗？
-
-**任务 3（挑战）**：在 `04_train_attention.py` 里加第四种模式 `"no_mask"`：注意力不加因果 mask。训练后比较它的训练损失和验证损失（注意验证时也不加 mask），然后写一个"真正逐字生成"的函数，比较 `attention` 和 `no_mask` 两个模型生成的文本。损失低的那个生成得更好吗？为什么？
+To be verified: none.
 
 ---
 
-## 想深入：CS336
+## Guided questions
 
-本章对应斯坦福 [CS336: Language Modeling from Scratch](https://cs336.stanford.edu/)（Spring 2026）：
+Ask Claude Code these questions. Continue until you can explain the answers in your own words:
 
-- **第 3 讲：架构与超参（Architectures and hyperparameters）**：从原始 Transformer 讲到现代大模型的各种架构选择，包括注意力的变体（MHA、GQA 等）、归一化和位置编码。本章是其中"注意力"这一块的入门，其余部分在第 9 章。
-- **作业 1（Basics）**：要求从零实现 `scaled_dot_product_attention`、因果多头自注意力（带和不带 RoPE 两个版本）、Transformer 块和完整的语言模型，并通过单元测试（见作业仓库 [stanford-cs336/assignment1-basics](https://github.com/stanford-cs336/assignment1-basics) 的 `tests/adapters.py` 里的 `run_scaled_dot_product_attention`、`run_multihead_self_attention` 等接口；具体要求以当期作业说明为准）。本章的 `02_attention_from_scratch.py` 可以直接当作这一部分的热身。
+1. Train a language model without the causal mask. What happens to the training loss? What happens at validation (when the model really generates one token at a time)? Why? You can ask Claude Code to add a switch to `04_train_attention.py` and try it.
+2. The computation of attention has a `T × T` term. When the context grows from 4K to 128K, how many times larger does this term become? How is this related to FlashAttention in Chapter 14, and to sliding windows and linear attention in Chapters 22–23?
+3. Attention itself does not "feel" the order of its inputs. If you shuffle the context, does the same query get the same weighted average? Then how does the model know the order? (What does `self.pos` in `04` do? Why is RoPE in Chapter 9 better?)
+4. Why does the parameter count of multi-head attention not depend on the number of heads? What happens if there are so many heads that each head has only 1 dimension? (Hint: row (A) of Table 3 in the original paper did this experiment.)
+5. In `05_zero_parity.py`, GQA reduces the K/V heads from 4 to 2. Which parameters does this save? What does it save during inference? (Chapter 10 does this calculation.)
 
-课程页有每一讲的讲义和 YouTube 录像。
+## Hands-on tasks
+
+For each task, run the code and look at the result.
+
+**Task 1 (basic)**: In `01_average_to_attention.py`, change the dot-product score. First multiply `x` by two different random matrices `Wq` and `Wk`, then take the dot product (`(x @ Wq) @ (x @ Wk).T`). Count again how many positions attend most to themselves. Did the result change? Which advantage of separate Q and K does this show?
+
+**Task 2 (core)**: In the `attention` function of `02_attention_from_scratch.py`, remove `/ math.sqrt(d)`. Change `C` to 256 and `H` to 1 (one head with 256 dimensions). Print the weight matrix of the first head. About how large is the largest weight in each row? Does it agree with the table in Section 5?
+
+**Task 3 (challenge)**: In `04_train_attention.py`, add a fourth mode `"no_mask"`: attention without the causal mask. After training, compare its training loss and validation loss (do not use the mask at validation either). Then write a function that really generates text one character at a time. Compare the text that the `attention` model and the `no_mask` model generate. Does the model with the lower loss generate better text? Why?
 
 ---
 
-## 本章参考文献
+## Go deeper: CS336
 
-- Vaswani et al. *Attention Is All You Need*，NeurIPS 2017（缩放点积注意力、√d_k 的方差解释、多头、因果 mask）：<https://arxiv.org/abs/1706.03762>
-- Bahdanau, Cho, Bengio. *Neural Machine Translation by Jointly Learning to Align and Translate*（注意力的起源；固定长度向量是瓶颈），2014：<https://arxiv.org/abs/1409.0473>
-- Ainslie et al. *GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints*，2023：<https://arxiv.org/abs/2305.13245>
-- Dao et al. *FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness*，2022：<https://arxiv.org/abs/2205.14135>
-- Qwen Team. *Qwen3 Technical Report*，2025：<https://arxiv.org/abs/2505.09388>
-- Llama Team. *The Llama 3 Herd of Models*，2024：<https://arxiv.org/abs/2407.21783>
-- OLMo Team. *2 OLMo 2 Furious*，2024：<https://arxiv.org/abs/2501.00656>
-- DeepSeek-AI. *DeepSeek-V3 Technical Report*（MLA），2024：<https://arxiv.org/abs/2412.19437>
-- Gemma Team. *Gemma 3 Technical Report*，2025：<https://arxiv.org/abs/2503.19786>
-- OpenAI. *gpt-oss-120b & gpt-oss-20b Model Card*，2025：<https://arxiv.org/abs/2508.10925>
-- Karpathy. nanoGPT（`CausalSelfAttention` 的写法、用下三角矩阵求前缀平均的技巧来自配套视频 *Let's build GPT: from scratch, in code, spelled out*）：<https://github.com/karpathy/nanoGPT>、<https://github.com/karpathy/ng-video-lecture>
-- *Understanding Transformers and Attention Mechanisms: An Introduction for Applied Mathematicians*（`references.md` 已收录，适合想看更数学化推导的读者）：<https://arxiv.org/pdf/2604.00965>
-- CS336 作业 1 仓库：<https://github.com/stanford-cs336/assignment1-basics>
-- CS336（Spring 2026）：<https://cs336.stanford.edu/>
+This chapter corresponds to Stanford [CS336: Language Modeling from Scratch](https://cs336.stanford.edu/) (Spring 2026):
 
-**下一章**：注意力会搬运和混合信息，但它几乎不做"计算"：每个位置拿到的只是别人值向量的加权平均。而且我们的单层模型只看得出"前一两个字符"这种浅层模式。第 9 章，我们给注意力配上前馈网络（SwiGLU）、RMSNorm、残差和 RoPE，把很多层叠起来，搭出一个完整的现代 Transformer，并训练它生成像样的文字。
+- **Lecture 3: Architectures and hyperparameters**: from the original Transformer to the architecture choices of modern large models. These choices include the attention variants (MHA, GQA, and others), normalization, and position encoding. This chapter is an introduction to the "attention" part. Chapter 9 covers the rest.
+- **Assignment 1 (Basics)**: implement these parts from scratch: `scaled_dot_product_attention`, causal multi-head self-attention (two versions, with and without RoPE), the Transformer block, and the full language model. The code must pass the unit tests. See the interfaces such as `run_scaled_dot_product_attention` and `run_multihead_self_attention` in `tests/adapters.py` of the assignment repository [stanford-cs336/assignment1-basics](https://github.com/stanford-cs336/assignment1-basics). The assignment text of the current term gives the exact requirements. You can use `02_attention_from_scratch.py` from this chapter directly as a warm-up for this part.
+
+The course page has the lecture notes and the YouTube recordings of each lecture.
+
+---
+
+## References
+
+- Vaswani et al. *Attention Is All You Need*, NeurIPS 2017 (scaled dot-product attention, the variance explanation of √d_k, multiple heads, causal mask): <https://arxiv.org/abs/1706.03762>
+- Bahdanau, Cho, Bengio. *Neural Machine Translation by Jointly Learning to Align and Translate* (the origin of attention; a fixed-length vector is a bottleneck), 2014: <https://arxiv.org/abs/1409.0473>
+- Ainslie et al. *GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints*, 2023: <https://arxiv.org/abs/2305.13245>
+- Dao et al. *FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness*, 2022: <https://arxiv.org/abs/2205.14135>
+- Qwen Team. *Qwen3 Technical Report*, 2025: <https://arxiv.org/abs/2505.09388>
+- Llama Team. *The Llama 3 Herd of Models*, 2024: <https://arxiv.org/abs/2407.21783>
+- OLMo Team. *2 OLMo 2 Furious*, 2024: <https://arxiv.org/abs/2501.00656>
+- DeepSeek-AI. *DeepSeek-V3 Technical Report* (MLA), 2024: <https://arxiv.org/abs/2412.19437>
+- Gemma Team. *Gemma 3 Technical Report*, 2025: <https://arxiv.org/abs/2503.19786>
+- OpenAI. *gpt-oss-120b & gpt-oss-20b Model Card*, 2025: <https://arxiv.org/abs/2508.10925>
+- Karpathy. nanoGPT (the form of `CausalSelfAttention`; the trick of the prefix average with a lower-triangular matrix comes from the companion video *Let's build GPT: from scratch, in code, spelled out*): <https://github.com/karpathy/nanoGPT>, <https://github.com/karpathy/ng-video-lecture>
+- *Understanding Transformers and Attention Mechanisms: An Introduction for Applied Mathematicians* (already in `references.md`; for readers who want a more mathematical derivation): <https://arxiv.org/pdf/2604.00965>
+- CS336 Assignment 1 repository: <https://github.com/stanford-cs336/assignment1-basics>
+- CS336 (Spring 2026): <https://cs336.stanford.edu/>
+
+**Next chapter**: Attention moves and mixes information, but it does almost no "computation": each position gets only a weighted average of the value vectors of other positions. Also, our one-layer model finds only shallow patterns, such as "the previous one or two characters". In Chapter 9, we add a feed-forward network (SwiGLU), RMSNorm, residual connections, and RoPE to attention. We stack many layers to build a full modern Transformer, and we train it to generate readable text.

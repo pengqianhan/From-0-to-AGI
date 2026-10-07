@@ -27,5 +27,5 @@ kill "$smi" 2>/dev/null || true
 end=$(date +%s)
 peak=$(awk -F', ' '{if ($2 > p[$1]) p[$1] = $2} END {for (i in p) printf "GPU%s %s MiB  ", i, p[i]}' "$out.gpumem")
 echo "[$name] 物理 GPU $GPU，nproc=$NPROC，退出码 $rc，墙钟 $((end - start)) s，nvidia-smi 显存峰值：$peak"
-grep -E "模型参数|step +[0-9]+/|checkpoint 已保存|续训|Error|error" "$out.log" | tail -30
+grep -E "Model parameters|step +[0-9]+/|checkpoint saved|Resumed training|Error|error" "$out.log" | tail -30
 exit $rc

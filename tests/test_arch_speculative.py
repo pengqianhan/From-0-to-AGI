@@ -1,6 +1,8 @@
-"""推测解码（zero/arch/speculative.py，第 25 章）的正确性：
-贪心时与目标模型贪心解码逐字相同；草稿 = 目标时接受率 100%；缓存回滚后续写与从头算一致；
-单步拒绝采样的分布等于目标分布。"""
+"""Correctness of speculative decoding (zero/arch/speculative.py, Chapter 25):
+greedy output is identical to greedy decoding of the target model; with draft = target, the
+acceptance rate is 100%; after a cache rollback, the continuation agrees with a full recomputation;
+the distribution of one-step rejection sampling equals the target distribution.
+"""
 
 from __future__ import annotations
 
@@ -33,7 +35,7 @@ def _model(seed: int, dim: int = 64, n_layers: int = 2) -> Transformer:
         head_dim=dim // 4,
         ffn_dim=2 * dim,
         max_seq_len=128,
-        init_std=0.2,  # 大一点的初始化，让随机模型的分布更"尖"、贪心输出更有区分度
+        init_std=0.2,  # a larger init makes the distribution of the random model "sharper", so the greedy outputs differ more
     )
     return Transformer(cfg).eval()
 
@@ -47,8 +49,8 @@ def test_greedy_matches_target_greedy(k: int) -> None:
     ref = generate(target, PROMPT, 40, temperature=0.0)
     res = speculative_generate(target, draft, PROMPT, 40, k=k, temperature=0.0)
     assert res.tokens == ref
-    assert res.rounds <= len(ref)  # 目标模型的前向次数不会比普通解码多
-    assert res.rounds + res.accepted >= len(ref)  # 每轮 = 接受数 + 1 个纠正/奖励 token
+    assert res.rounds <= len(ref)  # the target model does not do more forward passes than normal decoding
+    assert res.rounds + res.accepted >= len(ref)  # each round = number accepted + 1 correction/bonus token
 
 
 def test_prompt_lookup_greedy_matches_target_greedy() -> None:
@@ -66,7 +68,7 @@ def test_draft_equal_target_accepts_everything() -> None:
         assert len(res.tokens) == 33
         assert res.acceptance_rate == 1.0
         assert res.accepted == res.proposed
-        # 每轮 k 个草稿 + 1 个奖励 token；33 = 6 轮 × 5 + 最后一轮 3 个
+        # Each round: k drafts + 1 bonus token; 33 = 6 rounds × 5 + 3 in the last round.
         assert res.accepted_per_round[:6] == [4] * 6
 
 
@@ -76,10 +78,10 @@ def test_cache_rollback_then_continue_matches_full_forward() -> None:
     full = model(seq)
     cache = KVCache.from_config(model.config, 1, 64)
     model(seq[:, :7], kv_cache=cache, start_pos=0)
-    model(torch.tensor([[40, 41, 42, 43]]), kv_cache=cache, start_pos=7)  # "被拒绝的草稿"写进了缓存
+    model(torch.tensor([[40, 41, 42, 43]]), kv_cache=cache, start_pos=7)  # the "rejected drafts" go into the cache
     rollback(cache, 7)
     assert cache.seq_len == 7
-    cont = model(seq[:, 7:], kv_cache=cache, start_pos=7)  # 覆盖写入正确的 token
+    cont = model(seq[:, 7:], kv_cache=cache, start_pos=7)  # overwrite with the correct tokens
     assert torch.allclose(cont, full[:, 7:], atol=1e-5)
 
 
@@ -93,7 +95,9 @@ def test_sampling_is_reproducible_and_valid() -> None:
 
 
 def test_verify_preserves_target_distribution() -> None:
-    """单个位置：草稿按 q 抽，verify 之后的 token 分布应等于 p（大数定律，TV < 0.01）。"""
+    """One position: sample the draft from q; after verify, the token distribution must equal p
+    (law of large numbers, TV < 0.01).
+    """
     torch.manual_seed(0)
     V, N = 5, 40_000
     p_logits = torch.randn(2, V) * 1.5
@@ -108,14 +112,14 @@ def test_verify_preserves_target_distribution() -> None:
         counts[new[0]] += 1
         acc += m
     assert 0.5 * (counts / N - p).abs().sum() < 0.01
-    assert abs(acc / N - torch.minimum(p, q).sum()) < 0.01  # 接受率 = Σ min(p, q)
+    assert abs(acc / N - torch.minimum(p, q).sum()) < 0.01  # acceptance rate = Σ min(p, q)
 
 
 def test_warp_probs_top_p_matches_generate_rule() -> None:
     logits = torch.tensor([3.0, 2.0, 1.0, 0.0])
     p = warp_probs(logits, 1.0, top_p=0.7)
     full = torch.softmax(logits, -1)
-    assert p[2] == 0 and p[3] == 0  # 前两个的累计概率已超过 0.7
+    assert p[2] == 0 and p[3] == 0  # the cumulative probability of the first two is already more than 0.7
     assert torch.allclose(p[:2], full[:2] / full[:2].sum())
 
 

@@ -1,1 +1,1 @@
-"""评测：少样本选择题、生成式精确匹配、工具调用评测、bootstrap 置信区间、BFCL 适配（对应第 11、20 章）。"""
+"""Evaluation: few-shot multiple choice, generative exact match, tool-call evaluation, bootstrap confidence intervals, BFCL adapter (Chapters 11 and 20)."""

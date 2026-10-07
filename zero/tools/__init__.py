@@ -1,1 +1,1 @@
-"""命令行小工具（对应第 12、21 章）：成本估算、参数量统计等。"""
+"""Small command-line tools (Chapters 12 and 21): cost estimate, parameter count, and more."""

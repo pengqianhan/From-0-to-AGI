@@ -1,62 +1,64 @@
 ---
-description: 第 18 章自我检验：偏好对齐（偏好数据、Bradley–Terry、奖励模型即二分类、RLHF 目标与 KL 缰绳、reward hacking、PPO 铺垫、DPO 推导、隐式奖励与梯度、β 与学习率、chosen 概率下降）
+description: "Chapter 18 self-check: preference alignment — preference data, Bradley–Terry, the reward model as binary classification, the RLHF objective and the KL leash, reward hacking, PPO preview, DPO derivation, implicit reward and gradient, β and learning rate, chosen probability goes down (第 18 章自检：偏好对齐——偏好数据、Bradley–Terry、奖励模型即二分类、RLHF 目标与 KL 缰绳、reward hacking、PPO 铺垫、DPO 推导、隐式奖励与梯度、β 与学习率、chosen 概率下降)"
 ---
 
-# 第 18 章自我检验：偏好对齐 —— 从 RLHF 到 DPO
+# Chapter 18 self-check: preference alignment — from RLHF to DPO
 
-用户调用了 `/ch18-dpo`，说明他们刚学完第 18 章（`chapters/18-preference-alignment/`）。你的任务是帮他们检验自己是否真正理解了，而不是告诉他们答案。
+The learner typed `/ch18-dpo`. They finished Chapter 18 (`chapters/18-preference-alignment/`). Help them check if they understand it. Do not give them the answers.
 
-**检验方式**：逐一提问下面的问题，等用户用自己的话回答后，再给出反馈——哪里说对了，哪里还有偏差，以及如何深化理解。不要一次性把所有问题都抛出去。
+**Language**: Use the language of the learner. If the learner writes in Chinese, ask the questions and give feedback in Chinese. The Chinese text of the chapter is in `README.zh.md`. Write short, clear sentences (see `docs/STYLE_GUIDE.md`).
 
----
-
-## 检验问题（按难度递进）
-
-**第一关：概念——偏好数据与奖励模型**
-
-问用户：
-> 一条偏好数据长什么样？Bradley–Terry 模型怎样把它变成概率？为什么说训练奖励模型"就是第 5 章的二分类交叉熵"？
-
-期望回答：同一提示词下一对回答 (chosen y_w, rejected y_l)，裁判可以是人、更强的模型或自动判分程序；P(y_w ≻ y_l) = σ(r_w − r_l)；损失 −log σ(r_w − r_l)，就是以 r_w − r_l 为 logit、标签恒为 1 的二分类交叉熵，初始损失 ln 2。加分：只有分数差有意义，所以奖励模型的偏置梯度恒为 0。
+**Method**: Ask the questions below one at a time. Wait for the learner to answer in their own words. Then give feedback: tell them what is correct, what is not correct, and how to make their understanding deeper. Do not ask all the questions at the same time.
 
 ---
 
-**第二关：直觉——KL 缰绳**
+## Questions (from easy to difficult)
 
-问用户：
-> RLHF 的目标是 E[r] − β·KL(π‖π_ref)。如果把 β 设成 0 会怎样？本章 `02` 的老虎机里，为什么奖励模型分一路上涨，真实质量却先升后降？
+**Level 1: concepts — preference data and the reward model**
 
-期望回答：β = 0 时策略只追奖励模型的分，会跑到奖励模型没见过、打分不可靠的区域（reward hacking）；玩具里奖励模型学到了"长 = 好"，给从没见过的 900 字注水回答最高分，β 太小时策略全押它，真实质量掉到 −0.5；β = 0.5 时真实质量最高（1.124）。KL 让策略留在 SFT 模型附近、奖励模型靠谱的地方。加分：InstructGPT 用逐 token KL 惩罚（β = 0.02），PPO 靠采样、价值基线、裁剪比例来解这个目标。
+Ask the learner:
+> What does one preference pair look like? How does the Bradley–Terry model change it into a probability? Why do we say that training a reward model "is the binary cross-entropy of Chapter 5"?
 
----
-
-**第三关：发现问题——推导与梯度**
-
-问用户：
-> 请从 RLHF 的最优解出发，推出 DPO 损失。推导里有一个没法算的 Z，它是怎么消失的？再说说 DPO 的梯度对 chosen 和 rejected 各做了什么、力度由什么决定。
-
-期望回答：最优解 π* = π_ref·exp(r/β)/Z（因为目标 = β·log Z − β·KL(π‖π*)）；反解 r = β·log(π*/π_ref) + β·log Z；代入 Bradley–Terry 只用奖励差，两个 β·log Z 抵消；用 π_θ 代替 π* 做最大似然，得到 −log σ(β[(log π_θ(y_w) − log π_ref(y_w)) − (log π_θ(y_l) − log π_ref(y_l))])。梯度抬高 chosen、压低 rejected，力度都是 β·σ(−h)，h 是隐式奖励差：排错得越离谱推得越用力。
-
-追问：
-> DPO 训练时 loss 在降、margin 在涨，能说明模型变好了吗？
-
-期望回答：不能。DPO 只管差值，chosen 的概率也可能一起掉（本章 `05`：错答案只差一点时，chosen 的 log 概率 −1.045 → −1.662，留出答对概率 0.353 → 0.223；Nemotron-4 也报告两者都下降）；学习率太大时 margin 冲很高、格式却坏了（lr = 1e-2：margin 4.26，采样格式正确率 0.473；主线冒烟测试 lr = 5e-4 后 GRPO 格式正确率 0.16 → 0）。要看留出集上的真实指标；补救如 chosen 上加 NLL（Llama 3 系数 0.2）、屏蔽格式 token。
+Expected answer: a pair of answers for the same prompt (chosen y_w, rejected y_l). The judge can be a human, a stronger model, or a program that scores automatically. P(y_w ≻ y_l) = σ(r_w − r_l). The loss is −log σ(r_w − r_l). This is the binary cross-entropy with logit r_w − r_l and a label that is always 1. The initial loss is ln 2. Extra credit: only the score difference has a meaning, so the gradient of the reward-model bias is always 0.
 
 ---
 
-**第四关：迁移——主线模型**
+**Level 2: intuition — the KL leash**
 
-问用户：
-> 主线模型的 DPO 要提升通用对话质量，同时不能伤到工具调用。你会怎样准备偏好数据？`zero/post/dpo.py` 的 `make_env_preferences` 是怎么做的？学习率、β 你会怎么定，盯哪些指标？
+Ask the learner:
+> The RLHF objective is E[r] − β·KL(π‖π_ref). What happens if you set β to 0? In the bandit of `02` in this chapter, why does the reward-model score increase all the time while the true quality first increases and then decreases?
 
-期望回答：工具调用部分用 on-policy 偏好对——当前策略采样多个回答、tool_env 可验证奖励打分，最高分（满分）当 chosen、否则用标准解答，最低分当 rejected；通用对话部分用许可证允许的开放偏好数据（HelpSteer3 CC-BY-4.0、UltraFeedback MIT，Tülu 3 混合有不可商用子集）或用许可证允许的开放模型当裁判，并做 13-gram 去污染；lr 远小于 SFT（主线默认 5e-7，Zephyr / Tülu 3 5e-7），β 从 0.1 起用开发集扫；盯工具调用格式正确率、开发集对话评测、chosen_reward 是否一起下降，而不是训练 margin。
+Expected answer: at β = 0, the policy only chases the reward-model score. It moves to regions that the reward model never saw, where the scores are not reliable (reward hacking). In the toy, the reward model learned "long = good". It gives the highest score to the 900-token padded answer that it never saw. When β is too small, the policy puts everything on that answer, and the true quality falls to −0.5. At β = 0.5, the true quality is highest (1.124). The KL term keeps the policy near the SFT model, where the reward model is reliable. Extra credit: InstructGPT uses a KL penalty at each token (β = 0.02). PPO solves this objective with sampling, a value baseline, and a clipped ratio.
 
 ---
 
-## 反馈原则
+**Level 3: find the problem — derivation and gradient**
 
-- 答对了：认可，然后追问一个更深的"为什么"。
-- 答错了：不要直接给答案，给一个提示（比如让他们改 `02_rlhf_kl.py` 的 β、或 `04_toy_dpo.py` 的学习率跑一跑），让他们重新思考。
-- 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
+Ask the learner:
+> Start from the optimal solution of RLHF and derive the DPO loss. The derivation contains a Z that we cannot calculate. How does Z disappear? Then tell what the DPO gradient does to chosen and to rejected, and what sets its strength.
 
-四关都通过后，告诉用户可以进入第 19 章（`chapters/19-reinforcement-learning/`，强化学习：GRPO 与可验证奖励，学完后用 `/ch19-rl` 自检）。
+Expected answer: the optimal solution is π* = π_ref·exp(r/β)/Z, because the objective = β·log Z − β·KL(π‖π*). Solve for r: r = β·log(π*/π_ref) + β·log Z. Put r into Bradley–Terry, which uses only the reward difference, and the two β·log Z terms cancel. Replace π* with π_θ and do maximum likelihood. The result is −log σ(β[(log π_θ(y_w) − log π_ref(y_w)) − (log π_θ(y_l) − log π_ref(y_l))]). The gradient pushes chosen up and rejected down, both with strength β·σ(−h), where h is the implicit reward difference. The worse the ranking error, the harder the push.
+
+Follow-up question:
+> During DPO training, the loss goes down and the margin goes up. Does this show that the model became better?
+
+Expected answer: no. DPO only cares about the difference, so the probability of chosen can also go down. In `05` of this chapter, with wrong answers that differ by only a little, the log-probability of chosen went from −1.045 to −1.662, and the held-out probability of the correct answer went from 0.353 to 0.223. Nemotron-4 also reports that both go down. With a learning rate that is too large, the margin goes very high, but the format breaks (lr = 1e-2: margin 4.26, fraction of well-formed samples 0.473). In the main-line smoke test, after DPO with lr = 5e-4, the GRPO format accuracy fell from 0.16 to 0. Look at real metrics on a held-out set. Fixes: add an NLL term on chosen (Llama 3 uses a coefficient of 0.2) and mask the format tokens.
+
+---
+
+**Level 4: transfer — the main-line model**
+
+Ask the learner:
+> The DPO of the main-line model must improve the general chat quality and must not damage tool calling. How do you prepare the preference data? What does `make_env_preferences` in `zero/post/dpo.py` do? How do you set the learning rate and β, and which metrics do you watch?
+
+Expected answer: for tool calling, use on-policy preference pairs. The current policy samples several answers, and the verifiable reward of tool_env scores them. The highest score (a full score) becomes chosen; otherwise, the reference solution becomes chosen. The lowest score becomes rejected. For general chat, use open preference data whose license allows it (HelpSteer3 CC-BY-4.0, UltraFeedback MIT; the Tülu 3 mixture has subsets that are not for commercial use). Or use an open model whose license allows it as the judge. Do 13-gram decontamination. The learning rate is much smaller than for SFT (main-line default 5e-7; Zephyr / Tülu 3 5e-7). Start β at 0.1 and sweep it on the development set. Watch the tool-calling format accuracy, the chat evaluation on the development set, and whether chosen_reward also goes down. Do not watch the training margin.
+
+---
+
+## Rules for feedback
+
+- If the answer is correct: say so. Then ask a deeper "why" question.
+- If the answer is not correct: do not give the answer. Give a hint. For example, ask the learner to change β in `02_rlhf_kl.py` or the learning rate in `04_toy_dpo.py` and run it. Then let them think again.
+- If the learner says "I do not know": ask them to guess first. A wrong guess is better than no guess.
+
+When the learner passes all four levels, tell them to continue to Chapter 19 (`chapters/19-reinforcement-learning/`, reinforcement learning: GRPO and verifiable rewards). After Chapter 19, they can check themselves with `/ch19-rl`.

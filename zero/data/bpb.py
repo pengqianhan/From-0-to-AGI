@@ -1,24 +1,29 @@
-"""bits-per-byte（bpb）评估：与分词器无关的验证指标（对应第 7、13 章）。
+"""Bits-per-byte (bpb) evaluation: a validation metric that does not depend on the tokenizer (Chapters 7 and 13).
 
-每 token 的 loss 不能跨分词器比较：词表大的分词器一个 token 覆盖更多字节，每个 token 当然更难猜。
-bpb 把总损失摊到原始文本的**字节**上：
+You cannot compare the loss per token across tokenizers. A tokenizer with a large vocabulary covers
+more bytes with one token, so each of its tokens is more difficult to predict.
+bpb divides the total loss by the number of **bytes** of the original text:
 
     bpb = Σ_t (−ln p(y_t | x_≤t)) / (ln 2 × Σ_t bytes(y_t))
 
-- 分子：所有被预测的目标 token 的负对数似然（nats）之和；
-- 分母：这些目标 token 在 UTF-8 下一共覆盖多少字节，再乘 ln 2 把 nats 换成 bits；
-- 特殊 token（`<|endoftext|>`、`<|im_start|>` 等）记 0 字节，并且**不计入分子**——它们不对应任何原文；
-- 标签为 ignore_index（默认 -100，或任意负数）的位置也不计入。
+- Numerator: the sum of the negative log-likelihoods (in nats) of all predicted target tokens.
+- Denominator: the number of UTF-8 bytes that these target tokens cover, multiplied by ln 2
+  to change nats to bits.
+- Special tokens (`<|endoftext|>`, `<|im_start|>`, and others) count as 0 bytes, and they are
+  **not in the numerator**. They do not correspond to any original text.
+- Positions with the label ignore_index (default -100, or any negative number) are also not counted.
 
-写法参照 nanochat 的 `evaluate_bpb`（nanochat/loss_eval.py）：先用 `token_byte_lengths(tokenizer)`
-预先算好"每个 token id → 字节数"的查找表（长度 = 词表大小），评估时 `token_bytes[y]` 一次查表。
+The method follows `evaluate_bpb` in nanochat (nanochat/loss_eval.py). First,
+`token_byte_lengths(tokenizer)` makes a lookup table "token id → number of bytes"
+(length = vocabulary size). During the evaluation, `token_bytes[y]` is one table lookup.
 
-用法（训练循环里每隔 eval_every 步调用一次）：
+Usage (call it every eval_every steps in the training loop):
 
     token_bytes = token_byte_lengths(tokenizer).to(device)
     bpb = evaluate_bpb(model, val_loader, token_bytes, steps=eval_batches)
 
-多卡时分子、分母分别 all_reduce 求和再相除（不是对各卡的 bpb 取平均）。
+With multiple GPUs, all_reduce sums the numerator and the denominator separately, and then the code
+divides them. It does not average the bpb values of the GPUs.
 """
 
 from __future__ import annotations
@@ -36,7 +41,7 @@ import torch.nn.functional as F
 
 @lru_cache(maxsize=1)
 def _byte_decoder() -> dict[str, int]:
-    """GPT-2 byte-level 的反向映射：可见字符 → 原始字节（与 `tokenizers` 的 ByteLevel 一致）。"""
+    """Reverse map of the GPT-2 byte-level encoding: visible character → original byte (same as ByteLevel in `tokenizers`)."""
     bs = list(range(ord("!"), ord("~") + 1)) + list(range(ord("¡"), ord("¬") + 1))
     bs += list(range(ord("®"), ord("ÿ") + 1))
     cs = bs[:]
@@ -50,20 +55,21 @@ def _byte_decoder() -> dict[str, int]:
 
 
 def token_bytes_of(token: str) -> bytes:
-    """byte-level BPE 词表里的一个 token 字符串（如 'Ġthe'）→ 它代表的原始字节（b' the'）。"""
+    """A token string from a byte-level BPE vocabulary (for example 'Ġthe') → the original bytes that it represents (b' the')."""
     dec = _byte_decoder()
     return bytes(dec[c] for c in token)
 
 
 def token_byte_lengths(tokenizer: Any, device: torch.device | str = "cpu") -> torch.Tensor:
-    """每个 token id 覆盖的 UTF-8 字节数，形状 (vocab_size,)，int64；特殊 token 为 0。
+    """The number of UTF-8 bytes that each token id covers. Shape (vocab_size,), int64. Special tokens get 0.
 
-    tokenizer 可以是 `zero.tokenizer.Tokenizer`（或任何有 `vocab_size`、`id_to_token`、
-    `special_tokens` 的对象，token 字符串是 byte-level 表示），也可以直接传一个
-    `Sequence[bytes | None]`（第 i 个元素是 token i 的字节；None 表示特殊 token）。
+    `tokenizer` can be a `zero.tokenizer.Tokenizer`, or any object with `vocab_size`, `id_to_token`,
+    and `special_tokens` whose token strings use the byte-level form. It can also be a
+    `Sequence[bytes | None]`: element i holds the bytes of token i, and None marks a special token.
 
-    注意：不能用 `decode([i])` 来量长度——单个 token 可能只是半个汉字，decode 会得到替换字符 '�'（3 字节），
-    长度就错了。这里直接把 byte-level 字符映射回原始字节。
+    Note: do not use `decode([i])` to measure the length. One token can be half of a Chinese
+    character. Then decode gives the replacement character '�' (3 bytes), and the length is wrong.
+    This function maps the byte-level characters directly back to the original bytes.
     """
     if isinstance(tokenizer, Sequence) and not isinstance(tokenizer, str | bytes):
         lengths = [0 if b is None else len(b) for b in tokenizer]
@@ -81,11 +87,11 @@ def token_byte_lengths(tokenizer: Any, device: torch.device | str = "cpu") -> to
 
 @dataclass
 class BpbStats:
-    """评估的原始累计量：方便多次调用后合并，或者分语料分别报告。"""
+    """Raw totals of an evaluation. You can merge the totals of several calls, or report each corpus separately."""
 
-    nats: float  # 目标 token 的负对数似然之和（自然对数）
-    bytes: int  # 这些目标 token 覆盖的字节数
-    tokens: int  # 计入的目标 token 数（不含特殊 token 与 ignore 位置）
+    nats: float  # sum of the negative log-likelihoods of the target tokens (natural log)
+    bytes: int  # number of bytes that these target tokens cover
+    tokens: int  # number of counted target tokens (no special tokens, no ignore positions)
 
     @property
     def bpb(self) -> float:
@@ -103,10 +109,10 @@ class BpbStats:
 def _batches(
     loader_or_batches: Any, steps: int | None
 ) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
-    """统一两种输入：有 next_batch() 的加载器（PackedDataLoader / MixtureLoader），或 (x, y) 的可迭代对象。"""
+    """Accept two input types: a loader with next_batch() (PackedDataLoader / MixtureLoader), or an iterable of (x, y)."""
     if hasattr(loader_or_batches, "next_batch"):
         if steps is None:
-            raise ValueError("传加载器时必须给 steps（加载器是无限循环的）")
+            raise ValueError("With a loader, you must give steps (the loader never stops)")
         for _ in range(steps):
             yield loader_or_batches.next_batch()
         return
@@ -131,10 +137,12 @@ def bpb_stats(
     ignore_index: int = -100,
     autocast: Any = None,
 ) -> BpbStats:
-    """累计 nats、字节数、token 数（多卡时已 all_reduce 求和）。
+    """Add up the nats, bytes, and tokens. With multiple GPUs, all_reduce sums them.
 
-    model(x) 返回 logits (B, T, V)（zero.model.Transformer 的约定；返回 tuple 时取第一个）。
-    autocast：可选的上下文管理器工厂（如 Trainer.autocast），logits 一律转成 float32 再算交叉熵。
+    model(x) returns logits (B, T, V), as zero.model.Transformer does. If it returns a tuple,
+    the first element is used.
+    autocast: an optional context-manager factory (for example Trainer.autocast). The logits are
+    always changed to float32 before the cross-entropy.
     """
     was_training = model.training
     model.eval()
@@ -152,12 +160,12 @@ def bpb_stats(
                 logits = _logits(model, x)
             y = y.reshape(-1)
             valid = (y >= 0) & (y != ignore_index)
-            y_safe = torch.where(valid, y, torch.zeros_like(y))  # 负数标签不能拿去查表 / 算交叉熵
+            y_safe = torch.where(valid, y, torch.zeros_like(y))  # a negative label cannot index the table or go into the cross-entropy
             nats = F.cross_entropy(
                 logits.float().reshape(-1, logits.size(-1)), y_safe, reduction="none"
             )
             nb = torch.where(valid, token_bytes[y_safe], torch.zeros_like(y_safe))
-            counted = nb > 0  # 特殊 token（0 字节）和 ignore 位置都不计入分子
+            counted = nb > 0  # special tokens (0 bytes) and ignore positions are not in the numerator
             total_nats += (nats.double() * counted).sum()
             total_bytes += nb.sum()
             total_tokens += counted.sum()
@@ -177,5 +185,5 @@ def evaluate_bpb(
     ignore_index: int = -100,
     autocast: Any = None,
 ) -> float:
-    """验证集 bits-per-byte（越低越好）。参数见 `bpb_stats`。"""
+    """Bits-per-byte on the validation set (lower is better). See `bpb_stats` for the parameters."""
     return bpb_stats(model, loader_or_batches, token_bytes, steps, ignore_index, autocast).bpb

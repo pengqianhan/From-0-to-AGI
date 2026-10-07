@@ -1,22 +1,24 @@
-# tiny 预训练配置：CPU 上几十秒跑完的冒烟测试（第 14 章"极小配置演示"）。
-# 约 1.3M 参数，用 assets/tiny_corpus/ 现场训练分词器、切分片，然后训练几百步。
+# Tiny pretraining config: a smoke test that runs in tens of seconds on a CPU (Chapter 14, "Tiny-configuration demo").
+# About 1.3M parameters. It trains a tokenizer on assets/tiny_corpus/ and makes the shards on the spot,
+# then trains for a few hundred steps.
 #   uv run python -m zero.train.pretrain --config configs/tiny/pretrain.toml
-# 注意：这个规模的结果只能说明"代码能跑通、loss 会降"，不能说明任何关于主线模型的结论。
+# Note: at this scale, the results show only that "the code runs and the loss decreases".
+# They do not support any conclusion about the main-line model.
 
 [model]
-vocab_size = 2048        # 必须等于分词器的词表大小（[data.prepare] vocab_size）
-dim = 128                # 隐藏维度
+vocab_size = 2048        # Must be equal to the vocabulary size of the tokenizer ([data.prepare] vocab_size)
+dim = 128                # Hidden dimension
 n_layers = 4
 n_heads = 4
-n_kv_heads = 2           # GQA：每 2 个查询头共享一组 K/V
+n_kv_heads = 2           # GQA: each 2 query heads share one set of K/V
 head_dim = 32
-ffn_dim = 384            # SwiGLU 中间维度（= 3 × dim）
+ffn_dim = 384            # SwiGLU hidden dimension (= 3 × dim)
 rope_theta = 10000.0
-max_seq_len = 256        # 预留给中期训练把 seq_len 翻倍
+max_seq_len = 256        # Reserved for mid-training, which doubles seq_len
 norm_eps = 1e-6
 qk_norm = true
-tie_embeddings = false   # 主线模型共享 embedding；但在这个极小规模上实测不共享时 loss 更快走出
-                         # "只会猜高频词"的平台期（同样 200 步 val 5.71 vs 5.91），冒烟演示更清楚
+tie_embeddings = false   # The main-line model ties the embeddings. But at this tiny scale, we measured that untied embeddings
+                         # leave the "guess only frequent words" plateau faster (val 5.71 vs 5.91 at 200 steps). The smoke demo is clearer
 init_std = 0.02
 
 [train]
@@ -26,7 +28,7 @@ micro_batch_size = 16
 grad_accum_steps = 1
 device = "cpu"
 dtype = "fp32"
-cpu_threads = 1          # 单线程：CPU 被其他进程占用时多线程反而慢很多
+cpu_threads = 1          # One thread: when other processes use the CPU, many threads are much slower
 out_dir = "out/tiny/pretrain"
 eval_every = 100
 eval_batches = 4
@@ -36,7 +38,7 @@ tokenizer = "out/tiny/tokenizer.json"
 seq_len = 128
 val = "out/tiny/data/*_val_*.bin"
 
-# 三个来源按权重混合（见 zero/data/mixture.py）
+# Mix the three sources by weight (see zero/data/mixture.py)
 [[data.sources]]
 name = "shakespeare"
 path = "out/tiny/data/shakespeare_train_*.bin"
@@ -52,7 +54,7 @@ name = "code"
 path = "out/tiny/data/code_train_*.bin"
 weight = 0.1
 
-# 分片不存在时，从原始文本现场生成（只在 tiny 配置里用）
+# If the shards do not exist, make them from the raw text on the spot (only in the tiny configs)
 [data.prepare]
 raw_files = ["assets/tiny_corpus/*.txt"]
 out_dir = "out/tiny/data"
@@ -61,14 +63,14 @@ val_fraction = 0.05
 doc_chars = 2000
 
 [optim]
-lr = 3e-3                # 极小模型可以用很大的学习率
+lr = 3e-3                # A tiny model can use a very large learning rate
 weight_decay = 0.1
 beta1 = 0.9
 beta2 = 0.95
 grad_clip = 1.0
 
 [schedule]
-kind = "wsd"             # warmup → 稳定 → 最后 20% 线性衰减
+kind = "wsd"             # warmup → stable → linear decay in the last 20%
 warmup_steps = 30
 decay_frac = 0.2
 min_lr_ratio = 0.1

@@ -1,88 +1,89 @@
-# zero：主线模型的生产级代码
+# zero: production code of the main-line model
 
-`zero` 是本课主线模型的生产级代码（暂名）。它和各章 `code/` 里的极简代码讲同一件事，但要能真正训练 0.6–0.8B 的模型。规范见 `GOAL.md` 9.1。
+**English** · [中文](DESIGN.zh.md)
 
-## 设计原则
+`zero` is the production code of the main-line model of this course (working name). It covers the same ideas as the minimal code in the `code/` folder of each chapter, but it can really train a model with 0.6–0.8B parameters. The requirements are in `GOAL.md` 9.1.
 
-1. **可读优先**：参考 nanochat 的风格——单节点、纯 PyTorch、没有黑盒训练框架。每个文件开头一段中文说明它对应哪一章。
-2. **架构与 Qwen3 稠密模型兼容**：Pre-Norm RMSNorm、SwiGLU、RoPE、GQA、QK-Norm、共享 embedding、无 bias。好处：
-   - 正确性可以直接对拍：随机初始化一个小的 Hugging Face `Qwen3ForCausalLM`，把权重搬进 `zero`，logits 必须一致；
-   - 导出后直接被 transformers / vLLM / llama.cpp 支持，GGUF 转换用 llama.cpp 官方脚本。
-3. **配置驱动**：所有超参在 `configs/*.toml` 里，代码不写死。三档：`configs/tiny/`（CPU 冒烟）、`configs/ladder/`（阶梯实验）、`configs/main/`（主线训练）。
-4. **测试先行**：第一步没有 GPU，可信度全靠 `tests/`。CPU 上测不了的路径（多卡、FlashAttention kernel、FP8）在代码里标注 `# 尚未在 GPU 上验证`。
-5. **离线可跑**：冒烟测试和单元测试不依赖网络。极小语料放在 `assets/tiny_corpus/`（提交进仓库，附许可证说明）。
+## Design principles
 
-## 模块与对应章节
+1. **Readability first**: follow the style of nanochat: one node, pure PyTorch, no black-box training framework. Each file starts with a paragraph that tells which chapter the file belongs to. Comments, docstrings, and printed output are in English (see Section 4 of `docs/STYLE_GUIDE.md`).
+2. **The architecture is compatible with Qwen3 dense models**: Pre-Norm RMSNorm, SwiGLU, RoPE, GQA, QK-Norm, tied embeddings, no bias. Advantages:
+   - We can check the correctness directly with a parity check: initialize a small Hugging Face `Qwen3ForCausalLM` at random, and move its weights into `zero`. The logits must agree.
+   - After export, transformers / vLLM / llama.cpp support the model directly. The GGUF conversion uses the official llama.cpp script.
+3. **Configuration-driven**: all hyperparameters are in `configs/*.toml`. The code does not hard-code them. There are three levels: `configs/tiny/` (CPU smoke test), `configs/ladder/` (ladder experiments), and `configs/main/` (main-line training).
+4. **Tests first**: Step 1 has no GPU, so the trust in the code comes only from `tests/`. In the code, mark the paths that a CPU cannot test (multiple GPUs, FlashAttention kernels, FP8) with the comment `# not verified on GPU yet`.
+5. **Runs offline**: the smoke test and the unit tests do not need a network. The tiny corpus is in `assets/tiny_corpus/` (committed to the repository, with license notes).
 
-| 模块 | 内容 | 对应章节 |
+## Modules and chapters
+
+| Module | Content | Chapters |
 |---|---|---|
-| `zero/config.py` | `ModelConfig`、`TrainConfig` 等 dataclass；`load_config(path)` 读 TOML | 9、12 |
-| `zero/model.py` | `RMSNorm`、`RotaryEmbedding`（含 YaRN 缩放）、`Attention`（GQA + QK-Norm + SDPA + KV cache）、`SwiGLU`、`Block`、`Transformer`；`Transformer.forward(tokens, kv_cache=None, start_pos=0) -> logits` | 8、9、10、15 |
-| `zero/kv_cache.py` | `KVCache`：预分配的 K/V 缓存 | 10、21 |
-| `zero/generate.py` | `sample_next(logits, temperature, top_p, generator=None)`、`generate(model, prompt_ids, max_new_tokens, temperature=1.0, top_p=1.0, use_cache=True, eos_id=None, seed=None)`（返回新 token，不含提示词和 eos）、`generate_stream(...)`（逐步产出） | 10 |
-| `zero/hf.py` | `load_from_hf_qwen3(hf_model_or_state_dict, config=None) -> Transformer`（也可传导出目录）、`export_to_hf_qwen3(model, config, out_dir, tokenizer=None, dtype=torch.bfloat16)`、`config_to_hf_qwen3(config)`、`config_from_hf_qwen3(hf_config)` | 9、20 |
-| `zero/tokenizer.py` | `train_bpe(texts, vocab_size, special_tokens) -> Tokenizer`（基于 HF `tokenizers` 的 byte-level BPE）；`Tokenizer.encode/decode/save/load`；压缩率统计 `bytes_per_token` | 7、13 |
-| `zero/data/` | `sources.py`（数据集登记表：名称、地址、许可证、语言）、`clean.py`、`dedup.py`（精确哈希 + MinHash）、`quality.py`（启发式过滤 + 分类器接口）、`decontam.py`（n-gram 去污染）、`shard.py`（分词后写成 uint32 分片）、`loader.py`（`PackedDataLoader`：分布式、可断点续传的 `state_dict`）、`mixture.py`（多来源按比例采样）、`prepare.py`（tiny 用：原始文本 → 分词器 + 训练/验证分片） | 13、14 |
-| `zero/train/` | `dist.py`（DDP/FSDP 初始化）、`schedule.py`（cosine、WSD）、`checkpoint.py`（模型、优化器、调度器、数据加载器、随机数状态）、`trainer.py`（通用训练循环：BF16 autocast、梯度累积、梯度裁剪、日志、评估、MFU 估计）、`pretrain.py`、`midtrain.py`（入口：`python -m zero.train.pretrain --config ...`） | 6、12、14、15 |
-| `zero/post/` | `chat.py`（对话模板与工具调用格式的渲染/解析）、`sft.py`（loss mask、打包）、`distill.py`（教师数据生成 + 执行验证 + logits 蒸馏损失）、`dpo.py`、`grpo.py`、`envs/tool_env.py`（模拟 API 与可验证奖励） | 16–19 |
-| `zero/eval/` | `harness.py`（少样本对数似然选择题、生成式精确匹配）、`bootstrap.py`（置信区间）、`bfcl.py`（第二步对接官方 BFCL 的适配层）、`report.py` | 11、20 |
-| `zero/export/` | `gguf.py`（调用 llama.cpp 的 `convert_hf_to_gguf.py`） | 20 |
-| `zero/arch/` | 第五部分的实验模块，**不用于主线**：`mla.py`、`sliding_window.py`、`linear_attention.py`（含 Gated DeltaNet 递推）、`moe.py`、`mtp.py`、`speculative.py` | 21–25 |
-| `zero/tools/` | `estimate_cost.py`（卡时与费用估算）、`count_params.py`、`kv_cache_calc.py` | 12、21 |
-| `zero/demo/cli.py` | 本地工具调用命令行助手 | 20 |
-| `zero/smoke.py` | 端到端冒烟测试：`uv run python -m zero.smoke` | 全部 |
+| `zero/config.py` | `ModelConfig`, `TrainConfig`, and other dataclasses; `load_config(path)` reads TOML | 9, 12 |
+| `zero/model.py` | `RMSNorm`, `RotaryEmbedding` (with YaRN scaling), `Attention` (GQA + QK-Norm + SDPA + KV cache), `SwiGLU`, `Block`, `Transformer`; `Transformer.forward(tokens, kv_cache=None, start_pos=0) -> logits` | 8, 9, 10, 15 |
+| `zero/kv_cache.py` | `KVCache`: a preallocated K/V cache | 10, 21 |
+| `zero/generate.py` | `sample_next(logits, temperature, top_p, generator=None)`, `generate(model, prompt_ids, max_new_tokens, temperature=1.0, top_p=1.0, use_cache=True, eos_id=None, seed=None)` (returns the new tokens, without the prompt and without eos), `generate_stream(...)` (yields one step at a time) | 10 |
+| `zero/hf.py` | `load_from_hf_qwen3(hf_model_or_state_dict, config=None) -> Transformer` (also accepts an export folder), `export_to_hf_qwen3(model, config, out_dir, tokenizer=None, dtype=torch.bfloat16)`, `config_to_hf_qwen3(config)`, `config_from_hf_qwen3(hf_config)` | 9, 20 |
+| `zero/tokenizer.py` | `train_bpe(texts, vocab_size, special_tokens) -> Tokenizer` (a byte-level BPE based on HF `tokenizers`); `Tokenizer.encode/decode/save/load`; the compression statistic `bytes_per_token` | 7, 13 |
+| `zero/data/` | `sources.py` (data set registry: name, address, license, language), `clean.py`, `dedup.py` (exact hash + MinHash), `quality.py` (heuristic filters + classifier interface), `decontam.py` (n-gram decontamination), `shard.py` (writes tokenized uint32 shards), `loader.py` (`PackedDataLoader`: distributed, with a `state_dict` for resume), `mixture.py` (samples from multiple sources by ratio), `prepare.py` (for tiny: raw text → tokenizer + training/validation shards) | 13, 14 |
+| `zero/train/` | `dist.py` (DDP/FSDP initialization), `schedule.py` (cosine, WSD), `checkpoint.py` (model, optimizer, scheduler, data loader, random-number state), `trainer.py` (general training loop: BF16 autocast, gradient accumulation, gradient clipping, logs, evaluation, MFU estimate), `pretrain.py`, `midtrain.py` (entry point: `python -m zero.train.pretrain --config ...`) | 6, 12, 14, 15 |
+| `zero/post/` | `chat.py` (renders and parses the chat template and the tool-calling format), `sft.py` (loss mask, packing), `distill.py` (teacher data generation + execution check + logits distillation loss), `dpo.py`, `grpo.py`, `envs/tool_env.py` (simulated APIs and verifiable rewards) | 16–19 |
+| `zero/eval/` | `harness.py` (few-shot log-likelihood multiple choice, generative exact match), `bootstrap.py` (confidence intervals), `bfcl.py` (the adapter to the official BFCL for Step 2), `report.py` | 11, 20 |
+| `zero/export/` | `gguf.py` (calls `convert_hf_to_gguf.py` of llama.cpp) | 20 |
+| `zero/arch/` | The experiment modules of Part 5, **not for the main line**: `mla.py`, `sliding_window.py`, `linear_attention.py` (with the Gated DeltaNet recurrence), `moe.py`, `mtp.py`, `speculative.py` | 21–25 |
+| `zero/tools/` | `estimate_cost.py` (estimate of GPU-hours and cost), `count_params.py`, `kv_cache_calc.py` | 12, 21 |
+| `zero/demo/cli.py` | A local tool-calling command-line assistant | 20 |
+| `zero/smoke.py` | The end-to-end smoke test: `uv run python -m zero.smoke` | All |
 
-## 数据格式约定
+## Data format conventions
 
-- 预训练分片：`<name>_<idx>.bin`（`np.uint32` token 序列，无文件头，**每篇文档后面**跟一个 `<|endoftext|>`）+ `<name>.json`（元数据：分词器哈希、token 数、文档数、来源、各分片 token 数）。
-- 对话数据（SFT/DPO/RL）：JSONL，每行 `{"messages": [{"role": "system|user|assistant|tool", "content": "...", "tool_calls": [...]}], "tools": [...]}`；DPO 额外有 `chosen`/`rejected`。
-- 工具调用格式（与 Qwen/Hermes 风格一致，便于导出后被推理框架识别）：助手消息里用
-  `<tool_call>{"name": "...", "arguments": {...}}</tool_call>`，工具结果放在 `role="tool"` 的消息里。
+- Pretraining shards: `<name>_<idx>.bin` (a `np.uint32` token sequence, no file header, one `<|endoftext|>` **after each document**) + `<name>.json` (metadata: tokenizer hash, token count, document count, sources, token count of each shard).
+- Chat data (SFT/DPO/RL): JSONL. Each line is `{"messages": [{"role": "system|user|assistant|tool", "content": "...", "tool_calls": [...]}], "tools": [...]}`. DPO data also has `chosen`/`rejected`.
+- Tool-calling format (the same as the Qwen/Hermes style, so that inference frameworks recognize it after export): in the assistant message, use
+  `<tool_call>{"name": "...", "arguments": {...}}</tool_call>`. Put the tool result in a message with `role="tool"`.
 
-## 测试（`tests/`）
+## Tests (`tests/`)
 
-对应 GOAL.md 9.1 的清单：模型 logits 对拍、KV cache 一致性、分词器往返与压缩率、SFT/DPO/GRPO 损失手算对拍、断点续训一致性、工具调用模板往返与奖励函数。全部在 CPU 上几分钟内跑完：`uv run pytest`。
+The tests match the list in GOAL.md 9.1: parity of the model logits, KV cache consistency, tokenizer round trip and compression ratio, parity of the SFT/DPO/GRPO losses with hand calculations, consistency of resume from a checkpoint, round trip of the tool-calling template, and the reward functions. All tests finish on a CPU in a few minutes: `uv run pytest`.
 
-## 实现备注（zero core 完成时补充）
+## Implementation notes (added when the zero core was done)
 
-- **配置**：`load_config(path, overrides=None) -> Config`，`Config.model: ModelConfig`、`Config.train: TrainConfig`（内含 `data/optim/schedule/checkpoint/logging`）。TOML 里这些小节写成顶层表 `[data]`、`[optim]`……；支持 `base = "xxx.toml"` 继承和命令行 `--set section.key=value` 覆盖。
-- **模型**：`Transformer.forward(tokens, kv_cache=None, start_pos=0) -> logits`；`Transformer.loss(tokens, targets, ignore_index=-100)`；`num_params(non_embedding=False)`；`flops_per_token(seq_len)`。模块级函数 `count_params(config)`（不分配内存）、`estimate_flops_per_token(config, seq_len)`（= 6·N_matmul + 12·L·q_dim·T）。参数名：`tok_emb`、`layers.i.{attn_norm, attn.{wq,wk,wv,wo,q_norm,k_norm}, ffn_norm, ffn.{w_gate,w_up,w_down}}`、`norm`、`lm_head`，与 HF 的对照表在 `zero/hf.py` 开头。
-- **分词器特殊 token**（id 固定在词表最前面）：0 `<|endoftext|>`、1 `<|im_start|>`、2 `<|im_end|>`、3 `<tool_call>`、4 `</tool_call>`、5 `<tool_response>`、6 `</tool_response>`、7 `<think>`、8 `</think>`、9–15 `<|reserved_0..6|>`。`Tokenizer.eos_id` 为 Base 模型的 `<|endoftext|>`；`Tokenizer.save_hf(out_dir)` 写出 `AutoTokenizer` 可读的文件。
-- **训练**：`Trainer(cfg, info=None).train(stop_at=None) -> list[dict]`；`run_training(cfg)` 是入口脚本用的封装（初始化分布式 → rank 0 准备数据 → 训练）。数据加载器 `PackedDataLoader(paths, seq_len, batch_size, rank, world_size, seed, shuffle, device)` 与 `MixtureLoader` 接口相同：`next_batch() -> (x, y)`、`state_dict()`、`load_state_dict()`。
-- **checkpoint**：`<ckpt_dir>/step_XXXXXXXX/{model.pt, optim.pt, meta.json, rank{r}.pt}` + `latest`；先写临时目录再原子改名。
+- **Configuration**: `load_config(path, overrides=None) -> Config`, `Config.model: ModelConfig`, `Config.train: TrainConfig` (it contains `data/optim/schedule/checkpoint/logging`). In TOML, write these sections as top-level tables `[data]`, `[optim]`, …. The loader supports inheritance with `base = "xxx.toml"` and command-line overrides with `--set section.key=value`.
+- **Model**: `Transformer.forward(tokens, kv_cache=None, start_pos=0) -> logits`; `Transformer.loss(tokens, targets, ignore_index=-100)`; `num_params(non_embedding=False)`; `flops_per_token(seq_len)`. Module-level functions: `count_params(config)` (does not allocate memory) and `estimate_flops_per_token(config, seq_len)` (= 6·N_matmul + 12·L·q_dim·T). Parameter names: `tok_emb`, `layers.i.{attn_norm, attn.{wq,wk,wv,wo,q_norm,k_norm}, ffn_norm, ffn.{w_gate,w_up,w_down}}`, `norm`, `lm_head`. The mapping table to the HF names is at the start of `zero/hf.py`.
+- **Special tokens of the tokenizer** (their ids are fixed at the start of the vocabulary): 0 `<|endoftext|>`, 1 `<|im_start|>`, 2 `<|im_end|>`, 3 `<tool_call>`, 4 `</tool_call>`, 5 `<tool_response>`, 6 `</tool_response>`, 7 `<think>`, 8 `</think>`, 9–15 `<|reserved_0..6|>`. `Tokenizer.eos_id` is `<|endoftext|>` for the Base model. `Tokenizer.save_hf(out_dir)` writes files that `AutoTokenizer` can read.
+- **Training**: `Trainer(cfg, info=None).train(stop_at=None) -> list[dict]`. `run_training(cfg)` is the wrapper for the entry scripts (initialize the distributed setup → rank 0 prepares the data → train). The data loader `PackedDataLoader(paths, seq_len, batch_size, rank, world_size, seed, shuffle, device)` has the same interface as `MixtureLoader`: `next_batch() -> (x, y)`, `state_dict()`, `load_state_dict()`.
+- **checkpoint**: `<ckpt_dir>/step_XXXXXXXX/{model.pt, optim.pt, meta.json, rank{r}.pt}` + `latest`. The code writes to a temporary folder first, and then renames it atomically.
 
-## 实现备注（后训练、评测、导出、demo 完成时补充）
+## Implementation notes (added when post-training, evaluation, export, and the demo were done)
 
-- **对话模板**（`zero/post/chat.py`）：`render(messages, tools=None, add_generation_prompt=False, tokenizer=None, enable_thinking=False)`
-  不给分词器返回 `(text, 逐字符 mask)`，给了返回 `(ids, 逐 token mask)`（整段一次编码，再用 `Tokenizer.encode_with_offsets` 的字符偏移查 mask）；
-  `render_text`、`render_segments`、`assistant_text(msg)`、`encode_prompt_response(messages, response, tok, tools)`（只标回复部分）、
-  `parse_assistant(text) -> ParsedAssistant(content, tool_calls, reasoning_content, errors)`、`format_tool_call`；
-  `CHAT_TEMPLATE` 是等价的 Jinja 模板。格式与 Qwen3 一致，差别只有一处：关闭思考时不在生成提示后塞空的 `<think></think>`。
-- **导出**：`export_to_hf_qwen3(..., chat=False, chat_template=None)`：给了分词器就把 `CHAT_TEMPLATE` 写进 `tokenizer_config.json`；
-  `chat=True` 时 eos 为 `<|im_end|>`（generation_config 里是 `[<|im_end|>, <|endoftext|>]`）。`Tokenizer.save_hf(..., chat_template=None)`。
-- **配置**：`DataConfig.format`：`"packed"`（默认，预训练分片）| `"sft"`（对话窗口 + mask，`zero.data.loader.MaskedWindowLoader`）| `"none"`
-  （DPO / GRPO 自己管数据，`[[data.sources]]` 可空）。各阶段自己的小节（`[sft]`、`[teacher]`、`[distill]`、`[dpo]`、`[grpo]`）由
-  `zero.post.common.load_post_config(src, {名: dataclass}, overrides)` 解析，`src` 可以是路径或 dict（冒烟测试用）。评测配置只有 `[eval]`
-  （`zero.eval.harness.load_eval_config`）。
-- **训练循环**：SFT 与蒸馏复用 `Trainer`（`format = "sft"` 时读 `MaskedWindowLoader`；新增钩子 `Trainer.extra_metrics()`，
-  蒸馏子类用它记 `ce` / `kd`）。DPO / GRPO / 在线蒸馏用 `zero.post.common.LoopState`（优化器、调度、裁剪、日志、checkpoint、续训），
-  目前是**单进程**实现（CPU / 单卡），多卡未实现。
-- **模型加载**：`zero.post.common.load_policy(path)` 同时支持 zero checkpoint（分词器路径从 meta.json 读）与 HF 目录。
-- **SFT 数据文件**：`<shard_dir>/{train,val}.bin`（uint32，n_windows × (seq_len+1)）+ 同名 `.mask`（uint8）+ `.json` 元数据。
-- **工具环境**（`zero/post/envs/tool_env.py`）：`TOOLS`、`execute_call`、`validate_arguments`、`Task`、`generate_tasks(n, seed, split)`、
-  `dev_tasks(n)`（固定 dev 集，训练任务自动排除同问题）、`make_splits`、`reference_messages(task)`、
-  `score_tool_calls(task, text) -> Reward`、`score_final_answer`、`run_episode(policy, task)`。冻结的 dev 集文件：`zero/eval/tasks/tool_dev.jsonl`。
-- **损失函数**：`zero.post.dpo.dpo_loss`、`zero.post.grpo.group_advantages` / `grpo_loss`、`zero.post.distill.kd_loss` / `reverse_kl_loss`。
-- **评测**：`zero.eval.harness`（`eval_multiple_choice`、`eval_exact_match`、`eval_tool_calls`、`run_eval`）、
-  `zero.eval.bootstrap.paired_bootstrap` / `compare_to_opponent`、`zero.eval.report.write_report`、`zero.eval.bfcl`（尚未验证）。
-- **GGUF**：`zero.export.gguf.convert_hf_to_gguf / build_llama_cpp / quantize / run_llama / llama_tokenize`。
-  调用官方 `convert_hf_to_gguf.py` 前打一个运行时补丁：预切分规则不认识时按 `qwen2` 处理（正则相同，`tests/test_gguf.py` 用 `llama-tokenize` 对拍）。
-- **demo**：`zero.demo.cli`（`chat_turn`、`search_files`、`execute_demo_tool`）。**冒烟测试**：`zero.smoke`。
+- **Chat template** (`zero/post/chat.py`): `render(messages, tools=None, add_generation_prompt=False, tokenizer=None, enable_thinking=False)`.
+  Without a tokenizer, it returns `(text, per-character mask)`. With a tokenizer, it returns `(ids, per-token mask)` (it encodes the full text once, and then uses the character offsets from `Tokenizer.encode_with_offsets` to look up the mask).
+  Other functions: `render_text`, `render_segments`, `assistant_text(msg)`, `encode_prompt_response(messages, response, tok, tools)` (marks only the response), `parse_assistant(text) -> ParsedAssistant(content, tool_calls, reasoning_content, errors)`, `format_tool_call`.
+  `CHAT_TEMPLATE` is the equivalent Jinja template. The format is the same as the Qwen3 format, with one difference: when thinking is off, the template does not add an empty `<think></think>` after the generation prompt.
+- **Export**: `export_to_hf_qwen3(..., chat=False, chat_template=None)`. If you give a tokenizer, it writes `CHAT_TEMPLATE` into `tokenizer_config.json`.
+  With `chat=True`, eos is `<|im_end|>` (in generation_config, it is `[<|im_end|>, <|endoftext|>]`). `Tokenizer.save_hf(..., chat_template=None)`.
+- **Configuration**: `DataConfig.format`: `"packed"` (default, pretraining shards) | `"sft"` (chat windows + mask, `zero.data.loader.MaskedWindowLoader`) | `"none"`
+  (DPO / GRPO manage their own data, so `[[data.sources]]` can be empty). `zero.post.common.load_post_config(src, {name: dataclass}, overrides)` parses the sections of each stage (`[sft]`, `[teacher]`, `[distill]`, `[dpo]`, `[grpo]`).
+  `src` can be a path or a dict (the smoke test uses a dict). The evaluation configuration has only `[eval]`
+  (`zero.eval.harness.load_eval_config`).
+- **Training loop**: SFT and distillation reuse `Trainer` (with `format = "sft"`, it reads `MaskedWindowLoader`; a new hook `Trainer.extra_metrics()`
+  lets the distillation subclass log `ce` / `kd`). DPO / GRPO / on-policy distillation use `zero.post.common.LoopState` (optimizer, schedule, clipping, logs, checkpoint, resume).
+  At this time, they are **single-process** implementations (CPU / one GPU). Multiple GPUs are not implemented.
+- **Model loading**: `zero.post.common.load_policy(path)` supports both a zero checkpoint (it reads the tokenizer path from meta.json) and an HF folder.
+- **SFT data files**: `<shard_dir>/{train,val}.bin` (uint32, n_windows × (seq_len+1)) + a `.mask` file with the same name (uint8) + `.json` metadata.
+- **Tool environment** (`zero/post/envs/tool_env.py`): `TOOLS`, `execute_call`, `validate_arguments`, `Task`, `generate_tasks(n, seed, split)`,
+  `dev_tasks(n)` (a fixed dev set; the training tasks automatically exclude the same questions), `make_splits`, `reference_messages(task)`,
+  `score_tool_calls(task, text) -> Reward`, `score_final_answer`, `run_episode(policy, task)`. The frozen dev set file is `zero/eval/tasks/tool_dev.jsonl`.
+- **Loss functions**: `zero.post.dpo.dpo_loss`, `zero.post.grpo.group_advantages` / `grpo_loss`, `zero.post.distill.kd_loss` / `reverse_kl_loss`.
+- **Evaluation**: `zero.eval.harness` (`eval_multiple_choice`, `eval_exact_match`, `eval_tool_calls`, `run_eval`),
+  `zero.eval.bootstrap.paired_bootstrap` / `compare_to_opponent`, `zero.eval.report.write_report`, `zero.eval.bfcl` (not verified yet).
+- **GGUF**: `zero.export.gguf.convert_hf_to_gguf / build_llama_cpp / quantize / run_llama / llama_tokenize`.
+  Before the code calls the official `convert_hf_to_gguf.py`, it applies a runtime patch: if the pre-tokenizer rule is unknown, treat it as `qwen2` (the regex is the same; `tests/test_gguf.py` does a parity check with `llama-tokenize`).
+- **demo**: `zero.demo.cli` (`chat_turn`, `search_files`, `execute_demo_tool`). **Smoke test**: `zero.smoke`.
 
-## 补充说明（第 12–14 章后）
+## Additional notes (after Chapters 12–14)
 
-- **多来源混合与多卡**：`MixtureLoader` 按 `(seed, rank)` 各自抽签选来源，所以多来源数据下"2 卡 = 1 卡双倍 batch"不逐位成立（单来源时成立，见 tests/test_ddp_cpu.py）。每个 rank 的来源比例在期望上一致。
-- **激活检查点**：`train.activation_checkpointing = true` 时每个 Block 只保存输入、反向时重算（tests/test_activation_checkpointing.py 保证梯度一致）；已在单张 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/：CUDA 上开关前后梯度逐位相同，主线配置 T=4096 时 24GB 卡上不开放不下 micro batch 1、开了最多放 3）。
-- **优化器**：`optim.name = "muon"` 切换到 `zero/train/muon.py`（二维权重用 Muon，其余 AdamW；第 12 章核实 Muon 满足共识规则，是否用于主线由阶梯实验决定）。
-- **验证集 bits-per-byte**：配置了 `data.tokenizer` 的预训练评估会同时记录 `val_bpb`（`zero/data/bpb.py`）。
-- **主线配置显存**：micro batch 4 × 累积 4（第 14 章 `zero/tools/memory_calc.py` 估算 micro batch 8 超过 80GB）。
+- **Multi-source mixing and multiple GPUs**: `MixtureLoader` draws the source separately for each `(seed, rank)`. Thus, with multi-source data, "2 GPUs = 1 GPU with a double batch" is not true bit for bit (it is true for a single source; see tests/test_ddp_cpu.py). The expected source ratio on each rank is the same.
+- **Activation checkpointing**: with `train.activation_checkpointing = true`, each Block keeps only its input and calculates the rest again in the backward pass (tests/test_activation_checkpointing.py makes sure that the gradients agree). We verified it on one RTX 3090 (2026-10, see runs/2026-10-01-gpu0-check/). On CUDA, the gradients with and without it are identical bit for bit. With the main-line configuration and T=4096, a 24 GB GPU cannot fit micro batch 1 without it. With it, the GPU fits a maximum of 3.
+- **Optimizer**: `optim.name = "muon"` changes to `zero/train/muon.py` (Muon for 2D weights, AdamW for the other parameters). Chapter 12 verified that Muon satisfies the consensus rule. The ladder experiments decide if the main line uses it.
+- **Validation bits-per-byte**: if `data.tokenizer` is set, the pretraining evaluation also records `val_bpb` (`zero/data/bpb.py`).
+- **GPU memory of the main-line configuration**: micro batch 4 × accumulation 4 (in Chapter 14, `zero/tools/memory_calc.py` estimated that micro batch 8 needs more than 80 GB).

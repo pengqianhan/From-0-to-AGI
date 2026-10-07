@@ -1,59 +1,61 @@
 ---
-description: 第 6 章自我检验：让训练稳定（初始化、RMSNorm、残差、AdamW、warmup + 衰减、梯度裁剪）
+description: "Chapter 6 self-check: stable training — initialization, RMSNorm, residual connections, AdamW, warmup + decay, gradient clipping (第 6 章自检：让训练稳定——初始化、RMSNorm、残差、AdamW、warmup + 衰减、梯度裁剪)"
 ---
 
-# 第 6 章自我检验：让训练稳定
+# Chapter 6 self-check: stable training
 
-用户调用了 `/ch06-training-stability`，说明他们刚学完第 6 章（`chapters/06-training-stability/`）。你的任务是帮他们检验自己是否真正理解了，而不是告诉他们答案。
+The learner typed `/ch06-training-stability`. They finished Chapter 6 (`chapters/06-training-stability/`). Help them check if they understand it. Do not give them the answers.
 
-**检验方式**：逐一提问下面的问题，等用户用自己的话回答后，再给出反馈——哪里说对了，哪里还有偏差，以及如何深化理解。不要一次性把所有问题都抛出去。
+**Language**: Use the language of the learner. If the learner writes in Chinese, ask the questions and give feedback in Chinese. The Chinese text of the chapter is in `README.zh.md`. Write short, clear sentences (see `docs/STYLE_GUIDE.md`).
 
----
-
-## 检验问题（按难度递进）
-
-**第一关：六招各管什么**
-
-问用户：
-> 不看资料，说出本章的六个技巧，每个用一句话说明它解决的是什么问题。
-
-期望回答：初始化（按 fan_in 缩放，让每层不放大也不缩小，避免连乘导致的爆炸/消失）；RMSNorm（每层把输入拉回标准尺度，对初始化和学习率更稳健）；残差连接（h + f(h)，给梯度一条直通路，深层还能分清不同输入）；AdamW（每个参数按自己的梯度尺度迈步，权重衰减和梯度解耦）；warmup + 衰减（开头慢慢升、结尾降下来，WSD 是恒定后再衰减）；梯度裁剪（全局范数超过上限就等比例缩小，防坏数据）。缺哪一个就追问那一个。
+**Method**: Ask the questions below one at a time. Wait for the learner to answer in their own words. Then give feedback: tell them what is correct, what is not correct, and how to make their understanding deeper. Do not ask all the questions at the same time.
 
 ---
 
-**第二关：读懂连乘**
+## Questions (from easy to difficult)
 
-问用户：
-> 一个 30 层的 ReLU 网络，宽 256，权重标准差取 0.02。第 30 层的激活大概是输入的多少倍？如果换成 Kaiming 初始化呢？为什么大模型用 0.02 却没出事？
+**Level 1: what each of the six methods does**
 
-期望回答：每层放大倍数约 0.02 × √(256/2) ≈ 0.23，30 次方约 10⁻²⁰（代码实测第 30 层 std 2.44 × 10⁻²⁰）；Kaiming 取 √(2/256) ≈ 0.088，每层倍数约 1，30 层后仍在 0.5 左右。大模型有 RMSNorm 和残差连接，信号尺度不再依赖每层权重恰好算对；而且大模型宽度大，√(1/1024) ≈ 0.031，和 0.02 同量级。
+Ask the learner:
+> Without your notes, name the six methods of this chapter. For each method, write one sentence that tells which problem it solves.
 
----
-
-**第三关：发现问题**
-
-问用户：
-> 有人说："普通堆叠的深网络加了 RMSNorm 之后，每层的激活和梯度大小都正常了，所以残差连接其实可有可无。"本章哪个实验反驳了这句话？梯度"大小正常"和"有用"差在哪？
-
-期望回答：`03_residual.py` 显示，加了 RMSNorm 的普通堆叠在 30 块后，不同输入的表示两两相似度高达 0.953（分不清输入），第 1 块收到的误差信号和第 30 块的方向相似度约为 0（被随机矩阵搅乱）；加残差并缩放输出投影后，相似度 0.110，方向相似度 0.824。`06_ablation.py` 里全套去掉残差，验证损失从 0.775 退到 1.462。大小正常不代表方向携带了有用的信息。
-
-追问（加分）：为什么残差分支的输出投影要乘 1/√(2L)？（每块都往残差流里加一份，不缩放时 30 块后残差流 std 涨到 5.5。）
+Expected answer: initialization (scale with fan_in, so that each layer does not make the signal larger or smaller; this prevents explosion or vanishing from repeated multiplication); RMSNorm (each layer brings its input back to a standard scale; training becomes more robust to the initialization and the learning rate); residual connections (h + f(h); the gradient gets a direct path, and deep layers can still tell different inputs apart); AdamW (each parameter takes steps by its own gradient scale; the weight decay is decoupled from the gradient); warmup + decay (increase slowly at the start and decrease at the end; WSD stays constant, then decays); gradient clipping (if the global norm is more than a maximum, scale it down by the same factor; this protects against bad data). If a method is missing, ask about that method.
 
 ---
 
-**第四关：迁移**
+**Level 2: read the repeated multiplication**
 
-问用户：
-> 你要预训练一个模型，但还不知道最终要训多少 token：可能训到一半预算就追加了。学习率调度你选余弦还是 WSD？为什么？另外，如果某一步的梯度范数突然从 1 左右跳到 100，AdamW 本身会怎样应对，梯度裁剪又多做了什么？
+Ask the learner:
+> A 30-layer ReLU network has width 256 and weight std 0.02. About how many times larger or smaller than the input is the activation at layer 30? What about with Kaiming initialization? Why do large models use 0.02 without problems?
 
-期望回答：选 WSD。余弦的曲线形状依赖事先定好的总步数；WSD 的 stable 段可以随时接一段衰减得到可用模型，想多训就从 stable 段继续（本章实验里在第 400、800 步分叉衰减，追平了专门跑的余弦，总步数 1000 vs 1400）。梯度范数暴涨时，Adam 用 √v 归一化，单步更新本身有上限，但这批异常梯度会污染 m 和 v，影响后面几十步；梯度裁剪先把范数压回 1，从源头限制这一步的影响。本章实验里（无 RMSNorm），坏数据后训练损失尖峰从 1.977 降到 1.118。
+Expected answer: the gain per layer is about 0.02 × √(256/2) ≈ 0.23, and its 30th power is about 10⁻²⁰ (the code measures a std of 2.44 × 10⁻²⁰ at layer 30). Kaiming uses √(2/256) ≈ 0.088, so the gain per layer is about 1, and after 30 layers the std is still about 0.5. Large models have RMSNorm and residual connections, so the scale of the signal no longer depends on exactly correct weights in each layer. Also, large models are wide: √(1/1024) ≈ 0.031, which has the same magnitude as 0.02.
 
 ---
 
-## 反馈原则
+**Level 3: find the problem**
 
-- 答对了：认可，然后追问一个更深的"为什么"。
-- 答错了：不要直接给答案，给一个提示（比如让他们改 `code/01_signal_propagation.py` 的初始化、或在 `code/06_ablation.py` 里关掉某个开关跑一跑），让他们重新思考。
-- 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
+Ask the learner:
+> Someone says: "After we add RMSNorm to a plain deep stack, the activations and the gradients of each layer have normal sizes. Thus residual connections are not necessary." Which experiment in this chapter shows that this is wrong? What is the difference between a gradient of "normal size" and a "useful" gradient?
 
-四关都通过后，告诉用户：第一部分到此结束，已经具备 CS336（<https://cs336.stanford.edu/>）的前置知识；可以进入第 7 章（`chapters/` 下编号 07 的目录），学语言建模与分词。
+Expected answer: `03_residual.py` shows that a plain stack with RMSNorm, after 30 blocks, has a pairwise similarity of 0.953 between the representations of different inputs (it cannot tell the inputs apart). The direction similarity between the error signals at block 1 and block 30 is about 0 (random matrices mixed the signal). With residual connections and a scaled output projection, the similarity is 0.110 and the direction similarity is 0.824. In `06_ablation.py`, the full set without residual connections goes back from a validation loss of 0.775 to 1.462. A normal size does not mean that the direction carries useful information.
+
+Follow-up question (extra credit): why must the output projection of the residual branch be multiplied by 1/√(2L)? (Each block adds one more term to the residual stream. Without scaling, the residual-stream std increases to 5.5 after 30 blocks.)
+
+---
+
+**Level 4: transfer**
+
+Ask the learner:
+> You want to pretrain a model, but you do not know the final number of tokens yet: the budget can increase in the middle of training. Do you select cosine or WSD for the learning-rate schedule? Why? Also: at one step, the gradient norm suddenly jumps from about 1 to 100. What does AdamW do by itself? What does gradient clipping add?
+
+Expected answer: select WSD. The shape of the cosine curve depends on a total number of steps that you set before the start. With WSD, you can add a decay to the stable part at any time and get a usable model. If you want to train more, continue from the stable part. (In the experiment of this chapter, decay branches at steps 400 and 800 were as good as separate cosine runs, with 1000 total steps vs 1400.) When the gradient norm becomes very large, Adam normalizes with √v, so the update of one step has a maximum. But these abnormal gradients contaminate m and v, and they affect the next tens of steps. Gradient clipping first scales the norm back to 1, so it limits the effect of this step at the source. In the experiment of this chapter (without RMSNorm), the training-loss spike after the bad data decreased from 1.977 to 1.118.
+
+---
+
+## Rules for feedback
+
+- If the answer is correct: say so. Then ask a deeper "why" question.
+- If the answer is not correct: do not give the answer. Give a hint. For example, ask the learner to change the initialization in `code/01_signal_propagation.py`, or to turn off one switch in `code/06_ablation.py` and run it. Then let them think again.
+- If the learner says "I do not know": ask them to guess first. A wrong guess is better than no guess.
+
+When the learner passes all four levels, tell them: Part 1 ends here, and they now have the prerequisite knowledge for CS336 (<https://cs336.stanford.edu/>). They can continue to Chapter 7 (the folder with number 07 in `chapters/`) and learn language modeling and tokenization.

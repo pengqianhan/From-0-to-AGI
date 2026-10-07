@@ -1,57 +1,59 @@
 ---
-description: 第 23 章自我检验：线性注意力与混合架构（去掉 softmax → 递推状态、分块形式、delta 规则、Gated DeltaNet、3:1 混合）
+description: "Chapter 23 self-check: linear attention and hybrid architectures — remove the softmax → recurrent state, chunkwise form, delta rule, Gated DeltaNet, 3:1 hybrid (第 23 章自检：线性注意力与混合架构——去掉 softmax → 递推状态、分块形式、delta 规则、Gated DeltaNet、3:1 混合)"
 ---
 
-# 第 23 章自我检验：线性注意力与混合架构
+# Chapter 23 self-check: linear attention and hybrid architectures
 
-用户调用了 `/ch23-linear-attention`，说明他们刚学完第 23 章（`chapters/23-linear-attention-hybrid/`）。你的任务是帮他们检验自己是否真正理解了，而不是告诉他们答案。
+The learner typed `/ch23-linear-attention`. They finished Chapter 23 (`chapters/23-linear-attention-hybrid/`). Help them check if they understand it. Do not give them the answers.
 
-**检验方式**：逐一提问下面的问题，等用户用自己的话回答后，再给出反馈——哪里说对了，哪里还有偏差，以及如何深化理解。不要一次性把所有问题都抛出去。
+**Language**: Use the language of the learner. If the learner writes in Chinese, ask the questions and give feedback in Chinese. The Chinese text of the chapter is in `README.zh.md`. Write short, clear sentences (see `docs/STYLE_GUIDE.md`).
 
----
-
-## 检验问题（按难度递进）
-
-**第一关：概念——状态从哪里来**
-
-问用户：
-> softmax 注意力生成第 t 个 token 时要用到前面全部 t 个 K、V。去掉 softmax 以后，为什么只需要一个固定大小的矩阵 S？请写出 S 的更新公式和读出公式，并说出 S 的形状。
-
-期望回答：没有 softmax 时，o_t = Σ_{j≤t} (q_t·k_j) v_j = (Σ_{j≤t} v_j k_jᵀ) q_t，括号里的和可以边走边累加：S_t = S_{t−1} + v_t k_tᵀ，o_t = S_t q_t；S 的形状是 d_v × d_k，与序列长度无关。关键词是"矩阵乘法结合律"：(Q Kᵀ) V 换成 Q (Kᵀ V)。能指出 softmax 要对整行归一化、所以拆不开，是加分项。
+**Method**: Ask the questions below one at a time. Wait for the learner to answer in their own words. Then give feedback: tell them what is correct, what is not correct, and how to make their understanding deeper. Do not ask all the questions at the same time.
 
 ---
 
-**第二关：直觉——为什么要覆盖、为什么要遗忘**
+## Questions (from easy to difficult)
 
-问用户：
-> 同一个 key 先写入 v1、再写入 v2。朴素线性注意力和 delta 规则分别读出什么？再说说 Gated DeltaNet 的衰减门 α_t 额外解决了什么问题。
+**Level 1: concept — where does the state come from?**
 
-期望回答：朴素线性注意力只会累加，读出 v1 + v2；delta 规则先读出旧答案 S k，只写入差值 β(v − S k)，β=1 时读出 v2（覆盖）。衰减门让旧内容按 α_t 指数衰减，而且 α_t 由输入决定（数据相关），模型可以在"换话题"时把门关上、清掉旧记忆；`03_delta_rule.py` 里"换话题时 α=0"的 delta 规则读回误差最低。如果用户只说"遗忘旧信息"，追问：固定的 α 和数据相关的 α 有什么区别？
+Ask the learner:
+> To generate token t, softmax attention uses all t earlier K and V vectors. Why does attention need only one fixed-size matrix S when we remove the softmax? Write the update formula and the read formula of S. What is the shape of S?
 
----
-
-**第三关：发现问题——固定大小的代价**
-
-问用户：
-> 本章的联想回忆实验里，纯线性模型在键值对变多时准确率明显下降，而 3:1 混合模型（只有一层全注意力）基本恢复。用"容量"解释为什么；再解释为什么工业界不干脆全用线性层，也不全用注意力，而是"少量全注意力 + 大量线性层"。
-
-期望回答：一个 d_v × d_k 的状态最多可靠地存大约 d 量级个近似正交的键值对，存得越多串扰越大（`03` 的容量表），精确回忆（retrieval / recall）需要把原始 K、V 留下来，这正是 KV cache。混合结构里全注意力层负责精确回忆，线性层以固定成本承担大部分深度；KV cache 只随全注意力层数增长，3:1 时约为纯注意力的 1/4（Qwen3.5-0.8B：24 层里 6 层全注意力）。加分：MiniMax 从 MiniMax-01（线性注意力 7:1 混合）回到 M2 的全注意力，理由包括线性注意力基础设施不成熟、低精度状态与推测解码的难题——说明这仍是工程权衡。
+Expected answer: without the softmax, o_t = Σ_{j≤t} (q_t·k_j) v_j = (Σ_{j≤t} v_j k_jᵀ) q_t. The model can add up the sum in the parentheses step by step: S_t = S_{t−1} + v_t k_tᵀ, and o_t = S_t q_t. The shape of S is d_v × d_k, independent of the sequence length. The key word is "associativity of matrix multiplication": (Q Kᵀ) V becomes Q (Kᵀ V). Extra credit: the softmax normalizes a full row, so we cannot split it.
 
 ---
 
-**第四关：迁移——训练用分块、推理用递推**
+**Level 2: intuition — why overwrite, and why forget?**
 
-问用户：
-> 训练时 `zero/arch/linear_attention.py` 用 `chunk_gated_delta_rule`，推理 decode 时用 `recurrent_gated_delta_rule`。如果只有递推形式，训练会遇到什么问题？如果只有完全并行（T×T）形式，推理会怎样？分块形式里，delta 规则比朴素线性注意力多了哪一步计算，为什么？
+Ask the learner:
+> We write v1 and then v2 with the same key. What does naive linear attention read? What does the delta rule read? Then tell me which other problem the decay gate α_t of Gated DeltaNet solves.
 
-期望回答：只有递推形式时，训练必须逐 token 串行，GPU 并行度低（`02_chunked.py`：T=4096 时逐 token 递推比分块慢约一个数量级）；只有 T×T 并行形式时，推理就退回到要存全部历史、每步开销随长度增长，失去线性注意力的意义。delta 规则块内每个位置写入的 u_i 依赖前面的 u_j，需要解一个下三角方程组 (I + A)U = …（UT 变换），朴素线性注意力没有这一步。能说出"测试用分段喂 == 一次喂、缓存生成 == 全量重算来对拍"是加分项。
+Expected answer: naive linear attention can only add, so it reads v1 + v2. The delta rule first reads the old answer S k. Then it writes only the difference β(v − S k). With β = 1, it reads v2 (overwrite). The decay gate makes old content decay exponentially by α_t. Also, the input decides α_t (data-dependent). Thus the model can close the gate at a "topic change" and clear the old memory. In `03_delta_rule.py`, the delta rule with "α = 0 at the topic change" has the lowest read error. If the learner says only "it forgets old information", ask: what is the difference between a fixed α and a data-dependent α?
 
 ---
 
-## 反馈原则
+**Level 3: find the problem — the cost of a fixed size**
 
-- 答对了：认可，然后追问一个更深的"为什么"。
-- 答错了：不要直接给答案，给一个提示（比如让他们运行 `code/03_delta_rule.py` 看容量表，或者在 `code/05_associative_recall.py` 里改键值对个数），让他们重新思考。
-- 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
+Ask the learner:
+> In the associative recall experiment of this chapter, the accuracy of the pure linear models drops clearly when the number of key-value pairs grows. The 3:1 hybrid model (with only one full-attention layer) recovers most of the accuracy. Use "capacity" to explain why. Then explain why the industry does not use only linear layers, and does not use only attention. Why does it use "a few full-attention layers + many linear layers"?
 
-四关都通过后，告诉用户可以进入第 24 章（混合专家 MoE，`chapters/24-*/`）。
+Expected answer: a d_v × d_k state can reliably store only about d (order of magnitude) nearly orthogonal key-value pairs. The more it stores, the larger the interference (the capacity table in `03`). Exact recall (retrieval / recall) needs the original K and V. This is exactly the KV cache. In a hybrid, the full-attention layers do the exact recall. The linear layers give most of the depth at a fixed cost. The KV cache grows only with the number of full-attention layers. At 3:1, it is about 1/4 of pure attention (Qwen3.5-0.8B: 6 full-attention layers in 24 layers). Extra credit: MiniMax went from MiniMax-01 (a 7:1 hybrid with linear attention) back to full attention in M2. The reasons include immature infrastructure for linear attention, the difficulty of a low-precision state, and the open problem of speculative decoding. This shows that the hybrid is still an engineering trade-off.
+
+---
+
+**Level 4: transfer — chunkwise form for training, recurrent form for inference**
+
+Ask the learner:
+> In training, `zero/arch/linear_attention.py` uses `chunk_gated_delta_rule`. In inference decode, it uses `recurrent_gated_delta_rule`. If only the recurrent form exists, what problem does training have? If only the fully parallel (T×T) form exists, what happens in inference? In the chunkwise form, which extra calculation does the delta rule need, compared with naive linear attention? Why?
+
+Expected answer: with only the recurrent form, training must go token by token in sequence, and the GPU has little parallel work (`02_chunked.py`: at T = 4096, the token-by-token recurrence is about one order of magnitude slower than the chunkwise form). With only the T×T parallel form, inference must store the full history again, and the cost of each step grows with the length. Then linear attention loses its purpose. In the delta rule, the u_i that each position in a chunk writes depends on the earlier u_j. Thus the delta rule must solve a lower-triangular linear system (I + A)U = … (the UT transform). Naive linear attention does not need this step. Extra credit: the parity checks "input in segments == input in one pass" and "generation with the cache == full recalculation".
+
+---
+
+## Rules for feedback
+
+- If the answer is correct: say so. Then ask a deeper "why" question.
+- If the answer is not correct: do not give the answer. Give a hint. For example, ask the learner to run `code/03_delta_rule.py` and look at the capacity table, or to change the number of key-value pairs in `code/05_associative_recall.py`. Then let them think again.
+- If the learner says "I do not know": ask them to guess first. A wrong guess is better than no guess.
+
+When the learner passes all four levels, tell them to continue to Chapter 24 (mixture of experts, MoE: `chapters/24-mixture-of-experts/`). After Chapter 24, they can check themselves with `/ch24-moe`.

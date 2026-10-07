@@ -1,28 +1,38 @@
-"""预训练数据流水线：一个 TOML 驱动的端到端配方（对应第 13 章）。
+"""Pretraining data pipeline: an end-to-end recipe that one TOML file controls (Chapter 13).
 
-    uv run python -m zero.data.pipeline --config configs/tiny/data.toml    # CPU 上约半分钟
-    uv run python -m zero.data.pipeline --config configs/main/data.toml    # 第二步，尚未验证
+    uv run python -m zero.data.pipeline --config configs/tiny/data.toml    # about half a minute on a CPU
+    uv run python -m zero.data.pipeline --config configs/main/data.toml    # Step 2, not verified yet
 
-阶段（每个阶段的输出都落盘成 JSONL，方便单独检查、单独重跑）：
+Stages (each stage writes its output to disk as JSONL, so you can check and run each stage again separately):
 
-    1. 读取      [[sources]] 的 inputs：纯文本（按空行切段拼成文档）或 download.py 写出的 JSONL 分片
-    2. 清洗      clean.py：Unicode NFC、空白与控制字符、去掉特殊 token 字面量
-    3. 语言检查  按文字（汉字占比）粗检：中文来源里混进来的非中文文档丢掉（第二步换 fastText lid.176）
-    4. 质量      启发式规则（web：Gopher + C4 + FineWeb；code：Codex 的三条规则）+ 可选的分数阈值
-                 （数据集自带的分类器分数，如 FineWeb-Edu 的 int_score）或自定义分类器
-    5. 去重      精确哈希 + MinHash LSH（dedup.py），先在每个来源内部做，可选再跨来源做一次
-    6. 去污染    与评测集做 n-gram（默认 13）重叠检查（decontam.py），撞了的文档整篇删除
-    7. 切分      每个来源按固定种子切出验证集
-    8. 分词器    按配比从各来源采样文本，训练 byte-level BPE（预切分正则可选 qwen2 / qwen3.5）
-    9. 分片      shard.py：<来源>_train_*.bin / <来源>_val_*.bin
-   10. 清单      manifest.json：每一步每个来源留下多少文档/字节（漏斗）、删除原因、去污染命中、
-                 分词器哈希与各来源压缩率、分片 token 数、配比与"按预算需要几个 epoch"、许可证与来源地址
+    1. read        the inputs of [[sources]]: plain text (split at blank lines and joined into
+                   documents) or the JSONL shards from download.py
+    2. clean       clean.py: Unicode NFC, white space and control characters, remove literal special tokens
+    3. language    rough check by script (fraction of Chinese characters): remove non-Chinese
+                   documents from Chinese sources (Step 2 uses fastText lid.176 instead)
+    4. quality     heuristic rules (web: Gopher + C4 + FineWeb; code: the three rules of Codex) + an
+                   optional score threshold (the classifier score of the data set, for example
+                   int_score of FineWeb-Edu) or a custom classifier
+    5. dedup       exact hash + MinHash LSH (dedup.py), first in each source, then optionally once
+                   across sources
+    6. decontam    n-gram overlap check (default 13) with the evaluation sets (decontam.py);
+                   remove each document with a hit
+    7. split       for each source, take a validation set with a fixed seed
+    8. tokenizer   sample text from the sources by mixture weight and train a byte-level BPE
+                   (pre-tokenization regex: qwen2 / qwen3.5)
+    9. shards      shard.py: <source>_train_*.bin / <source>_val_*.bin
+   10. manifest    manifest.json: for each step and source, the documents/bytes that stay (the
+                   funnel), the removal reasons, the decontamination hits, the tokenizer hash and
+                   the compression of each source, the shard token counts, the mixture and "epochs
+                   needed for the budget", the licenses and the source URLs
 
-tiny 配置把 assets/tiny_corpus 走一遍全流程；main 配置描述第二步的真实配方（configs/main/data.toml）。
-第二步的规模（数十亿篇文档）下，第 5 步的 MinHash 需要换成分布式实现（如 datatrove 的 MinhashDedup），
-这里的单进程实现只保证算法正确（tests/test_data.py、tests/test_pipeline.py），**尚未在大规模数据上验证**：
-它把一个来源的全部文档放在内存里，第二步要按输入分片流式处理（阶段 1–4、6 天然可以逐篇流式，
-第 5 步需要分布式 MinHash）。
+The tiny configuration runs the full pipeline on assets/tiny_corpus. The main configuration
+describes the real recipe of Step 2 (configs/main/data.toml).
+At the scale of Step 2 (billions of documents), the MinHash of step 5 must change to a distributed
+implementation (for example MinhashDedup of datatrove). The single-process implementation here only
+makes sure that the algorithm is correct (tests/test_data.py, tests/test_pipeline.py). It is **not
+verified on large data yet**: it keeps all documents of a source in memory. Step 2 must stream the
+input shards (stages 1–4 and 6 can stream document by document; step 5 needs a distributed MinHash).
 """
 
 from __future__ import annotations
@@ -63,29 +73,30 @@ from zero.tokenizer import (
 )
 
 # ---------------------------------------------------------------------------
-# 分词器：预切分正则的两个预设
+# Tokenizer: two presets of the pre-tokenization regex
 # ---------------------------------------------------------------------------
 
-#: Qwen3.5 的 tokenizer.json 里的正则（2026-09 读取）：和 Qwen2/Qwen3 只差一处——字母串从 \p{L}+
-#: 变成 [\p{L}\p{M}]+，标点串也把 \p{M} 排除在外。\p{M} 是"组合符号"（天城文、泰文的元音符号、
-#: 阿拉伯文的变音符号……）。旧正则会在这些符号处把一个词切开，新正则让"字母 + 组合符号"留在一个词块里。
+#: The regex in tokenizer.json of Qwen3.5 (read in 2026-09). It has one difference from Qwen2/Qwen3:
+#: letter runs change from \p{L}+ to [\p{L}\p{M}]+, and punctuation runs also exclude \p{M}.
+#: \p{M} is the "combining marks" (vowel signs of Devanagari and Thai, diacritics of Arabic, ...).
+#: The old regex splits a word at these marks. The new regex keeps "letter + combining mark" in one piece.
 QWEN35_PRETOKENIZE_REGEX = (
     r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}"
     r"| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
 )
 
 PRETOKENIZE_PRESETS: dict[str, str] = {
-    "qwen2": PRETOKENIZE_REGEX,  # zero/tokenizer.py 的默认值，与 Qwen2/Qwen3 相同
+    "qwen2": PRETOKENIZE_REGEX,  # default of zero/tokenizer.py, the same as Qwen2/Qwen3
     "qwen3": PRETOKENIZE_REGEX,
     "qwen3.5": QWEN35_PRETOKENIZE_REGEX,
 }
 
-#: 导出 GGUF 时 llama.cpp 对应的预切分类型名（zero/export/gguf.py 的 pre_tokenizer 参数）
+#: The llama.cpp pre-tokenizer type name for the GGUF export (the pre_tokenizer parameter of zero/export/gguf.py)
 GGUF_PRE_TOKENIZER = {"qwen2": "qwen2", "qwen3": "qwen2", "qwen3.5": "qwen35"}
 
 
 def resolve_pretokenize(name_or_regex: str) -> str:
-    """预设名（qwen2 / qwen3 / qwen3.5）→ 正则；不是预设名就当作正则本身。"""
+    """Preset name (qwen2 / qwen3 / qwen3.5) → regex. Any other string is used as the regex itself."""
     return PRETOKENIZE_PRESETS.get(name_or_regex, name_or_regex)
 
 
@@ -96,11 +107,13 @@ def train_tokenizer(
     special_tokens: Sequence[str] | None = None,
     min_frequency: int = 2,
 ) -> Tokenizer:
-    """训练 byte-level BPE，可以换预切分正则。
+    """Train a byte-level BPE, with a choice of pre-tokenization regex.
 
-    默认（qwen2）直接调用 `zero.tokenizer.train_bpe`，结果完全相同；换正则时只替换预切分这一步，
-    规范化（NFC）、字节级、特殊 token 的排布都和 `train_bpe` 一致，所以 `Tokenizer.save_hf`、
-    `bytes_per_token`、`hash` 照常可用（正则写在 tokenizer.json 里，加载时自动恢复）。
+    The default (qwen2) calls `zero.tokenizer.train_bpe` directly, and the result is identical.
+    With a different regex, only the pre-tokenization step changes. The normalization (NFC), the
+    byte level, and the layout of the special tokens are the same as in `train_bpe`. So
+    `Tokenizer.save_hf`, `bytes_per_token`, and `hash` work as usual (the regex is in
+    tokenizer.json, and loading restores it).
     """
     regex = resolve_pretokenize(pretokenize)
     if regex == PRETOKENIZE_REGEX:
@@ -109,7 +122,7 @@ def train_tokenizer(
     if ENDOFTEXT not in special:
         special = [ENDOFTEXT, *special]
     if vocab_size < 256 + len(special):
-        raise ValueError(f"vocab_size={vocab_size} 太小")
+        raise ValueError(f"vocab_size={vocab_size} is too small")
     tok = _build_empty_bpe()
     tok.pre_tokenizer = pre_tokenizers.Sequence(
         [
@@ -139,27 +152,27 @@ def train_tokenizer(
 
 
 # ---------------------------------------------------------------------------
-# 配置
+# Configuration
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class SourceSpec:
-    name: str  # 分片名前缀（<name>_train_*.bin），也是配比里的键
-    inputs: list[str]  # glob 列表：纯文本文件，或 download.py 写出的 .jsonl / .jsonl.gz
-    registry: str = ""  # zero/data/sources.py 里的登记名（许可证、地址从那里取）
+    name: str  # shard name prefix (<name>_train_*.bin), also the key in the mixture
+    inputs: list[str]  # list of globs: plain text files, or .jsonl / .jsonl.gz files from download.py
+    registry: str = ""  # registry name in zero/data/sources.py (the license and the URL come from there)
     format: str = "text"  # "text" | "jsonl"
     text_field: str = "text"
-    weight: float = 1.0  # 预训练配比（会归一化）
-    lang: str = ""  # "zh" | "en" | "code" | ""：语言粗检
+    weight: float = 1.0  # pretraining mixture weight (normalized)
+    lang: str = ""  # "zh" | "en" | "code" | "": rough language check
     heuristics: str = "web"  # "web" | "code" | "none"
-    score_field: str = ""  # 数据集自带的质量分数字段（如 FineWeb-Edu 的 int_score）
+    score_field: str = ""  # quality score field of the data set (for example int_score of FineWeb-Edu)
     score_min: float | None = None
-    classifier: str = ""  # "模块:类名"，类要有 score(texts) -> list[float]
+    classifier: str = ""  # "module:ClassName"; the class must have score(texts) -> list[float]
     classifier_min: float = 3.0
-    doc_chars: int = 4000  # 纯文本输入：按空行切段后拼成约这么长的文档
+    doc_chars: int = 4000  # plain text input: split at blank lines, then join into documents of about this length
     min_chars: int = 50
-    max_docs: int | None = None  # 只读前 N 篇（调试用）
+    max_docs: int | None = None  # read only the first N documents (for debugging)
 
 
 @dataclass
@@ -170,44 +183,44 @@ class DedupSpec:
     num_perm: int = 128
     bands: int = 16
     ngram: int = 5
-    cross_source: bool = False  # 来源内部去重之后，是否再跨来源去一次
-    n_jobs: int = 1  # MinHash 签名用几个进程算（结果与 1 相同，只是快；阶梯数据 16.8GB 单进程约 5 小时）
+    cross_source: bool = False  # after the dedup in each source, dedup once more across sources
+    n_jobs: int = 1  # processes for the MinHash signatures (same result as 1, only faster; the 16.8GB ladder data takes about 5 hours in one process)
 
 
 @dataclass
 class EvalSetSpec:
     name: str
-    path: str  # .jsonl（取 fields 里的字符串，默认全部字符串字段）或 .txt（每行一题）
+    path: str  # .jsonl (the strings in `fields`; default: all string fields) or .txt (one item per line)
     fields: list[str] = field(default_factory=list)
 
 
 @dataclass
 class DecontamSpec:
     n: int = 13
-    min_tokens: int = 8  # 规范化后不足这么多"词"的题目跳过（太短的题目用子串匹配误报太多）
+    min_tokens: int = 8  # skip items with fewer normalized "words" than this (substring matches of very short items give too many false hits)
     eval_sets: list[EvalSetSpec] = field(default_factory=list)
 
 
 @dataclass
 class TokenizerSpec:
     vocab_size: int = 2048
-    pretokenize: str = "qwen2"  # "qwen2" | "qwen3" | "qwen3.5" | 自定义正则
-    sample_bytes: int = 0  # 训练分词器用多少字节（按配比从各来源采样）；0 = 全部训练文本
+    pretokenize: str = "qwen2"  # "qwen2" | "qwen3" | "qwen3.5" | custom regex
+    sample_bytes: int = 0  # bytes of text to train the tokenizer (sampled from the sources by mixture weight); 0 = all training text
     min_frequency: int = 2
-    path: str = ""  # 已有的 tokenizer.json：给了就不训练，直接用它切分片
+    path: str = ""  # an existing tokenizer.json: if given, do not train; use it to make the shards
 
 
 @dataclass
 class PipelineSpec:
     name: str = "data"
-    work_dir: str = "out/data"  # 中间结果（每阶段的 JSONL）
-    out_dir: str = ""  # 分片输出目录；默认 <work_dir>/shards
+    work_dir: str = "out/data"  # intermediate results (the JSONL of each stage)
+    out_dir: str = ""  # shard output directory; default <work_dir>/shards
     seed: int = 0
     val_fraction: float = 0.05
-    val_max_docs: int = 0  # 每个来源验证集最多多少篇（0 = 不限）
+    val_max_docs: int = 0  # maximum number of validation documents for each source (0 = no limit)
     shard_tokens: int = 100_000_000
-    token_budget: float = 0.0  # 预训练 token 预算（manifest 里算"每个来源要过几遍"）
-    write_stages: bool = True  # 每个阶段的结果都落盘成 JSONL（tiny 方便检查；main 数据量大时只写最后一步）
+    token_budget: float = 0.0  # pretraining token budget (the manifest computes "the number of passes over each source")
+    write_stages: bool = True  # write the result of each stage to disk as JSONL (easy checks for tiny; with the large data of main, write only the last step)
 
 
 @dataclass
@@ -218,30 +231,32 @@ class PipelineConfig:
     dedup: DedupSpec = field(default_factory=DedupSpec)
     decontam: DecontamSpec = field(default_factory=DecontamSpec)
     tokenizer: TokenizerSpec = field(default_factory=TokenizerSpec)
-    raw: dict[str, Any] = field(default_factory=dict)  # 原始 TOML（写进 manifest）
+    raw: dict[str, Any] = field(default_factory=dict)  # the original TOML (written into the manifest)
 
 
 def _build(cls: type, d: dict[str, Any], where: str) -> Any:
     names = {f.name for f in dataclasses.fields(cls)}
     unknown = set(d) - names
     if unknown:
-        raise ValueError(f"[{where}] 不认识的字段：{sorted(unknown)}")
+        raise ValueError(f"[{where}] unknown fields: {sorted(unknown)}")
     return cls(**d)
 
 
 def config_from_dict(d: dict[str, Any]) -> PipelineConfig:
-    """TOML 字典 → PipelineConfig。只认识 [pipeline] [[sources]] [quality] [dedup] [decontam]
-    [tokenizer] 这几节（main 配置里的 [download] 等小节由 download.py 读取，这里忽略）。"""
+    """TOML dict → PipelineConfig. Only these sections are read: [pipeline] [[sources]] [quality] [dedup] [decontam] [tokenizer].
+
+    download.py reads the other sections of the main configuration, such as [download]. This function ignores them.
+    """
     known = {"pipeline", "sources", "quality", "dedup", "decontam", "tokenizer"}
     if not d.get("sources"):
-        raise ValueError("至少要有一个 [[sources]]")
+        raise ValueError("At least one [[sources]] is necessary")
     sources = []
     for s in d["sources"]:
-        s = {k: v for k, v in s.items() if k != "download"}  # [sources.download] 给 download.py
+        s = {k: v for k, v in s.items() if k != "download"}  # [sources.download] is for download.py
         sources.append(_build(SourceSpec, s, "sources"))
     names = [s.name for s in sources]
     if len(set(names)) != len(names):
-        raise ValueError(f"来源名重复：{names}")
+        raise ValueError(f"Duplicate source names: {names}")
     dec = dict(d.get("decontam", {}))
     dec["eval_sets"] = [
         _build(EvalSetSpec, e, "decontam.eval_sets") for e in dec.get("eval_sets", [])
@@ -263,7 +278,7 @@ def load_pipeline_config(path: str | os.PathLike) -> PipelineConfig:
 
 
 # ---------------------------------------------------------------------------
-# 读写文档（JSONL：{"id", "text", "source", ...元数据}）
+# Read and write documents (JSONL: {"id", "text", "source", ...metadata})
 # ---------------------------------------------------------------------------
 
 Doc = dict[str, Any]
@@ -302,13 +317,16 @@ def _expand(patterns: Sequence[str]) -> list[Path]:
     for pat in patterns:
         matches = sorted(glob.glob(pat))
         if not matches:
-            raise FileNotFoundError(f"找不到输入：{pat}")
+            raise FileNotFoundError(f"Input not found: {pat}")
         files.extend(Path(m) for m in matches)
     return files
 
 
 def read_source(spec: SourceSpec) -> Iterator[Doc]:
-    """读一个来源的全部原始文档。纯文本按空行切段、拼成约 doc_chars 的文档；JSONL 直接读。"""
+    """Read all raw documents of one source.
+
+    Plain text is split at blank lines and joined into documents of about doc_chars characters. JSONL is read directly.
+    """
     n = 0
     for f in _expand(spec.inputs):
         if spec.format == "text":
@@ -319,7 +337,7 @@ def read_source(spec: SourceSpec) -> Iterator[Doc]:
         elif spec.format == "jsonl":
             rows = read_jsonl(f)
         else:
-            raise ValueError(f"来源 {spec.name}：不认识的 format={spec.format!r}")
+            raise ValueError(f"Source {spec.name}: unknown format={spec.format!r}")
         for i, row in enumerate(rows):
             if spec.max_docs is not None and n >= spec.max_docs:
                 return
@@ -335,14 +353,14 @@ def read_source(spec: SourceSpec) -> Iterator[Doc]:
 
 
 # ---------------------------------------------------------------------------
-# 各阶段（纯函数：输入文档列表，输出保留的文档 + 统计）
+# Stages (pure functions: a list of documents in, the kept documents + statistics out)
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class StageResult:
     kept: list[Doc]
-    removed: Counter = field(default_factory=Counter)  # 删除原因 → 篇数
+    removed: Counter = field(default_factory=Counter)  # removal reason → number of documents
 
     @property
     def n_removed(self) -> int:
@@ -361,7 +379,10 @@ def clean_stage(docs: Iterable[Doc], min_chars: int = 1) -> StageResult:
 
 
 def detect_script_lang(text: str) -> str:
-    """极简的语言粗检：汉字占非空白字符 > 30% 记为 zh，否则 other（第二步换 fastText lid.176）。"""
+    """A minimal rough language check. If Chinese characters are > 30% of the non-white-space characters, return zh; if not, other.
+
+    Step 2 uses fastText lid.176 instead.
+    """
     return "zh" if cjk_ratio(text) > 0.3 else "other"
 
 
@@ -378,8 +399,11 @@ def langid_stage(docs: Iterable[Doc], lang: str) -> StageResult:
 
 
 def code_quality_reasons(text: str) -> list[str]:
-    """Codex 论文（arXiv:2107.03374）第 3.1 节过滤代码文件的三条规则：平均行长 > 100、
-    最长行 > 1000、字母数字字符占比太低（这里取 < 0.25）。多半是自动生成或压缩过的文件。"""
+    """The three rules from Section 3.1 of the Codex paper (arXiv:2107.03374) that filter code files.
+
+    Mean line length > 100, longest line > 1000, and a fraction of alphanumeric characters that is
+    too low (< 0.25 here). Such files are usually generated or minified.
+    """
     lines = text.split("\n") or [""]
     reasons = []
     if sum(len(ln) for ln in lines) / len(lines) > 100:
@@ -392,8 +416,10 @@ def code_quality_reasons(text: str) -> list[str]:
 
 
 def heuristic_stage(docs: Iterable[Doc], mode: str, th: QualityThresholds) -> StageResult:
-    """mode="web"：quality.py 的 Gopher/C4/FineWeb 规则；"code"：Codex 规则；"none"：不过滤。
-    一篇文档可能同时违反多条规则，removed 里按第一条原因计数（漏斗图用）。"""
+    """mode="web": the Gopher/C4/FineWeb rules of quality.py; "code": the Codex rules; "none": no filter.
+
+    A document can fail several rules. `removed` counts only the first reason (for the funnel chart).
+    """
     kept, removed = [], Counter()
     for d in docs:
         if mode == "none":
@@ -403,7 +429,7 @@ def heuristic_stage(docs: Iterable[Doc], mode: str, th: QualityThresholds) -> St
         elif mode == "code":
             reasons = code_quality_reasons(d["text"])
         else:
-            raise ValueError(f"不认识的 heuristics 模式：{mode!r}")
+            raise ValueError(f"Unknown heuristics mode: {mode!r}")
         if reasons:
             removed[reasons[0]] += 1
         else:
@@ -412,13 +438,13 @@ def heuristic_stage(docs: Iterable[Doc], mode: str, th: QualityThresholds) -> St
 
 
 def load_classifier(path: str) -> Any:
-    """'模块:类名' → 实例（无参数构造）。"""
+    """'module:ClassName' → an instance (the constructor gets no arguments)."""
     mod, _, cls = path.partition(":")
     return getattr(importlib.import_module(mod), cls)()
 
 
 def score_stage(docs: Sequence[Doc], spec: SourceSpec) -> StageResult:
-    """质量分数阈值：先看数据集自带的分数字段，再看自定义分类器。"""
+    """Quality score thresholds: first the score field of the data set, then the custom classifier."""
     kept, removed = list(docs), Counter()
     if spec.score_field and spec.score_min is not None:
         nxt = []
@@ -443,7 +469,10 @@ def score_stage(docs: Sequence[Doc], spec: SourceSpec) -> StageResult:
 
 
 def dedup_stage(docs: Sequence[Doc], spec: DedupSpec) -> tuple[StageResult, list[list[str]]]:
-    """精确去重 + MinHash LSH 近似去重；返回保留的文档，以及近似重复簇（文档 id，第一篇是保留的）。"""
+    """Exact dedup + MinHash LSH near-dedup.
+
+    Returns the kept documents and the near-duplicate clusters (document ids; the first one is kept).
+    """
     kept = list(docs)
     removed: Counter = Counter()
     clusters: list[list[str]] = []
@@ -478,7 +507,10 @@ def _strings(obj: Any) -> Iterator[str]:
 
 
 def load_eval_texts(es: EvalSetSpec) -> list[str]:
-    """评测集 → 每题一段文本。JSONL 取 fields 指定的字段（默认全部字符串，包括工具名和 schema）。"""
+    """Evaluation set → one text for each item.
+
+    For JSONL, take the fields in `fields` (default: all strings, including tool names and schemas).
+    """
     p = Path(es.path)
     if p.suffix == ".txt":
         return [ln.strip() for ln in p.read_text("utf-8").splitlines() if ln.strip()]
@@ -532,7 +564,10 @@ def split_train_val(
 def sample_for_tokenizer(
     train: dict[str, list[Doc]], weights: dict[str, float], total_bytes: int, seed: int
 ) -> list[str]:
-    """按配比从各来源采样训练分词器的文本：来源 i 最多拿 total_bytes × w_i 字节（total_bytes=0 表示全部）。"""
+    """Sample the text for the tokenizer training from the sources by mixture weight.
+
+    Source i gives at most total_bytes × w_i bytes (total_bytes=0 means all).
+    """
     out = []
     for name, docs in train.items():
         budget = total_bytes * weights[name] if total_bytes else float("inf")
@@ -548,7 +583,7 @@ def sample_for_tokenizer(
 
 
 # ---------------------------------------------------------------------------
-# 主流程
+# Main flow
 # ---------------------------------------------------------------------------
 
 
@@ -557,7 +592,7 @@ def _git_commit() -> str:
         return subprocess.run(
             ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5, check=True
         ).stdout.strip()
-    except Exception:  # noqa: BLE001 - 不在 git 仓库里也照常运行
+    except Exception:  # noqa: BLE001 - also runs outside a git repository
         return ""
 
 
@@ -566,7 +601,7 @@ def _nbytes(docs: Iterable[Doc]) -> int:
 
 
 def run_pipeline(cfg: PipelineConfig, log: Callable[[str], None] = print) -> dict[str, Any]:
-    """跑完整条流水线，返回 manifest（同时写到 <work_dir>/manifest.json）。"""
+    """Run the full pipeline. Return the manifest (also written to <work_dir>/manifest.json)."""
     t0 = time.time()
     P = cfg.pipeline
     work = Path(P.work_dir)
@@ -590,15 +625,15 @@ def run_pipeline(cfg: PipelineConfig, log: Callable[[str], None] = print) -> dic
         if P.write_stages or stage == "decontam":
             write_jsonl(docs, work / f"{len(funnel[src]):02d}_{stage}" / f"{src}.jsonl")
 
-    def took(t: float) -> str:  # 每个阶段的耗时：大规模运行时用来找慢在哪
+    def took(t: float) -> str:  # time of each stage: in a large run, it shows which stage is slow
         return f"{time.time() - t:.0f}s"
 
-    # 1–5：逐来源
+    # 1–5: for each source
     for spec in cfg.sources:
         t = time.time()
         docs = list(read_source(spec))
         record(spec.name, "raw", docs)
-        log(f"[pipeline] {spec.name}: 读取 {len(docs)} 篇（{took(t)}）")
+        log(f"[pipeline] {spec.name}: read {len(docs)} documents ({took(t)})")
         for stage, fn in [
             ("clean", lambda d, s=spec: clean_stage(d, s.min_chars)),
             ("langid", lambda d, s=spec: langid_stage(d, s.lang)),
@@ -609,16 +644,16 @@ def run_pipeline(cfg: PipelineConfig, log: Callable[[str], None] = print) -> dic
             res = fn(docs)
             docs = res.kept
             record(spec.name, stage, docs, res)
-            log(f"[pipeline] {spec.name}: {stage} → {len(docs)} 篇（{took(t)}）")
+            log(f"[pipeline] {spec.name}: {stage} → {len(docs)} documents ({took(t)})")
         t = time.time()
         res, clusters = dedup_stage(docs, cfg.dedup)
         docs = res.kept
         clusters_all[spec.name] = len(clusters)
         record(spec.name, "dedup", docs, res)
         per_source[spec.name] = docs
-        log(f"[pipeline] {spec.name}: {funnel[spec.name][0]['docs']} → {len(docs)} 篇（去重后，去重 {took(t)}）")
+        log(f"[pipeline] {spec.name}: {funnel[spec.name][0]['docs']} → {len(docs)} documents (after dedup; dedup took {took(t)})")
 
-    # 5'：跨来源去重（可选）：按来源顺序，先出现的来源优先保留
+    # 5': cross-source dedup (optional), in the order of the sources: a source that comes first keeps its documents
     t = time.time()
     if cfg.dedup.cross_source and len(per_source) > 1:
         seen: set[str] = set()
@@ -635,9 +670,9 @@ def run_pipeline(cfg: PipelineConfig, log: Callable[[str], None] = print) -> dic
                 }
             per_source[name] = keep
 
-    log(f"[pipeline] 跨来源去重（{took(t)}）")
+    log(f"[pipeline] cross-source dedup ({took(t)})")
 
-    # 6：去污染
+    # 6: decontamination
     index, eval_sizes = build_eval_index(cfg.decontam)
     contamination: dict[str, list[dict]] = {}
     for name in per_source:
@@ -646,30 +681,30 @@ def run_pipeline(cfg: PipelineConfig, log: Callable[[str], None] = print) -> dic
         per_source[name] = res.kept
         contamination[name] = hits
         record(name, "decontam", res.kept, res)
-        log(f"[pipeline] {name}: 去污染 → {len(res.kept)} 篇（{took(t)}，含写盘）")
+        log(f"[pipeline] {name}: decontam → {len(res.kept)} documents ({took(t)}, with the disk write)")
 
-    # 7：切分
+    # 7: split
     train: dict[str, list[Doc]] = {}
     val: dict[str, list[Doc]] = {}
     for name, docs in per_source.items():
         train[name], val[name] = split_train_val(docs, P.val_fraction, P.seed, name, P.val_max_docs)
         if not train[name]:
-            raise ValueError(f"来源 {name} 过滤后没有训练文档了，检查规则是否对它适用")
+            raise ValueError(f"Source {name} has no training documents after the filters. Check if the rules are correct for this source")
 
-    # 8：分词器
+    # 8: tokenizer
     T = cfg.tokenizer
     if T.path and Path(T.path).exists():
         tok = Tokenizer.load(T.path)
-        log(f"[pipeline] 使用已有分词器 {T.path}")
+        log(f"[pipeline] using the existing tokenizer {T.path}")
     else:
         texts = sample_for_tokenizer(train, weights, T.sample_bytes, P.seed)
         log(
-            f"[pipeline] 训练分词器：vocab={T.vocab_size}，预切分={T.pretokenize}，"
-            f"{sum(len(t.encode()) for t in texts) / 1e6:.2f} MB 文本"
+            f"[pipeline] training the tokenizer: vocab={T.vocab_size}, pretokenize={T.pretokenize}, "
+            f"{sum(len(t.encode()) for t in texts) / 1e6:.2f} MB of text"
         )
         t = time.time()
         tok = train_tokenizer(texts, T.vocab_size, T.pretokenize, min_frequency=T.min_frequency)
-        log(f"[pipeline] 分词器训练完（{took(t)}）")
+        log(f"[pipeline] tokenizer trained ({took(t)})")
     tok_path = Path(T.path) if T.path else out_dir / "tokenizer.json"
     tok.save(tok_path)
     compression = {
@@ -678,13 +713,13 @@ def run_pipeline(cfg: PipelineConfig, log: Callable[[str], None] = print) -> dic
         if docs
     }
 
-    # 9：分片
+    # 9: shards
     shards: dict[str, dict[str, Any]] = {}
     for name in per_source:
         t = time.time()
         info: dict[str, Any] = {}
         for split, docs in (("train", train[name]), ("val", val[name])):
-            for stale in out_dir.glob(f"{name}_{split}_*.bin"):  # 上次运行留下的分片（可能更多）
+            for stale in out_dir.glob(f"{name}_{split}_*.bin"):  # shards from the last run (there can be more of them)
                 stale.unlink()
             paths = write_shards(
                 (d["text"] for d in docs),
@@ -701,9 +736,9 @@ def run_pipeline(cfg: PipelineConfig, log: Callable[[str], None] = print) -> dic
                 "files": [p.name for p in paths],
             }
         shards[name] = info
-        log(f"[pipeline] {name}: 分片 {info['train']['tokens']:,} + {info['val']['tokens']:,} token（{took(t)}）")
+        log(f"[pipeline] {name}: shards {info['train']['tokens']:,} + {info['val']['tokens']:,} tokens ({took(t)})")
 
-    # 10：清单
+    # 10: manifest
     mixture = {}
     for name, w in weights.items():
         tokens = shards[name]["train"]["tokens"]
@@ -755,12 +790,12 @@ def run_pipeline(cfg: PipelineConfig, log: Callable[[str], None] = print) -> dic
     }
     (work / "manifest.json").write_text(json.dumps(manifest, indent=1, ensure_ascii=False))
     (work / "pretrain_sources.toml").write_text(pretrain_sources_toml(manifest))
-    log(f"[pipeline] 完成，用时 {manifest['seconds']}s，清单：{work / 'manifest.json'}")
+    log(f"[pipeline] done in {manifest['seconds']}s, manifest: {work / 'manifest.json'}")
     return manifest
 
 
 def _inputs_digest(spec: SourceSpec) -> str:
-    """输入文件的内容哈希（小文件）或 名字+大小+修改时间 的哈希（> 64MB 的大文件）。"""
+    """Hash of the input files: the content hash (small files), or the hash of name + size + modification time (files > 64MB)."""
     h = hashlib.sha256()
     for f in _expand(spec.inputs):
         st = f.stat()
@@ -773,10 +808,10 @@ def _inputs_digest(spec: SourceSpec) -> str:
 
 
 def pretrain_sources_toml(manifest: dict[str, Any]) -> str:
-    """生成可以贴进 configs/*/pretrain.toml 的 [data] 片段。"""
+    """Make a [data] section that you can paste into configs/*/pretrain.toml."""
     d = manifest["shards"]["dir"]
     lines = [
-        f"# 由 zero.data.pipeline 生成（{manifest['name']}，配置哈希 {manifest['config_sha256']}）",
+        f"# Made by zero.data.pipeline ({manifest['name']}, config hash {manifest['config_sha256']})",
         "[data]",
         f'tokenizer = "{manifest["tokenizer"]["path"]}"',
         f'val = "{d}/*_val_*.bin"',
@@ -794,9 +829,9 @@ def pretrain_sources_toml(manifest: dict[str, Any]) -> str:
 
 
 def funnel_table(manifest: dict[str, Any]) -> str:
-    """把漏斗打印成文本表：每个来源每一步剩多少篇。"""
+    """Show the funnel as a text table: the number of documents left after each step, for each source."""
     stages = [s["stage"] for s in next(iter(manifest["funnel"].values()))]
-    rows = [["来源", *stages]]
+    rows = [["source", *stages]]
     for src, steps in manifest["funnel"].items():
         rows.append([src, *[str(s["docs"]) for s in steps]])
     widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
@@ -804,16 +839,16 @@ def funnel_table(manifest: dict[str, Any]) -> str:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description="预训练数据流水线（第 13 章）")
+    ap = argparse.ArgumentParser(description="Pretraining data pipeline (Chapter 13)")
     ap.add_argument("--config", required=True)
     args = ap.parse_args(argv)
     cfg = load_pipeline_config(args.config)
-    m = run_pipeline(cfg, log=lambda s: print(s, flush=True))  # 立即刷新：大规模运行要几个小时
+    m = run_pipeline(cfg, log=lambda s: print(s, flush=True))  # flush at once: a large run takes several hours
     print(funnel_table(m))
     for name, mix in m["mixture"].items():
         print(
-            f"  {name:>16}: 训练 {mix['train_tokens']:>10,} token，配比 {mix['weight']:.3f}，"
-            f"验证集字节/token {m['tokenizer']['val_bytes_per_token'].get(name, float('nan')):.3f}"
+            f"  {name:>16}: train {mix['train_tokens']:>10,} tokens, weight {mix['weight']:.3f}, "
+            f"validation bytes/token {m['tokenizer']['val_bytes_per_token'].get(name, float('nan')):.3f}"
         )
 
 

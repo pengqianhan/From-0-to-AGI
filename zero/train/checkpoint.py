@@ -1,22 +1,25 @@
-"""Checkpoint：保存与恢复训练的全部状态（对应第 14 章）。
+"""Checkpoint: save and restore the full training state (Chapter 14).
 
-要做到"断点续训后的 loss 与不中断时一致"（GOAL.md 9.1），光存模型权重不够，还要存：
+The goal: after a resume, the loss is the same as in a run without interruption (GOAL.md 9.1).
+The model weights alone are not sufficient for this. The checkpoint also stores more state:
 
-| 内容 | 文件 | 谁来写 |
+| Content | File | Written by |
 |---|---|---|
-| 模型权重 | model.pt | rank 0 |
-| 优化器状态（AdamW 的一阶、二阶矩） | optim.pt | rank 0 |
-| 步数、已训练 token 数、配置、学习率调度状态 | meta.json | rank 0 |
-| 数据加载器位置 + 各种随机数发生器状态 | rank{r}.pt | 每个 rank 各写一份 |
+| model weights | model.pt | rank 0 |
+| optimizer state (AdamW first and second moments) | optim.pt | rank 0 |
+| step, tokens trained, config, learning-rate schedule state | meta.json | rank 0 |
+| data loader position + the state of all random number generators | rank{r}.pt | each rank writes its own file |
 
-目录结构：
+Directory layout:
 
     <ckpt_dir>/step_00001000/{model.pt, optim.pt, meta.json, rank0.pt, rank1.pt, ...}
-    <ckpt_dir>/latest            # 文本文件，内容是最新一个 checkpoint 的目录名
+    <ckpt_dir>/latest            # text file that contains the directory name of the latest checkpoint
 
-**原子写入**：先写到临时目录 `.tmp_step_xxx`，全部写完再 `os.replace` 改名成正式目录，最后更新 `latest`。
-训练在写 checkpoint 的中途被杀掉（抢占式实例常有），留下的只是一个临时目录，`latest` 仍然指向
-上一个完整的 checkpoint，不会读到写了一半的文件。
+**Atomic write**: first write to a temporary directory `.tmp_step_xxx`. When all files are complete,
+`os.replace` renames it to the final directory. Then update `latest`.
+Sometimes the system kills the training while it writes a checkpoint (frequent on preemptible instances).
+Then only a temporary directory stays, and `latest` still points to the last complete checkpoint.
+A resume never reads a half-written file.
 """
 
 from __future__ import annotations
@@ -47,7 +50,7 @@ def rng_state() -> dict[str, Any]:
         "torch": torch.get_rng_state(),
     }
     if torch.cuda.is_available():
-        # CUDA 随机数状态的保存与恢复：已在单张 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）
+        # Save and restore of the CUDA RNG state: verified on one RTX 3090 (2026-10, see runs/2026-10-01-gpu0-check/).
         state["cuda"] = torch.cuda.get_rng_state_all()
     return state
 
@@ -57,14 +60,16 @@ def set_rng_state(state: dict[str, Any]) -> None:
     np.random.set_state(state["numpy"])
     torch.set_rng_state(state["torch"])
     if "cuda" in state and torch.cuda.is_available():
-        # 已在单张 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）
+        # Verified on one RTX 3090 (2026-10, see runs/2026-10-01-gpu0-check/).
         torch.cuda.set_rng_state_all(state["cuda"])
 
 
 def _model_state_dict(model: nn.Module, parallel: str, info: DistInfo) -> dict[str, torch.Tensor]:
     if info.is_distributed and parallel == "fsdp":
-        # FSDP2 下每个 rank 只有一片参数，要先聚合成完整的 state_dict（集合通信，所有 rank 都要调用）。
-        # 单卡通路与 2 卡已在 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/：2 卡 FSDP 的 checkpoint 能被单卡 load_policy 严格读回）
+        # With FSDP2, each rank has only a shard of the parameters. First gather them into a full
+        # state_dict. This is a collective operation: all ranks must call it.
+        # The 1-GPU path and 2 GPUs are verified on RTX 3090 (2026-10, see runs/2026-10-01-gpu0-check/:
+        # 1-GPU load_policy reads a 2-GPU FSDP checkpoint back in strict mode).
         from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
 
         return get_model_state_dict(
@@ -77,7 +82,7 @@ def _optim_state_dict(
     model: nn.Module, optimizer: torch.optim.Optimizer, parallel: str, info: DistInfo
 ) -> Any:
     if info.is_distributed and parallel == "fsdp":
-        # 单卡通路与 2 卡已在 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）
+        # The 1-GPU path and 2 GPUs are verified on RTX 3090 (2026-10, see runs/2026-10-01-gpu0-check/).
         from torch.distributed.checkpoint.state_dict import (
             StateDictOptions,
             get_optimizer_state_dict,
@@ -101,7 +106,7 @@ def save_checkpoint(
     parallel: str = "ddp",
     keep_last: int = 0,
 ) -> Path:
-    """保存一个 checkpoint，返回最终目录。多进程时所有 rank 都要调用。"""
+    """Save one checkpoint and return the final directory. With many processes, all ranks must call it."""
     info = info or DistInfo()
     root = Path(ckpt_dir)
     final = root / _step_dir_name(step)
@@ -160,7 +165,7 @@ def prune_checkpoints(ckpt_dir: str | os.PathLike, keep_last: int) -> None:
 
 
 def find_latest(ckpt_dir: str | os.PathLike) -> Path | None:
-    """ckpt_dir 可以是 checkpoint 根目录（读 latest）或者某个 step_xxx 目录本身。"""
+    """ckpt_dir can be the checkpoint root directory (read `latest`) or one step_xxx directory."""
     root = Path(ckpt_dir)
     if (root / "model.pt").exists():
         return root
@@ -176,10 +181,13 @@ def find_latest(ckpt_dir: str | os.PathLike) -> Path | None:
 def load_model_weights(
     path: str | os.PathLike, model: nn.Module, strict: bool = True
 ) -> dict[str, Any]:
-    """只加载模型权重（中期训练从预训练 checkpoint 接着训时用），返回 meta。"""
+    """Load only the model weights and return meta.
+
+    Mid-training uses this to continue from a pretraining checkpoint.
+    """
     ckpt = find_latest(path)
     if ckpt is None:
-        raise FileNotFoundError(f"在 {path} 找不到 checkpoint")
+        raise FileNotFoundError(f"No checkpoint found in {path}")
     sd = torch.load(ckpt / "model.pt", map_location="cpu", weights_only=True)
     unwrap_model(model).load_state_dict(sd, strict=strict)
     with open(ckpt / "meta.json") as f:
@@ -196,21 +204,23 @@ def load_checkpoint(
     parallel: str = "ddp",
     restore_rng: bool = True,
 ) -> dict[str, Any]:
-    """恢复全部训练状态，返回 meta（含 step）。"""
+    """Restore the full training state and return meta (it contains the step)."""
     info = info or DistInfo()
     ckpt = find_latest(path)
     if ckpt is None:
-        raise FileNotFoundError(f"在 {path} 找不到 checkpoint")
+        raise FileNotFoundError(f"No checkpoint found in {path}")
     with open(ckpt / "meta.json") as f:
         meta = json.load(f)
     if meta.get("world_size", 1) != info.world_size and loader is not None:
         raise ValueError(
-            f"checkpoint 是 {meta.get('world_size')} 卡存的，现在是 {info.world_size} 卡，数据位置无法精确恢复"
+            f"The checkpoint has world_size={meta.get('world_size')}, but the current world_size is "
+            f"{info.world_size}. The data loader cannot restore its exact position"
         )
 
     model_sd = torch.load(ckpt / "model.pt", map_location="cpu", weights_only=True)
     if info.is_distributed and parallel == "fsdp":
-        # 单卡通路与 2 卡已在 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/：2 卡 FSDP 从 checkpoint 续训与不中断逐位相同）
+        # The 1-GPU path and 2 GPUs are verified on RTX 3090 (2026-10, see runs/2026-10-01-gpu0-check/:
+        # a 2-GPU FSDP resume from a checkpoint is bitwise identical to a run without interruption).
         from torch.distributed.checkpoint.state_dict import (
             StateDictOptions,
             set_model_state_dict,

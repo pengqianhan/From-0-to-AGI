@@ -1,6 +1,7 @@
-"""zero：本课主线模型的生产级代码（暂名）。
+"""zero: the production code of the main-line model of this course (working name).
 
-模块总览见 `zero/DESIGN.md`。与各章 `code/` 里的极简代码讲同一件事，但要能真正训练 0.6–0.8B 的模型。
+See `zero/DESIGN.md` for an overview of the modules. It does the same things as the minimal code
+in the `code/` folder of each chapter, but it can really train a 0.6–0.8B model.
 """
 
 __version__ = "0.1.0"

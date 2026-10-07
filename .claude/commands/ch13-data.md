@@ -1,57 +1,59 @@
 ---
-description: 第 13 章自我检验：数据（开放数据集与许可证、启发式过滤、MinHash LSH 去重、基于模型的质量过滤、合成改写、配比消融、13-gram 去污染、词表大小与 bits-per-byte）
+description: "Chapter 13 self-check: data — open data sets and licenses, heuristic filters, MinHash LSH dedup, model-based quality filtering, synthetic rephrasing, mixture ablations, 13-gram decontamination, vocabulary size and bits-per-byte (第 13 章自检：数据——开放数据集与许可证、启发式过滤、MinHash LSH 去重、基于模型的质量过滤、合成改写、配比消融、13-gram 去污染、词表大小与 bits-per-byte)"
 ---
 
-# 第 13 章自我检验：数据
+# Chapter 13 self-check: data
 
-用户调用了 `/ch13-data`，说明他们刚学完第 13 章（`chapters/13-data/`）。你的任务是帮他们检验自己是否真正理解了，而不是告诉他们答案。
+The learner typed `/ch13-data`. They finished Chapter 13 (`chapters/13-data/`). Help them check if they understand it. Do not give them the answers.
 
-**检验方式**：逐一提问下面的问题，等用户用自己的话回答后，再给出反馈——哪里说对了，哪里还有偏差，以及如何深化理解。不要一次性把所有问题都抛出去。需要数字时，让用户自己跑 `chapters/13-data/code/` 里的脚本，不要替他们算。
+**Language**: Use the language of the learner. If the learner writes in Chinese, ask the questions and give feedback in Chinese. The Chinese text of the chapter is in `README.zh.md`. Write short, clear sentences (see `docs/STYLE_GUIDE.md`).
 
----
-
-## 检验问题（按难度递进）
-
-**第一关：流水线（概念）**
-
-问用户：
-> 从 Common Crawl 的原始网页到可以喂给模型的分片，中间要经过哪几步？每一步主要干掉什么样的文档？哪几步便宜、哪一步最贵，为什么贵的那步要放在后面？
-
-期望回答：文本抽取 → 语言识别 → 启发式规则（Gopher/C4/FineWeb：词数、符号比例、停用词、重复行、行尾标点……）→ 精确去重 + MinHash 近似去重 → 基于模型的质量过滤（FineWeb-Edu 的教育价值分类器、DCLM 的 fastText）→（可选）合成改写 → 去污染 → 分词、切分片，并记录每个来源的许可证与出处。规则和哈希是每篇文档几微秒；模型打分要跑神经网络（FineWeb-Edu 给 15T token 打分用了 6000 H100 卡时），所以先用便宜的步骤把量减下来。加分：说出 `01–05` 的漏斗里各类垃圾分别死在哪一步（导航页/广告/乱码死在规则，转载死在去重，乱序文本大多活过了规则、死在分类器）。
+**Method**: Ask the questions below one at a time. Wait for the learner to answer in their own words. Then give feedback: tell them what is correct, what is not correct, and how to make their understanding deeper. Do not ask all the questions at the same time. When a question needs numbers, let the learner run the scripts in `chapters/13-data/code/`. Do not calculate the numbers for them.
 
 ---
 
-**第二关：MinHash 的数学（直觉 + 公式）**
+## Questions (from easy to difficult)
 
-问用户：
-> 两篇文档的 5-gram 集合 Jaccard 相似度是 s。为什么"两个签名在某一位上相等"的概率正好是 s？签名切成 b 段、每段 r 行，一对文档成为候选的概率是多少？b=16、r=8 时，s=0.8 和 s=0.5 分别是多少？如果想让阈值更"陡"，该怎么改 b 和 r，代价是什么？
+**Level 1: the pipeline (concepts)**
 
-期望回答：随机哈希下，A∪B 里哈希值最小的元素落在 A∩B 里的概率是 |A∩B|/|A∪B| = s，这时两个最小值相等。候选概率 1 − (1 − s^r)^b；b=16、r=8 时 s=0.8 约 0.947，s=0.5 约 0.061（`03_minhash.py` 的表和实测都能对上）。拐点约 (1/b)^(1/r)。r 和 b 同时变大曲线更陡（RefinedWeb 用 450 × 20），代价是要算、要存更多哈希（FineWeb 为省算力选了 14 × 8）。加分：知道本章代码里"取低 32 位"那一行为什么不能删（a·x+b 没超过 p 时哈希对 x 单调，所有哈希函数选中同一个最小元素，签名各位不再独立）。
+Ask the learner:
+> What steps take raw Common Crawl web pages to shards that you can feed to a model? What type of document does each step mainly remove? Which steps are cheap, and which step is the most expensive? Why must the expensive step come later?
 
----
-
-**第三关：发现问题（数据消融与去污染）**
-
-问用户：
-> `06_quality_ablation.py` 里，用脏网页训练的模型训练 loss 反而更低，验证集 bpb 却更高。这说明什么？另外，13-gram 去污染抓不到哪种泄漏？把 n 调小到 5 又会出什么问题？`05_decontam.py` 里 n=13 的"其它命中"为什么不是误报？
-
-期望回答：脏数据里有大量重复和模板化的导航页、广告，它们很好猜，拉低了训练 loss，但对留出的正常文本没有帮助，训练 loss 低 ≠ 模型好，比较数据要看同一份干净验证集上的 bpb，还要看差距是否大于随机种子的波动。13-gram 抓不到改写过的考题（每隔几个词换一个词，13 个连续词就对不上了）；n 太小会把常见搭配（"me to the sight of"）当成泄漏，误删好文档。n=13 的"其它命中"是因为同一首宋词在语料里本来就出现了两次（《宋词三百首》和《全宋词》），考题取自其中一份——这是真泄漏，也说明文档级去重对"段落级重复"无能为力。
+Expected answer: text extraction → language identification → heuristic rules (Gopher/C4/FineWeb: word count, symbol ratio, stop words, duplicate lines, line-end punctuation, …) → exact dedup + MinHash near dedup → model-based quality filtering (the educational-value classifier of FineWeb-Edu, the fastText classifier of DCLM) → (optional) synthetic rephrasing → decontamination → tokenization and shards, with a record of the license and provenance of each source. Rules and hashes take a few microseconds per document. Model-based scoring must run a neural network (FineWeb-Edu used 6000 H100 GPU hours to score 15T tokens). Thus the cheap steps make the data smaller first. Extra credit: the learner can tell where each type of junk is removed in the funnel of `01–05`. Navigation pages, spam, and garbled pages are removed by the rules. Reposts are removed by dedup. Most word salad passes the rules and is removed by the classifier.
 
 ---
 
-**第四关：迁移（主线的决策）**
+**Level 2: the math of MinHash (intuition + formula)**
 
-问用户：
-> 主线模型形状固定（28 层、宽 1280、共享 embedding），只换词表大小。为什么不能只看"字节/token"来选词表？用第 8 节的表说明：词表从 64K 加到 128K，每 token 的算力增加多少、压缩率提高多少，合起来"读同样多的文本要花的算力"是变多还是变少？为什么主线最后选的是这个数？再说说：一个来源的许可证页面写着 Apache-2.0，为什么 `configs/main/data.toml` 里还标着"待核实"？
+Ask the learner:
+> The Jaccard similarity of the 5-gram sets of two documents is s. Why is the probability that "the two signatures are equal at one position" exactly s? Split the signature into b bands of r rows. What is the probability that the pair becomes a candidate? With b=16 and r=8, what is it for s=0.8 and for s=0.5? To make the threshold "steeper", how do you change b and r, and what is the cost?
 
-期望回答：词表越大压缩越好，但 embedding 参数 V×1280 和 lm_head 的矩阵乘跟着线性增长；要比的是 FLOPs/字节 = (FLOPs/token) ÷ (字节/token)，并且总参数不能超过 0.8B（151,936 的 Qwen 词表放在这个宽度上正好超线）。具体数字以用户跑 `08_vocab_size.py` 的结果和 README 第 8 节为准，回答要落到"算力/字节"与"参数上限"两个约束上，并提到 Tao et al. 2024 的结论（小模型的最优词表比大模型小，但过训练会让最优值变大）。许可证：Ultra-FineWeb 的中文部分汇集了多个上游语料，上游许可证不一，数据集页面的标注不等于每个上游都允许；DCLM 许可证 CC-BY-4.0 但卡片写"仅供研究"；Stack-Edu 页面没有许可证字段，要看 The Stack v2 的条款和每个文件的 detected_licenses——所以下载器对"待核实"的来源默认拒绝。
+Expected answer: with a random hash, the element of A∪B with the smallest hash is in A∩B with the probability |A∩B|/|A∪B| = s. In that case, the two minimums are equal. The candidate probability is 1 − (1 − s^r)^b. With b=16 and r=8: about 0.947 for s=0.8, and about 0.061 for s=0.5 (the table and the measurement of `03_minhash.py` agree). The inflection point is at about (1/b)^(1/r). When r and b both increase, the curve becomes steeper (RefinedWeb uses 450 × 20). The cost is that you must calculate and store more hashes (FineWeb selected 14 × 8 to save compute). Extra credit: the learner knows why the "take the low 32 bits" line in the code of this chapter is necessary. When a·x+b does not exceed p, the hash increases monotonically with x. Then all hash functions select the same minimum element, and the positions of the signature are no longer independent.
 
 ---
 
-## 反馈原则
+**Level 3: find the problem (data ablations and decontamination)**
 
-- 答对了：认可，然后追问一个更深的"为什么"（例如"FineWeb 为什么发现全局去重反而更差？"）。
-- 答错了：不要直接给答案，给一个提示（比如让他们改 `03_minhash.py` 的 bands，或者改 `05_decontam.py` 的 n，跑一跑看结果），让他们重新思考。
-- 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
+Ask the learner:
+> In `06_quality_ablation.py`, the model trained on the noisy crawl has a lower training loss, but a higher validation bpb. What does this tell you? Also: what type of leak can 13-gram decontamination not catch? What problem occurs if you decrease n to 5? In `05_decontam.py`, why are the "other hits" at n=13 not false positives?
 
-四关都通过后，告诉用户可以进入第 14 章（`chapters/14-pretraining-engineering/`）：数据和分词器都有了，下一步是把几千亿 token 真正喂进 8 张 GPU。
+Expected answer: the noisy data contains many duplicates and template-like navigation pages and spam. They are easy to predict, so they decrease the training loss. But they do not help on normal held-out text. A low training loss does not mean a good model. To compare data, look at bpb on the same clean validation set, and check if the difference is larger than the variation from the random seed. 13-grams cannot catch paraphrased test questions (one word changes in every few words, so no 13 consecutive words match). A small n flags common phrases ("me to the sight of") as leaks and removes good documents by mistake. The "other hits" at n=13 occur because the same Song ci poem is in the corpus two times ("Three Hundred Song Ci Poems" and "Complete Song Ci"), and the test question came from one copy. This is a real leak. It also shows that document-level dedup cannot find "paragraph-level duplicates".
+
+---
+
+**Level 4: transfer (the main-line decisions)**
+
+Ask the learner:
+> The shape of the main-line model is fixed (28 layers, width 1280, tied embeddings). Only the vocabulary size changes. Why can you not select the vocabulary by "bytes/token" alone? Use the table of Section 10: when the vocabulary increases from 64K to 128K, how much does the compute per token increase, and how much does the compression improve? Together, does "the compute to read the same amount of text" increase or decrease? Why did the main line select its value? Also: the license page of one source says Apache-2.0. Why does `configs/main/data.toml` still mark it as "to be verified"?
+
+Expected answer: a larger vocabulary compresses better, but the embedding parameters V×1280 and the lm_head matmul increase linearly. Compare FLOPs/byte = (FLOPs/token) ÷ (bytes/token). Also, the total parameters must not be more than 0.8B (the Qwen vocabulary of 151,936 at this width is over the limit). For the exact numbers, use the output of `08_vocab_size.py` that the learner runs and Section 10 of the README. The answer must use the two constraints, "compute/byte" and "the parameter limit". It must also mention the conclusion of Tao et al. 2024: the optimal vocabulary of a small model is smaller than that of a large model, but overtraining makes the optimum larger. Licenses: the Chinese part of Ultra-FineWeb collects many upstream corpora with different licenses, so the label on the data set page does not mean that each upstream source permits it. The license of DCLM is CC-BY-4.0, but the card says "research use only". The Stack-Edu page has no license field: you must check the terms of The Stack v2 and the detected_licenses of each file. Thus the downloader refuses "to be verified" sources by default.
+
+---
+
+## Rules for feedback
+
+- If the answer is correct: say so. Then ask a deeper "why" question (for example, "Why did FineWeb find that global dedup made the data worse?").
+- If the answer is not correct: do not give the answer. Give a hint. For example, ask the learner to change `bands` in `03_minhash.py` or `n` in `05_decontam.py` and run the script. Then let them think again.
+- If the learner says "I do not know": ask them to guess first. A wrong guess is better than no guess.
+
+When the learner passes all four levels, tell them to continue to Chapter 14 (`chapters/14-pretraining-engineering/`). Now they have the data and the tokenizer. The next step is to really feed hundreds of billions of tokens into 8 GPUs.

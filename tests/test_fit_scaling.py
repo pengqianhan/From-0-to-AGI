@@ -1,4 +1,4 @@
-"""scaling law 拟合与预算规划（zero/tools/fit_scaling.py、plan_budget.py，第 12 章）的测试。"""
+"""Tests for the scaling law fit and the budget plan (zero/tools/fit_scaling.py, plan_budget.py, Chapter 12)."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from zero.tools.fit_scaling import (
 )
 from zero.tools.plan_budget import apply_candidate, plan, tokens_for_budget
 
-TRUE = ChinchillaFit(E=1.82, A=482.0, B=2085.0, alpha=0.348, beta=0.366)  # Epoch 复现的量级
+TRUE = ChinchillaFit(E=1.82, A=482.0, B=2085.0, alpha=0.348, beta=0.366)  # the magnitude from the Epoch replication
 
 
 def _ladder(noise: float = 0.0, seed: int = 0) -> list[Point]:
@@ -43,10 +43,10 @@ def test_fit_recovers_known_parameters() -> None:
     assert fit.beta == pytest.approx(TRUE.beta, abs=0.02)
     assert fit.rmse < 1e-3
     assert not fit.at_boundary
-    # 外推 2 倍尺寸、长得多的训练：误差 < 0.3%
+    # Extrapolate to 2 times the size and a much longer training run: error < 0.3%
     N, D = 6e8, 4e11
     assert float(fit.predict(N, D)) == pytest.approx(float(TRUE.predict(N, D)), rel=3e-3)
-    # 算力最优比例与真值一致
+    # The compute-optimal ratio agrees with the true value
     n_opt, d_opt = fit.compute_optimal(1e21)
     t_n, t_d = TRUE.compute_optimal(1e21)
     assert d_opt / n_opt == pytest.approx(t_d / t_n, rel=0.1)
@@ -82,7 +82,7 @@ def test_loss_to_score_sigmoid() -> None:
 
 
 def test_cli_with_trainer_logs(tmp_path, capsys) -> None:
-    """用训练器格式的 log.jsonl + 配置文件拟合，并读留出运行、写出 JSON。"""
+    """Fit from log.jsonl files in the trainer format + config files; read held-out runs; write JSON."""
     runs = []
     for i, (dim, ffn) in enumerate([(64, 192), (96, 256), (128, 384), (160, 448), (192, 512)]):
         cfg_path_i = tmp_path / f"m{i}.toml"
@@ -120,7 +120,7 @@ def test_cli_with_trainer_logs(tmp_path, capsys) -> None:
     res = json.loads(out.read_text())
     ho = res["holdout"][0]
     assert ho["pred"] == pytest.approx(ho["loss"], rel=0.01)
-    assert "外推" in capsys.readouterr().out
+    assert "Extrapolation" in capsys.readouterr().out
     pts_file = tmp_path / "pts.jsonl"
     pts_file.write_text(
         "\n".join(json.dumps({"N": p.N, "D": p.D, "loss": p.loss}) for p in _ladder())
@@ -131,14 +131,14 @@ def test_cli_with_trainer_logs(tmp_path, capsys) -> None:
 def test_plan_matches_estimate_cost() -> None:
     cfg = load_model_config("configs/main/pretrain.toml")
     tokens = tokens_for_budget(cfg, 5000.0, 4096, mfu=0.4)
-    # 反过来用 estimate_cost 算这么多 token 的费用，必须正好是预算
+    # In the other direction: estimate_cost for this many tokens must give exactly the budget
     assert estimate_cost(cfg, tokens, 4096, mfu=0.4).cost_usd == pytest.approx(5000.0, rel=1e-9)
     row = plan(cfg, 5000.0, 4096, mfu=0.4)
     assert row.cost_usd == pytest.approx(5000.0, rel=1e-9)
     assert row.tokens_per_param == pytest.approx(tokens / row.params_total)
-    # 与 RUNBOOK 的数字一致：500B token 约 $6.1K → $5K 约 410B
+    # Agrees with the numbers in RUNBOOK: 500B tokens cost about $6.1K → $5K buys about 410B
     assert 405e9 < tokens < 415e9
-    # 提速 1.25 倍 ≡ MFU 从 0.4 变 0.5
+    # A speedup of 1.25 times ≡ MFU from 0.4 to 0.5
     assert tokens_for_budget(cfg, 5000.0, 4096, mfu=0.4, speedup=1.25) == pytest.approx(
         tokens_for_budget(cfg, 5000.0, 4096, mfu=0.5)
     )

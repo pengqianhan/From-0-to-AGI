@@ -1,48 +1,55 @@
-# 主线模型的预训练数据配方（第 13 章）。第二步才会真正运行，**所有配比都是暂定值**，
-# 等第二步的代理实验（proxy ablation，见文末）确定后再改；改动写进 git 历史并在第 13 章"主线进度"里说明。
+# Pretraining data recipe of the main-line model (Chapter 13). It runs only in Step 2. **All mix weights are provisional.**
+# The Step 2 proxy ablations (see the end of this file) will set them. Record each change in the git history,
+# and explain it in "Main-line progress" of Chapter 13.
 #
-# 两个命令：
+# Commands:
 #   uv sync --extra data
-#   uv run python -m zero.data.download --config configs/main/data.toml --dry-run      # 看下载计划
-#   uv run python -m zero.data.download --config configs/main/data.toml --max-docs 1000  # 先小规模核对字段
-#   uv run python -m zero.data.pipeline --config configs/main/data.toml                 # 过滤 → 分词器 → 分片
-# 注意：download.py 与 pipeline.py 的大规模路径**尚未验证**（构建环境访问不了 Hugging Face）；
-# pipeline.py 是单进程、全内存的实现，第二步处理 TB 级数据时，第 5 步（MinHash）要换分布式实现（如 datatrove）。
+#   uv run python -m zero.data.download --config configs/main/data.toml --dry-run      # show the download plan
+#   uv run python -m zero.data.download --config configs/main/data.toml --max-docs 1000  # check the fields on a small scale first
+#   uv run python -m zero.data.pipeline --config configs/main/data.toml                 # filter → tokenizer → shards
+# Note: the large-scale paths of download.py and pipeline.py are **not verified yet** (the build environment cannot access Hugging Face).
+# pipeline.py runs in one process and keeps all data in memory. For the TB-scale data of Step 2,
+# stage 5 (MinHash) must change to a distributed implementation (for example, datatrove).
 #
 # ---------------------------------------------------------------------------------------------
-# 配比（按训练 token 计，预算约 400B token，见 configs/main/pretrain.toml）
+# Mix (by training tokens; the budget is about 400B tokens, see configs/main/pretrain.toml)
 #
-#   英文网页  0.45 = FineWeb-Edu 0.35 + DCLM-baseline 0.10
-#   中文网页  0.30 = FineWeb-2 中文 0.20 + Ultra-FineWeb 中文 0.10
-#   代码      0.15 = Stack-Edu
-#   数学      0.10 = FineMath-3+
+#   English web  0.45 = FineWeb-Edu 0.35 + DCLM-baseline 0.10
+#   Chinese web  0.30 = FineWeb-2 Chinese 0.20 + Ultra-FineWeb Chinese 0.10
+#   Code         0.15 = Stack-Edu
+#   Math         0.10 = FineMath-3+
 #
-# 理由（证据见第 13 章正文与参考文献）：
-# - 数据是最大的杠杆，但"最好的数据"随目标而变：MobileLLM-R1 的留一法实验里，去掉 FineWeb-Edu 让
-#   知识、数学、代码三项一起变差（网页是把各领域粘在一起的"胶水"），所以通用网页占大头；
-# - 英文 > 中文：开放的高质量英文数据（经过模型过滤的）远多于中文；中文 0.30 是双语目标（C-Eval/CMMLU）
-#   的底线。对照：Puro-2B 第一阶段中文 11.7%（中文不是它的目标），Llama 3 多语言合计 8%；
-# - 代码 0.15：工具调用本质上是按 schema 生成结构化文本（JSON、函数签名）；MobileLLM-R1 发现代码数据对
-#   数学也有帮助；Llama 3 最终配比里代码约 17%。Puro-2B 的 PCA 显示代码能力与通用能力此消彼长，
-#   所以第一阶段不超过 0.15，想加强的部分留到中期训练（第 15 章）；
-# - 数学 0.10：Llama 3 数学与推理合计约 25%，Puro-2B 第一阶段 7.2%、第二阶段 18.3%；同样把一部分留到中期训练；
-# - 按预算 400B 算，每个来源要看几遍（epoch）：FineWeb-Edu 140B / 1.3T ≈ 0.11；DCLM 40B / 约 4T ≈ 0.01；
-#   Ultra-FineWeb 中文 40B / 约 120B ≈ 0.33；Stack-Edu 60B / 125B ≈ 0.5；FineMath-3+ 40B / 34B ≈ 1.2
-#   （数据集卡上的 token 数是各自分词器口径，和我们的分词器不完全一样）；FineWeb-2 中文 80B 相对它的
-#   总量（636M 篇文档，parquet 1.6TB）远小于 1 遍，但它只做了启发式过滤，第二步要先训一个中文质量分类器
-#   （FineWeb-Edu 的做法）再决定阈值。重复 4 遍以内损失很小（Muennighoff et al. 2023），这里都在 1.2 遍以内。
+# Reasons (Chapter 13 and its references give the evidence):
+# - Data is the largest lever, but the "best data" changes with the goal. In the leave-one-out experiments
+#   of MobileLLM-R1, removal of FineWeb-Edu made knowledge, math, and code all worse
+#   (web text is the "glue" that connects the domains). Thus general web text gets the largest share.
+# - English > Chinese: there is much more open, high-quality (model-filtered) English data than Chinese data.
+#   Chinese 0.30 is the minimum for the bilingual goal (C-Eval/CMMLU). For comparison: Puro-2B stage 1 has
+#   11.7% Chinese (Chinese is not its goal), and Llama 3 has 8% multilingual data in total.
+# - Code 0.15: tool calling is the generation of structured text from a schema (JSON, function signatures).
+#   MobileLLM-R1 found that code data also helps math. The final Llama 3 mix has about 17% code.
+#   The PCA of Puro-2B shows a trade-off between code ability and general ability.
+#   Thus stage 1 uses at most 0.15. Mid-training (Chapter 15) adds more where we want more strength.
+# - Math 0.10: Llama 3 has about 25% math and reasoning together. Puro-2B has 7.2% in stage 1 and 18.3% in stage 2.
+#   Here also, part of the math waits for mid-training.
+# - Passes (epochs) over each source at the 400B budget: FineWeb-Edu 140B / 1.3T ≈ 0.11; DCLM 40B / about 4T ≈ 0.01;
+#   Ultra-FineWeb Chinese 40B / about 120B ≈ 0.33; Stack-Edu 60B / 125B ≈ 0.5; FineMath-3+ 40B / 34B ≈ 1.2
+#   (each dataset card counts tokens with its own tokenizer, which is not the same as ours). FineWeb-2 Chinese
+#   80B is much less than 1 pass over its total (636M documents, 1.6TB parquet). But it has only heuristic filters.
+#   Step 2 must first train a Chinese quality classifier (as FineWeb-Edu did), then choose the threshold.
+#   Up to 4 repetitions cost very little (Muennighoff et al. 2023). All sources here stay at or below 1.2 passes.
 # ---------------------------------------------------------------------------------------------
 
 [pipeline]
 name = "main"
-work_dir = "data/pipeline"        # 每阶段的 JSONL（很大，放在不进 git 的 data/ 下）
-out_dir = "data/pretrain"         # 分片：data/pretrain/<来源>_{train,val}_*.bin（configs/main/pretrain.toml 读这里）
+work_dir = "data/pipeline"        # JSONL of each stage (very large; it goes in data/, which is not in git)
+out_dir = "data/pretrain"         # Shards: data/pretrain/<source>_{train,val}_*.bin (configs/main/pretrain.toml reads them here)
 seed = 0
 val_fraction = 0.001
 val_max_docs = 5000
 shard_tokens = 100_000_000
 token_budget = 500e9
-write_stages = false              # 只把去污染之后的最终文档落盘（中间阶段只记漏斗计数）
+write_stages = false              # Write to disk only the final documents after decontamination (other stages record only the funnel counts)
 
 [[sources]]
 name = "fineweb-edu"
@@ -51,14 +58,14 @@ inputs = ["data/raw/fineweb-edu/*.jsonl.gz"]
 format = "jsonl"
 weight = 0.35
 lang = "en"
-heuristics = "none"               # FineWeb 已经做过 Gopher/C4/FineWeb 规则和每个 dump 内的 MinHash
+heuristics = "none"               # FineWeb already applied the Gopher/C4/FineWeb rules and MinHash in each dump
 score_field = "int_score"
-score_min = 3                     # 数据集本身就是 ≥3 分；保留这一行是为了在清单里留下阈值记录
+score_min = 3                     # The dataset already contains only scores ≥3. This line keeps a record of the threshold in the manifest
   [sources.download]
   repo = "HuggingFaceFW/fineweb-edu"
   config = "default"
   keep_fields = ["url", "dump", "score", "int_score", "token_count", "language_score"]
-  target_bytes = 800_000_000_000  # ≈ 175B token × 约 4.3 字节/token ÷ 保留率约 0.95（第二步用主线分词器实测后更新）
+  target_bytes = 800_000_000_000  # ≈ 175B tokens × about 4.3 bytes/token ÷ keep rate of about 0.95 (update in Step 2 after a measurement with the main-line tokenizer)
 
 [[sources]]
 name = "dclm-baseline"
@@ -67,13 +74,13 @@ inputs = ["data/raw/dclm-baseline/*.jsonl.gz"]
 format = "jsonl"
 weight = 0.10
 lang = "en"
-heuristics = "none"               # DCLM：RefinedWeb 式启发式 + Bloom 过滤器去重 + fastText 分类器（前 10%）
+heuristics = "none"               # DCLM: RefinedWeb-style heuristics + Bloom filter dedup + fastText classifier (top 10%)
   [sources.download]
   repo = "mlfoundations/dclm-baseline-1.0"
-  keep_fields = ["url"]           # 其余元数据字段名待第二步核对
+  keep_fields = ["url"]           # Check the names of the other metadata fields in Step 2
   target_bytes = 230_000_000_000
-  # 注意：数据集卡把它定位为"研究基线"（intended for research use only），许可证是 CC-BY-4.0；
-  # 发布模型前要人工确认这两者的关系（待核实）。
+  # Note: the dataset card calls it a "research baseline" (intended for research use only). The license is CC-BY-4.0.
+  # Before we release a model, a person must check how these two statements agree (to be verified).
 
 [[sources]]
 name = "fineweb-2-zh"
@@ -82,10 +89,10 @@ inputs = ["data/raw/fineweb-2-zh/*.jsonl.gz"]
 format = "jsonl"
 weight = 0.20
 lang = "zh"
-heuristics = "web"                # 再过一遍我们的规则（中文按字计词）；阈值用 FineWeb 的英文值，第二步实测复核
+heuristics = "web"                # Apply our rules again (for Chinese, each character counts as a word). The thresholds are the English values of FineWeb; measure and check them again in Step 2
   [sources.download]
   repo = "HuggingFaceFW/fineweb-2"
-  config = "cmn_Hani"             # 普通话、汉字（2026-09 读取数据集目录确认）
+  config = "cmn_Hani"             # Mandarin, Han characters (confirmed from the dataset directory, 2026-09)
   keep_fields = ["url", "dump", "language_score"]
   target_bytes = 350_000_000_000
 
@@ -96,16 +103,17 @@ inputs = ["data/raw/ultra-fineweb-zh/*.jsonl.gz"]
 format = "jsonl"
 weight = 0.10
 lang = "zh"
-heuristics = "none"               # 已做启发式过滤 + fastText 质量分类器（MiniCPM4 的核心网页数据）
+heuristics = "none"               # Already has heuristic filters + a fastText quality classifier (the core web data of MiniCPM4)
   [sources.download]
   repo = "openbmb/Ultra-FineWeb"
   split = "zh"
   text_field = "content"
   keep_fields = ["score", "source"]
   target_bytes = 180_000_000_000
-  # 许可证：数据集页标 Apache-2.0，但中文部分来自 IndustryCorpus2、MiChao、WuDao、SkyPile、WanJuan、
-  # ChineseWebText、TeleChat、CCI3 等上游语料，上游许可证不一（如 SkyPile 用 Skywork 社区许可证）。
-  # 第二步下载前逐个核实；核实不了就把这 0.10 并入 fineweb-2-zh。
+  # License: the dataset page says Apache-2.0. But the Chinese part comes from upstream corpora such as IndustryCorpus2,
+  # MiChao, WuDao, SkyPile, WanJuan, ChineseWebText, TeleChat, and CCI3. Their licenses are different
+  # (for example, SkyPile uses the Skywork community license). Check each one before the Step 2 download.
+  # If we cannot verify them, move this 0.10 into fineweb-2-zh.
 
 [[sources]]
 name = "stack-edu"
@@ -117,16 +125,19 @@ lang = "code"
 heuristics = "code"
   [sources.download]
   repo = "HuggingFaceTB/stack-edu"
-  # 只含文件 id（blob_id）；内容按数据集卡的方法从 Software Heritage 的 S3 桶取（需要 AWS 凭证）。
-  # 语言顺序即优先级：工具调用最常见的 Python/JS/TS/Shell/SQL/Markdown 在前，Java（42B，占一半）放最后。
+  # The dataset contains only the file ids (blob_id). Get the content from the Software Heritage S3 bucket,
+  # as the dataset card describes (this needs AWS credentials).
+  # The language order is the priority. The languages most common in tool calls (Python/JS/TS/Shell/SQL/Markdown)
+  # come first. Java (42B, half of the data) is last.
   config = ["Python", "JavaScript", "TypeScript", "Shell", "SQL", "Markdown", "Go", "Rust",
             "Cpp", "C", "CSharp", "PHP", "Ruby", "Swift", "Java"]
   id_field = "blob_id"
   swh_content = true
   keep_fields = ["repo_name", "path", "language", "score", "int_score", "detected_licenses", "license_type"]
   target_bytes = 300_000_000_000
-  # 许可证：数据集页没有 license 字段，指向 The Stack v2 的条款；每个文件带 detected_licenses，
-  # 第二步可以只保留宽松许可证的文件。sources.py 里仍是"待核实"，下载需要 --allow-unverified。
+  # License: the dataset page has no license field; it points to the terms of The Stack v2. Each file has
+  # detected_licenses, so Step 2 can keep only the files with permissive licenses. sources.py still marks the
+  # license as unverified, so the download needs --allow-unverified.
 
 [[sources]]
 name = "finemath"
@@ -138,7 +149,7 @@ lang = "en"
 heuristics = "none"
   [sources.download]
   repo = "HuggingFaceTB/finemath"
-  config = "finemath-3plus"       # 约 34B token；4plus 约 9.6B 留给中期训练
+  config = "finemath-3plus"       # About 34B tokens. 4plus (about 9.6B) is for mid-training
   keep_fields = ["url", "score", "int_score", "token_count"]
 
 [quality]
@@ -149,14 +160,15 @@ exact = true
 near = true
 threshold = 0.8
 num_perm = 128
-bands = 16                        # 拐点 (1/16)^(1/8) ≈ 0.71；FineWeb 用 14 × 8（拐点 0.72）
+bands = 16                        # S-curve threshold (1/16)^(1/8) ≈ 0.71. FineWeb uses 14 × 8 (threshold 0.72)
 ngram = 5
-cross_source = true               # 同一篇文章可能同时在 FineWeb-Edu 和 DCLM 里
+cross_source = true               # The same article can be in both FineWeb-Edu and DCLM
 
 [decontam]
 n = 13
 min_tokens = 8
-# 评测集由第 11 章的评测代码导出成 JSONL（第二步准备）；工具调用基准的函数名与 schema 也在其中
+# The evaluation code of Chapter 11 exports the evaluation sets as JSONL (prepared in Step 2).
+# They also contain the function names and schemas of the tool-calling benchmark.
 [[decontam.eval_sets]]
 name = "mmlu-redux"
 path = "data/eval_sets/mmlu_redux.jsonl"
@@ -192,23 +204,29 @@ name = "tool_dev"
 path = "zero/eval/tasks/tool_dev.jsonl"
 
 [tokenizer]
-vocab_size = 65536                # 第 13 章第 8 节的测量与取舍；configs/main/pretrain.toml 的 model.vocab_size 要一致
-pretokenize = "qwen3.5"           # 与 Qwen3 的正则只差 \p{M}：中英代码上切分完全相同，印地语、泰语等不再在元音符号处断开；
-                                  # 导出 GGUF 时 pre_tokenizer 用 "qwen35"（llama.cpp 已支持）
-sample_bytes = 20_000_000_000     # 按配比从各来源采样 20GB 文本训练分词器
+vocab_size = 65536                # Measurement and trade-off in Chapter 13, Section 10. model.vocab_size in configs/main/pretrain.toml must be the same
+pretokenize = "qwen3.5"           # Differs from the Qwen3 regex only in \p{M}: the same splits on Chinese, English, and code. Hindi, Thai, and
+                                  # similar languages no longer split at vowel signs. For GGUF export, pre_tokenizer is "qwen35" (llama.cpp supports it)
+sample_bytes = 20_000_000_000     # Sample 20GB of text from the sources by the mix to train the tokenizer
 min_frequency = 2
 path = "data/pretrain/tokenizer.json"
 
 # ---------------------------------------------------------------------------------------------
-# 第二步的配比代理实验（proxy ablation）计划——跑完再改上面的 weight
+# Plan for the Step 2 mix proxy ablations. Run them, then change the weight values above.
 #
-# 做法参照 Puro-2B（从同一个 Qwen3-0.6B checkpoint 出发，每个候选数据切片续训约 8.4B token，候选占比
-# 在前 1600 步从 0 线性升到 80%，看 15 项基准组成的"能力向量"）和 Llama 3 / OLMo 2 的退火估值：
-#   1. 起点：第 12 章阶梯实验里最大的一档（configs/ladder/l150m.toml）训练到稳定段中途的 checkpoint；
-#   2. 每个候选（来源、来源内的质量分位段、配比）续训约 2B token，候选占比 0 → 80% 线性升上去；
-#   3. 看各领域开发集的 bpb（zero/data/bpb.py，跨分词器可比）和小基准上的准确率，不用预注册的测试基准；
-#   4. 先比来源，再比配比（3–4 个候选配比），最后抽查 FineWeb-2 中文的分类器阈值。
-# 算力：uv run python -m zero.tools.estimate_cost --config configs/ladder/l150m.toml --tokens 2B --gpu h100-sxm
-#   → 2.5e18 FLOPs、1.8 卡时、约 $4 一个（MFU 0.4、$2.5/卡时的假设，尚未在 GPU 上验证）；
-#   计划 20–30 个，连同评测约 $100–200，在 GOAL.md 3.4"第 12–13 章小规模实验 ~$1,200"之内。
+# The method follows Puro-2B and the annealing evaluation of Llama 3 / OLMo 2. (Puro-2B starts from the same
+# Qwen3-0.6B checkpoint and continues training on each candidate data slice for about 8.4B tokens. The candidate share
+# increases linearly from 0 to 80% in the first 1600 steps. It compares a "capability vector" of 15 benchmarks.)
+#   1. Start: a checkpoint from the middle of the stable phase of the largest size in the Chapter 12 ladder
+#      experiment (configs/ladder/l150m.toml).
+#   2. For each candidate (source, quality percentile band in the source, mix), continue training for about 2B tokens.
+#      The candidate share increases linearly from 0 → 80%.
+#   3. Compare the bpb on the dev set of each domain (zero/data/bpb.py; comparable across tokenizers) and the accuracy
+#      on small benchmarks. Do not use the preregistered test benchmarks.
+#   4. Compare the sources first, then the mixes (3–4 candidate mixes). At the end, spot-check the classifier
+#      threshold for FineWeb-2 Chinese.
+# Compute: uv run python -m zero.tools.estimate_cost --config configs/ladder/l150m.toml --tokens 2B --gpu h100-sxm
+#   → 2.5e18 FLOPs, 1.8 GPU-hours, about $4 each (assumes MFU 0.4 and $2.5/GPU-hour; not verified on a GPU yet).
+#   We plan 20–30 runs. With evaluation, the total is about $100–200. This is inside the GOAL.md 3.4 budget
+#   for "Chapters 12–13: small-scale experiments ~$1,200".
 # ---------------------------------------------------------------------------------------------

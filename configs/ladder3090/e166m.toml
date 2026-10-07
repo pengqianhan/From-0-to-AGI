@@ -1,4 +1,4 @@
-# 阶梯 e166m：有效参数 N_eff = 165.94M（每 token FLOPs / 6，序列 2048；runs/ladder-3090/README.md 第 3 节）
+# Ladder size e166m: effective parameters N_eff = 165.94M (FLOPs per token / 6, sequence length 2048; runs/ladder-3090/README.md, Section 3)
 base = "base.toml"
 [model]
 dim = 768

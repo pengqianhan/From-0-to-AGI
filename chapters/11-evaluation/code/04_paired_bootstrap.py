@@ -1,12 +1,17 @@
-"""配对 bootstrap：两个模型在同一组题上的分差，有多大把握不是运气？（GOAL.md 3.2 第 5 条）
+"""Paired bootstrap: two models have a score difference on the same questions.
+How sure can we be that the difference is not luck? (GOAL.md 3.2, item 5)
 
     uv run python chapters/11-evaluation/code/04_paired_bootstrap.py
 
-1. 从零写配对 bootstrap，给出 95% 置信区间和"超过 / 持平 / 落后"判定；
-2. 用冒烟测试（极小配置演示）里真实的逐题结果做例子，并和 zero/eval/bootstrap.py 对拍；
-3. 配对 vs 不配对：同样的数据，区间宽多少；
-4. 题数：同样 3 个百分点的真实差距，30 / 300 / 3000 题各能不能判出来；
-5. 多重比较：两个一模一样的模型比 6 次，至少一次"不是持平"的概率。
+1. Write a paired bootstrap from zero. It gives a 95% confidence interval and an
+   "ahead / tie / behind" decision.
+2. Use the real per-question results of the smoke test (tiny-configuration demo) as an example,
+   and do a parity check with zero/eval/bootstrap.py.
+3. Paired vs unpaired: on the same data, how wide is each interval?
+4. Number of questions: the true difference is 3 percentage points.
+   Can we detect it with 30, 300, or 3000 questions?
+5. Multiple comparisons: compare two identical models 6 times.
+   What is the probability of at least one result that is "not a tie"?
 """
 
 from __future__ import annotations
@@ -16,28 +21,30 @@ from pathlib import Path
 
 import numpy as np
 
-AHEAD, TIE, BEHIND = "超过", "持平", "落后"
+AHEAD, TIE, BEHIND = "ahead", "tie", "behind"
 
 # ---------------------------------------------------------------------------
-# 1. 从零实现
+# 1. Implementation from zero
 # ---------------------------------------------------------------------------
 
 
 def paired_bootstrap(a, b, n_boot: int = 10_000, seed: int = 0, confidence: float = 0.95):  # noqa: ANN001, ANN201
-    """a、b：同一组题上两个模型的逐题得分（对 = 1，错 = 0）。返回 (差值, 下界, 上界, 判定, 所有 d*)。"""
-    d = np.asarray(a, float) - np.asarray(b, float)  # 逐题分差
+    """a, b: per-question scores of two models on the same questions (correct = 1, wrong = 0).
+    Return (difference, lower bound, upper bound, decision, all d*)."""
+    d = np.asarray(a, float) - np.asarray(b, float)  # per-question difference
     n = len(d)
     rng = np.random.default_rng(seed)
-    idx = rng.integers(0, n, size=(n_boot, n))  # 每一行：有放回地抽 n 道题的下标（两个模型用同一组下标）
-    stats = d[idx].mean(axis=1)  # 每次重抽的平均分差 d*
+    idx = rng.integers(0, n, size=(n_boot, n))  # each row: draw n question indices with replacement (both models use the same indices)
+    stats = d[idx].mean(axis=1)  # mean difference d* of each resample
     alpha = 1 - confidence
-    lo, hi = np.quantile(stats, [alpha / 2, 1 - alpha / 2])  # 百分位法
-    decision = AHEAD if lo > 0 else BEHIND if hi < 0 else TIE  # 整个区间在 0 的哪一边
+    lo, hi = np.quantile(stats, [alpha / 2, 1 - alpha / 2])  # percentile method
+    decision = AHEAD if lo > 0 else BEHIND if hi < 0 else TIE  # on which side of 0 is the full interval?
     return float(d.mean()), float(lo), float(hi), decision, stats
 
 
 def unpaired_bootstrap(a, b, n_boot: int = 10_000, seed: int = 0):  # noqa: ANN001, ANN201
-    """对照：两个模型各自独立地重抽题目（丢掉了"同一道题"的配对信息）。"""
+    """Control: resample the questions for each model independently.
+    This discards the pairing information ("the same question")."""
     a, b = np.asarray(a, float), np.asarray(b, float)
     rng = np.random.default_rng(seed)
     sa = a[rng.integers(0, len(a), size=(n_boot, len(a)))].mean(axis=1)
@@ -47,9 +54,10 @@ def unpaired_bootstrap(a, b, n_boot: int = 10_000, seed: int = 0):  # noqa: ANN0
 
 
 # ---------------------------------------------------------------------------
-# 2. 冒烟测试的真实逐题结果（极小配置演示：约 1.3M 参数的 tiny 模型，分数接近随机，只说明代码通路）
-#    来自 out/smoke/eval/results.json（`uv run python -m zero.smoke` 的产物；out/ 不进 git，所以抄在这里，
-#    本地有这个文件时会自动核对一遍）
+# 2. Real per-question results of the smoke test (tiny-configuration demo: a tiny model with about
+#    1.3M parameters. Its scores are near random. They only show that the code path works.)
+#    They come from out/smoke/eval/results.json (made by `uv run python -m zero.smoke`).
+#    out/ is not in git, so we copy the results here. If the file exists locally, the script checks it.
 # ---------------------------------------------------------------------------
 SMOKE = {
     ("sft", "toy_mc"): "100001010000000001000000100000",
@@ -68,52 +76,57 @@ def smoke_scores(model: str, task: str) -> np.ndarray:
 
 def check_against_file() -> str:
     if not SMOKE_JSON.exists():
-        return "（本地没有 out/smoke/eval/results.json，跳过核对）"
+        return "(out/smoke/eval/results.json does not exist locally; check skipped)"
     res = json.loads(SMOKE_JSON.read_text())["results"]
     key = {"toy_mc": "correct", "tool_dev": "call_exact"}
     for (m, t), s in SMOKE.items():
         got = "".join(str(int(it[key[t]])) for it in res[m][t]["items"])
         if got != s:
-            # 上面写死的是修复工具调用判分器（第 19 章第 6 节）之前那次冒烟测试的逐题结果，正文用的就是它；
-            # 之后重跑的 out/smoke 判分更严（换一台机器训练，逐题结果也会不同），对不上是正常的，不算错误。
-            return ("\n（注意：out/smoke 是修复判分器之后重跑的结果，与正文使用的修复前数据不同"
-                    f"——例如 {m} 的 {t} 逐题结果不一致；下面继续用写死的修复前数据）")
-    return "（已与 out/smoke/eval/results.json 逐题核对一致）"
+            # The fixed results above come from the smoke test before the fix of the tool-call scorer
+            # (Chapter 19, Section 6). The text uses them. A later run of out/smoke scores more strictly.
+            # (Training on a different machine also gives different per-question results.)
+            # Thus a mismatch is normal. It is not an error.
+            return ("\n(Note: out/smoke is from a run after the scorer fix. It is different from the "
+                    f"pre-fix data that the text uses. For example, the per-question results of {m} on {t} "
+                    "do not match. Below, we continue to use the fixed pre-fix data.)")
+    return "(checked per question: same as out/smoke/eval/results.json)"
 
 
 def zero_parity(a, b, n_boot: int, seed: int) -> str:  # noqa: ANN001
     import sys
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # 仓库根目录，才能 import zero
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repository root, so that we can import zero
     try:
         from zero.eval.bootstrap import paired_bootstrap as zpb
     except ImportError:
-        return "（没找到 zero 包，跳过对拍）"
+        return "(zero package not found; parity check skipped)"
     z = zpb(a, b, n_boot=n_boot, seed=seed)
     diff, lo, hi, dec, _ = paired_bootstrap(a, b, n_boot=n_boot, seed=seed)
     same = (abs(z.diff - diff) < 1e-12 and abs(z.ci_low - lo) < 1e-12
             and abs(z.ci_high - hi) < 1e-12 and z.decision == dec)
-    return f"zero.eval.bootstrap.paired_bootstrap 给出 [{z.ci_low:+.3f}, {z.ci_high:+.3f}] {z.decision}，" \
-           f"与本文件{'逐位一致' if same else '不一致！'}"
+    return f"zero.eval.bootstrap.paired_bootstrap gives [{z.ci_low:+.3f}, {z.ci_high:+.3f}] {z.decision}; " \
+           f"{'same digits as this file' if same else 'NOT the same as this file!'}"
 
 
 # ---------------------------------------------------------------------------
-# 模拟用的"模型"：题目有难度 p_i，模型 m 在第 i 题答对的概率 = clip(p_i + delta_m)
+# "Models" for the simulation: question i has difficulty p_i.
+# The probability that model m answers question i correctly = clip(p_i + delta_m).
 # ---------------------------------------------------------------------------
 
 
 def simulate_pair(rng: np.random.Generator, n: int, acc_a: float, acc_b: float):  # noqa: ANN201
-    p = rng.beta(2, 2, size=n)  # 平均 0.5 的题目难度
-    u = rng.random(n)  # 同一道题用同一个随机数：难题两个模型都容易错（相关性）
+    p = rng.beta(2, 2, size=n)  # question difficulty with mean 0.5
+    u = rng.random(n)  # one random number per question: both models tend to fail on hard questions (correlation)
     a = (u < np.clip(p + acc_a - 0.5, 0, 1)).astype(float)
     b = (u < np.clip(p + acc_b - 0.5, 0, 1)).astype(float)
-    flip = rng.random(n) < 0.3  # 30% 的题两个模型各自独立作答，别让两者完全同步
+    flip = rng.random(n) < 0.3  # on 30% of the questions, the models answer independently, so they are not fully in sync
     b[flip] = (rng.random(flip.sum()) < np.clip(p[flip] + acc_b - 0.5, 0, 1)).astype(float)
     return a, b
 
 
 def simulations() -> dict:
-    """配对 vs 不配对、题数、多重比较三个模拟（视频也用这个函数）。"""
+    """Three simulations: paired vs unpaired, number of questions, multiple comparisons.
+    The video also uses this function."""
     rng = np.random.default_rng(0)
     out: dict = {}
     a, b = simulate_pair(rng, 300, 0.55, 0.50)
@@ -143,23 +156,24 @@ def simulations() -> dict:
 
 
 def main() -> None:
-    # --- 手算级的小例子 ---
+    # --- a small example that you can calculate by hand ---
     a = np.array([1, 1, 0, 1, 0, 1, 1, 0, 1, 1], float)
     b = np.array([1, 0, 0, 1, 0, 1, 0, 0, 1, 1], float)
-    print("手算小例子：10 道题，模型 A 对 7 道、模型 B 对 5 道")
+    print("Small example to calculate by hand: 10 questions, model A has 7 correct, model B has 5 correct")
     d = (a - b).astype(int).tolist()
-    print(f"  逐题分差 d = A − B = {d}，平均 {np.mean(d):+.2f}")
+    print(f"  per-question difference d = A − B = {d}, mean {np.mean(d):+.2f}")
     rng = np.random.default_rng(1)
     for k in range(3):
         idx = rng.integers(0, 10, size=10)
-        print(f"  第 {k + 1} 次重抽题号 {idx.tolist()} → d* = {np.mean(np.array(d)[idx]):+.2f}")
+        print(f"  resample {k + 1}: question indices {idx.tolist()} → d* = {np.mean(np.array(d)[idx]):+.2f}")
     diff, lo, hi, dec, _ = paired_bootstrap(a, b)
-    print(f"  重抽 10000 次：95% 区间 [{lo:+.2f}, {hi:+.2f}] → {dec}\n")
+    print(f"  10000 resamples: 95% interval [{lo:+.2f}, {hi:+.2f}] → {dec}\n")
 
-    # --- 冒烟测试（极小配置演示）---
-    print("【极小配置演示】冒烟测试的逐题结果，基线 = sft，2000 次重抽、种子 0（与 configs/tiny/eval.toml 相同）",
+    # --- smoke test (tiny-configuration demo) ---
+    print("[Tiny-configuration demo] Per-question results of the smoke test, baseline = sft, "
+          "2000 resamples, seed 0 (the same as configs/tiny/eval.toml)",
           check_against_file())
-    print("| 比较 | 任务 | 题数 | 模型 | 基线 | 差值 | 95% 区间 | 判定 |")
+    print("| Comparison | Task | Questions | Model | Baseline | Difference | 95% interval | Decision |")
     print("|---|---|---:|---:|---:|---:|---|---|")
     for m in ("dpo", "grpo"):
         for t in ("toy_mc", "tool_dev"):
@@ -168,28 +182,31 @@ def main() -> None:
             print(f"| {m} vs sft | {t} | {len(x)} | {x.mean():.3f} | {y.mean():.3f} | {diff:+.3f} | "
                   f"[{lo:+.3f}, {hi:+.3f}] | {dec} |")
     x, y = smoke_scores("grpo", "toy_mc"), smoke_scores("sft", "toy_mc")
-    print("对拍：", zero_parity(x, y, 2000, 0))
+    print("Parity check:", zero_parity(x, y, 2000, 0))
     n10 = int(((x - y) != 0).sum())
-    print(f"grpo 对 sft 的 toy_mc：30 题里只有 {n10} 题两者结果不同（全是 grpo 对、sft 错）——"
-          "分差完全来自这几道题。\n")
+    print(f"grpo vs sft on toy_mc: the two models differ on only {n10} of 30 questions "
+          "(on all of them, grpo is correct and sft is wrong). "
+          "The full difference comes from these few questions.\n")
 
-    # --- 三个模拟（同一个随机数流，顺序固定，数字可复现）---
+    # --- three simulations (one random-number stream in a fixed order, so the numbers are reproducible) ---
     sim = simulations()
-    print(f"配对 vs 不配对（模拟：300 题，两个模型的对错相关系数 {sim['corr']:.2f}）")
+    print(f"Paired vs unpaired (simulation: 300 questions, correlation of the two models' results {sim['corr']:.2f})")
     lo, hi = sim["paired"]
     ulo, uhi = sim["unpaired"]
-    print(f"  配对：  [{lo:+.3f}, {hi:+.3f}]，宽 {hi - lo:.3f} → {sim['paired_decision']}")
-    print(f"  不配对：[{ulo:+.3f}, {uhi:+.3f}]，宽 {uhi - ulo:.3f} → "
+    print(f"  paired:   [{lo:+.3f}, {hi:+.3f}], width {hi - lo:.3f} → {sim['paired_decision']}")
+    print(f"  unpaired: [{ulo:+.3f}, {uhi:+.3f}], width {uhi - ulo:.3f} → "
           f"{AHEAD if ulo > 0 else BEHIND if uhi < 0 else TIE}\n")
-    print("题数够不够：真实水平 0.53 vs 0.50（差 3 个百分点），各模拟 100 次，看判成'超过'的比例")
-    print("| 题数 | 平均区间宽度 | 判成'超过'的比例 |")
+    print("Are there enough questions? True skill 0.53 vs 0.50 (3 percentage points). "
+          "100 simulations each. We count how often the decision is 'ahead'.")
+    print("| Questions | Mean interval width | Fraction decided 'ahead' |")
     print("|---:|---:|---:|")
     for n, width, win in sim["by_n"]:
         print(f"| {n} | {width:.3f} | {win:.2f} |")
-    print(f"\n多重比较：两个真实水平完全相同的模型，30 题，模拟 {sim['trials']} 次")
-    print(f"  比 1 次就判出'超过/落后'的比例：{sim['single_hit']:.2f}")
-    print(f"  比 6 次（像冒烟测试那张表）至少有 1 次判出'超过/落后'的比例：{sim['any_hit']:.2f}")
-    print("  → 预注册要事先指定'主结论看哪一个分数'，其余只作描述。")
+    print(f"\nMultiple comparisons: two models with exactly the same true skill, 30 questions, {sim['trials']} simulations")
+    print(f"  fraction with 'ahead/behind' in 1 comparison: {sim['single_hit']:.2f}")
+    print(f"  fraction with at least 1 'ahead/behind' in 6 comparisons (like the smoke-test table): {sim['any_hit']:.2f}")
+    print("  → The pre-registration must specify in advance 'which score decides the main conclusion'. "
+          "All other scores are only descriptive.")
 
 
 if __name__ == "__main__":

@@ -1,37 +1,43 @@
-"""多头潜在注意力 MLA（Multi-head Latent Attention，对应第 21 章）。实验模块，不用于主线模型。
+"""Multi-head Latent Attention, MLA (Chapter 21). Experiment module; the main-line model does not use it.
 
-MLA 由 DeepSeek-V2（arXiv:2405.04434）提出，DeepSeek-V3、Kimi K2、GLM-5、Mistral Large 3 采用。
-和 GQA "少存几个头" 不同，MLA 把所有头的 K、V **联合压缩**成一个低秩潜向量 c_KV，缓存里只存它：
+DeepSeek-V2 introduced MLA (arXiv:2405.04434). DeepSeek-V3, Kimi K2, GLM-5, and Mistral Large 3 use it.
+GQA stores fewer heads. MLA is different: it **jointly compresses** the K and V of all heads into one
+low-rank latent vector c_KV, and the cache stores only this vector:
 
-    c_KV = RMSNorm(W_DKV · h)              # (kv_lora_rank,)      ← 缓存
-    k_R  = RoPE(W_KR · h)                  # (qk_rope_head_dim,)  ← 缓存（所有头共享一个）
-    k_i  = [W_UK,i · c_KV ; k_R]           # 第 i 个头的 key = 不带位置的部分 + 共享的 RoPE 部分
+    c_KV = RMSNorm(W_DKV · h)              # (kv_lora_rank,)      ← cached
+    k_R  = RoPE(W_KR · h)                  # (qk_rope_head_dim,)  ← cached (one, shared by all heads)
+    k_i  = [W_UK,i · c_KV ; k_R]           # key of head i = part without position + shared RoPE part
     v_i  =  W_UV,i · c_KV
     q_i  = [W_UQ,i · h ; RoPE(W_QR,i · h)]
 
-每层每个位置只存 kv_lora_rank + qk_rope_head_dim 个数（DeepSeek-V3：512 + 64 = 576），
-而同样 128 个头的 MHA 要存 2 × 128 × 128 = 32,768 个。
+For each layer and position, the cache stores only kv_lora_rank + qk_rope_head_dim numbers
+(DeepSeek-V3: 512 + 64 = 576). MHA with the same 128 heads stores 2 × 128 × 128 = 32,768 numbers.
 
-**为什么 RoPE 要"解耦"**：如果把 RoPE 直接转在 k_i = W_UK,i · c_KV 上，位置相关的旋转矩阵就夹在
-W_UQ 和 W_UK 中间，下面的"吸收"技巧就不成立了。所以让一小段维度（qk_rope_head_dim）专门带位置，
-其余维度不带位置。
+**Why RoPE must be "decoupled"**: if RoPE rotates k_i = W_UK,i · c_KV directly, a position-dependent
+rotation matrix sits between W_UQ and W_UK. Then the "absorb" trick below does not work.
+Thus a small set of dimensions (qk_rope_head_dim) carries the position, and the other dimensions
+carry no position.
 
-**吸收（absorb）技巧**：推理时不必把 K、V 从 c_KV 还原出来。因为
+**The absorb trick**: at inference, it is not necessary to recover K and V from c_KV, because
     q_iᵀ k_j = (W_UK,iᵀ q_i^C)ᵀ c_KV,j + q_i^Rᵀ k_R,j
     Σ_j p_ij v_j = W_UV,i (Σ_j p_ij c_KV,j)
-先把 query 投影进潜空间，直接和缓存里的潜向量做注意力，最后再用 W_UV 投回去。
-这样每个头都在 576 维上做点积——形式上就是"所有头共享一组 K/V"的 MQA（GLM-5 报告称之为
-MLA 的 MQA 模式）。本模块两条路径都实现：`absorb=False` 显式还原 K/V（训练/prefill 用），
-`absorb=True` 走吸收路径（decode 用）；`tests/test_arch_mla.py` 验证两者一致、
-带缓存与不带缓存生成完全一致。
+First project the query into the latent space. Then do attention directly with the cached latent
+vectors. At the end, use W_UV to project back.
+Then each head computes dot products in 576 dimensions. In form, this is MQA where "all heads share
+one set of K/V" (the GLM-5 report calls it the MQA mode of MLA). This module implements both paths:
+`absorb=False` recovers K/V explicitly (for training/prefill), and `absorb=True` uses the absorb path
+(for decode). `tests/test_arch_mla.py` checks that the two paths agree, and that generation with
+and without the cache is identical.
 
-接口与 `zero.model.Attention` 相同：`forward(x, cos, sin, kv_cache, layer_idx, start_pos)`，
-可以直接替换进 `zero.model.Transformer`（见 `mla_transformer`）。区别是 MLA 只对
-qk_rope_head_dim 维做 RoPE，所以用自己的 RoPE 表，忽略传进来的 cos/sin。
+The interface is the same as `zero.model.Attention`: `forward(x, cos, sin, kv_cache, layer_idx, start_pos)`.
+Thus it can replace the attention in `zero.model.Transformer` directly (see `mla_transformer`).
+One difference: MLA applies RoPE only to qk_rope_head_dim dimensions. Thus it uses its own RoPE
+table and ignores the cos/sin arguments.
 
-行业实现：DeepSeek 开源的 FlashMLA（GPU decode kernel）、vLLM / SGLang 的 MLA 后端。
-本文件只追求可读和正确：CUDA 上前向 / 反向与 CPU 对拍、潜向量缓存生成与重算逐字相同已在 RTX 3090 上验证
-（2026-10，见 runs/2026-10-01-gpu0-check/），尚未在 GPU 上验证性能。
+Industry implementations: FlashMLA (open-source GPU decode kernel by DeepSeek), and the MLA backends
+of vLLM / SGLang. This file has only two goals: easy to read and correct. On RTX 3090, the forward /
+backward parity check of CUDA against CPU passed, and generation with the latent cache is identical
+to recomputation (2026-10, see runs/2026-10-01-gpu0-check/). The performance is not verified on GPU yet.
 """
 
 from __future__ import annotations
@@ -49,15 +55,15 @@ from zero.model import RMSNorm, RotaryEmbedding, Transformer, apply_rope
 
 @dataclass
 class MLAConfig:
-    """MLA 超参。字段名与 Hugging Face DeepSeek-V3 的 config.json 一致。"""
+    """MLA hyperparameters. The field names are the same as in the Hugging Face DeepSeek-V3 config.json."""
 
     dim: int
     n_heads: int
-    kv_lora_rank: int  # 潜向量维度 d_c（DeepSeek-V3：512）
-    qk_nope_head_dim: int  # 每个头 key/query 中不带位置的部分（DeepSeek-V3：128）
-    qk_rope_head_dim: int  # 带 RoPE 的部分，key 这一段所有头共享（DeepSeek-V3：64）
-    v_head_dim: int  # 每个头 value 的维度（DeepSeek-V3：128）
-    q_lora_rank: int | None = None  # query 也压缩（省训练激活，不省 KV cache）；None 表示不压缩
+    kv_lora_rank: int  # latent vector dimension d_c (DeepSeek-V3: 512)
+    qk_nope_head_dim: int  # part of each head's key/query without position (DeepSeek-V3: 128)
+    qk_rope_head_dim: int  # part with RoPE; all heads share this part of the key (DeepSeek-V3: 64)
+    v_head_dim: int  # value dimension of each head (DeepSeek-V3: 128)
+    q_lora_rank: int | None = None  # also compress the query (saves training activations, not KV cache); None = no compression
     max_seq_len: int = 2048
     rope_theta: float = 10000.0
     norm_eps: float = 1e-6
@@ -68,7 +74,7 @@ class MLAConfig:
 
     @property
     def cache_dim(self) -> int:
-        """每层每个位置缓存多少个数。"""
+        """The number of cached values for each layer and position."""
         return self.kv_lora_rank + self.qk_rope_head_dim
 
     @classmethod
@@ -79,7 +85,7 @@ class MLAConfig:
         qk_rope_head_dim: int | None = None,
         q_lora_rank: int | None = None,
     ) -> MLAConfig:
-        """沿用一个 GQA 配置的宽度、头数和 head_dim，只把注意力换成 MLA。"""
+        """Keep the width, number of heads, and head_dim of a GQA config. Replace only the attention with MLA."""
         assert cfg.head_dim is not None
         rope = qk_rope_head_dim if qk_rope_head_dim is not None else cfg.head_dim // 2
         return cls(
@@ -97,9 +103,10 @@ class MLAConfig:
 
 
 class MLACache:
-    """MLA 的缓存：每层只存潜向量 c_KV 和共享的 RoPE key，预分配（同 zero.kv_cache.KVCache）。
+    """The MLA cache. Each layer stores only the latent vector c_KV and the shared RoPE key.
 
-    形状：latent (n_layers, batch, max_seq_len, kv_lora_rank)，k_rope (n_layers, batch, max_seq_len, rope_dim)。
+    The memory is preallocated (as in zero.kv_cache.KVCache).
+    Shapes: latent (n_layers, batch, max_seq_len, kv_lora_rank), k_rope (n_layers, batch, max_seq_len, rope_dim).
     """
 
     def __init__(
@@ -144,11 +151,11 @@ class MLACache:
     def update(
         self, layer_idx: int, start_pos: int, c_kv: torch.Tensor, k_rope: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """写入 [start_pos, start_pos+T)，返回这一层 0..start_pos+T 的全部潜向量与 RoPE key。"""
+        """Write [start_pos, start_pos+T). Return all latent vectors and RoPE keys of this layer for 0..start_pos+T."""
         bsz, t, _ = c_kv.shape
         end = start_pos + t
         if end > self.max_seq_len:
-            raise ValueError(f"MLA cache 溢出：需要 {end} 个位置，只预分配了 {self.max_seq_len}")
+            raise ValueError(f"MLA cache overflow: needs {end} positions, but only {self.max_seq_len} are preallocated")
         self.latent[layer_idx, :bsz, start_pos:end] = c_kv.to(self.latent.dtype)
         self.k_rope[layer_idx, :bsz, start_pos:end] = k_rope.to(self.k_rope.dtype)
         return self.latent[layer_idx, :bsz, :end], self.k_rope[layer_idx, :bsz, :end]
@@ -161,7 +168,7 @@ class MLACache:
 
 
 def _causal_mask(seqlen: int, kv_len: int, device: torch.device) -> torch.Tensor | None:
-    """第 i 个新 token 能看见位置 <= past + i（past = kv_len - seqlen）。seqlen=1 时不需要掩码。"""
+    """New token i can see positions <= past + i (past = kv_len - seqlen). With seqlen=1, no mask is necessary."""
     if seqlen == 1:
         return None
     past = kv_len - seqlen
@@ -171,12 +178,13 @@ def _causal_mask(seqlen: int, kv_len: int, device: torch.device) -> torch.Tensor
 
 
 class MLAAttention(nn.Module):
-    """多头潜在注意力。参数命名参照 DeepSeek-V3（wq_a/wq_b、wkv_a、wkv_b、wo）。"""
+    """Multi-head latent attention. The parameter names follow DeepSeek-V3 (wq_a/wq_b, wkv_a, wkv_b, wo)."""
 
     def __init__(self, cfg: MLAConfig, absorb: bool | None = None) -> None:
         super().__init__()
         self.cfg = cfg
-        #: None = 自动：有缓存（推理）时走吸收路径，没有缓存（训练）时显式还原 K/V
+        #: None = automatic: with a cache (inference), use the absorb path; without a cache (training),
+        #: recover K/V explicitly.
         self.absorb = absorb
         h, dq = cfg.n_heads, cfg.qk_head_dim
         if cfg.q_lora_rank:
@@ -185,10 +193,11 @@ class MLAAttention(nn.Module):
             self.wq_b = nn.Linear(cfg.q_lora_rank, h * dq, bias=False)
         else:
             self.wq = nn.Linear(cfg.dim, h * dq, bias=False)
-        # 下投影：一次得到潜向量 c_KV 和共享的 RoPE key（DeepSeek 里叫 kv_a_proj_with_mqa）
+        # Down-projection: get the latent vector c_KV and the shared RoPE key in one step
+        # (DeepSeek calls it kv_a_proj_with_mqa).
         self.wkv_a = nn.Linear(cfg.dim, cfg.kv_lora_rank + cfg.qk_rope_head_dim, bias=False)
         self.kv_norm = RMSNorm(cfg.kv_lora_rank, cfg.norm_eps)
-        # 上投影：潜向量 → 每个头的 k_nope 与 v（W_UK 与 W_UV 拼在一起）
+        # Up-projection: latent vector → k_nope and v of each head (W_UK and W_UV concatenated).
         self.wkv_b = nn.Linear(
             cfg.kv_lora_rank, h * (cfg.qk_nope_head_dim + cfg.v_head_dim), bias=False
         )
@@ -210,7 +219,7 @@ class MLAAttention(nn.Module):
         layer_idx: int = 0,
         start_pos: int = 0,
     ) -> torch.Tensor:
-        del cos, sin  # MLA 只对 rope 子维度做旋转，用自己的 RoPE 表
+        del cos, sin  # MLA rotates only the rope sub-dimensions, so it uses its own RoPE table.
         c = self.cfg
         bsz, seqlen, _ = x.shape
         h, dn, dr, dv = c.n_heads, c.qk_nope_head_dim, c.qk_rope_head_dim, c.v_head_dim
@@ -223,7 +232,7 @@ class MLAAttention(nn.Module):
         kv = self.wkv_a(x)
         c_kv, k_pe = kv.split([c.kv_lora_rank, dr], dim=-1)
         c_kv = self.kv_norm(c_kv)  # (B, T, r)
-        k_pe = apply_rope(k_pe[:, None], cos_r, sin_r)[:, 0]  # (B, T, dr)，所有头共享
+        k_pe = apply_rope(k_pe[:, None], cos_r, sin_r)[:, 0]  # (B, T, dr), shared by all heads
 
         if kv_cache is not None:
             c_kv, k_pe = kv_cache.update(layer_idx, start_pos, c_kv, k_pe)
@@ -239,7 +248,10 @@ class MLAAttention(nn.Module):
         return self.wo(out.transpose(1, 2).reshape(bsz, seqlen, h * dv))
 
     def _naive(self, q_nope, q_pe, c_kv, k_pe, mask) -> torch.Tensor:
-        """显式还原每个头的 K、V，再做标准注意力（训练和 prefill 时算力更划算）。"""
+        """Recover K and V of each head explicitly, then do standard attention.
+
+        This costs less compute for training and prefill.
+        """
         c = self.cfg
         bsz, s, _ = c_kv.shape
         kv = self.wkv_b(c_kv).view(bsz, s, c.n_heads, c.qk_nope_head_dim + c.v_head_dim)
@@ -249,34 +261,37 @@ class MLAAttention(nn.Module):
         return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, scale=self.scale)
 
     def _absorbed(self, q_nope, q_pe, c_kv, k_pe, mask) -> torch.Tensor:
-        """吸收路径：把 W_UK 并进 query、W_UV 并进输出，直接在潜空间里做注意力。"""
+        """Absorb path: merge W_UK into the query and W_UV into the output. Do attention in the latent space."""
         c = self.cfg
         w = self.wkv_b.weight.view(c.n_heads, c.qk_nope_head_dim + c.v_head_dim, c.kv_lora_rank)
         w_uk, w_uv = w[:, : c.qk_nope_head_dim], w[:, c.qk_nope_head_dim :]
-        q_lat = torch.einsum("bhtd,hdr->bhtr", q_nope, w_uk)  # query 投进潜空间
-        scores = torch.einsum("bhtr,bsr->bhts", q_lat, c_kv)  # 与缓存的潜向量直接点积
-        scores = scores + torch.einsum("bhtd,bsd->bhts", q_pe, k_pe)  # 加上位置部分
+        q_lat = torch.einsum("bhtd,hdr->bhtr", q_nope, w_uk)  # project the query into the latent space
+        scores = torch.einsum("bhtr,bsr->bhts", q_lat, c_kv)  # dot product directly with the cached latent vectors
+        scores = scores + torch.einsum("bhtd,bsd->bhts", q_pe, k_pe)  # add the position part
         scores = scores * self.scale
         if mask is not None:
             scores = scores.masked_fill(~mask, float("-inf"))
-        # 在至少 float32 上做 softmax（BF16 推理时避免精度问题）
+        # Do softmax in at least float32 (this prevents precision problems in BF16 inference).
         acc = torch.promote_types(scores.dtype, torch.float32)
         p = torch.softmax(scores, dim=-1, dtype=acc).to(q_nope.dtype)
-        o_lat = torch.einsum("bhts,bsr->bhtr", p, c_kv)  # 在潜空间里加权平均
-        return torch.einsum("bhtr,hvr->bhtv", o_lat, w_uv)  # 最后再投回每个头的 value 空间
+        o_lat = torch.einsum("bhts,bsr->bhtr", p, c_kv)  # weighted average in the latent space
+        return torch.einsum("bhtr,hvr->bhtv", o_lat, w_uv)  # at the end, project back to the value space of each head
 
 
 # ---------------------------------------------------------------------------
-# 实验用：把 zero.model.Transformer 的注意力换成 MLA
+# For experiments: replace the attention of zero.model.Transformer with MLA
 # ---------------------------------------------------------------------------
 
 
 def mla_transformer(model_cfg: ModelConfig, mla_cfg: MLAConfig) -> Transformer:
-    """构建一个 Transformer，每层的注意力换成 MLAAttention，其余（RMSNorm、SwiGLU、共享 embedding）不变。"""
+    """Build a Transformer with MLAAttention in each layer.
+
+    All other parts (RMSNorm, SwiGLU, shared embedding) do not change.
+    """
     model = Transformer(model_cfg)
     for layer in model.layers:
         layer.attn = MLAAttention(mla_cfg)
-    model.init_weights()  # 让新模块也按同样规则初始化（wo 缩小 1/sqrt(2L)）
+    model.init_weights()  # Initialize the new modules with the same rules (wo scaled by 1/sqrt(2L)).
     return model
 
 
@@ -288,7 +303,11 @@ def generate_greedy(
     mla_cfg: MLAConfig,
     use_cache: bool = True,
 ) -> list[int]:
-    """贪心生成（batch=1）。use_cache=False 时每步重算整段，用来和缓存版对拍。"""
+    """Greedy generation (batch=1).
+
+    With use_cache=False, recompute the full sequence at each step. This is a parity check
+    against the cached version.
+    """
     model.eval()
     device = next(model.parameters()).device
     ids = list(prompt_ids)

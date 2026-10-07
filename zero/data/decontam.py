@@ -1,15 +1,20 @@
-"""去污染：训练数据与评测集的 n-gram 重叠检查（对应第 13 章，GOAL.md 3.2 第 6 条）。
+"""Decontamination: check the n-gram overlap between training data and evaluation sets (Chapter 13, GOAL.md 3.2 item 6).
 
-如果评测题目（或答案）出现在训练数据里，模型分数就不可信。标准做法（GPT-3、Llama 等都用过）：
+If evaluation items (or their answers) occur in the training data, the model scores are not reliable.
+The standard method (GPT-3, Llama, and others used it):
 
-1. 把每道评测题切成 n-gram（默认 13 个"词"，GPT-3 论文的取值）；
-2. 扫描训练文档，只要某篇文档和某道题共享任何一个 n-gram，就认为"撞了"；
-3. 撞了的训练文档要么删掉，要么把重叠片段挖掉；统计结果写进模型卡。
+1. Split each evaluation item into n-grams (default: 13 "words", the value of the GPT-3 paper).
+2. Scan the training documents. If a document shares one or more n-grams with an item, it is a "hit".
+3. Remove each training document with a hit, or cut out the overlapping part.
+   Write the statistics into the model card.
 
-"词"的定义：先转小写、去掉标点，英文按空白切，中文每个汉字算一个词。
-中文题目往往很短，13 个汉字的窗口偏严格还是偏宽松需要实测（待核实），所以 n 可调。
+Definition of a "word": first change the text to lowercase and remove the punctuation. Split English
+text at white space. Each Chinese character is one word.
+Chinese items are often short. We must measure if a window of 13 Chinese characters is too strict
+or too loose (to be verified). For this reason, n is a parameter.
 
-n-gram 用 blake2b 取 8 字节哈希存进 set，内存比存字符串小得多，而且跨进程稳定。
+The code keeps an 8-byte blake2b hash of each n-gram in a set. This uses much less memory than
+strings, and the hash is the same in all processes.
 """
 
 from __future__ import annotations
@@ -23,7 +28,7 @@ _TOKEN_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿]|[a-z0-9]+")
 
 
 def normalize_tokens(text: str) -> list[str]:
-    """小写 → 只保留字母数字串和单个汉字（标点、空白全部丢掉）。"""
+    """Lowercase → keep only alphanumeric strings and single Chinese characters (drop all punctuation and white space)."""
     return _TOKEN_RE.findall(text.lower())
 
 
@@ -36,7 +41,7 @@ def _hash_gram(gram: Sequence[str]) -> int:
 def ngram_hashes(text: str, n: int = 13) -> set[int]:
     toks = normalize_tokens(text)
     if len(toks) < n:
-        # 比 n 还短的题目：整题作为一个 gram（否则永远查不出来）
+        # An item shorter than n: use the full item as one gram (if not, we can never find it)
         return {_hash_gram(toks)} if toks else set()
     return {_hash_gram(toks[i : i + n]) for i in range(len(toks) - n + 1)}
 
@@ -46,7 +51,7 @@ class ContaminationHit:
     doc_index: int
     eval_set: str
     eval_index: int
-    overlap: int  # 共享的 n-gram 个数
+    overlap: int  # number of shared n-grams
 
 
 @dataclass
@@ -64,18 +69,19 @@ class ContaminationReport:
 
     def summary(self) -> str:
         sets = sorted({h.eval_set for h in self.hits})
-        parts = [f"{s}: {len(self.eval_items_hit(s))} 题" for s in sets]
+        parts = [f"{s} items: {len(self.eval_items_hit(s))}" for s in sets]
         return (
-            f"{self.n}-gram 去污染：{len(self.contaminated_docs)}/{self.num_docs} 篇训练文档与评测集重叠"
-            + (f"（{'，'.join(parts)}）" if parts else "")
+            f"{self.n}-gram decontamination: {len(self.contaminated_docs)}/{self.num_docs} training documents overlap with the evaluation sets"
+            + (f" ({', '.join(parts)})" if parts else "")
         )
 
 
 class NgramIndex:
-    """评测集的 n-gram 索引：hash -> [(评测集名, 题号), ...]。
+    """N-gram index of the evaluation sets: hash -> [(evaluation set name, item index), ...].
 
-    长度 >= n 的评测题存 n-gram 哈希；更短的题目（整题不足 n 个词）存规范化后的整句，
-    检查时用子串包含判断（否则短题永远查不出来）。
+    For an item with >= n words, the index keeps the n-gram hashes. For a shorter item (fewer than
+    n words in total), it keeps the full normalized text, and the check looks for it as a substring.
+    If not, we can never find a short item.
     """
 
     def __init__(self, n: int = 13) -> None:
@@ -93,7 +99,7 @@ class NgramIndex:
                 self.short.append((name, i, " ".join(toks)))
 
     def check(self, text: str) -> dict[tuple[str, int], int]:
-        """返回这篇文档撞到的 {(评测集, 题号): 共享 n-gram 数}。"""
+        """Return the hits of this document: {(evaluation set, item index): number of shared n-grams}."""
         toks = normalize_tokens(text)
         hits: dict[tuple[str, int], int] = {}
         if len(toks) >= self.n:
@@ -112,7 +118,7 @@ class NgramIndex:
 def find_contamination(
     train_texts: Sequence[str], eval_sets: dict[str, Sequence[str]], n: int = 13
 ) -> ContaminationReport:
-    """检查每篇训练文档与各评测集的 n-gram 重叠。"""
+    """Check the n-gram overlap of each training document with each evaluation set."""
     index = NgramIndex(n)
     for name, texts in eval_sets.items():
         index.add_eval_set(name, texts)
@@ -126,7 +132,7 @@ def find_contamination(
 def decontaminate(
     train_texts: Sequence[str], eval_sets: dict[str, Sequence[str]], n: int = 13
 ) -> tuple[list[int], ContaminationReport]:
-    """删掉所有与评测集有重叠的训练文档，返回 (保留的下标, 报告)。"""
+    """Remove all training documents that overlap with an evaluation set. Return (indices that we keep, report)."""
     report = find_contamination(train_texts, eval_sets, n)
     bad = set(report.contaminated_docs)
     return [i for i in range(len(train_texts)) if i not in bad], report

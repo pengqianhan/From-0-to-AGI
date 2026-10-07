@@ -1,13 +1,16 @@
-"""第 26 章 · 极简代码 1：把最新的开源旗舰和我们的主线模型放进同一张表
+"""Chapter 26 · minimal code 1: put the newest open flagships and our main-line model in one table.
 
-读 models.json（每个字段都抄自 config.json / 模型卡，链接在文件里），做三件事：
-  1. 逐层"拆解"：每个模型的层由哪几种注意力组成；
-  2. 大对比表：参数、层数、注意力、MoE、MTP、上下文、词表、KV cache（每 token / 128K）；
-     KV cache 一律用生产级的 zero.tools.kv_cache_calc 计算（DeepSeek-V4 的压缩注意力它还不认识，
-     这里用它的 KVLayout / LayerSpec 自己搭一本账）；
-  3. 采用矩阵：每项技术在 6 个最新旗舰家族里有几家在用 → 按 GOAL.md 2.1 的"至少 3 家"判定。
+The script reads models.json. Each field in that file is copied from a config.json or a model card,
+and the file contains the links. The script does three things:
+  1. Dissect layer by layer: which kinds of attention make up the layers of each model.
+  2. One large comparison table: parameters, layers, attention, MoE, MTP, context, vocabulary,
+     KV cache (per token / 128K). All KV cache values come from the production code
+     zero.tools.kv_cache_calc. That tool does not know the compressed attention of DeepSeek-V4 yet,
+     so this script builds that ledger itself with the KVLayout / LayerSpec of the tool.
+  3. Adoption matrix: how many of the 6 newest flagship families use each technique.
+     The decision uses the "at least 3 families" rule of GOAL.md 2.1.
 
-运行：uv run python chapters/26-open-model-panorama/code/01_panorama.py
+Run: uv run python chapters/26-open-model-panorama/code/01_panorama.py
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ import torch
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
-sys.path.insert(0, str(REPO))  # 让脚本能 import 仓库根目录下的 zero
+sys.path.insert(0, str(REPO))  # lets the script import zero from the repository root
 
 from zero.config import load_model_config  # noqa: E402
 from zero.model import count_params  # noqa: E402
@@ -52,18 +55,21 @@ def load_models() -> dict[str, dict]:
     return {m["id"]: m for m in data["models"]}
 
 
-# ── 1. 每层是什么 ───────────────────────────────────────────────────────────
+# ── 1. What each layer is ───────────────────────────────────────────────────
 def layer_kinds(m: dict) -> list[str]:
-    """每层注意力的类型（短名）。依据：layer_types / linear_attn_config / compress_ratios / 稀疏配置。"""
+    """Short name of the attention type of each layer.
+
+    Sources: layer_types / linear_attn_config / compress_ratios / the sparse-attention config.
+    """
     c = m["config"]
     if m.get("zero_toml"):
         return ["GQA"] * load_model_config(REPO / m["zero_toml"]).n_layers
     n = c.get("num_hidden_layers") or c.get("n_layer")
-    # DeepSeek-V4：4 = CSA（压缩 + 稀疏），128 = HCA（重压缩），0 = 纯滑动窗口
+    # DeepSeek-V4: 4 = CSA (compressed + sparse), 128 = HCA (heavily compressed), 0 = sliding window only
     if "compress_ratios" in c:
         name = {4: "CSA", 128: "HCA", 0: "SWA"}
         return [name[r] for r in c["compress_ratios"][:n]]
-    if "linear_attn_config" in c:  # Kimi：层号从 1 开始
+    if "linear_attn_config" in c:  # Kimi: layer numbers start at 1
         full = set(c["linear_attn_config"]["full_attn_layers"])
         return ["MLA" if i + 1 in full else "KDA" for i in range(n)]
     if "layer_types" in c:
@@ -73,6 +79,7 @@ def layer_kinds(m: dict) -> list[str]:
         return ["MLA+DSA" if c.get("index_topk") else "MLA"] * n
     sp = c.get("sparse_attention_config", {})
     if sp.get("use_sparse_attention"):
+        # The label means "GQA+sparse". It stays in Chinese because the video uses it as a key.
         return ["GQA+稀疏" if f else "GQA" for f in sp["sparse_attention_freq"]]
     return ["MHA" if c.get("n_head") else "GQA"] * n
 
@@ -84,15 +91,20 @@ def composition(kinds: list[str]) -> str:
     return " + ".join(out)
 
 
-# ── 2. KV cache 账本 ─────────────────────────────────────────────────────────
+# ── 2. KV cache ledger ───────────────────────────────────────────────────────
 def dsv4_layout(m: dict, with_indexer: bool = False) -> KVLayout:
-    """DeepSeek-V4：每层一份共享 K=V 的压缩条目（每 r 个 token 一条、每条 head_dim 个数）
-    + 一个 128 窗口的滑动分支（K=V，head_dim 个数）；CSA 层另有索引器的压缩 key（index_head_dim）。"""
+    """DeepSeek-V4 ledger.
+
+    Each layer stores compressed entries with shared K=V: one entry for each r tokens,
+    head_dim numbers in each entry. Each layer also has a sliding branch with a window of 128
+    (K=V, head_dim numbers). CSA layers also store the compressed keys of the indexer
+    (index_head_dim).
+    """
     c = m["config"]
     hd, win = c["head_dim"], c["sliding_window"]
     layers: list[LayerSpec] = []
     for r in c["compress_ratios"][: c["num_hidden_layers"]]:
-        if r:  # 按"每个原始 token 摊到多少个数"记账：head_dim / r（精确值是 ⌊T/r⌋ 条 × head_dim）
+        if r:  # count the numbers per original token: head_dim / r (exact value: ⌊T/r⌋ entries × head_dim)
             layers.append(LayerSpec("full", hd // r))
             if with_indexer and r == 4:
                 layers.append(LayerSpec("full", c["index_head_dim"] // r))
@@ -101,7 +113,10 @@ def dsv4_layout(m: dict, with_indexer: bool = False) -> KVLayout:
 
 
 def gpt2_view(c: dict) -> dict:
-    """GPT-2 的字段名和后来的模型不一样，换成 kv_cache_calc 认识的名字（值不变）。"""
+    """Rename the GPT-2 fields to the names that kv_cache_calc knows (the values do not change).
+
+    GPT-2 uses different field names from later models.
+    """
     return dict(
         num_hidden_layers=c["n_layer"], num_attention_heads=c["n_head"], hidden_size=c["n_embd"]
     )
@@ -117,8 +132,12 @@ def layout(m: dict) -> KVLayout:
 
 
 def kv_numbers(m: dict) -> dict:
-    """每 token 的增长量取"长上下文下"的斜率：(KV(256K) − KV(128K)) / 128K。
-    这样滑动窗口层（早就填满了）不再计入，DeepSeek-V4 的压缩层按摊到每个 token 的量计入。"""
+    """KV numbers of one model.
+
+    The growth per token is the slope at long context: (KV(256K) − KV(128K)) / 128K.
+    Thus sliding-window layers (full long before) do not count, and the compressed layers of
+    DeepSeek-V4 count with their share per token.
+    """
     lay = layout(m)
     c = m["config"]
     ctx = (
@@ -134,28 +153,57 @@ def kv_numbers(m: dict) -> dict:
     )
 
 
-# ── 3. 从 config 读出"用了哪些技术" ──────────────────────────────────────────
-# config 里看不出来的，写明证据来源（代码或报告）
+# ── 3. Read from the config which techniques a model uses ───────────────────
+# If the config does not show a technique, give the source of the evidence (code or report)
 QK_NORM_EVIDENCE = {
     "qwen3": "HF Qwen3Attention.q_norm/k_norm",
     "qwen3_5_text": "HF Qwen3_5Attention.q_norm/k_norm",
     "qwen3_5_moe_text": "HF Qwen3_5MoeAttention.q_norm/k_norm",
-    "deepseek_v4": "V4 报告 2.3.3：query 各头与压缩 KV 条目都做 RMSNorm",
+    "deepseek_v4": "V4 report 2.3.3: RMSNorm on each query head and on the compressed KV entries",
 }
 
 
-# 这 6 家之外、前面章节已经核实过的采用方（家族名 + 章节），用来补足"至少 3 家"的计数
+# Adopters outside these 6 families that earlier chapters verified (family + chapter).
+# They complete the count for the "at least 3 families" rule.
+# The keys must be the same as the keys of features().
 EARLIER = {
-    "YaRN": ["Kimi K2、Qwen3、SmolLM3（第 15 章）"],
-    "滑动窗口": ["Gemma 3、OLMo 3（第 22 章）"],
-    "混合线性注意力": ["NVIDIA Nemotron 3（第 23 章）"],
-    "MLA": ["Mistral Large 3（第 21 章）"],
-    "稀疏注意力": ["美团 LongCat-2.0（第 22 章）"],
+    "YaRN": ["Kimi K2, Qwen3, SmolLM3 (Chapter 15)"],
+    "滑动窗口": ["Gemma 3, OLMo 3 (Chapter 22)"],
+    "混合线性注意力": ["NVIDIA Nemotron 3 (Chapter 23)"],
+    "MLA": ["Mistral Large 3 (Chapter 21)"],
+    "稀疏注意力": ["Meituan LongCat-2.0 (Chapter 22)"],
 }
+
+# Display names for the printed output. Some keys, the layer kind "GQA+稀疏", the name of the
+# main-line model in models.json, and the keys of next_version_layouts() stay in Chinese, because
+# the Chinese video (video/scenes.py) reads them.
+EN = {
+    "RMSNorm 前置": "Pre-Norm RMSNorm",
+    "滑动窗口": "Sliding window",
+    "稀疏注意力": "Sparse attention",
+    "共享专家": "Shared experts",
+    "无辅助损失均衡": "Aux-free balancing",
+    "混合线性注意力": "Hybrid linear attn",
+    "GQA+稀疏": "GQA+sparse",
+    "主线模型（本课）": "Main-line model",
+    "现在：28 层全注意力 GQA": "now: 28 full-attention GQA layers",
+    "3:1 局部-全局（窗口 4096）": "3:1 local-global (window 4096)",
+    "3:1 混合线性注意力（Qwen3.5 式）": "3:1 hybrid linear (Qwen3.5 style)",
+}
+
+
+def en(s: str) -> str:
+    """English display name of a key or a name (unchanged if it has no entry in EN)."""
+    return EN.get(s, s)
 
 
 def features(m: dict) -> dict[str, str]:
-    """返回 {技术: 证据}；没有这项技术就不出现在字典里。"""
+    """Return {technique: evidence}. A technique that the model does not use is not in the dict.
+
+    Some keys stay in Chinese because the Chinese video (video/scenes.py) looks them up:
+    pre-norm RMSNorm, sliding window, sparse attention, hybrid linear attention,
+    shared experts, and auxiliary-loss-free balancing.
+    """
     c, f = m["config"], {}
     mt = c.get("model_type", "")
     if m.get("zero_toml"):
@@ -167,40 +215,40 @@ def features(m: dict) -> dict[str, str]:
         if mc.qk_norm:
             f["QK-Norm"] = "qk_norm = true"
         if mc.tie_embeddings:
-            f["共享 embedding"] = "tie_embeddings = true"
+            f["Tied embedding"] = "tie_embeddings = true"
         return f
     if c.get("rms_norm_eps"):
         f["RMSNorm 前置"] = f"rms_norm_eps {c['rms_norm_eps']:g}" + (
-            "（Gemma 式 1+w）" if c.get("use_gemma_norm") else ""
+            " (Gemma-style 1+w)" if c.get("use_gemma_norm") else ""
         )
-    # 位置编码
+    # Position encoding
     if c.get("mla_use_nope"):
-        f["NoPE（全注意力层不加位置）"] = "mla_use_nope: true"
+        f["NoPE (full-attn)"] = "mla_use_nope: true"
     elif c.get("n_positions"):
-        f["学习的绝对位置"] = f"n_positions {c['n_positions']}"
+        f["Learned absolute position"] = f"n_positions {c['n_positions']}"
     else:
         rp = c.get("rope_parameters", {})
         prf = c.get("partial_rotary_factor") or rp.get("partial_rotary_factor")
         if prf:
             f["RoPE"] = f"partial_rotary_factor {prf}"
         elif c.get("qk_rope_head_dim"):
-            f["RoPE"] = f"只转 {c['qk_rope_head_dim']} 维（qk_rope_head_dim）"
+            f["RoPE"] = f"rotates only {c['qk_rope_head_dim']} dims (qk_rope_head_dim)"
         else:
             f["RoPE"] = f"rope_theta {c.get('rope_theta')}"
     rs = c.get("rope_scaling") or {}
     if (rs.get("type") or rs.get("rope_type")) == "yarn":
-        f["YaRN"] = f"factor {rs['factor']:g}，原始 {rs['original_max_position_embeddings']}"
+        f["YaRN"] = f"factor {rs['factor']:g}, original {rs['original_max_position_embeddings']}"
     act = c.get("hidden_act") or c.get("activation_function")
     if act in ("silu", "swigluoai", "situ"):
         f["SwiGLU/GLU"] = f"hidden_act {act}"
-    # 注意力
+    # Attention
     kinds = layer_kinds(m)
     if any(k.startswith("GQA") for k in kinds) and c.get("num_key_value_heads", 0) < c.get(
         "num_attention_heads", 0
     ):
         f["GQA"] = f"{c['num_attention_heads']} Q / {c['num_key_value_heads']} KV"
     if c.get("num_key_value_heads") == 1 and "compress_ratios" in c:
-        f["MQA（共享 K=V）"] = f"num_key_value_heads 1，head_dim {c['head_dim']}"
+        f["MQA (shared K=V)"] = f"num_key_value_heads 1, head_dim {c['head_dim']}"
     if c.get("kv_lora_rank"):
         f["MLA"] = f"kv_lora_rank {c['kv_lora_rank']} + qk_rope_head_dim {c['qk_rope_head_dim']}"
     if c.get("use_qk_norm"):
@@ -212,40 +260,40 @@ def features(m: dict) -> dict[str, str]:
     if "GDN" in kinds or "KDA" in kinds:
         lin = "GDN" if "GDN" in kinds else "KDA"
         f["混合线性注意力"] = (
-            f"{kinds.count(lin)} 层 {lin} : {len(kinds) - kinds.count(lin)} 层全注意力"
+            f"{kinds.count(lin)} {lin} layers : {len(kinds) - kinds.count(lin)} full-attention layers"
         )
     if c.get("index_topk") or c.get("sparse_attention_config", {}).get("use_sparse_attention"):
         f["稀疏注意力"] = (
             f"index_topk {c['index_topk']}"
             if c.get("index_topk")
-            else f"块稀疏：块 {c['sparse_attention_config']['sparse_block_size']}，"
-            f"top {c['sparse_attention_config']['sparse_topk_blocks']} 块"
+            else f"block-sparse: block {c['sparse_attention_config']['sparse_block_size']}, "
+            f"top {c['sparse_attention_config']['sparse_topk_blocks']} blocks"
         )
     if "compress_ratios" in c:
-        f["压缩注意力（CSA/HCA）"] = "compress_ratios 4 / 128"
+        f["CSA/HCA compression"] = "compress_ratios 4 / 128"
     if c.get("hc_mult"):
-        f["超连接 mHC"] = f"hc_mult {c['hc_mult']}"
+        f["Hyper-connection mHC"] = f"hc_mult {c['hc_mult']}"
     if c.get("attn_res_block_size"):
-        f["注意力残差 AttnRes"] = f"attn_res_block_size {c['attn_res_block_size']}"
-    # 前馈
+        f["Attention residuals"] = f"attn_res_block_size {c['attn_res_block_size']}"
+    # Feed-forward
     E = c.get("n_routed_experts") or c.get("num_experts") or c.get("num_local_experts")
     if E:
         k = c.get("num_experts_per_tok") or c.get("num_experts_per_token")
-        f["MoE"] = f"{E} 选 {k}"
+        f["MoE"] = f"top-{k} of {E}"
         sh = (
             c.get("n_shared_experts")
             or c.get("num_shared_experts")
             or (1 if c.get("shared_expert_intermediate_size") else 0)
         )
         if sh:
-            f["共享专家"] = f"{sh} 个"
+            f["共享专家"] = f"{sh}"
         if c.get("topk_method") == "noaux_tc" or c.get("use_routing_bias"):
             f["无辅助损失均衡"] = (
                 "topk_method noaux_tc" if c.get("topk_method") else "use_routing_bias: true"
             )
     if c.get("swiglu_limit"):
-        f["SwiGLU 截断"] = f"swiglu_limit {c['swiglu_limit']}"
-    # 其他
+        f["SwiGLU clamp"] = f"swiglu_limit {c['swiglu_limit']}"
+    # Other
     if c.get("num_nextn_predict_layers") or c.get("mtp_num_hidden_layers"):
         f["MTP"] = (
             f"num_nextn_predict_layers {c['num_nextn_predict_layers']}"
@@ -253,14 +301,17 @@ def features(m: dict) -> dict[str, str]:
             else f"mtp_num_hidden_layers {c['mtp_num_hidden_layers']}"
         )
     if c.get("tie_word_embeddings") or mt == "gpt2":
-        f["共享 embedding"] = (
-            "tie_word_embeddings: true" if mt != "gpt2" else "GPT2LMHeadModel 默认共享"
+        f["Tied embedding"] = (
+            "tie_word_embeddings: true" if mt != "gpt2" else "GPT2LMHeadModel ties them by default"
         )
     return f
 
 
 def computed_params() -> dict[str, dict]:
-    """按 config 数出来的参数（03_meta_params.py，需要 transformers）；拿不到就返回空。"""
+    """Parameters counted from the config (03_meta_params.py, needs transformers).
+
+    Return an empty dict if the count is not available.
+    """
     try:
         import importlib.util
 
@@ -268,20 +319,23 @@ def computed_params() -> dict[str, dict]:
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return mod.run()
-    except Exception as e:  # noqa: BLE001 - transformers 缺失或太旧时只用模型卡数字
-        print(f"（跳过按 config 数参数：{e!r}）")
+    except Exception as e:  # noqa: BLE001 - without transformers (or too old), use only the model-card numbers
+        print(f"(Skip the parameter count from the config: {e!r})")
         return {}
 
 
 def params_str(m: dict, cp: dict) -> tuple[str, str]:
-    """(总参数, 激活参数)：优先模型卡；稠密模型和没写的，用按 config 数出来的值。"""
+    """(total parameters, active parameters).
+
+    Use the model card first. For dense models and for missing values, use the count from the config.
+    """
     if m.get("zero_toml"):
         n = count_params(load_model_config(REPO / m["zero_toml"]))["total"]
-        return f"{n / 1e6:.1f}M", "稠密"
+        return f"{n / 1e6:.1f}M", "dense"
     card = m.get("card", {})
     r = cp.get(m["id"], {})
     tot = card.get("total_params") or (f"{r['total'] / 1e9:.2f}B" if r.get("total") else "—")
-    return tot, card.get("active_params", "稠密")
+    return tot, card.get("active_params", "dense")
 
 
 def fmt(n: float | None) -> str:
@@ -297,7 +351,7 @@ def main() -> None:
     ms = load_models()
 
     print("=" * 100)
-    print("1. 拆解：每个模型的层由什么组成（读自 config.json）")
+    print("1. Dissection: what makes up the layers of each model (read from config.json)")
     print("=" * 100)
     for mid in DISSECT + ["glm-5.3", "minimax-m3", "qwen3.5-0.8b", "main"]:
         m = ms[mid]
@@ -317,22 +371,22 @@ def main() -> None:
             }[k]
             for k in kinds
         )
-        print(f"{m['name']:<22} {len(kinds):>3} 层：{composition(kinds)}")
+        print(f"{en(m['name']):<22} {len(kinds):>3} layers: {composition([en(k) for k in kinds])}")
         print(f"{'':<22}     {strip}")
     print(
-        "  图例：G 全注意力(GQA)  s 滑动窗口  l 线性注意力(GDN/KDA)  M MLA  c CSA  h HCA  g GQA+块稀疏"
+        "  Legend: G full attention (GQA)  s sliding window  l linear attention (GDN/KDA)  M MLA  c CSA  h HCA  g GQA+block-sparse"
     )
 
     print()
     print("=" * 100)
     print(
-        "2. 大对比表（KV cache：BF16、batch 1，只算随长度增长的 K/V 或潜向量；线性层固定状态另列）"
+        "2. Large comparison table (KV cache: BF16, batch 1, only the K/V or latent vectors that grow with length; fixed state of linear layers in its own column)"
     )
     print("=" * 100)
     cp = computed_params()
     print(
-        f"{'模型':<19}{'总参数':>8}{'激活':>7}{'层':>4}{'词表':>9}{'上下文':>7}{'共享emb':>6}"
-        f"{'每token KV':>11}{'32K KV':>11}{'128K KV':>11}{'线性层状态':>11}"
+        f"{'Model':<19}{'Total':>8}{'Active':>7}{'Lyr':>4}{'Vocab':>9}{'Ctx':>7}{'Tied':>6}"
+        f"{'KV/token':>11}{'32K KV':>11}{'128K KV':>11}{'Lin. state':>11}"
     )
     order = [
         "gpt2",
@@ -360,20 +414,20 @@ def main() -> None:
             tie = c.get("tie_word_embeddings", c.get("model_type") == "gpt2")
         ctx = f"{kv['ctx'] // 1024}K" if kv["ctx"] >= 1024 else str(kv["ctx"])
         print(
-            f"{m['name']:<19}{tot:>8}{act:>7}{n:>4}{vocab:>9,}{ctx:>7}{'是' if tie else '否':>6}"
+            f"{en(m['name']):<19}{tot:>8}{act:>7}{n:>4}{vocab:>9,}{ctx:>7}{'yes' if tie else 'no':>6}"
             f"{fmt(kv['per_token']):>11}{fmt(kv['kv_32k']):>11}{fmt(kv['kv_128k']):>11}{fmt(kv['state'] or None):>11}"
         )
     print(
-        "  注：'每 token KV' 是长上下文下每多一个 token 增加的量（滑动窗口层已填满、不再增长）；超出模型上下文的格子记 —。"
+        "  Note: 'KV/token' is the growth for each additional token at long context (sliding-window layers are full and do not grow). A cell beyond the context of the model shows —."
     )
     print(
-        "      主线模型按长上下文阶段的 32K 记；DeepSeek-V4 的压缩层按摊到每个 token 的量（CSA 512/4、HCA 512/128）。"
+        "      The main-line model uses the 32K of the long-context stage. The compressed layers of DeepSeek-V4 count their share per token (CSA 512/4, HCA 512/128)."
     )
     print(
-        "      GLM-5.3 的参数取 GLM-5 模型卡（5.3 的 config 形状与 GLM-5 相同）；稠密小模型的总参数按 config 数出（03_meta_params.py）。"
+        "      The GLM-5.3 parameters come from the GLM-5 model card (the 5.3 config has the same shapes as GLM-5). The total parameters of small dense models are counted from the config (03_meta_params.py)."
     )
 
-    # DeepSeek-V4 与 V3.2 的对照（报告说 1M 上下文时 KV 只有 V3.2 的 10%）
+    # DeepSeek-V4 vs V3.2 (the report says that at 1M context, the KV cache is only 10% of V3.2)
     v4, v32 = ms["deepseek-v4-pro"], ms["deepseek-v3.2"]
     T = 1 << 20
     v4b = kv_cache_bytes(dsv4_layout(v4, with_indexer=True), T)
@@ -386,17 +440,17 @@ def main() -> None:
     )
     v32b = kv_cache_bytes(v32_lay, T)
     print(
-        f"\n  对照：1M 上下文、同一精度（BF16）、都算上索引器的 key：V4-Pro {fmt(v4b)}，V3.2 {fmt(v32b)}，"
-        f"比值 {v4b / v32b:.1%}（报告：约 10%；报告里 KV 条目除 RoPE 维外用 FP8 存）"
+        f"\n  Comparison at 1M context, same precision (BF16), indexer keys included in both: V4-Pro {fmt(v4b)}, V3.2 {fmt(v32b)}, "
+        f"ratio {v4b / v32b:.1%} (report: about 10%; the report stores the KV entries in FP8, except the RoPE dimensions)"
     )
     main_m = ms["main"]
     print(
-        f"  主线模型 32K：{fmt(kv_numbers(main_m)['kv_32k'])}；Qwen3.8-2.4T 128K：{fmt(kv_numbers(ms['qwen3.8-2.4t-a95b'])['kv_128k'])}"
+        f"  Main-line model at 32K: {fmt(kv_numbers(main_m)['kv_32k'])}; Qwen3.8-2.4T at 128K: {fmt(kv_numbers(ms['qwen3.8-2.4t-a95b'])['kv_128k'])}"
     )
 
     print()
     print("=" * 100)
-    print("3. 采用矩阵：6 个最新旗舰家族（证据：config 字段，或注明的代码 / 报告）")
+    print("3. Adoption matrix: the 6 newest flagship families (evidence: config fields, or the code / report given)")
     print("=" * 100)
     feats = {mid: features(ms[mid]) for mid in FLAGSHIPS}
     all_f = list(dict.fromkeys(k for mid in FLAGSHIPS for k in feats[mid]))
@@ -409,51 +463,55 @@ def main() -> None:
         "minimax-m3": "M3",
     }
     print(
-        f"{'技术':<20}"
+        f"{'Technique':<20}"
         + "".join(f"{short[m]:>9}" for m in FLAGSHIPS)
-        + f"{'家数':>5}  前几章核实过的其他采用方 → 判定"
+        + f"{'Uses':>5}  other adopters verified in earlier chapters → decision"
     )
     for k in all_f:
         n = sum(k in feats[mid] for mid in FLAGSHIPS)
         extra = EARLIER.get(k, [])
         total = n + len(extra)
-        v = "≥3 家，共识" if total >= 3 else "不足 3 家 → 前沿观察"
-        more = ("＋" + "、".join(extra) + " → ") if extra else ""
+        v = "≥3 families: consensus" if total >= 3 else "fewer than 3 → frontier note"
+        more = ("+ " + ", ".join(extra) + " → ") if extra else ""
         print(
-            f"{k:<20}"
+            f"{en(k):<20}"
             + "".join(f"{'●' if k in feats[mid] else '·':>9}" for mid in FLAGSHIPS)
             + f"{n:>5}  {more}{v}"
         )
-    print("\n  证据明细：")
+    print("\n  Evidence details:")
     for mid in FLAGSHIPS:
-        print(f"  {ms[mid]['name']}: " + "；".join(f"{k}={v}" for k, v in feats[mid].items()))
+        print(f"  {ms[mid]['name']}: " + "; ".join(f"{en(k)}={v}" for k, v in feats[mid].items()))
 
     print()
     print("=" * 100)
-    print("4. 小模型这一侧：主线模型 vs 两个千问小模型")
+    print("4. The small-model side: the main-line model vs two small Qwen models")
     print("=" * 100)
     for mid in ("main", "qwen3-0.6b", "qwen3.5-0.8b"):
         print(
-            f"  {ms[mid]['name']}: " + "；".join(f"{k}={v}" for k, v in features(ms[mid]).items())
+            f"  {en(ms[mid]['name'])}: " + "; ".join(f"{en(k)}={v}" for k, v in features(ms[mid]).items())
         )
 
     print()
     print("=" * 100)
     print(
-        "5. 如果主线模型的'下一版'换注意力：32K 上下文的 KV cache（同样 28 层、GQA 16/8、head_dim 128）"
+        "5. If the 'next version' of the main-line model changes the attention: KV cache at 32K context (same 28 layers, GQA 16/8, head_dim 128)"
     )
     print("=" * 100)
     for name, lay in next_version_layouts().items():
         kv, st = kv_cache_bytes(lay, 32768), fixed_state_bytes(lay)
-        extra = f"，线性层固定状态约 {fmt(st)}" if st else ""
-        print(f"  {name:<34} {fmt(kv):>11}{extra}")
+        extra = f", fixed state of the linear layers about {fmt(st)}" if st else ""
+        print(f"  {en(name):<34} {fmt(kv):>11}{extra}")
     print(
-        "  （线性层用 Qwen3.5-0.8B 的线性层头数与维度：16 个 key 头、16 个 value 头、各 128 维；状态按 float32 估算）"
+        "  (The linear layers use the head counts and sizes of Qwen3.5-0.8B: 16 key heads and 16 value heads, 128 dims each. The state is estimated in float32.)"
     )
 
 
 def next_version_layouts() -> dict[str, KVLayout]:
-    """主线模型的几种"下一版"注意力方案，交给 zero.tools.kv_cache_calc 记账。"""
+    """Some attention options for the "next version" of the main-line model.
+
+    zero.tools.kv_cache_calc keeps the ledger. The dict keys stay in Chinese because the Chinese
+    video shows them.
+    """
     mc = load_model_config(REPO / "configs/main/pretrain.toml")
     base = dict(
         num_hidden_layers=mc.n_layers,
@@ -462,7 +520,7 @@ def next_version_layouts() -> dict[str, KVLayout]:
         head_dim=mc.head_dim,
         hidden_size=mc.dim,
     )
-    lin = dict(  # 取自 Qwen3.5-0.8B 的 config（models.json）
+    lin = dict(  # from the Qwen3.5-0.8B config (models.json)
         linear_num_key_heads=16,
         linear_num_value_heads=16,
         linear_key_head_dim=128,

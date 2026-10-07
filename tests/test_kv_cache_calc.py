@@ -1,4 +1,7 @@
-"""KV cache 计算器（zero/tools/kv_cache_calc.py，第 21 章）：公式与真实分配对拍，各种层类型按预期记账。"""
+"""KV cache calculator (zero/tools/kv_cache_calc.py, Chapter 21).
+
+Parity check of the formula against the real allocation; each layer type is counted as expected.
+"""
 
 from __future__ import annotations
 
@@ -20,7 +23,7 @@ def test_matches_real_kvcache_for_zero_configs() -> None:
     for path in ("configs/tiny/pretrain.toml", "configs/main/pretrain.toml"):
         cfg = load_model_config(path)
         for dtype, nb in ((torch.float32, 4), (torch.bfloat16, 2)):
-            # meta 设备：只记形状不真正分配内存，主线配置也瞬间完成
+            # meta device: records only shapes and allocates no memory, so the main-line config is fast too
             cache = KVCache.from_config(
                 cfg, batch_size=2, max_seq_len=1000, device="meta", dtype=dtype
             )
@@ -29,7 +32,7 @@ def test_matches_real_kvcache_for_zero_configs() -> None:
 
 
 def test_main_model_numbers() -> None:
-    # 28 层 × 8 个 KV 头 × head_dim 128 × 2（K 和 V）× 2 字节 = 114,688 字节 = 112 KiB
+    # 28 layers × 8 KV heads × head_dim 128 × 2 (K and V) × 2 bytes = 114,688 bytes = 112 KiB
     assert kv_bytes_per_token("configs/main/pretrain.toml") == 114_688
     assert kv_cache_bytes("configs/main/pretrain.toml", 32768) == 114_688 * 32768
 
@@ -53,7 +56,7 @@ def test_mla_matches_mlacache() -> None:
 
 
 def test_deepseek_v3_mla() -> None:
-    # 数字来自 deepseek-ai/DeepSeek-V3 的 config.json：61 层，kv_lora_rank 512，qk_rope_head_dim 64
+    # Numbers from config.json of deepseek-ai/DeepSeek-V3: 61 layers, kv_lora_rank 512, qk_rope_head_dim 64
     hf = {
         "num_hidden_layers": 61,
         "num_attention_heads": 128,
@@ -64,11 +67,11 @@ def test_deepseek_v3_mla() -> None:
         "qk_nope_head_dim": 128,
         "v_head_dim": 128,
     }
-    assert kv_bytes_per_token(hf) == 61 * 576 * 2  # 70,272 字节 ≈ 68.6 KiB
+    assert kv_bytes_per_token(hf) == 61 * 576 * 2  # 70,272 bytes ≈ 68.6 KiB
 
 
 def test_sliding_window_and_hybrid() -> None:
-    # gpt-oss 风格：一半层是 128 窗口的滑动注意力
+    # gpt-oss style: half of the layers use sliding attention with a window of 128
     hf = {
         "num_hidden_layers": 4,
         "num_attention_heads": 8,
@@ -79,7 +82,7 @@ def test_sliding_window_and_hybrid() -> None:
     }
     per_layer = 2 * 2 * 16
     assert kv_cache_bytes(hf, 1000, dtype_bytes=1) == 2 * per_layer * 1000 + 2 * per_layer * 128
-    # Qwen3.5 风格：3 层线性注意力 + 1 层全注意力，只有全注意力层随长度增长
+    # Qwen3.5 style: 3 linear attention layers + 1 full attention layer; only the full attention layer grows with length
     q = {
         "text_config": {
             "num_hidden_layers": 4,
@@ -96,14 +99,14 @@ def test_sliding_window_and_hybrid() -> None:
         }
     }
     assert kv_cache_bytes(q, 500) == 1 * 2 * 2 * 32 * 500 * 2
-    state = 2 * 8 * 8 + 3 * (2 * 2 * 8 + 2 * 8)  # 递推状态 + 短卷积缓存（每层）
+    state = 2 * 8 * 8 + 3 * (2 * 2 * 8 + 2 * 8)  # recurrent state + short convolution cache (each layer)
     assert fixed_state_bytes(q) == 3 * state * 4
     r = breakdown(q, 500)
     assert r["by_kind"]["linear"]["layers"] == 3 and r["by_kind"]["full"]["layers"] == 1
 
 
 def test_mistral_params_json_and_all_sliding() -> None:
-    # Mistral 原生 params.json 字段名
+    # Field names of the native Mistral params.json
     p = {
         "n_layers": 2,
         "n_heads": 4,
@@ -114,7 +117,7 @@ def test_mistral_params_json_and_all_sliding() -> None:
         "qk_rope_head_dim": 8,
     }
     assert kv_bytes_per_token(p, dtype_bytes=1) == 2 * 40
-    # Mistral-7B-v0.1 风格：没有 layer_types，但设置了 sliding_window → 全部层滑动
+    # Mistral-7B-v0.1 style: no layer_types, but sliding_window is set → all layers use the sliding window
     m = {
         "num_hidden_layers": 2,
         "num_attention_heads": 4,

@@ -1,1 +1,1 @@
-"""导出：Hugging Face 格式见 zero/hf.py，GGUF 见 gguf.py（对应第 20 章）。"""
+"""Export: see zero/hf.py for the Hugging Face format and gguf.py for GGUF (Chapter 20)."""

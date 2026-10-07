@@ -1,18 +1,20 @@
-# tiny 评测配置（第 11、20 章"极小配置演示"）：玩具评测集 + 工具调用 dev 集，比较后训练各阶段的模型。
+# Tiny evaluation config (Chapters 11 and 20, "Tiny-configuration demo"): compare the models of the post-training stages
+# on the toy evaluation sets + the tool-calling dev set.
 #   uv run python -m zero.eval.harness --config configs/tiny/eval.toml
-# 路径不存在的 checkpoint 会报错；先把 configs/tiny 的各阶段跑完（或直接 uv run python -m zero.smoke）。
-# 极小模型的分数接近随机，只说明评测代码能跑通。
+# A checkpoint path that does not exist causes an error. First run all stages of configs/tiny
+# (or run uv run python -m zero.smoke). The scores of a tiny model are near random.
+# They show only that the evaluation code runs.
 
 [eval]
-mc_tasks = ["toy_mc.jsonl"]          # 相对路径先找当前目录，再找 zero/eval/tasks/
+mc_tasks = ["toy_mc.jsonl"]          # A relative path looks in the current folder first, then in zero/eval/tasks/
 gen_tasks = ["toy_gen.jsonl"]
 tool_tasks = "tool_dev.jsonl"
 fewshot = 3
-max_items = 30                       # 每个任务最多 30 题（tiny 模型推理也要时间）
+max_items = 30                       # At most 30 questions per task (inference with the tiny model also takes time)
 max_new_tokens = 96
 max_turns = 3
 out_dir = "out/tiny/eval"
-baseline = "sft"                     # 其余模型与 SFT 做配对 bootstrap
+baseline = "sft"                     # Each other model gets a paired bootstrap against SFT
 n_boot = 2000
 seed = 0
 cpu_threads = 1

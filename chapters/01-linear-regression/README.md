@@ -1,4 +1,4 @@
-# Chapter 1: y = ax + b — Learn "Training" from a Straight Line
+# Chapter 1: y = ax + b — Learn "training" from a straight line
 
 **English** · [中文](README.zh.md)
 

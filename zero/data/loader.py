@@ -1,18 +1,22 @@
-"""打包数据加载器：从 uint32 分片里切出定长训练样本（对应第 14 章）。
+"""Packed data loader: cut fixed-length training samples from uint32 shards (Chapter 14).
 
-**打包（packing）**：预训练不按文档对齐，而是把所有 token 看成一条长河，切成长度 seq_len+1 的片段，
-x = 片段[:-1]，y = 片段[1:]。相邻片段重叠 1 个 token（步长 seq_len），所以每个 token 恰好当一次
-"预测目标"。文档边界处的 <|endoftext|> 让模型知道上下文换了，一个片段里可能包含好几篇文档的结尾和开头。
+**Packing**: pretraining does not align samples with documents. It treats all tokens as one long
+stream and cuts it into chunks of length seq_len+1: x = chunk[:-1], y = chunk[1:]. Two adjacent
+chunks overlap by 1 token (the stride is seq_len), so each token is a "prediction target" exactly
+once. The <|endoftext|> at each document boundary tells the model that the context changed.
+One chunk can contain the end and the start of several documents.
 
-**确定性与断点续训**：样本的顺序完全由 (seed, epoch) 决定：
-- 每个 epoch 先打乱分片顺序，再打乱每个分片内部的片段顺序（两级打乱，不需要给全部片段建一个巨大的排列）；
-- 于是"第 g 个全局样本是哪个分片的哪个片段"可以直接算出来（随机访问）。
-加载器的全部状态就是一个整数 `consumed`（本 rank 已经取了多少个样本），`state_dict()` 存它，
-`load_state_dict()` 恢复它，续训后的 batch 与不中断时逐字节相同。
+**Determinism and resume**: only (seed, epoch) decides the order of the samples:
+- In each epoch, first shuffle the order of the shards, then shuffle the order of the chunks in
+  each shard. With these two levels, we do not need one very large permutation of all chunks.
+- So we can compute directly "which chunk of which shard is global sample g" (random access).
+The full state of the loader is one integer, `consumed` (the number of samples that this rank took).
+`state_dict()` saves it and `load_state_dict()` restores it. After a resume, the batches are
+identical, byte for byte, to a run without interruption.
 
-**分布式**：第 g 个全局样本分给 rank = g % world_size。每步所有 rank 合起来正好取走连续的
-batch_size * world_size 个全局样本，所以"2 卡各 B 条"与"1 卡 2B 条"看到的是同一批数据
-（`tests/test_ddp_cpu.py` 用这一点来对拍 DDP）。
+**Distributed**: global sample g goes to rank = g % world_size. In each step, all ranks together
+take exactly batch_size * world_size consecutive global samples. So "2 GPUs with B rows each" and
+"1 GPU with 2B rows" see the same data (`tests/test_ddp_cpu.py` uses this for a parity check of DDP).
 """
 
 from __future__ import annotations
@@ -31,16 +35,16 @@ from zero.data.shard import read_shard
 
 
 def resolve_shards(paths: str | os.PathLike | Sequence[str | os.PathLike]) -> list[Path]:
-    """glob 或路径列表 → 排好序的 .bin 文件列表。"""
+    """A glob or a list of paths → a sorted list of .bin files."""
     items = [paths] if isinstance(paths, str | os.PathLike) else list(paths)
     out: list[Path] = []
     for item in items:
         matches = sorted(glob.glob(str(item)))
         if not matches:
-            raise FileNotFoundError(f"找不到分片：{item}")
+            raise FileNotFoundError(f"Shards not found: {item}")
         out.extend(Path(m) for m in matches if m.endswith(".bin"))
     if not out:
-        raise FileNotFoundError(f"没有 .bin 分片：{paths}")
+        raise FileNotFoundError(f"No .bin shards: {paths}")
     return out
 
 
@@ -77,20 +81,20 @@ class PackedDataLoader:
         self.shuffle = shuffle
         self.device = device
         self.shards = [read_shard(p) for p in self.paths]
-        # 每个分片能切出多少个 (seq_len+1) 片段（步长 seq_len）
+        # Number of (seq_len+1) chunks in each shard (stride seq_len)
         self.n_chunks = np.array(
             [max((len(s) - 1) // seq_len, 0) for s in self.shards], dtype=np.int64
         )
         self.total_chunks = int(self.n_chunks.sum())
         if self.total_chunks < world_size:
             raise ValueError(
-                f"数据太少：{self.total_chunks} 个长度 {seq_len}+1 的片段，不够分给 {world_size} 个 rank"
+                f"Not enough data: {self.total_chunks} chunks of length {seq_len}+1 are too few for {world_size} ranks"
             )
         self.consumed = 0
         self._epoch_cache: tuple[int, np.ndarray, np.ndarray] | None = None
         self._perm_cache: OrderedDict[tuple[int, int], np.ndarray] = OrderedDict()
 
-    # ---- 索引计算 ----
+    # ---- index computation ----
     def _epoch_layout(self, epoch: int) -> tuple[np.ndarray, np.ndarray]:
         if self._epoch_cache is None or self._epoch_cache[0] != epoch:
             if self.shuffle:
@@ -115,7 +119,7 @@ class PackedDataLoader:
         return self._perm_cache[key]
 
     def locate(self, global_index: int) -> tuple[int, int, int]:
-        """第 global_index 个全局样本 → (epoch, 分片号, 片段号)。"""
+        """Global sample global_index → (epoch, shard index, chunk index)."""
         epoch, pos = divmod(global_index, self.total_chunks)
         order, cum = self._epoch_layout(epoch)
         j = int(np.searchsorted(cum, pos, side="right"))
@@ -126,20 +130,20 @@ class PackedDataLoader:
         return epoch, shard, chunk
 
     def sample(self, local_index: int) -> np.ndarray:
-        """本 rank 的第 local_index 个样本（长度 seq_len+1 的 token 数组）。"""
+        """Sample local_index of this rank (a token array of length seq_len+1)."""
         g = local_index * self.world_size + self.rank
         _, shard, chunk = self.locate(g)
         start = chunk * self.seq_len
         return np.asarray(self.shards[shard][start : start + self.seq_len + 1])
 
-    # ---- 取数据 ----
+    # ---- get data ----
     def next_samples(self, n: int) -> np.ndarray:
         out = np.stack([self.sample(self.consumed + i) for i in range(n)])
         self.consumed += n
         return out
 
     def next_batch(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """返回 (x, y)，形状都是 (batch_size, seq_len)，int64。"""
+        """Return (x, y). Both have the shape (batch_size, seq_len), int64."""
         return to_torch_batch(self.next_samples(self.batch_size), self.device)
 
     def __iter__(self) -> PackedDataLoader:
@@ -156,7 +160,7 @@ class PackedDataLoader:
     def num_tokens(self) -> int:
         return int(sum(len(s) for s in self.shards))
 
-    # ---- 断点续训 ----
+    # ---- resume ----
     def state_dict(self) -> dict[str, Any]:
         return {
             "consumed": self.consumed,
@@ -172,8 +176,8 @@ class PackedDataLoader:
         for key in ("seed", "seq_len", "world_size", "total_chunks"):
             if state[key] != getattr(self, key):
                 raise ValueError(
-                    f"加载器状态不匹配：{key} 保存时是 {state[key]}，现在是 {getattr(self, key)}。"
-                    "改了数据、序列长度或卡数之后不能精确续训。"
+                    f"The loader state does not match: {key} was {state[key]} when saved, now it is {getattr(self, key)}. "
+                    "After a change of the data, the sequence length, or the number of GPUs, an exact resume is not possible."
                 )
         self.consumed = int(state["consumed"])
 
@@ -182,19 +186,21 @@ class PackedDataLoader:
 
 
 class MaskedWindowLoader:
-    """SFT 用：读"定长窗口 + loss mask"（对应第 16 章）。
+    """For SFT: read "fixed-length windows + loss mask" (Chapter 16).
 
-    zero/post/sft.py 把若干条对话打包进长度 seq_len+1 的窗口（不把一条对话切到两个窗口里，
-    剩余位置用 <|endoftext|> 填充），写成两份文件：
+    zero/post/sft.py packs several conversations into windows of length seq_len+1. It does not split
+    a conversation across two windows, and it fills the remaining positions with <|endoftext|>.
+    It writes two files:
 
-        <name>.bin   np.uint32，n_windows × (seq_len+1) 个 token
-        <name>.mask  np.uint8， 同样长度；1 = 助手输出的 token（要算 loss），0 = 其余
+        <name>.bin   np.uint32, n_windows × (seq_len+1) tokens
+        <name>.mask  np.uint8, the same length; 1 = token of the assistant output (in the loss), 0 = all others
 
-    `next_batch()` 返回 (x, y)：x = 窗口[:-1]，y = 窗口[1:]，mask 为 0 的目标位置换成 -100
-    （交叉熵的 ignore_index），于是 `Transformer.loss` / 训练循环不用改就只在助手 token 上算 loss。
+    `next_batch()` returns (x, y): x = window[:-1], y = window[1:]. Target positions with mask 0
+    become -100 (the ignore_index of the cross-entropy). So `Transformer.loss` and the training loop
+    compute the loss only on the assistant tokens, without changes.
 
-    顺序由 (seed, epoch) 决定，状态只有 `consumed` 一个整数，断点续训与 PackedDataLoader 一样精确；
-    多卡时第 g 个全局样本分给 rank g % world_size。
+    Only (seed, epoch) decides the order. The state is one integer, `consumed`, so a resume is as
+    exact as with PackedDataLoader. With multiple GPUs, global sample g goes to rank g % world_size.
     """
 
     def __init__(
@@ -225,7 +231,7 @@ class MaskedWindowLoader:
             m = np.fromfile(p.with_suffix(".mask"), dtype=np.uint8)
             if len(t) % w != 0 or len(m) != len(t):
                 raise ValueError(
-                    f"{p}: 长度 {len(t)} 不是窗口长度 {w} 的整数倍，或 mask 长度不符（seq_len 改过？）"
+                    f"{p}: the length {len(t)} is not a multiple of the window length {w}, or the mask length does not match (did seq_len change?)"
                 )
             toks.append(t.reshape(-1, w))
             masks.append(m.reshape(-1, w))
@@ -233,7 +239,7 @@ class MaskedWindowLoader:
         self.masks = np.concatenate(masks).astype(bool)
         self.total_chunks = len(self.tokens)
         if self.total_chunks < world_size:
-            raise ValueError(f"SFT 窗口只有 {self.total_chunks} 个，不够分给 {world_size} 个 rank")
+            raise ValueError(f"Only {self.total_chunks} SFT windows: too few for {world_size} ranks")
         self.consumed = 0
         self._perm: tuple[int, np.ndarray] | None = None
 
@@ -280,6 +286,6 @@ class MaskedWindowLoader:
         for key in ("seed", "seq_len", "world_size", "total_chunks"):
             if state[key] != getattr(self, key):
                 raise ValueError(
-                    f"加载器状态不匹配：{key} 保存时是 {state[key]}，现在是 {getattr(self, key)}"
+                    f"The loader state does not match: {key} was {state[key]} when saved, now it is {getattr(self, key)}"
                 )
         self.consumed = int(state["consumed"])

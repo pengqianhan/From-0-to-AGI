@@ -1,310 +1,337 @@
-# 第 10 章：推理 —— 让模型开口说话，而且说得快
+# Chapter 10: Inference — Make the model generate text, and make it fast
 
-> **一句话目标**：读完这一章，你能写出带温度、top-k、top-p 的采样函数；能给一个 Transformer 加上 KV cache，并验证它和不加缓存时生成的结果逐字相同；还能用 `2 × 层数 × KV 头数 × head_dim × 序列长度 × 字节数` 算出任意模型的 KV cache 有多大、GQA 能省多少。
+**English** · [中文](README.zh.md)
 
-📺 **本章视频**：待发布（本地渲染：`bash chapters/10-inference/video/build.sh`）
-🧪 **本章自检**：学完后在 Claude Code 里输入 `/ch10-inference`
+> **Goal**: After this chapter, you can write a sampling function with temperature, top-k, and top-p. You can add a KV cache to a Transformer and make sure that it generates exactly the same text as the model without a cache. You can also use `2 × layers × KV heads × head_dim × sequence length × bytes` to calculate the KV cache size of any model and how much GQA saves.
+
+📺 **Video**: Not published yet. To render it on your computer, run `bash chapters/10-inference/video/build.sh`.
+🧪 **Self-check**: After the chapter, type `/ch10-inference` in Claude Code.
 
 ---
 
-上一章我们搭出了一个完整的现代 Transformer：RMSNorm、RoPE、SwiGLU、因果注意力，训练几分钟就能写出"莎士比亚腔"。但我们一直在关心**训练**：给一整段文本，一次算出所有位置的 loss。这一章要解决的问题是：**训练好的模型，怎么真正把话说出来？** 这里有两件事。一是"说什么"：模型每一步给出的是一个概率分布，从里面怎么挑字，决定了生成的文字是呆板还是灵活、是通顺还是胡言乱语。二是"说多快"：最朴素的生成方法里藏着大量重复计算，而把它省掉的 KV cache 又带来了新问题——显存。KV cache 太大，于是有了 GQA。
+In the last chapter, we built a complete modern Transformer: RMSNorm, RoPE, SwiGLU, and causal attention. After a few minutes of training, it wrote text in the style of Shakespeare. But until now, we looked only at **training**: we give the model a full text and calculate the loss at all positions at the same time. This chapter answers a new question: **how does a trained model actually produce text?**
 
-本章所有代码都用一个自带的小模型（`code/01_tiny_model.py`）：和第 9 章同一套结构（Pre-Norm RMSNorm、RoPE、SwiGLU、共享 embedding），为了在 CPU 上一两分钟训完，改成字符级（65 个字符的词表）、去掉了 QK-Norm，多了本章的两样东西：KV cache 和 `n_kv_heads`。
+The question has two parts. The first part is "what to say". At each step, the model gives a probability distribution. The method that picks a character from this distribution decides if the text is dull or varied, and if it is fluent or nonsense.
+
+The second part is "how fast". The most basic generation method does a large amount of repeated calculation. The KV cache removes this calculation, but it causes a new problem: GPU memory. The KV cache is too large, and GQA is the answer to that problem.
+
+All code in this chapter uses its own small model (`code/01_tiny_model.py`). It has the same structure as Chapter 9 (Pre-Norm RMSNorm, RoPE, SwiGLU, tied embeddings). We want to train it on a CPU in 1 to 2 minutes. Thus it works on characters (a vocabulary of 65 characters), and it has no QK-Norm. It also adds two things from this chapter: a KV cache and `n_kv_heads`.
 
 ```bash
-uv run python chapters/10-inference/code/01_tiny_model.py   # 训练并缓存权重（单线程约 1.5 分钟，只需一次）
+uv run python chapters/10-inference/code/01_tiny_model.py   # train and save the weights (about 1.5 minutes on 1 thread, only once)
 ```
 
-| 配置 | 数值 |
+| Setting | Value |
 |---|---|
-| 层数 / 宽度 / 查询头数 / head_dim | 4 / 128 / 4 / 32 |
-| 参数量 | 861,440（0.86M） |
-| 训练 | 600 步，batch 16 × 64 字符，AdamW + warmup + cosine |
-| 验证集 loss | 1.838 nats/字符（均匀乱猜是 ln 65 = 4.174） |
+| Layers / width / query heads / head_dim | 4 / 128 / 4 / 32 |
+| Parameters | 861,440 (0.86M) |
+| Training | 600 steps, batch 16 × 64 characters, AdamW + warmup + cosine |
+| Validation loss | 1.838 nats/character (a uniform random guess gives ln 65 = 4.174) |
 
-> 关于数字：本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同机器、不同版本的底层数学库，浮点运算的顺序略有不同，训练几百步后会把这些微小差异放大，你本机跑出的数字可能从小数点后第二三位开始就不一样；请以下文不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-07-10.md](../../runs/2026-10-01-gpu0-check/chapters-07-10.md)。
+> **Note:** The numbers from the training experiments in this chapter come from one CPU run on the course build machine. Different machines and different versions of the low-level math libraries do floating-point operations in a slightly different order. After some hundred training steps, these small differences become larger. Your numbers can differ from the second or third decimal place. Trust the conclusions below that do not depend on exact values. For a re-run on a different server in 2026-10, see [runs/2026-10-01-gpu0-check/chapters-07-10.md](../../runs/2026-10-01-gpu0-check/chapters-07-10.md).
 
-## 1. 生成是一个循环
+## 1. Generation is a loop
 
-语言模型只会做一件事：看前面的全部内容，给"下一个 token"的每个候选打分（logits）。要生成一段话，就把这件事循环起来：
+A language model can do only one thing. It looks at all the content before the current position and gives a score (a logit) to each candidate for the "next token". To generate a text, we do this in a loop:
 
-1. 把当前序列喂进模型，取**最后一个位置**的 logits；
-2. 按某种策略从中挑出一个 token；
-3. 把它接到序列末尾，回到第 1 步。
+1. Give the current sequence to the model, and take the logits at the **last position**.
+2. Use a strategy to pick one token from these logits.
+3. Append the token to the end of the sequence. Then go back to step 1.
 
-这叫**自回归生成（autoregressive generation）**：每一步的输出，都是下一步的输入。`01_tiny_model.py` 末尾就是最朴素的写法：
+This is **autoregressive generation**: the output of each step is the input of the next step. The end of `01_tiny_model.py` shows the most basic form:
 
 ```python
 ids = data.encode("ROMEO:\n")
 for _ in range(120):
-    logits = model(torch.tensor([ids]))[0, -1]   # 整段喂进去，只要最后一个位置
-    ids.append(int(logits.argmax()))             # 挑最大的那个，接到末尾
+    logits = model(torch.tensor([ids]))[0, -1]   # give the full sequence, keep only the last position
+    ids.append(int(logits.argmax()))             # pick the largest one and append it
 ```
 
-这短短四行里有两个问题：第 2 行"挑最大的"好不好？第 1 行"整段喂进去"快不快？接下来一个一个说。
+These four short lines contain two questions. Is it good to "pick the largest one" (step 2)? Is it fast to "give the full sequence" (step 1)? We look at the two questions one at a time.
 
-## 2. 挑哪个字：贪心、温度、top-k、top-p
+## 2. Which character to pick: greedy, temperature, top-k, top-p
 
-### 2.1 贪心：稳妥，但会原地打转
+### 2.1 Greedy: safe, but it goes around in a loop
 
-每一步都挑概率最大的 token，叫**贪心解码（greedy decoding）**。它看起来最稳妥，但运行 `02_sampling.py` 看看它写出了什么：
+**Greedy decoding** picks the token with the highest probability at each step. It seems to be the safest method. But run `02_sampling.py` and look at what it writes:
 
 ```
-[贪心 (T=0)]  不重复 4-gram 占比 0.27
+[greedy (T=0)]  distinct 4-gram ratio 0.27
   the son the such the shall the shall the proves
   The shall the shall the such the shall the shalleend the shand
 ```
 
-"the shall the shall"——在原地打转。我们用"不重复的 4 字符片段占比"粗略衡量重复程度：200 个字符里，贪心只有 0.27。每一步都选局部最优，拼起来不是全局最好的文字；一旦走进一个循环，下一步最可能的字又把它带回循环里。这种退化现象在大模型上同样存在，Holtzman 等人 2019 年的论文专门研究了它，标题就叫《神经文本退化的奇特案例》。
+"the shall the shall": the text goes around in a loop. We use "the fraction of distinct 4-character pieces" as a rough measure of repetition. In 200 characters, greedy decoding gets only 0.27. Each step makes the best local choice, but a chain of best local choices is not the best text. When the text enters a loop, the most probable next character takes it back into the loop.
 
-解决办法是**抽样（sampling）**：按模型给出的概率随机抽一个字。概率大的更容易被抽中，但不是每次都是它。
+Large models show the same degeneration. Holtzman et al. studied it in a 2019 paper with the title *The Curious Case of Neural Text Degeneration*.
 
-### 2.2 温度：抽样之前先调一调分布
+The solution is **sampling**: pick a character at random, with the probabilities that the model gives. A character with a high probability has a higher chance, but the sampler does not pick it every time.
 
-第 5 章讲过带温度的 softmax：把 logits 先除以温度 T 再做 softmax。
+### 2.2 Temperature: change the distribution before sampling
+
+Chapter 5 showed softmax with temperature: divide the logits by the temperature T, and then apply softmax.
 
 ```
 p_i = softmax(z / T)_i
 ```
 
-对应 `02_sampling.py` 的 `filtered_probs`：
+This is `filtered_probs` in `02_sampling.py`:
 
 ```python
-probs = torch.softmax(logits / temperature, dim=-1)  # 第 5 章的带温度 softmax
+probs = torch.softmax(logits / temperature, dim=-1)  # softmax with temperature (Chapter 5)
 ```
 
-下面是提示词 `"ROMEO:\nI will "` 之后，小模型给出的**真实**下一字符分布（前 8 名，`␣` 是空格）：
+Below is the **real** distribution of the next character from the small model, after the prompt `"ROMEO:\nI will "` (top 8; `␣` is a space):
 
-| 温度 | t | a | n | s | h | m | b | w | 熵（nats） |
+| Temperature | t | a | n | s | h | m | b | w | Entropy (nats) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | T = 0.5 | 0.427 | 0.093 | 0.073 | 0.066 | 0.062 | 0.060 | 0.047 | 0.037 | 2.15 |
 | T = 1.0 | 0.173 | 0.081 | 0.071 | 0.068 | 0.066 | 0.065 | 0.057 | 0.051 | 3.00 |
 | T = 1.5 | 0.106 | 0.064 | 0.059 | 0.057 | 0.056 | 0.055 | 0.051 | 0.047 | 3.39 |
 
-T < 1 放大差距：t 从 0.17 涨到 0.43，分布更尖，生成更保守；T > 1 压小差距：t 降到 0.11，冷门字符也有了机会，生成更大胆，也更容易胡言乱语。T → 0 就是贪心，所以代码里 `temperature == 0` 直接走 `argmax`。
+T < 1 makes the differences larger: the probability of t increases from 0.17 to 0.43. The distribution becomes sharper, and the generation becomes more conservative. T > 1 makes the differences smaller: t decreases to 0.11, and rare characters also get a chance. The generation becomes bolder, and it also produces nonsense more often. T → 0 is greedy decoding. Thus the code uses `argmax` directly when `temperature == 0`.
 
-### 2.3 截掉长尾：top-k 与 top-p
+### 2.3 Cut the long tail: top-k and top-p
 
-就算温度合适，分布的尾巴上还躺着几十个很不靠谱的 token。每个的概率都很小，但加起来并不小——生成几百个 token，迟早会抽中一个，一旦抽中，后面的文字就被带偏了。所以常常在抽样前把长尾截掉，再重新归一化：
+Even with a good temperature, the tail of the distribution contains tens of very unlikely tokens. Each of them has a very small probability, but their sum is not small. In a generation of some hundred tokens, the sampler will pick one of them sooner or later. When it does, the text after that token goes in a wrong direction. Thus we often cut the long tail before sampling, and then normalize again:
 
-- **top-k**（Fan 等 2018）：只保留概率最大的 k 个。
-- **top-p**，也叫 **nucleus 采样**（Holtzman 等 2019）：把概率从大到小排，累加到刚好不小于 p 为止，只在这一小撮"核"里抽。
+- **top-k** (Fan et al. 2018): keep only the k most probable tokens.
+- **top-p**, also called **nucleus sampling** (Holtzman et al. 2019): sort the probabilities from the largest to the smallest. Add them until the sum is at least p. Sample only from this small "nucleus".
 
 ```python
-if top_k > 0:  # 只留概率最大的 k 个
+if top_k > 0:  # keep only the k most probable tokens
     kth = torch.topk(probs, top_k).values[-1]
     probs = torch.where(probs >= kth, probs, 0.0)
-if top_p < 1.0:  # nucleus：从大到小累加，刚好够 top_p 就停
+if top_p < 1.0:  # nucleus: add from the largest down; stop when the sum reaches top_p
     sorted_p, idx = torch.sort(probs, descending=True)
-    before = torch.cumsum(sorted_p, 0) - sorted_p  # 加上自己之前的累计概率
+    before = torch.cumsum(sorted_p, 0) - sorted_p  # cumulative probability before this token
     keep = torch.zeros_like(probs, dtype=torch.bool)
-    keep[idx] = before < top_p  # 保证至少留下最大的那个
+    keep[idx] = before < top_p  # this always keeps the largest one
     probs = torch.where(keep, probs, 0.0)
 return probs / probs.sum()
 ```
 
-top-p 比 top-k 聪明在哪？看两个上下文：
+Why is top-p better than top-k? Look at two contexts:
 
-| 上下文 | 最可能的下一个字符 | top-p = 0.9 留下几个 | top-k = 5 留下几个 |
+| Context | Most probable next character | Kept by top-p = 0.9 | Kept by top-k = 5 |
 |---|---|---:|---:|
-| `"KING RICHARD III:\nWhat is th"`（很确定） | `e`，p = 0.546 | 5 | 5 |
-| `"ROMEO:\n"`（台词刚开头，很不确定） | `A`，p = 0.123 | 15 | 5 |
+| `"KING RICHARD III:\nWhat is th"` (very certain) | `e`, p = 0.546 | 5 | 5 |
+| `"ROMEO:\n"` (a line of dialogue starts, very uncertain) | `A`, p = 0.123 | 15 | 5 |
 
-模型有把握时，核很小；没把握时，核自动变大。top-k 不管模型有没有把握，永远留 k 个：没把握时砍掉了合理的候选，有把握时又可能留下离谱的候选。这正是 Holtzman 等人提出 top-p 的理由。实践中两者也常常一起用。
+When the model is confident, the nucleus is small. When the model is not confident, the nucleus becomes larger automatically. top-k always keeps k tokens, whether the model is confident or not. When the model is not confident, top-k removes reasonable candidates. When the model is confident, top-k can keep absurd candidates. This is the reason why Holtzman et al. proposed top-p. In practice, people also often use the two methods together.
 
-### 2.4 实际效果，和开源模型的默认配置
+### 2.4 Real results, and the defaults of open models
 
-同一提示词、同一随机种子，各生成 200 个字符（`02_sampling.py` 输出，节选开头）：
+We use the same prompt and the same random seed, and generate 200 characters with each strategy (output of `02_sampling.py`, start only):
 
-| 策略 | 不重复 4-gram 占比 | 生成开头 |
+| Strategy | Distinct 4-gram ratio | Start of the generated text |
 |---|---:|---|
-| 贪心（T = 0） | 0.27 | `the son the such the shall the shall the proves` |
+| Greedy (T = 0) | 0.27 | `the son the such the shall the shall the proves` |
 | T = 0.5 | 0.84 | `there his the prester of thee hand,` |
 | T = 1.0 | 0.95 | `thy forful haves: / WeWadHis nears! younk gelst to you` |
-| T = 1.0，top-k = 5 | 0.91 | `thy comman haves their soul that` |
-| T = 1.0，top-p = 0.9 | 0.94 | `thou more the prevenced can that` |
+| T = 1.0, top-k = 5 | 0.91 | `thy comman haves their soul that` |
+| T = 1.0, top-p = 0.9 | 0.94 | `thou more the prevenced can that` |
 | T = 1.5 | 0.98 | `thyremhis kiss selted? / His nears! youd Igelst, gMycouuesy` |
 
-一个 86 万参数的字符级模型写不出真正通顺的英文，但趋势很清楚：贪心重复，T = 1.5 乱码（`gMycouuesy`），截掉长尾之后（top-k、top-p）怪词明显变少。不重复占比只衡量"不重复"，衡量不了"通顺"，所以 T = 1.5 的 0.98 并不代表它最好——这也是为什么解码参数最终要靠人看、靠评测来定。
+A character-level model with 860 thousand parameters cannot write really fluent English. But the trend is clear. Greedy decoding repeats itself. T = 1.5 produces garbage (`gMycouuesy`). After we cut the long tail (top-k, top-p), there are many fewer strange words.
 
-真实模型怎么选？开源模型会随权重一起发布 `generation_config.json`，里面就是官方推荐的默认解码参数（2026-09 读取）：
+The distinct ratio measures only "no repetition". It does not measure "fluency". Thus the 0.98 of T = 1.5 does not mean that T = 1.5 is the best. For this reason, people must choose the decoding settings by reading the output and by evaluation.
 
-| 模型 | 温度 | top-p | top-k |
+How do real models choose? Open models publish a `generation_config.json` file together with the weights. This file contains the official recommended decoding settings (read in 2026-09):
+
+| Model | Temperature | top-p | top-k |
 |---|---:|---:|---:|
 | Qwen3-8B | 0.6 | 0.95 | 20 |
 | Qwen2.5-7B-Instruct | 0.7 | 0.8 | 20 |
 | Llama-3.1-8B-Instruct | 0.6 | 0.9 | — |
 | SmolLM3-3B | 0.6 | 0.95 | — |
-| Gemma-3-27B-it | —（默认 1.0） | 0.95 | 64 |
+| Gemma-3-27B-it | — (default 1.0) | 0.95 | 64 |
 
-"温度略低于 1 + top-p 0.8–0.95"几乎是标准配置。
+"A temperature a little below 1 + top-p 0.8–0.95" is almost the standard setting.
 
-## 3. 朴素生成为什么慢：一个三角形的重复计算
+## 3. Why naive generation is slow: a triangle of repeated calculation
 
-回到第 1 节那四行代码的第一行：`model(torch.tensor([ids]))`。每生成一个字，都把**整段**序列重新过一遍模型。提示词长 P，生成第 t 个字时要处理 P + t 个位置，生成 n 个字一共处理
+Go back to the four lines of code in Section 1, and look at `model(torch.tensor([ids]))`. For each new character, the code gives the **full** sequence to the model again. Let the prompt length be P. To generate character t, the model processes P + t positions. To generate n characters, it processes this number of positions in total:
 
 ```
-Σ (P + t) ≈ P·n + n²/2   个位置
+Σ (P + t) ≈ P·n + n²/2   positions
 ```
 
-画出来是一个三角形：第 1 步处理 P 个位置，第 2 步 P + 1 个……本章的提示词 `"ROMEO:\nI will "` 有 14 个字符，生成 512 个就要处理 137,984 个位置。
+In a plot, this is a triangle: step 1 processes P positions, step 2 processes P + 1 positions, and so on. The prompt of this chapter, `"ROMEO:\nI will "`, has 14 characters. To generate 512 characters, the model processes 137,984 positions.
 
-但仔细想一想：因果注意力里，位置 i 只看位置 ≤ i 的内容。后面来了新字，**过去位置的所有中间结果都不会变**。三角形里每一行，除了最后一个新位置，全是上一步算过的东西。
+But think about it. In causal attention, position i looks only at the positions ≤ i. When a new character arrives, **all intermediate results of the past positions stay the same**. In each row of the triangle, everything except the last new position was already calculated in the previous step.
 
-## 4. KV cache：把算过的 K、V 存起来
+## 4. KV cache: keep the K and V that you already calculated
 
-哪些中间结果值得存？看注意力（第 8 章）：新位置 t 要算
+Which intermediate results must we keep? Look at attention (Chapter 8). The new position t must calculate:
 
 ```
 out_t = softmax(q_t · [k_1, …, k_t]ᵀ / √d) · [v_1, …, v_t]
 ```
 
-它需要自己的 query `q_t`，以及**所有**位置的 key 和 value。过去位置的 `k_i`、`v_i` 不会变，那就每层存一份，这就是 **KV cache**。之后每一步只喂一个新 token：算出它自己的 q、k、v，把 k、v 追加到缓存末尾，再用 q 和缓存里全部的 K、V 做注意力。**Q 不用缓存**：`q_t` 只在第 t 步用一次。
+It needs its own query `q_t`, and the keys and values of **all** positions. The `k_i` and `v_i` of past positions do not change, so we keep one copy of them in each layer. This is the **KV cache**.
 
-极简实现只改了注意力里的两处（`01_tiny_model.py`）：
+After the first step, each step gives the model only one new token. The model calculates the q, k, v of this token and appends k and v to the end of the cache. Then it does attention between q and all K, V in the cache. **Q needs no cache**: the model uses `q_t` only once, in step t.
+
+The minimal implementation changes only two places in attention (`01_tiny_model.py`):
 
 ```python
-q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)  # 缓存的是已经旋转过的 K
+q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)  # the cache keeps K after the rotation
 if cache is not None:
-    k, v = cache.append(layer, k, v)  # 旧 K/V + 新 K/V（torch.cat）
-S = k.shape[2]  # 能看到的总长度 = 过去 + 现在
+    k, v = cache.append(layer, k, v)  # old K/V + new K/V (torch.cat)
+S = k.shape[2]  # total visible length = past + now
 ...
-# 因果掩码：新 token 在全局的位置是 S-T+i，只能看位置 ≤ 它自己的 key
+# Causal mask: the global position of new token i is S-T+i.
+# It can see only the keys at positions ≤ its own position.
 i = torch.arange(T)[:, None] + (S - T)
 j = torch.arange(S)[None, :]
 att = att.masked_fill(j > i, float("-inf")).softmax(-1)
 ```
 
-外加一个细节：RoPE 需要知道新 token 的**绝对位置**，所以 `TinyLM.forward` 用 `start = len(cache)` 取出对应位置的 cos/sin 表。生成循环变成（`03_kv_cache.py`）：
+There is one more detail. RoPE must know the **absolute position** of the new token. Thus `TinyLM.forward` uses `start = len(cache)` to take the cos/sin values of the correct positions. The generation loop becomes (`03_kv_cache.py`):
 
 ```python
 cache = tiny.KVCache(model.c.n_layers)
-logits = model(torch.tensor([prompt]), cache)[0, -1]      # prefill：整段提示词一次喂进去
+logits = model(torch.tensor([prompt]), cache)[0, -1]      # prefill: give the full prompt at once
 for i in range(n):
     nxt = samp.sample_next(logits, g=g, **kw)
-    logits = model(torch.tensor([[nxt]]), cache)[0, -1]  # decode：只喂 1 个新字
+    logits = model(torch.tensor([[nxt]]), cache)[0, -1]  # decode: give only 1 new character
 ```
 
-生成 512 个字，处理的位置从 137,984 个降到 525 个（14 + 511）。
+To generate 512 characters, the number of processed positions decreases from 137,984 to 525 (14 + 511).
 
-### 4.1 对拍：结果必须逐字相同
+### 4.1 Parity check: the result must be exactly the same
 
-缓存是纯粹的"少算重复的东西"，不应该改变任何结果。运行：
+The cache only removes repeated calculation. It must not change any result. Run:
 
 ```bash
 uv run python chapters/10-inference/code/03_kv_cache.py
 ```
 
 ```
-1. 对拍：缓存版和朴素版生成的 200 个字符是否完全一致
-  贪心                     一致：True   开头：'the son the such the shall the shall the'
-  采样 T=1.0 top-p=0.9     一致：True   开头：'thou more the prevenced can that\nhave wi'
-  同一位置的 logits 最大差异 4.3e-06（浮点舍入量级）
-  缓存大小 872448 字节 = 2 × 4 层 × 4 个 KV 头 × 32 × 213 个位置 × 4 字节 = 872448
+1. Parity check: do the cached and the naive versions generate the same 200 characters?
+  greedy                 same: True   start: 'the son the such the shall the shall the'
+  sample T=1.0 top-p=0.9 same: True   start: 'thou more the prevenced can that\nhave wi'
+  max logits difference at the same position: 4.3e-06 (the size of floating-point rounding)
+  cache size 872448 bytes = 2 × 4 layers × 4 KV heads × 32 × 213 positions × 4 bytes = 872448
 ```
 
-采样模式也一致，因为两边用同一个种子的随机数生成器，每一步看到的分布（在浮点误差内）相同。logits 差 4.3 × 10⁻⁶ 是因为两种算法里矩阵乘法的形状不同、累加顺序不同。
+The sampling mode also gives the same text. Both versions use a random number generator with the same seed, and at each step they see the same distribution (within the floating-point error). The logits differ by 4.3 × 10⁻⁶ for this reason: the matrix multiplications in the two methods have different shapes, so the additions occur in a different order.
 
-### 4.2 测速
+### 4.2 Speed
 
-同一份输出，快多少？（单线程 CPU，每项取两次中较快的一次，贪心）
+The output is the same. How much faster is it? (1 CPU thread, the faster of 2 runs for each item, greedy)
 
-| 新生成 | 朴素（秒） | KV cache（秒） | 加速 | 朴素共处理位置 | 缓存共处理位置 |
+| New characters | Naive (s) | KV cache (s) | Speedup | Positions processed (naive) | Positions processed (cache) |
 |---:|---:|---:|---:|---:|---:|
 | 64 | 0.33 | 0.16 | 2.1× | 2,912 | 77 |
 | 128 | 0.78 | 0.30 | 2.6× | 9,920 | 141 |
 | 256 | 2.55 | 0.58 | 4.4× | 36,224 | 269 |
 | 512 | 10.47 | 1.34 | 7.8× | 137,984 | 525 |
 
-序列越长，加速越大：朴素版的代价按 n² 增长，缓存版按 n 增长。加速比远小于"处理位置"之比（137,984 / 525 ≈ 263），因为小模型上每一步都有固定开销（Python 循环、小矩阵乘法调用），而且缓存版每步仍要让新 q 和全部历史 K 做注意力。计时受机器负载影响：视频里用的另一次运行是 1.9× / 2.7× / 4.4× / 9.8×。
+The longer the sequence, the larger the speedup. The cost of the naive version increases as n², and the cost of the cached version increases as n. The speedup is much smaller than the ratio of the processed positions (137,984 / 525 ≈ 263). There are two reasons. On a small model, each step has a fixed overhead (the Python loop and the calls of small matrix multiplications). Also, at each step, the cached version must still do attention between the new q and all past K.
 
-### 4.3 两个阶段：prefill 与 decode
+The timing depends on the load of the machine: another run, which the video uses, gave 1.9× / 2.7× / 4.4× / 9.8×.
 
-有了缓存，推理自然分成两段：
+### 4.3 Two phases: prefill and decode
 
-- **prefill**：把整段提示词一次喂进去，所有位置并行计算，顺便把 K、V 写进缓存；
-- **decode**：之后一次只算一个新 token。
+With a cache, inference has two phases:
 
-同样处理 256 个位置（`03_kv_cache.py` 第 3 部分）：
+- **prefill**: give the full prompt to the model at once. The model calculates all positions in parallel and writes their K and V into the cache.
+- **decode**: after that, calculate one new token at a time.
 
-```
-prefill 一次喂 256 个：  16.9 ms  →    15168 位置/秒
-decode  一次喂 1 个：  691.5 ms  →      370 位置/秒
-prefill 的吞吐是 decode 的 41 倍
-```
-
-（视频里用的另一次运行是 19.0 ms 对 585 ms，31 倍；具体倍数取决于机器，量级是几十倍。）decode 每一步只有一个 token 的计算量，却要把全部权重和整个 KV cache 读一遍，硬件大部分时间花在搬数据上，算力吃不饱。这就是推理服务要把很多用户的请求**拼成一批（batch）一起 decode** 的原因：读一遍权重，服务几十个请求。这也意味着 KV cache 要按用户数成倍增加。
-
-## 5. KV cache 的显存账
-
-缓存省了计算，却要占显存。每一层、每个位置都要存一份 K 和一份 V，每份是 `KV 头数 × head_dim` 个数：
+We process the same 256 positions in both phases (part 3 of `03_kv_cache.py`):
 
 ```
-KV cache 字节数 = 2 × 层数 × KV 头数 × head_dim × 序列长度 × 每个数的字节数（× batch）
+prefill, 256 at a time:   16.9 ms  →    15168 positions/s
+decode,  1 at a time:    691.5 ms  →      370 positions/s
+prefill throughput is 41× the decode throughput
 ```
 
-对应 `04_kv_memory.py`：
+(Another run, which the video uses, gave 19.0 ms vs 585 ms, 31×. The exact ratio depends on the machine, but it is always some tens of times.) Each decode step calculates only one token. But it must read all weights and the full KV cache. The hardware spends most of its time on moving data, and the compute units are not fully used.
+
+For this reason, inference services **put the requests of many users into one batch and decode them together**: one read of the weights serves tens of requests. This also means that the KV cache increases in proportion to the number of users.
+
+## 5. The memory ledger of the KV cache
+
+The cache saves calculation, but it uses GPU memory. Each layer must keep one K and one V for each position. Each of them has `KV heads × head_dim` numbers:
+
+```
+KV cache bytes = 2 × layers × KV heads × head_dim × sequence length × bytes per number (× batch)
+```
+
+This is the function in `04_kv_memory.py`:
 
 ```python
 def kv_bytes(layers, kv_heads, head_dim, seq_len, bytes_per=BF16, batch=1):
     return 2 * layers * kv_heads * head_dim * seq_len * bytes_per * batch
 ```
 
-代入主线模型（`configs/main/pretrain.toml`：28 层，16 个查询头，8 个 KV 头，head_dim 128，BF16）：
+Use the values of the main-line model (`configs/main/pretrain.toml`: 28 layers, 16 query heads, 8 KV heads, head_dim 128, BF16):
 
 ```bash
 uv run python chapters/10-inference/code/04_kv_memory.py
 ```
 
-| 方案 | KV 头 | 每 token | 4K 上下文 | 32K 上下文 |
+| Scheme | KV heads | Per token | 4K context | 32K context |
 |---|---:|---:|---:|---:|
-| MHA（不共享） | 16 | 224 KiB | 896 MiB | 7.00 GiB |
-| **GQA（主线）** | **8** | **112 KiB** | **448 MiB** | **3.50 GiB** |
-| MQA（全共享） | 1 | 14 KiB | 56 MiB | 0.44 GiB |
+| MHA (no sharing) | 16 | 224 KiB | 896 MiB | 7.00 GiB |
+| **GQA (main line)** | **8** | **112 KiB** | **448 MiB** | **3.50 GiB** |
+| MQA (all heads share) | 1 | 14 KiB | 56 MiB | 0.44 GiB |
 
-每个 token 是 2 × 28 × 8 × 128 × 2 = 114,688 字节 = 112 KiB。对照一下：主线模型 689.5M 参数，BF16 权重是 1.28 GiB。**一条 32K 上下文的对话，KV cache 就是权重的 2.7 倍**；同时服务 16 条这样的对话，缓存要 56 GiB（MHA 的话 112 GiB）。推理的瓶颈从"算得慢"变成了"存不下"。
+Each token needs 2 × 28 × 8 × 128 × 2 = 114,688 bytes = 112 KiB. For comparison, the main-line model has 689.5M parameters, and its BF16 weights use 1.28 GiB. **For one conversation with a 32K context, the KV cache is 2.7 times as large as the weights.** To serve 16 such conversations at the same time, the cache needs 56 GiB (112 GiB with MHA). The bottleneck of inference changes from "the calculation is too slow" to "the memory is too small".
 
-## 6. GQA：让几个查询头共享一组 K、V
+## 6. GQA: several query heads share one set of K and V
 
-公式里的层数、head_dim 都和模型能力直接相关，不好动；序列长度是用户要的，也不能动。剩下的是 **KV 头数**。
+The number of layers and head_dim in the formula have a direct effect on the capability of the model. Thus we do not want to change them. The user decides the sequence length, so we cannot change it either. The **number of KV heads** is the only term that is left.
 
-标准的多头注意力（**MHA，Multi-Head Attention**）里，每个查询头都有自己的一组 K、V。Shazeer 2019 年提出了一个极端做法：所有查询头**共用一组** K、V，叫**多查询注意力（MQA，Multi-Query Attention）**，KV cache 缩小到 1/头数，但质量会有损失。Ainslie 等人 2023 年提出了折中：把查询头分成若干组，每组共用一组 K、V，叫**分组查询注意力（GQA，Grouped-Query Attention）**。论文的实验结论是：GQA 的质量接近 MHA，速度接近 MQA。MHA 和 MQA 是它的两个端点（组数 = 头数，组数 = 1）。
+In standard **multi-head attention (MHA)**, each query head has its own K and V. In 2019, Shazeer proposed an extreme method: all query heads **share one set** of K and V. This is **multi-query attention (MQA)**. The KV cache becomes smaller by a factor equal to the number of heads, but the quality decreases.
 
-实现上改动很小：K、V 的投影变窄（输出 `n_kv_heads × head_dim`），做注意力前把每组 K、V 复制给组内的查询头：
+In 2023, Ainslie et al. proposed a compromise. Divide the query heads into groups, and let each group share one set of K and V. This is **grouped-query attention (GQA)**. The experiments in the paper found that GQA has a quality near MHA and a speed near MQA. MHA and MQA are the two end points of GQA (number of groups = number of heads, and number of groups = 1).
+
+The change in the implementation is small. The K and V projections become narrower (their output is `n_kv_heads × head_dim`). Before attention, the code copies each set of K and V to the query heads of its group:
 
 ```python
-self.wk = nn.Linear(c.dim, c.n_kv_heads * c.head_dim, bias=False)  # GQA：K/V 投影更窄
+self.wk = nn.Linear(c.dim, c.n_kv_heads * c.head_dim, bias=False)  # GQA: narrower K/V projections
 ...
 g = c.n_heads // c.n_kv_heads
-k, v = k.repeat_interleave(g, dim=1), v.repeat_interleave(g, dim=1)  # 每 g 个查询头共用一组
+k, v = k.repeat_interleave(g, dim=1), v.repeat_interleave(g, dim=1)  # g query heads share one set
 ```
 
-关键在于复制发生在**缓存之后**：缓存里存的是 `n_kv_heads` 份，而不是 `n_heads` 份。
+The important point is that the copy occurs **after the cache**. The cache keeps `n_kv_heads` copies, not `n_heads` copies.
 
-### 6.1 小实验：同样训练 600 步
+### 6.1 A small experiment: the same 600 training steps
 
-`05_gqa.py` 用同样 4 个查询头，只改 KV 头数，同样的种子、数据顺序、训练步数：
+`05_gqa.py` uses the same 4 query heads and changes only the number of KV heads. The seed, the data order, and the number of training steps are the same:
 
 ```bash
-uv run python chapters/10-inference/code/05_gqa.py   # 第一次要训 3 个模型，单线程约 5 分钟
+uv run python chapters/10-inference/code/05_gqa.py   # the first run trains 3 models, about 5 minutes on 1 thread
 ```
 
-| 方案 | KV 头 | 验证 loss | 注意力参数 | 总参数 | KV cache（生成 512 字后，FP32） |
+| Scheme | KV heads | Validation loss | Attention parameters | Total parameters | KV cache (after 512 generated characters, FP32) |
 |---|---:|---:|---:|---:|---:|
-| MHA | 4 | 1.838 | 262,144 | 861,440 | 2,150,400 B（1.00×） |
-| GQA | 2 | 1.867 | 196,608 | 795,904 | 1,075,200 B（0.50×） |
-| MQA | 1 | 1.860 | 163,840 | 763,136 | 537,600 B（0.25×） |
-| 对照：MHA 换随机种子 1 | 4 | 1.869 | | | |
+| MHA | 4 | 1.838 | 262,144 | 861,440 | 2,150,400 B (1.00×) |
+| GQA | 2 | 1.867 | 196,608 | 795,904 | 1,075,200 B (0.50×) |
+| MQA | 1 | 1.860 | 163,840 | 763,136 | 537,600 B (0.25×) |
+| Control: MHA with random seed 1 | 4 | 1.869 | | | |
 
-（2026-10 在另一台服务器上复跑的验证 loss：MHA 1.831、GQA 1.865、MQA 1.860，MHA 换种子 1.861。）
+(Validation loss from a re-run on a different server in 2026-10: MHA 1.831, GQA 1.865, MQA 1.860, and MHA with the other seed 1.861.)
 
-KV cache 严格按 KV 头数成比例缩小，参数也少了一点（K、V 投影变窄）。脚本也打印了生成 512 个字的时间，但在这个小模型、单线程 CPU 上它主要反映机器负载（两次运行分别是 1.79 / 1.50 / 1.21 秒和 3.62 / 4.09 / 4.89 秒，连大小顺序都反了），看不出 GQA 的速度差别。GQA 的速度收益来自 decode 时要读的 KV cache 变少，要在显存带宽成为瓶颈的 GPU 上、长上下文和大 batch 时才明显（第 21 章）。loss 呢？MHA 看起来最好，但只换一个随机种子，同样的 MHA 就差了 0.031，和三者之间的差距（最大 0.029）是同一个量级；另一台服务器上复跑，换种子差 0.030，三者之间最大差 0.034，还是同一个量级。**在这个规模上，GQA/MQA 的质量代价和随机种子带来的波动差不多大，分不出来**，不能从这张表得出"谁更好"的结论。要看清质量差距需要多个种子、更大的模型和更长的训练，这正是 GQA 论文做的事，第 21 章会在 CPU 上做更仔细的 MHA / GQA / MLA 对比。
+The KV cache decreases exactly in proportion to the number of KV heads. The number of parameters also decreases a little, because the K and V projections are narrower.
 
-### 6.2 公开模型怎么选
+The script also prints the time to generate 512 characters. But on this small model and 1 CPU thread, the time shows mostly the load of the machine. Two runs gave 1.79 / 1.50 / 1.21 seconds and 3.62 / 4.09 / 4.89 seconds: even the order is reversed. Thus we cannot see a speed difference from GQA here. The speed benefit of GQA comes from the smaller KV cache that decode must read. It becomes visible only on a GPU where memory bandwidth is the bottleneck, with long contexts and large batches (Chapter 21).
 
-`04_kv_memory.py` 第 2 部分，数字取自各模型 Hugging Face 仓库的 `config.json`（32K 上下文，BF16，batch 1，按公式把所有层都当作全注意力计算）：
+What about the loss? MHA seems to be the best. But a different random seed alone changes the loss of the same MHA by 0.031. This is the same order of magnitude as the differences between the three variants (at most 0.029).
 
-| 模型 | 层 | Q 头 | KV 头 | head_dim | 每 token | 32K 上下文 | 若不共享（MHA） | 省下 |
+In the re-run on a different server, the seed difference was 0.030, and the largest difference between the three variants was 0.034. Again, these numbers have the same order of magnitude. **At this scale, the quality cost of GQA/MQA is about as large as the variation from the random seed, so we cannot separate the two.** This table does not tell us which variant is better.
+
+To see the quality difference, we need several seeds, a larger model, and longer training. The GQA paper did this. Chapter 21 does a more careful comparison of MHA / GQA / MLA on a CPU.
+
+### 6.2 What public models choose
+
+This is part 2 of `04_kv_memory.py`. The numbers come from the `config.json` of each model in its Hugging Face repository (32K context, BF16, batch 1; the formula counts all layers as full attention):
+
+| Model | Layers | Q heads | KV heads | head_dim | Per token | 32K context | Without sharing (MHA) | Saving |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | Qwen3-0.6B | 28 | 16 | 8 | 128 | 112 KiB | 3.50 GiB | 7.00 GiB | 2× |
 | SmolLM3-3B | 36 | 16 | 4 | 128 | 72 KiB | 2.25 GiB | 9.00 GiB | 4× |
@@ -316,152 +343,172 @@ KV cache 严格按 KV 头数成比例缩小，参数也少了一点（K、V 投�
 | Gemma-3-27B | 62 | 32 | 16 | 128 | 496 KiB | 15.50 GiB | 31.00 GiB | 2× |
 | Llama-3.3-70B | 80 | 64 | 8 | 128 | 320 KiB | 10.00 GiB | 80.00 GiB | 8× |
 
-主线模型的 KV 配置和 Qwen3-0.6B 完全相同（28 层、8 个 KV 头、head_dim 128），所以每 token 的缓存也一样。几点说明：Mistral 7B 用了 4096 的滑动窗口、gpt-oss 一半层是 128 窗口的滑动注意力、Gemma 3 大部分层是 1024 窗口的局部注意力，它们实际的缓存比表里小——这是第 22 章的主题。Gemma 3 的 1B 版本更激进，直接用了 MQA（1 个 KV 头）。
+The KV configuration of the main-line model is the same as that of Qwen3-0.6B (28 layers, 8 KV heads, head_dim 128). Thus the cache per token is also the same.
 
-## 7. 小结
+Some notes follow. Mistral 7B uses a sliding window of 4096. In gpt-oss, half of the layers use sliding attention with a window of 128. In Gemma 3, most layers use local attention with a window of 1024. For these models, the real cache is smaller than the table shows. This is the topic of Chapter 22. The 1B version of Gemma 3 goes further: it uses MQA (1 KV head).
 
-- **自回归生成**：算分布 → 挑一个 token → 接到末尾 → 重复。
-- **解码策略**：贪心会原地打转；温度调分布的尖锐程度；top-k 固定留 k 个，top-p 按累计概率留、随模型把握自动伸缩。开源模型默认多是温度 0.6–0.7 + top-p 0.8–0.95。
-- **KV cache**：过去位置的 K、V 不会变，存起来；每步只算新 token。输出逐字不变，代价从 O(n²) 降到 O(n)。
-- **prefill / decode**：prefill 并行、吃得饱；decode 一次一个、吃不饱，所以服务要批处理。
-- **显存账**：`2 × 层数 × KV 头数 × head_dim × 序列长度 × 字节数`。主线模型每 token 112 KiB，32K 上下文 3.5 GiB，是权重的 2.7 倍。
-- **GQA**：多个查询头共享一组 K、V，缓存按比例缩小；MHA、MQA 是它的两个端点。
+## 7. Summary
+
+- **Autoregressive generation**: calculate the distribution → pick one token → append it to the end → do it again.
+- **Decoding strategies**: greedy decoding goes around in a loop. Temperature controls how sharp the distribution is. top-k always keeps k tokens. top-p keeps tokens by cumulative probability, so the number changes automatically with the confidence of the model. Most open models use a default temperature of 0.6–0.7 + top-p 0.8–0.95.
+- **KV cache**: the K and V of past positions do not change, so keep them. Each step calculates only the new token. The output stays exactly the same, and the cost decreases from O(n²) to O(n).
+- **prefill / decode**: prefill works in parallel and uses the hardware fully. Decode does one token at a time and does not use the hardware fully, so a service must use batches.
+- **Memory ledger**: `2 × layers × KV heads × head_dim × sequence length × bytes`. The main-line model needs 112 KiB per token and 3.5 GiB for a 32K context. This is 2.7 times the size of the weights.
+- **GQA**: several query heads share one set of K and V, and the cache becomes smaller in proportion. MHA and MQA are its two end points.
 
 ---
 
-## GPU 实测（单张 RTX 3090）
+## GPU measurements (one RTX 3090)
 
-> 上面正文里的数字都来自 CPU 运行。本节换到一张 NVIDIA GeForce RTX 3090（24 GB 显存，Ampere 架构；规格表：BF16 张量核稠密峰值约 71 TFLOPS，FP32 约 35.6 TFLOPS，显存带宽约 936 GB/s）上实测，环境：PyTorch 2.11.0+cu128、CUDA 12.8，2026 年 10 月。这张卡的功耗上限被服务器设成了 240 W（出厂默认 350 W），持续满载时会降频，所以算力、带宽的绝对值比满功耗的 3090 偏低，看相对关系更可靠。没有 GPU 可以跳过本节。
+> All numbers in the main text above come from CPU runs. In this section, we measure on one NVIDIA GeForce RTX 3090 (24 GB of GPU memory, Ampere architecture). Its spec sheet gives a dense BF16 tensor-core peak of about 71 TFLOPS, FP32 of about 35.6 TFLOPS, and a memory bandwidth of about 936 GB/s. Environment: PyTorch 2.11.0+cu128, CUDA 12.8, October 2026.
+>
+> The server sets the power limit of this card to 240 W (the factory default is 350 W). Under a continuous full load, the card lowers its clock. Thus the absolute compute and bandwidth are lower than on a 3090 at full power, and the relative values are more reliable. If you do not have a GPU, skip this section.
 
-运行：
+Run:
 
 ```bash
 uv run python chapters/10-inference/code/06_gpu_prefill_decode.py
 ```
 
-模型还是 `01_tiny_model.py` 里的 `TinyLM`（代码原样加载），只把尺寸换成 Llama 3 8B 一层的形状：d = 4096、32 个查询头、8 个 KV 头、FFN 14336，叠 4 层，共 0.87B 参数，BF16 权重 1.63 GiB，随机初始化（只测速度）。按规格带宽，把这些权重从显存读一遍至少要 1.86 ms。计时分两种："eager"就是平常那样一个算子一个算子地调用；"CUDA graph"先把一次前向的全部 kernel 录下来，再整张图一次性重放，不经过 Python，量到的是 GPU 自己干活的时间。
+The model is still `TinyLM` from `01_tiny_model.py` (the script loads the code without changes). Only the size changes to the shape of one layer of Llama 3 8B: d = 4096, 32 query heads, 8 KV heads, FFN 14336. The model has 4 such layers: 0.87B parameters in total, 1.63 GiB of BF16 weights, with random initialization (we measure only the speed). At the spec-sheet bandwidth, one read of these weights from GPU memory takes at least 1.86 ms.
 
-先用 `03_kv_cache.py` 的两个生成函数，贪心生成，看平均每个 token 的耗时（eager，3 次取中位数）：
+There are two kinds of timing. "eager" is the usual call, one operator at a time. "CUDA graph" first records all kernels of one forward pass, and then replays the full graph at once, without Python. It measures only the time of the GPU work.
 
-| 新生成 | 朴素（ms/token） | KV cache（ms/token） | 加速 |
+First, we use the two generation functions of `03_kv_cache.py` with greedy generation, and look at the mean time per token (eager, median of 3 runs):
+
+| New tokens | Naive (ms/token) | KV cache (ms/token) | Speedup |
 |---:|---:|---:|---:|
 | 64 | 6.44 | 5.77 | 1.1× |
 | 256 | 9.21 | 5.14 | 1.8× |
 | 512 | 13.89 | 5.21 | 2.7× |
 
-再看一次前向喂 T 个 token（就是 prefill T 个 token）要多久。后三列按 CUDA graph 的时间算，括号里是占规格峰值的比例：
+Next, we measure the time of one forward pass with T tokens (this is a prefill of T tokens). The last three columns use the CUDA graph time. The values in parentheses are the fraction of the spec-sheet peak:
 
-| T | eager（ms） | CUDA graph（ms） | token/s | 算力 TFLOPS | 读权重 GB/s |
+| T | eager (ms) | CUDA graph (ms) | token/s | Compute TFLOPS | Weight read GB/s |
 |---:|---:|---:|---:|---:|---:|
-| 1 | 4.70 | 2.65 | 378 | 0.7（1%） | 659（70%） |
-| 8 | 5.17 | 2.69 | 2,978 | 5.2（7%） | 650（69%） |
-| 32 | 4.69 | 3.19 | 10,019 | 17.5（25%） | 547（58%） |
-| 128 | 6.78 | 5.95 | 21,507 | 37.6（53%） | 293（31%） |
-| 512 | 20.30 | 20.39 | 25,106 | 44.2（62%） | 86（9%） |
-| 2048 | 88.13 | 87.99 | 23,275 | 42.2（59%） | 20（2%） |
+| 1 | 4.70 | 2.65 | 378 | 0.7 (1%) | 659 (70%) |
+| 8 | 5.17 | 2.69 | 2,978 | 5.2 (7%) | 650 (69%) |
+| 32 | 4.69 | 3.19 | 10,019 | 17.5 (25%) | 547 (58%) |
+| 128 | 6.78 | 5.95 | 21,507 | 37.6 (53%) | 293 (31%) |
+| 512 | 20.30 | 20.39 | 25,106 | 44.2 (62%) | 86 (9%) |
+| 2048 | 88.13 | 87.99 | 23,275 | 42.2 (59%) | 20 (2%) |
 
-最后是 decode：每条序列每步只喂 1 个 token，但把 batch 从 1 加到 64（CUDA graph；"读显存"按"全部权重 + 全部 KV cache 各读一遍"算）：
+Last is decode. Each sequence gets only 1 token per step, and the batch increases from 1 to 64 (CUDA graph; "memory read" counts one read of all weights + one read of the full KV cache):
 
-| 上下文 | batch | 每步（ms） | token/s | KV cache | 读显存 GB/s |
+| Context | batch | Per step (ms) | token/s | KV cache | Memory read GB/s |
 |---:|---:|---:|---:|---:|---:|
-| 64 | 1 | 2.77 | 360 | 1 MiB | 630（67%） |
-| 64 | 8 | 3.13 | 2,553 | 8 MiB | 560（60%） |
-| 64 | 32 | 4.36 | 7,333 | 32 MiB | 408（44%） |
-| 64 | 64 | 6.21 | 10,311 | 64 MiB | 292（31%） |
-| 512 | 1 | 2.91 | 344 | 8 MiB | 603（64%） |
-| 512 | 8 | 4.58 | 1,747 | 64 MiB | 396（42%） |
-| 512 | 32 | 10.04 | 3,188 | 256 MiB | 201（21%） |
-| 512 | 64 | 17.12 | 3,737 | 512 MiB | 133（14%） |
+| 64 | 1 | 2.77 | 360 | 1 MiB | 630 (67%) |
+| 64 | 8 | 3.13 | 2,553 | 8 MiB | 560 (60%) |
+| 64 | 32 | 4.36 | 7,333 | 32 MiB | 408 (44%) |
+| 64 | 64 | 6.21 | 10,311 | 64 MiB | 292 (31%) |
+| 512 | 1 | 2.91 | 344 | 8 MiB | 603 (64%) |
+| 512 | 8 | 4.58 | 1,747 | 64 MiB | 396 (42%) |
+| 512 | 32 | 10.04 | 3,188 | 256 MiB | 201 (21%) |
+| 512 | 64 | 17.12 | 3,737 | 512 MiB | 133 (14%) |
 
-第二张表就是 4.3 节"decode 算力吃不饱"的实物：T 从 1 涨到 32，一次前向几乎一样快（2.65 → 3.19 ms），这段时间 GPU 主要在把 1.63 GiB 权重从显存搬出来（550–660 GB/s），算力只用了峰值的 1%–25%，这是 decode 的处境；T 过了一百左右，耗时才跟着 T 线性涨，token/s 停在 2.3–2.5 万，算力用到峰值的六成左右，这是 prefill 的处境。拐点落在 32 和 128 之间，和脚本打印的"峰值算力 ÷ 带宽 ≈ 76 FLOP/字节"对得上：一次喂 T 个 token，每个 2 字节的参数要做 2T 次浮点运算，算术强度大约就是 T。第三张表是同一件事的另一面：上下文 64 时，batch 从 1 加到 64，每步只从 2.77 ms 涨到 6.21 ms，吞吐涨了约 29 倍，读一遍权重服务了 64 条序列；可上下文到 512、batch 64 时 KV cache 有 512 MiB，每步都要整块读一遍（极简版的 `torch.cat` 和 `repeat_interleave` 还要再复制），吞吐只剩 3,737，缓存开始和权重抢带宽，这就是第 5 节那笔显存账、也是第 21 章的主题。第一张表里 KV cache 只快了 1.1–2.7 倍，没有 4.2 节单线程 CPU 上那么明显，原因也在第二张表：GPU 上重算几十个 token 和算 1 个 token 几乎一样贵，序列要够长，朴素版的浪费才显出来。出乎意料的是 eager 和 CUDA graph 的差距：T = 1 时 eager 要 4.70 ms，重放只要 2.65 ms，将近一半时间花在 Python 逐个发射 kernel 上（极简模型每层都有几十个小算子：RMSNorm、RoPE、拼缓存、复制 K/V……），vLLM 这类推理引擎在 decode 阶段录 CUDA graph，就是为了省掉这一块。
+The second table shows on real hardware what Section 4.3 said: "decode does not use the compute fully". When T increases from 1 to 32, one forward pass takes almost the same time (2.65 → 3.19 ms). During this time, the GPU mainly moves the 1.63 GiB of weights out of GPU memory (550–660 GB/s). It uses only 1%–25% of the peak compute. This is the situation of decode.
 
-## 从极简到生产级
+Only when T passes about one hundred does the time increase linearly with T. Then token/s stays at 23,000–25,000, and the compute reaches about 60% of the peak. This is the situation of prefill.
 
-本章的三件事在主线模型里的对应：
+The turning point is between 32 and 128. This agrees with the value that the script prints: "peak compute ÷ bandwidth ≈ 76 FLOP/byte". When we give T tokens at once, each parameter of 2 bytes does 2T floating-point operations. Thus the arithmetic intensity (floating-point operations per byte read) is about T.
 
-| 极简版（`code/`） | 生产级（`zero/`） | 多做了什么、为什么 |
+The third table shows the other side of the same effect. At context 64, the batch increases from 1 to 64, but each step increases only from 2.77 ms to 6.21 ms. The throughput increases by about 29 times: one read of the weights serves 64 sequences.
+
+But at context 512 and batch 64, the KV cache is 512 MiB, and each step must read all of it. (The `torch.cat` and `repeat_interleave` of the minimal code also copy it again.) The throughput is only 3,737. The cache starts to compete with the weights for bandwidth. This is the memory ledger of Section 5, and it is also the topic of Chapter 21.
+
+In the first table, the KV cache is only 1.1–2.7 times faster, much less than on 1 CPU thread in Section 4.2. The second table also gives the reason: on a GPU, to calculate some tens of tokens again costs almost the same as to calculate 1 token. The waste of the naive version becomes visible only when the sequence is long enough.
+
+The difference between eager and CUDA graph was a surprise. At T = 1, eager needs 4.70 ms, and the replay needs only 2.65 ms. Almost half of the time goes to Python, which launches the kernels one at a time. (Each layer of the minimal model has tens of small operators: RMSNorm, RoPE, cache concatenation, K/V copies, and more.) Inference engines such as vLLM record CUDA graphs in the decode phase to remove this cost.
+
+## From minimal code to production code
+
+The table shows where the three topics of this chapter are in the main-line model:
+
+| Minimal code (`code/`) | Production code (`zero/`) | What it adds, and why |
 |---|---|---|
-| `02_sampling.py` 的 `sample_next(logits, temperature, top_k, top_p)`，一次处理一个序列 | `zero/generate.py` 的 `sample_next(logits, temperature, top_p, generator)` | 输入是 `(B, V)`，一次处理一批序列；在 float32 上做 softmax（BF16 推理时避免精度问题）；top-p 的"至少留一个"写法相同。zero 目前没有 top-k（第 20 章本地 demo 需要时再加） |
-| 手写的 `generate_cached` 循环 | `zero/generate.py` 的 `generate(...)` 和 `generate_stream(...)` | 支持 batch、`eos_id` 提前停止（已结束的序列补 eos）、`seed` 可复现；`generate_stream` 边生成边产出，命令行里能一个字一个字打印；`use_cache=False` 保留朴素路径专门用来对拍 |
-| `KVCache.append`：每步 `torch.cat` 拼接 | `zero/kv_cache.py` 的 `KVCache`：按 `(层, batch, n_kv_heads, max_seq_len, head_dim)` **一次性预分配**，`update(layer, start_pos, k, v)` 只往里写；`nbytes()` 报告占用 | `torch.cat` 每一步都要重新分配、拷贝整块缓存，长序列上很浪费；预分配之后写入是 O(1) 的，显存占用也一开始就确定（`04_kv_memory.py` 第 3 部分验证了 `nbytes()` 与公式一致：主线配置 1024 个位置 117,440,512 字节） |
-| `len(cache)` 决定新 token 的位置 | `Transformer.forward(tokens, kv_cache, start_pos)` 显式传入位置 | 支持**分块 prefill**：有历史的同时一次喂多个 token，`zero/model.py` 的 `Attention.forward` 为此单独构造了掩码（`j <= past + i`）；这对第 15 章的长上下文很重要 |
-| `repeat_interleave` 把 K/V 复制 g 份再做注意力 | `zero/model.py` 的 `Attention`：`F.scaled_dot_product_attention(q, k, v, ..., enable_gqa=self.n_kv_heads != self.n_heads)` | SDPA 在内部广播 K/V 头，不必真的复制出 `n_heads` 份张量；同时能用上 FlashAttention 等融合 kernel（第 14 章） |
-| 手写 `q @ kᵀ`、掩码、softmax | 同上，SDPA | 同一个数学，融合 kernel 更快、更省显存 |
-| 无 | QK-Norm 之后、RoPE 旋转之后再写入缓存；YaRN 长上下文缩放 | 读出来的 K 可以直接用；位置相关的计算都在写入前完成 |
+| `sample_next(logits, temperature, top_k, top_p)` in `02_sampling.py`, one sequence at a time | `sample_next(logits, temperature, top_p, generator)` in `zero/generate.py` | The input is `(B, V)`, so it processes a batch of sequences at once. It does softmax in float32 (this prevents precision problems in BF16 inference). The "keep at least one token" method of top-p is the same. zero has no top-k now (we add it when the local demo in Chapter 20 needs it). |
+| The hand-written `generate_cached` loop | `generate(...)` and `generate_stream(...)` in `zero/generate.py` | It supports batches, an early stop with `eos_id` (it pads the finished sequences with eos), and reproducible results with `seed`. `generate_stream` yields tokens while it generates, so the command line can print one character at a time. `use_cache=False` keeps the naive path only for parity checks. |
+| `KVCache.append`: `torch.cat` at each step | `KVCache` in `zero/kv_cache.py`: it **allocates the full cache once in advance** with the shape `(layer, batch, n_kv_heads, max_seq_len, head_dim)`. `update(layer, start_pos, k, v)` only writes into it. `nbytes()` reports the memory use | At each step, `torch.cat` allocates and copies the full cache again, which wastes much time on long sequences. With an allocation in advance, a write is O(1), and the memory use is known from the start. (Part 3 of `04_kv_memory.py` makes sure that `nbytes()` agrees with the formula: 117,440,512 bytes for 1024 positions in the main-line config.) |
+| `len(cache)` sets the position of the new token | `Transformer.forward(tokens, kv_cache, start_pos)` gets the position explicitly | It supports **chunked prefill**: it can take several tokens at once when the cache already has history. For this case, `Attention.forward` in `zero/model.py` makes its own mask (`j <= past + i`). This is important for the long context in Chapter 15. |
+| `repeat_interleave` copies K/V g times before attention | `Attention` in `zero/model.py`: `F.scaled_dot_product_attention(q, k, v, ..., enable_gqa=self.n_kv_heads != self.n_heads)` | SDPA broadcasts the K/V heads internally, so it does not really make `n_heads` copies of the tensors. It can also use fused kernels such as FlashAttention (Chapter 14). |
+| Hand-written `q @ kᵀ`, mask, softmax | Same as above, SDPA | The same math. The fused kernel is faster and uses less memory. |
+| None | It writes K into the cache after QK-Norm and after the RoPE rotation; YaRN long-context scaling | The K that it reads from the cache is ready to use. All position-dependent calculation occurs before the write. |
 
-**对拍**：`tests/test_kv_cache.py`（`uv run pytest tests/test_kv_cache.py`，本机 7 项全部通过），保证：
+**Parity check**: `tests/test_kv_cache.py` (`uv run pytest tests/test_kv_cache.py`; all 7 tests pass on this machine) makes sure of these points:
 
-- 贪心生成：缓存版与 `use_cache=False` 的朴素版 40 个 token 完全一致；
-- batch 为 3、MQA（`n_kv_heads=1`）、开启 YaRN 时也完全一致；
-- 带温度和 top-p 的**采样**、固定种子时，缓存版、朴素版、再跑一次缓存版三者一致；
-- 分块 prefill（20 + 1 + 29 个 token 分三次喂）的 logits 与一次性前向在 1e-5 内一致；
-- `eos_id` 能正确截断；`sample_next` 在 top-p 很小时只剩最大的 token；`KVCache.nbytes()` 等于 2 × 层 × batch × KV 头 × 长度 × head_dim × 4。
+- Greedy generation: the cached version and the naive version with `use_cache=False` give exactly the same 40 tokens.
+- They are also exactly the same with batch 3, with MQA (`n_kv_heads=1`), and with YaRN.
+- **Sampling** with temperature and top-p and a fixed seed: the cached version, the naive version, and a second run of the cached version give the same tokens.
+- Chunked prefill (20 + 1 + 29 tokens in three calls) gives the same logits as one full forward pass, within 1e-5.
+- `eos_id` cuts the output correctly. `sample_next` keeps only the largest token when top-p is very small. `KVCache.nbytes()` equals 2 × layers × batch × KV heads × length × head_dim × 4.
 
-**真正上线服务**不会用这样的循环。行业标准是 **vLLM**：它的 **PagedAttention** 把 KV cache 切成固定大小的"页"，像操作系统管理虚拟内存那样按需分配、在请求之间共享，避免为每个请求预留最大长度造成的浪费；再配合**连续批处理（continuous batching）**——一个请求生成完立刻换下一个请求进来，而不是等整批都结束——把 GPU 喂饱。第 20 章发布主线模型时会用到它，这里不展开。
+**A real production service** does not use a loop like this. The industry standard is **vLLM**. Its **PagedAttention** cuts the KV cache into "pages" of a fixed size. It allocates the pages when they are necessary and shares them between requests, as an operating system manages virtual memory. This prevents the waste that occurs when each request reserves memory for the maximum length.
+
+vLLM also uses **continuous batching**: when one request finishes, the next request starts immediately, and the service does not wait for the full batch to finish. Together, these methods keep the GPU busy. Chapter 20 uses vLLM when we release the main-line model. We do not discuss it further here.
 
 ---
 
-## 采用方与来源
+## Adopters and sources
 
-| 技术 | 采用方（主力版本） | 来源 |
+| Technique | Adopters (main versions) | Sources |
 |---|---|---|
-| KV cache | 所有自回归 Transformer 推理的标准做法：Hugging Face transformers（`use_cache`，各模型 `config.json` 里 `"use_cache": true`）、vLLM、llama.cpp | 行业标准（GOAL.md 2.1 的 B 类）；vLLM 论文 |
-| 温度 + top-p（nucleus）采样 | Qwen3（0.6 / 0.95 / top-k 20）、Qwen2.5-Instruct（0.7 / 0.8 / top-k 20）、Llama 3.1 Instruct（0.6 / 0.9）、SmolLM3（0.6 / 0.95）、Gemma 3 it（top-p 0.95 / top-k 64） | 各模型 `generation_config.json`（2026-09 读取）；Holtzman 等 2019 |
-| GQA | Llama 2（34B、70B）与 Llama 3 全系列（8 个 KV 头）；Qwen2 / Qwen2.5 / Qwen3；Mistral 7B；Gemma 3（27B：32 Q / 16 KV）；gpt-oss（64 Q / 8 KV）；SmolLM3（16 Q / 4 KV） | 技术报告：Llama 2、Llama 3、Qwen2、Qwen3、Mistral 7B、Gemma 3；各模型 `config.json` 的 `num_key_value_heads` |
-| MQA | Gemma 3 1B（`num_key_value_heads: 1`）；作为 GQA 的端点讲 | `google/gemma-3-1b-pt` 的 `config.json`；Shazeer 2019 |
-| PagedAttention / 连续批处理 | vLLM（行业标准推理引擎） | Kwon 等 2023；Orca（Yu 等 2022） |
+| KV cache | The standard method of all autoregressive Transformer inference: Hugging Face transformers (`use_cache`; `"use_cache": true` in the `config.json` of each model), vLLM, llama.cpp | Industry standard (class B in GOAL.md 2.1); the vLLM paper |
+| Temperature + top-p (nucleus) sampling | Qwen3 (0.6 / 0.95 / top-k 20), Qwen2.5-Instruct (0.7 / 0.8 / top-k 20), Llama 3.1 Instruct (0.6 / 0.9), SmolLM3 (0.6 / 0.95), Gemma 3 it (top-p 0.95 / top-k 64) | The `generation_config.json` of each model (read in 2026-09); Holtzman et al. 2019 |
+| GQA | Llama 2 (34B, 70B) and all Llama 3 models (8 KV heads); Qwen2 / Qwen2.5 / Qwen3; Mistral 7B; Gemma 3 (27B: 32 Q / 16 KV); gpt-oss (64 Q / 8 KV); SmolLM3 (16 Q / 4 KV) | Technical reports: Llama 2, Llama 3, Qwen2, Qwen3, Mistral 7B, Gemma 3; `num_key_value_heads` in the `config.json` of each model |
+| MQA | Gemma 3 1B (`num_key_value_heads: 1`); this chapter discusses it as an end point of GQA | The `config.json` of `google/gemma-3-1b-pt`; Shazeer 2019 |
+| PagedAttention / continuous batching | vLLM (the industry-standard inference engine) | Kwon et al. 2023; Orca (Yu et al. 2022) |
 
-说明：Llama 官方仓库需要申请权限，Llama-3.1-8B、Llama-3.1-8B-Instruct 和 Llama-3.3-70B 的 `config.json` / `generation_config.json` 读自 unsloth 的镜像仓库（`unsloth/Meta-Llama-3.1-8B` 等，其中 `_name_or_path` 指向 meta-llama 官方仓库），与 Llama 3 论文表 3 的"8 个 KV 头"一致；Llama 2 70B 的配置未能直接读取，采用 Llama 2 论文的说法（34B、70B 用 GQA），**config 数字待核实**。
-
----
-
-## 引导问题
-
-带着这些问题去问 Claude Code，直到你能用自己的话讲清楚：
-
-1. 温度 T 很大时分布趋向均匀，T → 0 时趋向 argmax。用 softmax 的公式解释为什么；如果 logits 里有两个完全相等的最大值，T → 0 时会怎样？
-2. 为什么 KV cache 只缓存 K 和 V，不缓存 Q，也不缓存注意力的输出或 FFN 的中间结果？如果模型用的是双向注意力（比如 BERT），KV cache 还成立吗？
-3. 缓存里的 K 是做过 RoPE 旋转之后的。如果先缓存旋转之前的 K，每步读出来再旋转，结果会一样吗？哪种更划算？
-4. decode 阶段"算力吃不饱"具体是什么意思？试着让 Claude Code 帮你估算：主线模型 decode 一个 token 要读多少字节的权重和 KV cache、做多少次乘加，比值是多少？（提示：搜索"算术强度"（arithmetic intensity）和"roofline"。）
-5. 本章小实验里 MHA 和 GQA 的 loss 差距，和随机种子带来的差距是同一个量级。如果要认真比较，你会怎么设计实验？需要几个种子、多大的模型、怎么报告误差？
-6. GQA 的论文里，GQA 模型是从已有的 MHA checkpoint"上训练"（uptraining）来的：把一组内几个头的 K、V 投影取平均。为什么是取平均？还有别的初始化办法吗？
-
-## 动手任务
-
-每个任务都要真的运行代码、看到结果。
-
-**任务 1（基础）**：在 `02_sampling.py` 里找一个你自己的上下文，打印 top-p = 0.5、0.9、0.99 分别留下多少个字符；再把温度改成 0.7，同样的 top-p 留下的个数怎么变？解释为什么温度和 top-p 会互相影响。
-
-**任务 2（核心）**：把 `01_tiny_model.py` 的 `KVCache` 改成**预分配**版本：构造时传入 `max_len`，一次性分配 `(n_layers, B, n_kv_heads, max_len, head_dim)` 的张量，`append` 只写入 `[start:start+T]`。用 `03_kv_cache.py` 验证输出仍然逐字一致，再比较生成 512 个字的时间。和 `zero/kv_cache.py` 对照你的写法。
-
-**任务 3（挑战）**：给 `03_kv_cache.py` 加上 batch 支持：一次生成 8 条不同提示词的续写（提示词先补齐到同样长度，或者全部用同一个提示词、不同种子）。测一下 batch = 1、4、8 时每秒生成的总 token 数，验证第 4.3 节"批处理能提高 decode 吞吐"的说法；再用 `04_kv_memory.py` 的公式算出每种 batch 下的缓存大小。
+Notes: the official Llama repositories require an access request. Thus we read the `config.json` / `generation_config.json` of Llama-3.1-8B, Llama-3.1-8B-Instruct, and Llama-3.3-70B from the unsloth mirror repositories (`unsloth/Meta-Llama-3.1-8B` and others; their `_name_or_path` points to the official meta-llama repositories). These values agree with the "8 KV heads" in Table 3 of the Llama 3 paper. We could not read the config of Llama 2 70B directly. Thus we use the statement of the Llama 2 paper (34B and 70B use GQA). **The config numbers are to be verified.**
 
 ---
 
-## 想深入：CS336
+## Guided questions
 
-本章对应斯坦福 CS336（Spring 2026）<https://cs336.stanford.edu/>：
+Ask Claude Code these questions. Continue until you can explain the answers in your own words:
 
-- **第 10 讲：推理**。从资源核算的角度讲推理的开销从哪里来（prefill 与 decode、KV cache 的显存与内存带宽），以及让推理更快更省的各类办法（讲义与录像见课程页）。本章只讲了其中最基础的部分，第 20、21、25 章还会回到这一讲。
-- **作业 1（Basics）的解码部分**：在自己训练的 Transformer 上实现带温度和 top-p 的文本生成，和本章的 `02_sampling.py` 是同一件事。作业仓库：<https://github.com/stanford-cs336/assignment1-basics>
+1. When the temperature T is very large, the distribution becomes almost uniform. When T → 0, it becomes argmax. Use the softmax formula to explain why. If the logits have two equal maximum values, what happens when T → 0?
+2. Why does the KV cache keep only K and V? Why does it not keep Q, the attention output, or the intermediate results of the FFN? If the model uses bidirectional attention (for example, BERT), does the KV cache still work?
+3. The cache keeps K after the RoPE rotation. Suppose that we keep K before the rotation and rotate it each time that we read it. Is the result the same? Which method costs less?
+4. What exactly does "decode does not use the compute fully" mean? Ask Claude Code to help you estimate it. To decode one token with the main-line model, how many bytes of weights and KV cache must the hardware read? How many multiply-add operations does it do? What is the ratio? (Hint: search for "arithmetic intensity" and "roofline".)
+5. In the small experiment of this chapter, the loss difference between MHA and GQA has the same order of magnitude as the difference from the random seed. For a serious comparison, how do you design the experiment? How many seeds and how large a model do you need? How do you report the error?
+6. In the GQA paper, the authors made the GQA models from existing MHA checkpoints with "uptraining": they averaged the K and V projections of the heads in a group. Why the average? Are there other initialization methods?
+
+## Hands-on tasks
+
+For each task, run the code and look at the result.
+
+**Task 1 (basic)**: In `02_sampling.py`, choose a context of your own. Print the number of characters that top-p = 0.5, 0.9, and 0.99 keep. Then change the temperature to 0.7. For the same top-p, how does the number of kept characters change? Explain why temperature and top-p affect each other.
+
+**Task 2 (core)**: Change the `KVCache` in `01_tiny_model.py` to a **pre-allocated** version. The constructor gets `max_len` and allocates one tensor with the shape `(n_layers, B, n_kv_heads, max_len, head_dim)`. `append` only writes into `[start:start+T]`. Use `03_kv_cache.py` to make sure that the output is still exactly the same. Then compare the time to generate 512 characters. Compare your code with `zero/kv_cache.py`.
+
+**Task 3 (challenge)**: Add batch support to `03_kv_cache.py`. Generate continuations of 8 different prompts at once (pad the prompts to the same length first, or use the same prompt with different seeds). Measure the total number of generated tokens per second for batch = 1, 4, and 8. Check the statement in Section 4.3 that "batching increases the decode throughput". Then use the formula in `04_kv_memory.py` to calculate the cache size for each batch.
 
 ---
 
-## 本章参考文献
+## Go deeper: CS336
 
-- Holtzman, Buys, Du, Forbes, Choi. *The Curious Case of Neural Text Degeneration*（nucleus / top-p 采样），2019：<https://arxiv.org/abs/1904.09751>
-- Fan, Lewis, Dauphin. *Hierarchical Neural Story Generation*（top-k 采样），2018：<https://arxiv.org/abs/1805.04833>
-- Shazeer. *Fast Transformer Decoding: One Write-Head is All You Need*（MQA），2019：<https://arxiv.org/abs/1911.02150>
-- Ainslie et al. *GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints*，2023：<https://arxiv.org/abs/2305.13245>
-- Kwon et al. *Efficient Memory Management for Large Language Model Serving with PagedAttention*（vLLM），2023：<https://arxiv.org/abs/2309.06180>
-- Yu et al. *Orca: A Distributed Serving System for Transformer-Based Generative Models*（迭代级调度 / 连续批处理），OSDI 2022：<https://www.usenix.org/conference/osdi22/presentation/yu>
-- Touvron et al. *Llama 2: Open Foundation and Fine-Tuned Chat Models*，2023：<https://arxiv.org/abs/2307.09288>
-- Llama Team. *The Llama 3 Herd of Models*，2024：<https://arxiv.org/abs/2407.21783>
-- Qwen Team. *Qwen2 Technical Report*，2024：<https://arxiv.org/abs/2407.10671>；*Qwen3 Technical Report*，2025：<https://arxiv.org/abs/2505.09388>
-- Jiang et al. *Mistral 7B*，2023：<https://arxiv.org/abs/2310.06825>
-- Gemma Team. *Gemma 3 Technical Report*，2025：<https://arxiv.org/abs/2503.19786>
-- 模型配置（2026-09 读取）：[Qwen3-0.6B](https://huggingface.co/Qwen/Qwen3-0.6B/blob/main/config.json)、[Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B/blob/main/config.json)（[generation_config](https://huggingface.co/Qwen/Qwen3-8B/blob/main/generation_config.json)）、[Qwen2.5-7B](https://huggingface.co/Qwen/Qwen2.5-7B/blob/main/config.json)、[Qwen2.5-7B-Instruct generation_config](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct/blob/main/generation_config.json)、[Mistral-7B-v0.1](https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json)、[gemma-3-1b-pt](https://huggingface.co/google/gemma-3-1b-pt/blob/main/config.json)、[gemma-3-27b-pt](https://huggingface.co/google/gemma-3-27b-pt/blob/main/config.json)、[gemma-3-27b-it generation_config](https://huggingface.co/google/gemma-3-27b-it/blob/main/generation_config.json)、[gpt-oss-20b](https://huggingface.co/openai/gpt-oss-20b/blob/main/config.json)、[SmolLM3-3B](https://huggingface.co/HuggingFaceTB/SmolLM3-3B/blob/main/config.json)（[generation_config](https://huggingface.co/HuggingFaceTB/SmolLM3-3B/blob/main/generation_config.json)）、Llama 镜像：[unsloth/Meta-Llama-3.1-8B](https://huggingface.co/unsloth/Meta-Llama-3.1-8B/blob/main/config.json)、[unsloth/Llama-3.1-8B-Instruct generation_config](https://huggingface.co/unsloth/Llama-3.1-8B-Instruct/blob/main/generation_config.json)、[unsloth/Llama-3.3-70B-Instruct](https://huggingface.co/unsloth/Llama-3.3-70B-Instruct/blob/main/config.json)
-- vLLM：<https://github.com/vllm-project/vllm>
-- [nanoGPT](https://github.com/karpathy/nanoGPT) 的 `generate`（温度 + top-k 的最简写法）、[minimind](https://github.com/jingyaogong/minimind)（带 KV cache 的小模型推理）
+This chapter corresponds to Stanford CS336 (Spring 2026) <https://cs336.stanford.edu/>:
 
-**下一章**：第二部分到这里结束——我们有了一个能训练、能快速生成的现代 Transformer。第三部分要训练一个真正的模型：0.6–0.8B 参数、上千亿 token、上万美元的算力。但在花第一块钱之前，得先回答一个问题：怎么判断它好不好？和谁比？怎么比才公平？第 11 章，我们先定考卷。
+- **Lecture 10: Inference**. It uses resource accounting to show where the cost of inference comes from (prefill and decode, the memory and the memory bandwidth of the KV cache). It also shows the methods that make inference faster and cheaper (the slides and the recordings are on the course page). This chapter covers only the most basic parts. Chapters 20, 21, and 25 come back to this lecture.
+- **The decoding part of Assignment 1 (Basics)**: implement text generation with temperature and top-p on the Transformer that you trained. This is the same task as `02_sampling.py` in this chapter. Assignment repository: <https://github.com/stanford-cs336/assignment1-basics>
+
+---
+
+## References
+
+- Holtzman, Buys, Du, Forbes, Choi. *The Curious Case of Neural Text Degeneration* (nucleus / top-p sampling), 2019: <https://arxiv.org/abs/1904.09751>
+- Fan, Lewis, Dauphin. *Hierarchical Neural Story Generation* (top-k sampling), 2018: <https://arxiv.org/abs/1805.04833>
+- Shazeer. *Fast Transformer Decoding: One Write-Head is All You Need* (MQA), 2019: <https://arxiv.org/abs/1911.02150>
+- Ainslie et al. *GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints*, 2023: <https://arxiv.org/abs/2305.13245>
+- Kwon et al. *Efficient Memory Management for Large Language Model Serving with PagedAttention* (vLLM), 2023: <https://arxiv.org/abs/2309.06180>
+- Yu et al. *Orca: A Distributed Serving System for Transformer-Based Generative Models* (iteration-level scheduling / continuous batching), OSDI 2022: <https://www.usenix.org/conference/osdi22/presentation/yu>
+- Touvron et al. *Llama 2: Open Foundation and Fine-Tuned Chat Models*, 2023: <https://arxiv.org/abs/2307.09288>
+- Llama Team. *The Llama 3 Herd of Models*, 2024: <https://arxiv.org/abs/2407.21783>
+- Qwen Team. *Qwen2 Technical Report*, 2024: <https://arxiv.org/abs/2407.10671>; *Qwen3 Technical Report*, 2025: <https://arxiv.org/abs/2505.09388>
+- Jiang et al. *Mistral 7B*, 2023: <https://arxiv.org/abs/2310.06825>
+- Gemma Team. *Gemma 3 Technical Report*, 2025: <https://arxiv.org/abs/2503.19786>
+- Model configs (read in 2026-09): [Qwen3-0.6B](https://huggingface.co/Qwen/Qwen3-0.6B/blob/main/config.json), [Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B/blob/main/config.json) ([generation_config](https://huggingface.co/Qwen/Qwen3-8B/blob/main/generation_config.json)), [Qwen2.5-7B](https://huggingface.co/Qwen/Qwen2.5-7B/blob/main/config.json), [Qwen2.5-7B-Instruct generation_config](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct/blob/main/generation_config.json), [Mistral-7B-v0.1](https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json), [gemma-3-1b-pt](https://huggingface.co/google/gemma-3-1b-pt/blob/main/config.json), [gemma-3-27b-pt](https://huggingface.co/google/gemma-3-27b-pt/blob/main/config.json), [gemma-3-27b-it generation_config](https://huggingface.co/google/gemma-3-27b-it/blob/main/generation_config.json), [gpt-oss-20b](https://huggingface.co/openai/gpt-oss-20b/blob/main/config.json), [SmolLM3-3B](https://huggingface.co/HuggingFaceTB/SmolLM3-3B/blob/main/config.json) ([generation_config](https://huggingface.co/HuggingFaceTB/SmolLM3-3B/blob/main/generation_config.json)), Llama mirrors: [unsloth/Meta-Llama-3.1-8B](https://huggingface.co/unsloth/Meta-Llama-3.1-8B/blob/main/config.json), [unsloth/Llama-3.1-8B-Instruct generation_config](https://huggingface.co/unsloth/Llama-3.1-8B-Instruct/blob/main/generation_config.json), [unsloth/Llama-3.3-70B-Instruct](https://huggingface.co/unsloth/Llama-3.3-70B-Instruct/blob/main/config.json)
+- vLLM: <https://github.com/vllm-project/vllm>
+- The `generate` function of [nanoGPT](https://github.com/karpathy/nanoGPT) (the shortest code for temperature + top-k), [minimind](https://github.com/jingyaogong/minimind) (inference of a small model with a KV cache)
+
+**Next chapter**: Part 2 ends here. We have a modern Transformer that we can train and that generates text fast. In Part 3, we train a real model: 0.6–0.8B parameters, more than 100 billion tokens, and more than 10,000 dollars of compute. But before we spend the first dollar, we must answer some questions: how do we know if the model is good, what do we compare it with, and how do we make the comparison fair? In Chapter 11, we set the exam first.

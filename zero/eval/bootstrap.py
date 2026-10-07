@@ -1,19 +1,24 @@
-"""配对 bootstrap 置信区间与"超过 / 持平 / 落后"判定（对应第 11、20 章；GOAL.md 3.2 第 5 条）。
+"""Paired bootstrap confidence intervals and the "ahead / tie / behind" decision (Chapters 11 and 20; GOAL.md 3.2 item 5).
 
-两个模型在**同一组题**上各有逐题得分 a_i、b_i（对 / 错记 1 / 0，或连续分数）。我们关心平均分之差
-d = mean(a) − mean(b) 有多可信。配对 bootstrap：
+Two models have per-item scores a_i and b_i on **the same set of items** (correct / wrong = 1 / 0,
+or a continuous score). We want to know how reliable the difference of the mean scores
+d = mean(a) − mean(b) is. The paired bootstrap:
 
-1. 从 n 道题里有放回地抽 n 道（两个模型用**同一组下标**——这就是"配对"，题目难度的波动被抵消）；
-2. 算这组题上的 d*；
-3. 重复 n_boot 次，取 d* 的 2.5% 与 97.5% 分位数作为 95% 置信区间 [lo, hi]（百分位法）。
+1. Draw n items with replacement from the n items. Both models use **the same indices**. This is the
+   "paired" part: it cancels the variation in item difficulty.
+2. Compute d* on these items.
+3. Do this n_boot times. The 2.5% and 97.5% quantiles of d* are the 95% confidence interval
+   [lo, hi] (percentile method).
 
-判定（GOAL.md 3.2 第 5 条："领先幅度要超出 bootstrap 95% 置信区间才算'超过'，否则只能说'持平'"）：
+The decision (GOAL.md 3.2 item 5: "the lead must be outside the bootstrap 95% confidence interval
+to count as 'ahead'; if not, we can only say 'tie'"):
 
-- lo > 0：整个区间都在 0 右边 → **超过**；
-- hi < 0：整个区间都在 0 左边 → **落后**；
-- 否则区间跨过 0 → **持平**。
+- lo > 0: the full interval is to the right of 0 → **ahead**.
+- hi < 0: the full interval is to the left of 0 → **behind**.
+- In all other cases, the interval contains 0 → **tie**.
 
-对手有思考 / 非思考两种模式时，取对手**较高分**的模式来比（GOAL.md 3.2 第 4 条），见 `compare_to_opponent`。
+If the opponent has a thinking mode and a non-thinking mode, compare with the mode in which the
+opponent has the **higher score** (GOAL.md 3.2 item 4). See `compare_to_opponent`.
 """
 
 from __future__ import annotations
@@ -23,7 +28,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-AHEAD, TIE, BEHIND = "超过", "持平", "落后"
+AHEAD, TIE, BEHIND = "ahead", "tie", "behind"
 
 
 @dataclass
@@ -36,7 +41,7 @@ class BootstrapResult:
     n: int
     n_boot: int
     confidence: float
-    decision: str  # 超过 / 持平 / 落后（a 相对 b）
+    decision: str  # ahead / tie / behind (a compared with b)
 
 
 def decide(ci_low: float, ci_high: float) -> str:
@@ -55,14 +60,14 @@ def paired_bootstrap(
     seed: int = 0,
     chunk: int = 1000,
 ) -> BootstrapResult:
-    """a、b 是同一组题上的逐题得分（顺序对齐）。"""
+    """a and b are the per-item scores on the same set of items (in the same order)."""
     x = np.asarray(a, dtype=np.float64)
     y = np.asarray(b, dtype=np.float64)
     if x.shape != y.shape or x.ndim != 1:
-        raise ValueError(f"配对 bootstrap 需要等长的一维得分：{x.shape} vs {y.shape}")
+        raise ValueError(f"The paired bootstrap needs 1-D scores of equal length: {x.shape} vs {y.shape}")
     n = len(x)
     if n == 0:
-        raise ValueError("没有题目")
+        raise ValueError("No items")
     d = x - y
     rng = np.random.default_rng(seed)
     stats = np.empty(n_boot)
@@ -91,9 +96,12 @@ def compare_to_opponent(
     n_boot: int = 10_000,
     seed: int = 0,
 ) -> tuple[str, BootstrapResult]:
-    """对手有多种模式（如 thinking / non-thinking）时，取平均分最高的模式来比较。返回 (模式名, 结果)。"""
+    """If the opponent has several modes (for example thinking / non-thinking), compare with the mode that has the highest mean score.
+
+    Returns (mode name, result).
+    """
     if not opponent_modes:
-        raise ValueError("至少要有一种对手模式")
+        raise ValueError("At least one opponent mode is necessary")
     best = max(opponent_modes, key=lambda k: float(np.mean(opponent_modes[k])))
     return best, paired_bootstrap(ours, opponent_modes[best], n_boot=n_boot, seed=seed)
 
@@ -111,17 +119,19 @@ def stratified_paired_bootstrap(
     confidence: float = 0.95,
     seed: int = 0,
 ) -> BootstrapResult:
-    """分层配对 bootstrap：总分 = 各类别平均分的加权和（如 BFCL 按类别加权，见 eval/PREREGISTRATION.md 的 E1）。
+    """Stratified paired bootstrap: total score = weighted sum of the mean scores of the categories.
 
-    每个类别内部独立地有放回重抽（两个模型用同一组下标），再按权重合成总分之差。
-    只有一个类别、权重为 1 时，与 paired_bootstrap 完全相同。
+    BFCL, for example, weights its categories (see E1 in eval/PREREGISTRATION.md).
+    In each category, the items are resampled with replacement independently (both models use the
+    same indices). Then the weights combine the differences into a difference of the total scores.
+    With one category and weight 1, the result is identical to paired_bootstrap.
     """
     keys = list(weights)
     if set(keys) != set(a_by) or set(keys) != set(b_by):
-        raise ValueError(f"类别不一致：权重 {sorted(keys)}，a {sorted(a_by)}，b {sorted(b_by)}")
+        raise ValueError(f"The categories do not match: weights {sorted(keys)}, a {sorted(a_by)}, b {sorted(b_by)}")
     total_w = float(sum(weights.values()))
     if total_w <= 0:
-        raise ValueError("权重之和必须为正")
+        raise ValueError("The sum of the weights must be positive")
     rng = np.random.default_rng(seed)
     stats = np.zeros(n_boot)
     n_total = 0
@@ -129,7 +139,7 @@ def stratified_paired_bootstrap(
         x = np.asarray(a_by[k], dtype=np.float64)
         y = np.asarray(b_by[k], dtype=np.float64)
         if x.shape != y.shape or x.ndim != 1 or len(x) == 0:
-            raise ValueError(f"类别 {k}：需要等长、非空的一维得分")
+            raise ValueError(f"Category {k}: needs non-empty 1-D scores of equal length")
         d = x - y
         n = len(d)
         n_total += n
@@ -153,13 +163,15 @@ def stratified_paired_bootstrap(
 
 
 def overall_verdict(decisions: Mapping[tuple[str, str], str]) -> str:
-    """总判定（交-并检验）：键是 (对手, 终点)，值是该组合的"超过 / 持平 / 落后"。
+    """Overall verdict (intersection-union test). Keys are (opponent, endpoint); values are "ahead / tie / behind".
 
-    只有**每一个**对手在**每一个**预注册终点上都判"超过"，才能宣称"超过"；任何一组"落后"则总体"落后"；
-    其余情况一律"持平"。这是 GOAL.md 3.2 "超过所有同尺寸模型"的保守读法。
+    We can claim "ahead" only if the decision is "ahead" against **every** opponent on **every**
+    preregistered endpoint. If any combination is "behind", the overall verdict is "behind".
+    All other cases are "tie". This is the conservative reading of GOAL.md 3.2: "better than all
+    models of the same size".
     """
     if not decisions:
-        raise ValueError("没有任何比较结果")
+        raise ValueError("No comparison results")
     values = set(decisions.values())
     if values == {AHEAD}:
         return AHEAD

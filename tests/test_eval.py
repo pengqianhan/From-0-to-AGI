@@ -1,4 +1,4 @@
-"""评测：配对 bootstrap 判定、对手取较高模式、选择题 / 精确匹配 / 工具调用评测的通路、报告表格、BFCL 适配层（第 11、20 章）。"""
+"""Evaluation: paired bootstrap decision, the higher mode of the opponent, the code paths of multiple choice / exact match / tool-call evaluation, report tables, BFCL adapter (Chapters 11 and 20)."""
 
 from __future__ import annotations
 
@@ -25,31 +25,31 @@ from zero.eval.report import comparison_table, results_table
 
 
 def test_decision_rule() -> None:
-    assert decide(0.01, 0.2) == AHEAD == "超过"
-    assert decide(-0.01, 0.2) == TIE == "持平"
-    assert decide(-0.3, -0.02) == BEHIND == "落后"
+    assert decide(0.01, 0.2) == AHEAD == "ahead"
+    assert decide(-0.01, 0.2) == TIE == "tie"
+    assert decide(-0.3, -0.02) == BEHIND == "behind"
 
 
 def test_paired_bootstrap_cases() -> None:
     rng = np.random.default_rng(0)
     base = (rng.random(400) < 0.5).astype(float)
     better = base.copy()
-    better[rng.choice(400, 60, replace=False)] = 1.0  # 明显更好
+    better[rng.choice(400, 60, replace=False)] = 1.0  # clearly better
     r = paired_bootstrap(better, base, n_boot=2000, seed=1)
     assert (
-        r.decision == "超过"
+        r.decision == "ahead"
         and r.ci_low > 0
         and r.diff == pytest.approx(better.mean() - base.mean())
     )
-    assert paired_bootstrap(base, better, n_boot=2000).decision == "落后"
-    noisy = base.copy()  # 3 道由对变错、4 道由错变对：差值很小，区间跨过 0
+    assert paired_bootstrap(base, better, n_boot=2000).decision == "behind"
+    noisy = base.copy()  # 3 items change from correct to wrong, 4 from wrong to correct: small difference, the interval contains 0
     ones, zeros = np.flatnonzero(base == 1), np.flatnonzero(base == 0)
     noisy[ones[:3]] = 0
     noisy[zeros[:4]] = 1
-    assert paired_bootstrap(noisy, base, n_boot=2000).decision == "持平"
+    assert paired_bootstrap(noisy, base, n_boot=2000).decision == "tie"
     same = paired_bootstrap(base, base, n_boot=500)
-    assert same.ci_low == same.ci_high == 0.0 and same.decision == "持平"
-    # 可复现
+    assert same.ci_low == same.ci_high == 0.0 and same.decision == "tie"
+    # Reproducible
     assert paired_bootstrap(better, base, n_boot=500, seed=3) == paired_bootstrap(
         better, base, n_boot=500, seed=3
     )
@@ -62,7 +62,7 @@ def test_opponent_higher_mode_is_used() -> None:
     mode, r = compare_to_opponent(
         ours, {"non_thinking": [0, 1, 0, 0] * 50, "thinking": [1, 1, 1, 0] * 50}, n_boot=500
     )
-    assert mode == "thinking" and r.decision == "持平"
+    assert mode == "thinking" and r.decision == "tie"
 
 
 def test_continuation_logprob_and_mc(chat_tok, tiny_ckpt) -> None:  # noqa: ANN001
@@ -114,7 +114,7 @@ def test_shipped_task_files_are_valid() -> None:
         Task.from_dict(json.loads(x))
         for x in (TASK_DIR / "tool_dev.jsonl").read_text().splitlines()
     ]
-    assert [t.query for t in tool] == [t.query for t in dev_tasks(100)]  # 冻结文件与生成器一致
+    assert [t.query for t in tool] == [t.query for t in dev_tasks(100)]  # the frozen file matches the generator
 
 
 def test_run_eval_and_report(tmp_path: Path, tiny_ckpt) -> None:  # noqa: ANN001
@@ -133,7 +133,7 @@ def test_run_eval_and_report(tmp_path: Path, tiny_ckpt) -> None:  # noqa: ANN001
     p = run_eval(ec, log=lambda _: None)
     assert set(p["results"]) == {"a", "b"}
     assert {c["task"] for c in p["comparisons"]} == {"toy_mc", "toy_gen", "tool_dev"}
-    assert all(c["decision"] == "持平" and c["diff"] == 0 for c in p["comparisons"])  # 同一个模型
+    assert all(c["decision"] == "tie" and c["diff"] == 0 for c in p["comparisons"])  # the same model
     md = (tmp_path / "report.md").read_text()
     assert "| a |" in md and "95% CI" in md
 
@@ -157,11 +157,11 @@ def test_report_tables() -> None:
                 "diff": 0.25,
                 "ci_low": -0.1,
                 "ci_high": 0.5,
-                "decision": "持平",
+                "decision": "tie",
             }
         ]
     )
-    assert "[-0.100, +0.500] | 持平" in c
+    assert "[-0.100, +0.500] | tie" in c
 
 
 def test_eval_config_file_parses() -> None:
@@ -209,6 +209,6 @@ def test_stratified_weighted_means():
 def test_overall_verdict_requires_every_comparison():
     from zero.eval.bootstrap import overall_verdict
 
-    assert overall_verdict({("q", "e1"): "超过", ("q", "e2"): "超过"}) == "超过"
-    assert overall_verdict({("q", "e1"): "超过", ("q", "e2"): "持平"}) == "持平"
-    assert overall_verdict({("q", "e1"): "超过", ("m", "e1"): "落后"}) == "落后"
+    assert overall_verdict({("q", "e1"): "ahead", ("q", "e2"): "ahead"}) == "ahead"
+    assert overall_verdict({("q", "e1"): "ahead", ("q", "e2"): "tie"}) == "tie"
+    assert overall_verdict({("q", "e1"): "ahead", ("m", "e1"): "behind"}) == "behind"

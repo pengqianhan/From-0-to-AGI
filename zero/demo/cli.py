@@ -1,23 +1,31 @@
-"""本地工具调用命令行助手（对应第 20 章：“真正可用”的直接证明）。
+"""Command-line assistant with local tool calls (Chapter 20: the direct proof that the model is "really usable").
 
-    uv run python -m zero.demo.cli --model out/tiny/grpo/ckpt --root .          # 交互模式
+    uv run python -m zero.demo.cli --model out/tiny/grpo/ckpt --root .          # interactive mode
     uv run python -m zero.demo.cli --model out/tiny/hf_chat --once "3 * (4 + 5) 等于多少？"
 
-模型可以是 zero 的 checkpoint 目录，也可以是导出的 Hugging Face 目录。循环：
+The model can be a zero checkpoint directory or an exported Hugging Face directory. The loop:
 
-    用户输入 → 套对话模板生成 → 解析 <tool_call> → 在本地执行 → 结果作为 tool 消息喂回 → …
-    → 直到模型给出不含工具调用的回答（最多 --max-turns 轮）
+    user input → generate with the chat template → parse <tool_call> → run it locally →
+    send the result back as a tool message → …
+    → until the model gives an answer without a tool call (at most --max-turns turns)
 
-本地工具：
+Local tools:
 
-- `calculator(expression)`：算术（AST 白名单求值，不用 eval）；
-- `date_add` / `days_between` / `weekday`：日期计算；`today()`：今天的日期（读系统时钟）；
-- `search_files(query, glob="*")`：在 `--root` 目录里按文件名和内容搜索，只返回前几条匹配；
-  路径限制在 root 之内（解析后的真实路径必须在 root 下，防止 `../` 逃逸），不跟随指向外部的符号链接，
-  单个文件只读前 1 MB。
+- `calculator(expression)`: arithmetic (evaluation with an AST allowlist, no eval).
+- `date_add` / `days_between` / `weekday`: date calculations; `today()`: today's date (from the
+  system clock).
+- `search_files(query, glob="*")`: search the `--root` directory by file name and content, and
+  return only the first matches. The paths stay inside root (the resolved real path must be
+  below root, which stops a `../` escape). It does not follow symbolic links that point outside,
+  and it reads only the first 1 MB of each file.
 
-**tiny 模型的输出基本是乱的**（1.3M 参数、几分钟 CPU 训练），这个 demo 在第一步只证明"加载 → 生成 →
-解析 → 执行 → 喂回"这条链路是通的；真正好用要等第二步训练出的主线模型。
+**The output of the tiny model is mostly noise** (1.3M parameters, a few minutes of CPU training).
+In Step 1, this demo shows only that the chain "load → generate → parse → run → send back" works.
+For a really useful assistant, wait for the main-line model of Step 2.
+
+The model sees some strings in this file as input: the system prompt, the tool descriptions, and
+the tool results (including the `ToolError` messages and the "match" value). These strings are
+data. They stay in Chinese, the same as in zero/post/envs/tool_env.py.
 """
 
 from __future__ import annotations
@@ -72,7 +80,7 @@ SYSTEM = (
 
 
 def search_files(root: Path, query: str, glob: str = "*") -> dict[str, Any]:
-    """在 root 下找文件名或内容包含 query 的文件（大小写不敏感），返回前 MAX_RESULTS 条。"""
+    """Find files below root whose name or content contains query (case-insensitive); return the first MAX_RESULTS."""
     if not query:
         raise ToolError("query 不能为空")
     root = root.resolve()
@@ -128,7 +136,10 @@ def chat_turn(
     max_turns: int = 4,
     on_event: Callable[[str, Any], None] | None = None,
 ) -> str:
-    """处理一轮用户输入（messages 已经含这条 user 消息），原地追加助手/工具消息，返回最终回答文本。"""
+    """Process one user input (messages already contains this user message).
+
+    Append the assistant/tool messages in place, and return the text of the final answer.
+    """
     emit = on_event or (lambda *_: None)
     for _ in range(max_turns):
         text = generate_fn(messages, DEMO_TOOLS)
@@ -145,7 +156,7 @@ def chat_turn(
             res = execute_demo_tool(c["name"], c["arguments"], root)
             emit("result", res)
             messages.append({"role": "tool", "content": json.dumps(res, ensure_ascii=False)})
-    return "（达到最大轮数，没有得到最终回答）"
+    return "(Reached the maximum number of turns; no final answer)"
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -153,10 +164,10 @@ def main(argv: list[str] | None = None) -> None:
 
     from zero.post.common import chat_complete, load_policy
 
-    ap = argparse.ArgumentParser(description="本地工具调用助手（第 20 章）")
-    ap.add_argument("--model", required=True, help="zero checkpoint 目录或 HF 目录")
-    ap.add_argument("--root", default=".", help="search_files 的搜索根目录")
-    ap.add_argument("--once", default="", help="只问一个问题就退出（非交互）")
+    ap = argparse.ArgumentParser(description="Assistant with local tool calls (Chapter 20)")
+    ap.add_argument("--model", required=True, help="zero checkpoint directory or HF directory")
+    ap.add_argument("--root", default=".", help="root directory for search_files")
+    ap.add_argument("--once", default="", help="ask only this one question, then exit (not interactive)")
     ap.add_argument("--max-new-tokens", type=int, default=128)
     ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--max-turns", type=int, default=4)
@@ -171,30 +182,30 @@ def main(argv: list[str] | None = None) -> None:
         return chat_complete(model, tok, messages, tools, args.max_new_tokens, args.temperature)[0]
 
     def show(kind: str, obj: Any) -> None:
-        tag = {"call": "→ 调用", "result": "← 结果", "format_error": "✗ 格式错误"}[kind]
+        tag = {"call": "→ call", "result": "← result", "format_error": "✗ format error"}[kind]
         print(f"  {tag} {json.dumps(obj, ensure_ascii=False)[:300]}")
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM}]
     questions = [args.once] if args.once else None
     print(
-        f"[zero demo] 模型 {args.model}（{model.num_params() / 1e6:.1f}M 参数），搜索根目录 {root.resolve()}"
+        f"[zero demo] model {args.model} ({model.num_params() / 1e6:.1f}M parameters), search root {root.resolve()}"
     )
     while True:
         if questions is not None:
             if not questions:
                 break
             q = questions.pop(0)
-            print(f"你：{q}")
+            print(f"You: {q}")
         else:
             try:
-                q = input("你：").strip()
+                q = input("You: ").strip()
             except EOFError:
                 break
             if q in ("", "exit", "quit"):
                 break
         messages.append({"role": "user", "content": q})
         ans = chat_turn(gen, messages, root, args.max_turns, show)
-        print(f"助手：{ans}")
+        print(f"Assistant: {ans}")
 
 
 if __name__ == "__main__":

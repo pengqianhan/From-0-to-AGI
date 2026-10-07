@@ -1,18 +1,22 @@
-"""第 12 章 · 极简代码 3：阶梯实验的第一步 —— 先给每个尺寸找到合适的学习率
+"""Chapter 12 · Minimal code 3: the first step of a ladder experiment. Find a good learning rate for each size.
 
-"小规模实验可以预测大规模结果"有个前提：每个小模型都调好了超参。没调好的小模型会把
-scaling law 扭歪（Lourie et al. 2026, arXiv:2608.11859）。所以阶梯实验先做学习率扫描：
+"Small experiments can predict large results" is true only when each small model has well-tuned
+hyperparameters. Badly tuned small models distort the scaling law (Lourie et al. 2026, arXiv:2608.11859).
+Thus the ladder experiment starts with a learning-rate sweep:
 
-  1. 4 个尺寸（非 embedding 参数约 1 万 → 20 万）× 5 个学习率，每个跑同样的 token 数；
-  2. 每个尺寸取验证 loss 最低的学习率 η*；
-  3. 拟合 η*(N) = c · N^(-k)（对数坐标下的一条直线），外推给更大的模型用（第 4 个脚本）。
+  1. 4 sizes (about 10K → 200K non-embedding parameters) × 5 learning rates. Each run uses the same number of tokens.
+  2. For each size, take the learning rate η* with the lowest validation loss.
+  3. Fit η*(N) = c · N^(-k) (a straight line on log axes). Extrapolate it to larger models (the fourth script).
 
-模型就是第 9 章的 TinyTransformer（字节级，词表 256），数据是 assets/tiny_corpus/shakespeare.txt。
-学习率调度用 WSD（第 6 章）：warmup → 恒定 → 最后 20% 线性降到 0。
+The model is the TinyTransformer from Chapter 9 (byte-level, vocabulary of 256).
+The data is assets/tiny_corpus/shakespeare.txt.
+The learning-rate schedule is WSD (Chapter 6): warmup → constant → linear decay to 0 in the last 20%.
 
-运行：uv run python chapters/12-scaling-laws/code/03_lr_sweep.py
-      （单线程，共享 CPU 上实测约 7 分钟；结果缓存到 out/ch12/lr_sweep.json，再跑直接读缓存，加 --fresh 重跑）
-这是"极小配置演示"：几万参数、十几万 token，结论只说明方法，不代表主线模型。
+Run: uv run python chapters/12-scaling-laws/code/03_lr_sweep.py
+     (single thread, about 7 min measured on a shared CPU. The results are cached in out/ch12/lr_sweep.json.
+      The next run reads the cache. Add --fresh to train again.)
+This is a "tiny-configuration demo": tens of thousands of parameters and about 130K tokens.
+The results show only the method. They do not represent the main-line model.
 """
 
 from __future__ import annotations
@@ -39,15 +43,16 @@ tt = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(tt)
 
 SEQ_LEN = 64
-BATCH = 8  # 小 batch：同样的 token 数走更多步，这个尺度上学得更快（实测）
-TOKENS_PER_STEP = SEQ_LEN * BATCH  # 512 个字节 / 步
+BATCH = 8  # small batch: more steps for the same tokens; at this scale, the model learns faster (measured)
+TOKENS_PER_STEP = SEQ_LEN * BATCH  # 512 bytes per step
 WARMUP = 20
 
-# 阶梯：(名字, dim, 层数)；head_dim 固定 16，SwiGLU 中间维度 ≈ 8/3·dim 取 16 的倍数
+# Ladder: (name, dim, number of layers). head_dim is always 16.
+# The SwiGLU hidden size is about 8/3·dim, rounded to a multiple of 16.
 LADDER = [("s1", 16, 2), ("s2", 32, 2), ("s3", 48, 3), ("s4", 64, 4)]
-HELD_OUT = ("s5", 96, 4)  # N 是阶梯最大的 2.1 倍，只用来检验外推
+HELD_OUT = ("s5", 96, 4)  # N is 2.1× the largest ladder size; use it only to test the extrapolation
 SWEEP_LRS = [2.5e-3, 5e-3, 1e-2, 2e-2, 4e-2]
-SWEEP_TOKENS = 131_072  # 256 步
+SWEEP_TOKENS = 131_072  # 256 steps
 
 
 def make_config(dim: int, n_layers: int):
@@ -56,17 +61,24 @@ def make_config(dim: int, n_layers: int):
 
 
 def make_model(dim: int, n_layers: int):
-    """第 9 章的模型，只改一处：输入 embedding 和 lm_head 不共享。
-    这个尺度上共享会让模型在"只会猜高频字节"的平台期卡很久（实测），曲线噪声大到拟合不出规律；
-    zero 的 tiny 配置也因为同样的原因不共享（configs/tiny/pretrain.toml 的注释）。"""
+    """The model from Chapter 9 with one change: the input embedding and lm_head do not share weights.
+
+    At this scale, shared weights keep the model for a long time on a plateau where it only
+    predicts frequent bytes (measured). The curves then have too much noise to fit a law.
+    The tiny configuration of zero does not share them for the same reason
+    (see the comment in configs/tiny/pretrain.toml).
+    """
     model = tt.TinyTransformer(make_config(dim, n_layers))
     model.lm_head.weight = nn.Parameter(torch.randn(model.cfg.vocab_size, dim) * 0.02)
     return model
 
 
 def non_embedding_params(dim: int, n_layers: int) -> int:
-    """scaling law 里的 N：参与矩阵乘的参数（除了输入 embedding 查表以外的全部，含 lm_head）。
-    这样 6N 就是每 token 的训练 FLOPs（不算注意力项），和 01_flops.py 的口径一致。"""
+    """N in the scaling law: the parameters in matrix products.
+
+    This is all parameters except the input embedding lookup, and it includes lm_head.
+    Then 6N is the training FLOPs per token (without the attention term), as in 01_flops.py.
+    """
     model = make_model(dim, n_layers)
     return sum(p.numel() for p in model.parameters()) - model.tok_emb.weight.numel()
 
@@ -87,7 +99,7 @@ def batch(data, g):
 
 @torch.no_grad()
 def val_bpb(model, val, n_batches=24) -> float:
-    """验证集 bits-per-byte（固定的 24 个 batch，所有运行用同一份）。"""
+    """Validation bits per byte (24 fixed batches; all runs use the same batches)."""
     g = torch.Generator().manual_seed(123)
     model.eval()
     losses = [F.cross_entropy(model(x).flatten(0, 1), y.flatten()).item()
@@ -111,11 +123,12 @@ def adamw(model, lr):
 
 
 def train_wsd_branches(dim, n_layers, lr, budgets, seed=0, data=None, make_opt=adamw):
-    """一次训练得到多个 token 预算的结果（WSD 分叉）。
+    """Get the results of several token budgets from one training run (WSD branches).
 
-    主干：warmup 后保持峰值学习率一直训到 0.8 × 最大预算；
-    每个预算 D_k：在主干的 0.8·D_k 处复制一份模型 + 优化器，接一段 0.2·D_k 的线性衰减，
-    衰减完测验证 loss。这样 3 个预算只花约 1.15 倍最大预算的算力，而不是 1.75 倍。
+    Trunk: after warmup, keep the peak learning rate until 0.8 × the largest budget.
+    For each budget D_k: at 0.8·D_k on the trunk, copy the model and the optimizer, add a linear
+    decay of 0.2·D_k, and measure the validation loss after the decay. Then 3 budgets cost about
+    1.15× the compute of the largest budget, not 1.75×.
     """
     train, val = data or load_bytes()
     torch.manual_seed(seed)
@@ -127,7 +140,7 @@ def train_wsd_branches(dim, n_layers, lr, budgets, seed=0, data=None, make_opt=a
     trunk_end = max(branch_at)
     results = {}
     for step in range(trunk_end + 1):
-        if step in branch_at:  # 分叉：复制当前状态，接一段衰减
+        if step in branch_at:  # branch: copy the current state and add a decay
             D = branch_at[step]
             m2 = copy.deepcopy(model)
             o2 = make_opt(m2, lr)
@@ -145,14 +158,18 @@ def train_wsd_branches(dim, n_layers, lr, budgets, seed=0, data=None, make_opt=a
 
 
 def fit_power_law(x, y):
-    """log y = log c − k·log x 的最小二乘，返回 (c, k)。"""
+    """Least squares for log y = log c − k·log x. Returns (c, k)."""
     slope, intercept = np.polyfit(np.log(x), np.log(y), 1)
     return float(np.exp(intercept)), float(-slope)
 
 
 def run_sweep(fresh=False):
-    """每个尺寸先扫 SWEEP_LRS；如果最优值落在网格边上，就往那一侧再扩一倍，直到最优点在内部。
-    （最优在边上说明真正的最优还在网格外面——这是调参时最常见的坑。）结果逐个缓存，中断后可接着跑。"""
+    """For each size, sweep SWEEP_LRS first. If the best value is at an edge of the grid, add one value
+    2× farther out on that side. Continue until the best point is inside the grid.
+
+    (A best value at the edge means that the true optimum is outside the grid. This is the most common
+    mistake in tuning.) The cache stores each result, so an interrupted run can continue.
+    """
     path = OUT / "lr_sweep.json"
     rows = [] if fresh or not path.exists() else json.loads(path.read_text())["rows"]
     done = {(r["size"], r["lr"]) for r in rows}
@@ -168,7 +185,7 @@ def run_sweep(fresh=False):
                 bpb = train_wsd_branches(dim, L, lr, [SWEEP_TOKENS], data=data)[SWEEP_TOKENS]
                 rows.append({"size": name, "dim": dim, "layers": L, "N": n, "lr": lr, "val_bpb": bpb})
                 done.add((name, lr))
-                print(f"  {name} N={n:>7,}  lr={lr:<8g} val {bpb:.4f} bit/字节  ({time.time() - t0:4.0f}s)")
+                print(f"  {name} N={n:>7,}  lr={lr:<8g} val {bpb:.4f} bit/byte  ({time.time() - t0:4.0f}s)")
                 OUT.mkdir(parents=True, exist_ok=True)
                 path.write_text(json.dumps({"tokens": SWEEP_TOKENS, "rows": rows}, indent=1))
             mine = sorted((r["lr"], r["val_bpb"]) for r in rows if r["size"] == name)
@@ -184,7 +201,11 @@ def run_sweep(fresh=False):
 
 
 def best_lrs(sweep):
-    """每个尺寸的最优学习率。网格是 2 倍一档，太粗：取最低点和左右邻居，在 log(η) 上拟合抛物线取顶点。"""
+    """The best learning rate of each size.
+
+    The grid has steps of 2×, which is too coarse. Take the lowest point and its two neighbors,
+    fit a parabola in log(η), and take its vertex.
+    """
     best = {}
     for name in dict.fromkeys(r["size"] for r in sweep["rows"]):
         mine = sorted((r for r in sweep["rows"] if r["size"] == name), key=lambda r: r["lr"])
@@ -202,33 +223,33 @@ def best_lrs(sweep):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--fresh", action="store_true", help="忽略缓存，重新训练")
+    ap.add_argument("--fresh", action="store_true", help="ignore the cache and train again")
     args = ap.parse_args()
-    torch.set_num_threads(1)  # 共享 CPU 上单线程最快；本机空闲时可删掉
-    print(f"学习率扫描：每个运行 {SWEEP_TOKENS:,} 个字节（token），batch {BATCH}×{SEQ_LEN}")
+    torch.set_num_threads(1)  # one thread is fastest on a shared CPU; remove this line on an idle computer
+    print(f"Learning-rate sweep: {SWEEP_TOKENS:,} bytes (tokens) per run, batch {BATCH}×{SEQ_LEN}")
     sweep = run_sweep(args.fresh)
     table = {}
     for r in sweep["rows"]:
         table.setdefault((r["size"], r["N"]), {})[r["lr"]] = r["val_bpb"]
     all_lrs = sorted({r["lr"] for r in sweep["rows"]})
-    print("\n验证 loss（bit/字节），每行一个尺寸，* 为该尺寸最优，- 为没跑：")
-    print(f"{'尺寸':>4} {'N':>8} | " + " ".join(f"{lr:>8g}" for lr in all_lrs))
+    print("\nValidation loss (bit/byte). One row per size. * = best for that size, - = not run:")
+    print(f"{'size':>4} {'N':>8} | " + " ".join(f"{lr:>8g}" for lr in all_lrs))
     best = best_lrs(sweep)
     for (name, n), row in table.items():
         cells = [f"{row[lr]:>7.4f}{'*' if lr == best[name]['grid_lr'] else ' '}" if lr in row else f"{'-':>8}"
                  for lr in all_lrs]
         print(f"{name:>4} {n:>8,} | " + " ".join(cells))
-    print("抛物线插值后的 η*：" + "，".join(f"{s} {best[s]['lr']:.4g}" for s, _, _ in LADDER))
+    print("η* after parabola interpolation: " + ", ".join(f"{s} {best[s]['lr']:.4g}" for s, _, _ in LADDER))
     ns = [best[s]["N"] for s, _, _ in LADDER]
     lrs = [best[s]["lr"] for s, _, _ in LADDER]
     c, k = fit_power_law(ns, lrs)
     n5 = non_embedding_params(*HELD_OUT[1:])
-    print(f"\n拟合 η*(N) = {c:.3g} · N^(-{k:.3f})")
-    print(f"外推到留出尺寸 {HELD_OUT[0]}（N={n5:,}）：η* ≈ {c * n5 ** -k:.4g}")
+    print(f"\nFit η*(N) = {c:.3g} · N^(-{k:.3f})")
+    print(f"Extrapolate to the held-out size {HELD_OUT[0]} (N={n5:,}): η* ≈ {c * n5 ** -k:.4g}")
     fixed = best[LADDER[0][0]]["grid_lr"]
-    print(f"\n如果所有尺寸都沿用最小模型调出来的学习率 {fixed:g}（只在小模型上调参）：")
+    print(f"\nIf all sizes use the learning rate {fixed:g} from the smallest model (tuning only on the small model):")
     for (name, n), row in table.items():
-        print(f"  {name} N={n:>7,}  {row[fixed]:.4f}  比调好的差 {row[fixed] - best[name]['val_bpb']:+.4f}")
+        print(f"  {name} N={n:>7,}  {row[fixed]:.4f}  worse than tuned by {row[fixed] - best[name]['val_bpb']:+.4f}")
 
 
 if __name__ == "__main__":

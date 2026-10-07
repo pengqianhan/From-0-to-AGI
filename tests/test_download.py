@@ -1,4 +1,4 @@
-"""第二步下载器（zero/data/download.py）的纯函数：用假数据代替网络。"""
+"""Pure functions of the Step 2 downloader (zero/data/download.py): fake data instead of the network."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def fake_rows(n: int) -> list[dict]:
         }
         for i in range(n)
     ]
-    rows[3]["text"] = "   "  # 空文本：跳过，但仍占一个行号
+    rows[3]["text"] = "   "  # empty text: skipped, but it still uses a row number
     return rows
 
 
@@ -75,7 +75,7 @@ def test_make_record_keeps_provenance() -> None:
 
 
 def test_make_record_keep_field_does_not_clobber_provenance() -> None:
-    # Ultra-FineWeb 自带一个 "source" 字段（上游语料名，如 "Tele"），不能覆盖我们的出处
+    # Ultra-FineWeb has its own "source" field (the upstream corpus name, for example "Tele"). It must not overwrite our provenance.
     r = make_record({"text": "x", "source": "Tele", "score": 0.5}, spec(keep_fields=["source", "score"]), 0)
     assert r["source"] == "fw"
     assert r["orig_source"] == "Tele"
@@ -84,20 +84,20 @@ def test_make_record_keep_field_does_not_clobber_provenance() -> None:
 
 def test_download_writes_shards_and_resumes(tmp_path: Path) -> None:
     rows = fake_rows(10)
-    # 第一次：最多 5 篇就停（模拟中途停下），complete=False
+    # First run: stop at 5 documents (simulates a stop in the middle), complete=False
     m = download_source(spec(max_docs=5), tmp_path, rows=rows, log=lambda s: None)
     assert m["complete"] is False and m["license"] == "ODC-By-1.0"
     assert [s["docs"] for s in m["shards"]] == [4, 1]
-    # 续传：跳过已完成分片覆盖的行，接着写，直到读完
+    # Resume: skip the rows of the completed shards, and continue until the end
     m = download_source(spec(), tmp_path, rows=rows, log=lambda s: None)
     assert m["complete"] is True
     recs = read_all(tmp_path / "fw")
-    assert [r["row"] for r in recs] == [0, 1, 2, 4, 5, 6, 7, 8, 9]  # 第 3 行是空文本
+    assert [r["row"] for r in recs] == [0, 1, 2, 4, 5, 6, 7, 8, 9]  # row 3 is empty text
     assert all(r["source"] == "fw" and "url" in r and "score" in r for r in recs)
     assert sum(s["rows"] for s in m["shards"]) == 10
-    # 已完成就不再下载
+    # A complete source is not downloaded again
     assert download_source(spec(), tmp_path, rows=rows, log=lambda s: None)["complete"] is True
-    # sha256 与文件一致
+    # sha256 matches the file
     import hashlib
 
     for s in m["shards"]:
@@ -114,7 +114,7 @@ def test_rerun_after_target_reached_does_not_read_again(tmp_path: Path) -> None:
     download_source(spec(target_bytes=100), tmp_path, rows=fake_rows(10), log=lambda s: None)
 
     def must_not_read():  # noqa: ANN202
-        raise AssertionError("已经下够了，不该再读数据流")
+        raise AssertionError("The target is already reached; the data stream must not be read again")
         yield
 
     m = download_source(spec(target_bytes=100), tmp_path, rows=must_not_read(), log=lambda s: None)
@@ -161,10 +161,10 @@ def test_main_config_download_specs_parse() -> None:
     with open(REPO / "configs" / "main" / "data.toml", "rb") as f:
         cfg = tomllib.load(f)
     specs = specs_from_config(cfg)
-    assert specs, "configs/main/data.toml 里应当有 [sources.download]"
+    assert specs, "configs/main/data.toml must have [sources.download]"
     for s in specs:
         assert s.repo.count("/") == 1
-        check_license(s, allow_unverified=True)  # 每个来源都登记过
+        check_license(s, allow_unverified=True)  # each source is registered
     with pytest.raises(ValueError):
         DownloadSpec.from_dict("x", "fineweb-edu", {"repo": "a/b", "bogus": 1})
 

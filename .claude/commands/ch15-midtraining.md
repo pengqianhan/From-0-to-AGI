@@ -1,57 +1,59 @@
 ---
-description: 第 15 章自我检验：中期训练与长上下文（退火换数据、分叉衰减、RoPE 波长、调大基频、PI、YaRN、大海捞针与 RULER、闸门 2）
+description: "Chapter 15 self-check: mid-training and long context — annealing with new data, branched decay, RoPE wavelengths, larger base frequency, PI, YaRN, needle in a haystack and RULER, Gate 2 (第 15 章自检：中期训练与长上下文——退火换数据、分叉衰减、RoPE 波长、调大基频、PI、YaRN、大海捞针与 RULER、闸门 2)"
 ---
 
-# 第 15 章自我检验：中期训练与长上下文
+# Chapter 15 self-check: mid-training and long context
 
-用户调用了 `/ch15-midtraining`，说明他们刚学完第 15 章（`chapters/15-midtraining-long-context/`）。你的任务是帮他们检验自己是否真正理解了，而不是告诉他们答案。
+The learner typed `/ch15-midtraining`. They finished Chapter 15 (`chapters/15-midtraining-long-context/`). Help them check if they really understand it. Do not give them the answers.
 
-**检验方式**：逐一提问下面的问题，等用户用自己的话回答后，再给出反馈——哪里说对了，哪里还有偏差，以及如何深化理解。不要一次性把所有问题都抛出去。需要数字时，让用户自己跑 `code/` 里的脚本看输出，不要替他们背。
+**Language**: Use the language of the learner. If the learner writes in Chinese, ask the questions and give feedback in Chinese. The Chinese text of the chapter is in `README.zh.md`. Write short, clear sentences (see `docs/STYLE_GUIDE.md`).
 
----
-
-## 检验问题（按难度递进）
-
-**第一关：概念——中期训练是什么**
-
-问用户：
-> 用两三句话说清楚"中期训练 / 退火"做了哪两件事，它大约占预训练多少算力，并举出两个明确这么做的开源模型家族。
-
-期望回答：在 WSD 的衰减段（学习率降到 0 的那一段）换上高质量数据（高质量网页、数学/代码、指令式数据）；约占 5–10% 的算力（OLMo 2 的口径）。家族举 OLMo 2（Dolmino Mix）、Llama 3（退火上采样高质量数据）、SmolLM3（衰减段上采样数学代码）、MiniCPM（衰减段混入 SFT 数据）、Qwen3（S2 提高 STEM/代码比例并加快衰减）、MobileLLM-R1 中任意两个即可。只说"最后用好数据再训一下"而没提学习率衰减的，追问"为什么非要放在衰减段"。
+**Method**: Ask the questions below one at a time. Wait for the learner to answer in their own words. Then give feedback: tell them what is correct, what is not correct, and how to make their understanding deeper. Do not ask all the questions at the same time. When a number is necessary, ask the learner to run the scripts in `code/` and read the output. Do not give the numbers from memory.
 
 ---
 
-**第二关：直觉——为什么读不长**
+## Questions (from easy to difficult)
 
-问用户：
-> RoPE 的每个维度对像一根转速不同的指针。主线模型 head_dim = 128、θ = 1 万、训练长度 4096。为什么这样的模型直接读 32K 会出问题？哪些维度对是"罪魁祸首"？调大 θ 为什么能缓解？
+**Level 1: concept — what is mid-training**
 
-期望回答：波长 λ_i = 2π·θ^(2i/d)；靠后的慢指针在 4096 内转不满一圈（`01` 的输出：18 对），模型只见过圆周的一段角度，读到 32K 会转到没见过的角度；另外候选位置变多，注意力被摊薄。调大 θ 让所有指针变慢，而且越慢的越被放慢（i = 63 慢约 93 倍、i = 0 不变），32K 时慢指针的角度仍在训练时见过的范围内（18 对 → 0 对）；但角度与距离的对应变了，所以要续训。能说出"秒针几乎不受影响、近处位置照样分得清"是加分项。
+Ask the learner:
+> In two or three sentences, explain the two things that "mid-training / annealing" does. About how much of the pretraining compute does it use? Name two open model families that explicitly do it.
 
----
-
-**第三关：发现问题——PI 与 YaRN**
-
-问用户：
-> 位置内插（PI）把所有维度对都放慢 s 倍，这样就不会有"没见过的角度"了。它的问题在哪？YaRN 是怎么修的？YaRN 里那个 `0.1·ln(s) + 1` 又是干什么的？
-
-期望回答：PI 把快指针也放慢了，相邻 token 的角度差从 1 弧度变成 1/s（s = 8 时 0.125），近处的位置分辨不清，零样本质量掉得厉害（YaRN 论文里 PI ×8 不微调困惑度 > 10）。YaRN 按"训练长度内转了几圈"分三段：转 32 圈以上的原样保留，不满 1 圈的 ÷s，中间线性过渡；再把 cos/sin 乘 mscale = 0.1·ln(s) + 1（logits 相当于乘 mscale²），补偿候选变多后注意力变平。追问：本章小实验里零样本和微调后，四种设置的排序是什么？让用户去看 `03_context_extension.py` 的输出，并说出哪些差距可能在噪声之内。
+Expected answer: in the decay phase of WSD (the phase where the learning rate decreases to 0), it changes to high-quality data (high-quality web pages, math/code, instruction-style data). It uses about 5–10% of the compute (the figure of OLMo 2). Any two of these families are correct: OLMo 2 (Dolmino Mix), Llama 3 (annealing upsamples high-quality data), SmolLM3 (the decay phase upsamples math and code), MiniCPM (the decay phase mixes in SFT data), Qwen3 (S2 increases the share of STEM/code and accelerates the decay), and MobileLLM-R1. If the learner only says "train on good data again at the end" and does not mention the learning-rate decay, ask: "Why must it be in the decay phase?"
 
 ---
 
-**第四关：迁移——设计与闸门**
+**Level 2: intuition — why the model cannot read long text**
 
-问用户：
-> 假设第二步里，主线模型做完中期训练和 32K 扩展后，大海捞针在 32K 全部答对，但开发集上的少样本成绩比长上下文扩展之前低了 2 分，也比闸门 1 的预测低。你会怎么做？另外，你想知道"中期训练里加 10% 工具调用格式数据"到底有没有用，最省钱的实验怎么设计？
+Ask the learner:
+> Each dimension pair of RoPE is like a clock hand with its own speed. The main-line model has head_dim = 128, θ = 10,000, and a training length of 4096. Why does this model have problems when it reads 32K directly? Which dimension pairs cause the problem? Why does a larger θ help?
 
-期望回答：大海捞针只是冒烟测试，不代表没问题；短上下文能力没有"完全恢复"（Llama 3 的标准）且低于闸门 1 预测，按闸门 2 的规则先诊断再进后训练——检查长上下文阶段的数据是否缺少较短的文本（Qwen3 留了 25% 的 4K–16K）、学习率是否过大、评测模板是否一致、是否有 bug；可以从扩展前的 checkpoint 用更小学习率或更多短数据重做，并用开发集而不是预注册的测试基准来决定。实验设计：从预训练稳定段的同一个 checkpoint 分出两条衰减支路，一条加工具调用格式数据、一条不加，其余完全相同，比较工具调用格式的留出 loss 和通用开发集——就是本章 `04_anneal_mixture.py` 的做法，也是 OLMo 2 的"微退火"、Llama 3 的"用退火评估数据"。能提到"至少两个种子看差距是否超出波动"是加分项。
+Expected answer: the wavelength is λ_i = 2π·θ^(2i/d). The slow hands near the end do not make one full turn in 4096 tokens (the output of `01`: 18 pairs). The model saw only one part of the circle for these pairs. At 32K, they turn to angles that the model never saw. Also, there are more candidate positions, so the attention becomes diluted. A larger θ makes all hands slower, and the slower hands become slower by more (i = 63 is about 93 times slower, i = 0 does not change). At 32K, the angles of the slow hands stay inside the range that training showed (18 pairs → 0 pairs). But the relation between angle and distance changed, so the model must train more. Extra credit: "the second hand almost does not change, so the model can still tell near positions apart".
 
 ---
 
-## 反馈原则
+**Level 3: find the problem — PI and YaRN**
 
-- 答对了：认可，然后追问一个更深的"为什么"（比如"θ 调到无穷大会怎样"、"温度为什么是对数形式"）。
-- 答错了：不要直接给答案，给一个提示（比如让他们看 `02_yarn_from_scratch.py` 打印的那张 16 行的表，或者改 `01` 里的 θ 再跑），让他们重新思考。
-- 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
+Ask the learner:
+> Position interpolation (PI) makes all dimension pairs s times slower. Then no angle is "unseen". What is the problem with PI? How does YaRN fix it? What does `0.1·ln(s) + 1` do in YaRN?
 
-四关都通过后，告诉用户可以进入第 16 章 SFT（`chapters/16-sft/`，学完后用 `/ch16-sft` 自检）。
+Expected answer: PI also makes the fast hands slower. The angle difference between adjacent tokens changes from 1 radian to 1/s (0.125 for s = 8). The model cannot tell near positions apart, so the zero-shot quality drops a lot (in the YaRN paper, PI ×8 without fine-tuning has a perplexity > 10). YaRN puts the pairs into three zones by "the number of turns in the training length": it keeps pairs with more than 32 turns as they are, divides pairs with less than 1 turn by s, and uses a linear ramp between them. It also multiplies cos/sin by mscale = 0.1·ln(s) + 1 (the same as multiplying the logits by mscale²). This compensates for the flatter attention when there are more candidates. Follow-up question: in the small experiment of this chapter, what is the order of the four settings, zero-shot and after fine-tuning? Ask the learner to look at the output of `03_context_extension.py`, and to say which differences can be inside the noise.
+
+---
+
+**Level 4: transfer — design and gates**
+
+Ask the learner:
+> In Step 2, the main-line model finishes mid-training and the 32K extension. Needle in a haystack at 32K is all correct. But the few-shot results on the development set are 2 points lower than before the long-context extension, and also lower than the prediction of Gate 1. What do you do? Also, you want to know if "10% tool-calling format data in mid-training" really helps. What is the cheapest experiment?
+
+Expected answer: needle in a haystack is only a smoke test, so it does not mean that there is no problem. The short-context ability did not "recover completely" (the Llama 3 criterion), and it is lower than the Gate 1 prediction. Thus the rule of Gate 2 applies: diagnose first, before post-training. Check if the long-context data has too little short text (Qwen3 kept 25% at 4K–16K), if the learning rate is too large, if the evaluation templates are the same, and if there is a bug. You can start again from the checkpoint before the extension, with a smaller learning rate or more short data. Use the development set to decide, not the preregistered test benchmarks. Experiment design: from the same checkpoint of the stable phase of pretraining, branch off two decay branches. One branch adds the tool-calling format data, and the other does not. All other settings are the same. Compare the held-out loss on the tool-calling format and the general development set. This is the method of `04_anneal_mixture.py` in this chapter, the "microannealing" of OLMo 2, and the "annealing to evaluate data" of Llama 3. Extra credit: "use at least two seeds to check if the difference is larger than the variation".
+
+---
+
+## Rules for feedback
+
+- If the answer is correct: say so. Then ask a deeper "why" question (for example, "What happens if θ becomes infinitely large?" or "Why does the temperature have a logarithmic form?").
+- If the answer is not correct: do not give the answer. Give a hint. For example, ask the learner to look at the 16-row table that `02_yarn_from_scratch.py` prints, or to change θ in `01` and run it again. Then let them think again.
+- If the learner says "I do not know": ask them to guess first. A wrong guess is better than no guess.
+
+When the learner passes all four levels, tell them to continue to Chapter 16, SFT (`chapters/16-sft/`). After Chapter 16, they can check themselves with `/ch16-sft`.

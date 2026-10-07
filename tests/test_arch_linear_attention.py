@@ -1,9 +1,13 @@
-"""第 23 章：线性注意力 / Gated DeltaNet / 混合模型的正确性测试。
+"""Chapter 23: correctness tests of linear attention / Gated DeltaNet / the hybrid model.
 
-- 递推形式 == 分块形式（线性注意力、带衰减、delta 规则、gated delta 规则；带初始状态、长度不整除块大小）；
-- gated delta rule 与"最朴素的矩阵写法" S_t = α_t (I − β_t k_t k_tᵀ) S_{t−1} + β_t k_t v_tᵀ 一致；
-- 层：分段喂（带状态）== 一次喂；与 HF Qwen3.5 的 GatedDeltaNet 权重对拍；
-- 混合模型：状态缓存生成 == 每步全量重算；缓存大小与长度的关系。
+- Recurrent form == chunked form (linear attention, with decay, delta rule, gated delta rule;
+  with an initial state, with a length that is not a multiple of the chunk size).
+- The gated delta rule agrees with "the most basic matrix form"
+  S_t = α_t (I − β_t k_t k_tᵀ) S_{t−1} + β_t k_t v_tᵀ.
+- Layer: input in segments (with state) == input in one pass; parity check against the weights
+  of the HF Qwen3.5 GatedDeltaNet.
+- Hybrid model: generation with the state cache == full recomputation at each step;
+  the relation between cache size and length.
 """
 
 from __future__ import annotations
@@ -53,7 +57,9 @@ def test_linear_attention_chunk_equals_recurrent(use_decay: bool, chunk: int) ->
 
 
 def test_linear_attention_equals_masked_parallel_form() -> None:
-    """不衰减时：O = (QKᵀ ⊙ M) V —— 矩阵乘法结合律把 T×T 的矩阵换成 d×d 的状态。"""
+    """Without decay: O = (QKᵀ ⊙ M) V. The associativity of matrix multiplication replaces
+    the T×T matrix with a d×d state.
+    """
     q, k, v, _, _, _ = _inputs()
     T = q.shape[2]
     mask = torch.ones(T, T).tril()
@@ -74,7 +80,7 @@ def test_gated_delta_chunk_equals_recurrent(use_decay: bool, chunk: int) -> None
 
 
 def test_gated_delta_matches_naive_matrix_reference() -> None:
-    """逐步用显式矩阵 S_t = α_t (I − β_t k_t k_tᵀ) S_{t−1} + β_t k_t v_tᵀ，o_t = S_tᵀ q_t。"""
+    """Use the explicit matrices at each step: S_t = α_t (I − β_t k_t k_tᵀ) S_{t−1} + β_t k_t v_tᵀ, o_t = S_tᵀ q_t."""
     q, k, v, g, beta, s0 = _inputs(B=1, H=2, T=20, seed=2)
     dk = q.shape[-1]
     o, s = recurrent_gated_delta_rule(q, k, v, g, beta, initial_state=s0)
@@ -88,7 +94,9 @@ def test_gated_delta_matches_naive_matrix_reference() -> None:
 
 
 def test_delta_rule_overwrites_same_key() -> None:
-    """同一个 key 先写 v1 再写 v2（β=1）：delta 规则读出 v2，朴素线性注意力读出 v1+v2。"""
+    """Write v1 and then v2 with the same key (β=1): the delta rule reads v2,
+    basic linear attention reads v1+v2.
+    """
     k = l2norm(torch.randn(1, 1, 1, 8)).repeat(1, 1, 2, 1)
     v = torch.randn(1, 1, 2, 4)
     beta = torch.ones(1, 1, 2)
@@ -116,7 +124,7 @@ def test_layer_chunk_recurrent_and_streaming_agree(cls, use_decay: bool) -> None
     with torch.no_grad():
         full_chunk = layer(x, mode="chunk")
         full_rec = layer(x, mode="recurrent")
-        # 分三段喂：10 个 token 的 prefill（分块）+ 逐个 token（递推）+ 再一段 12 个（分块）
+        # Three segments: a prefill of 10 tokens (chunked) + one token (recurrent) + 12 more tokens (chunked).
         cache = HybridCache(kv=None, kv_slot={})
         parts = [
             layer(x[:, :10], cache=cache),
@@ -125,14 +133,14 @@ def test_layer_chunk_recurrent_and_streaming_agree(cls, use_decay: bool) -> None
         ]
     torch.testing.assert_close(full_chunk, full_rec, atol=1e-5, rtol=1e-4)
     torch.testing.assert_close(torch.cat(parts, 1), full_chunk, atol=1e-5, rtol=1e-4)
-    # 状态大小与序列长度无关
+    # The state size does not depend on the sequence length.
     st = cache.linear[0]
     assert st.recurrent is not None and st.recurrent.shape == (2, 4, 8, 8)
     assert st.conv is not None and st.conv.shape == (2, layer.conv_dim, 3)
 
 
 def test_gated_deltanet_matches_hf_qwen3_5() -> None:
-    """把 HF transformers 的 Qwen3_5GatedDeltaNet 权重搬进 zero 的 GatedDeltaNet，输出一致。"""
+    """Copy the weights of HF transformers Qwen3_5GatedDeltaNet into the zero GatedDeltaNet. The outputs agree."""
     mod = pytest.importorskip("transformers.models.qwen3_5.modeling_qwen3_5")
     cfg_mod = pytest.importorskip("transformers.models.qwen3_5.configuration_qwen3_5")
     cfg = cfg_mod.Qwen3_5TextConfig(
@@ -153,7 +161,7 @@ def test_gated_deltanet_matches_hf_qwen3_5() -> None:
     torch.manual_seed(0)
     hf = mod.Qwen3_5GatedDeltaNet(cfg, layer_idx=0).eval()
     with torch.no_grad():
-        for p in hf.parameters():  # 随机化所有权重（包括 norm、dt_bias），避免"恰好是 1"的巧合
+        for p in hf.parameters():  # randomize all weights (norm and dt_bias too) to prevent a lucky match "because the value is 1"
             p.copy_(torch.randn_like(p) * 0.3)
     ours = GatedDeltaNet(48, 2, 4, 8, 12, conv_kernel=4, use_decay=True, chunk_size=16).eval()
     missing, unexpected = ours.load_state_dict(hf.state_dict(), strict=True)
@@ -219,7 +227,7 @@ def test_layer_types_and_cache_accounting() -> None:
     model = _tiny_hybrid(4)
     assert model.full_layers == [3]
     cache = model.new_cache(1, 100)
-    assert cache.kv is not None and cache.kv.k.shape[0] == 1  # 只为 1 个全注意力层分配 KV
+    assert cache.kv is not None and cache.kv.k.shape[0] == 1  # KV is allocated only for the 1 full attention layer
     lt = hybrid_layer_types(24, 4)
     short = cache_bytes_per_sequence(lt, 1000, 2, 256, 16, 128, 128, conv_dim=6144)
     long = cache_bytes_per_sequence(lt, 2000, 2, 256, 16, 128, 128, conv_dim=6144)
@@ -227,7 +235,9 @@ def test_layer_types_and_cache_accounting() -> None:
 
 
 def test_hybrid_trains() -> None:
-    """几步梯度下降 loss 要降（梯度能穿过分块算子里的三角求解）。"""
+    """A few gradient descent steps must decrease the loss
+    (the gradient goes through the triangular solve in the chunked operator).
+    """
     model = _tiny_hybrid(2).train()
     x = torch.randint(0, 61, (4, 33), generator=torch.Generator().manual_seed(0))
     opt = torch.optim.AdamW(model.parameters(), lr=3e-3)
@@ -241,10 +251,12 @@ def test_hybrid_trains() -> None:
     assert losses[-1] < losses[0] - 0.5
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="需要 CUDA")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 @pytest.mark.parametrize("kind", ["gated_deltanet", "linear"])
 def test_generate_greedy_on_cuda(kind: str) -> None:
-    """模型在 CUDA 上时，generate_greedy 的输入和缓存也要放到 CUDA 上（2026-10 在 RTX 3090 上发现）。"""
+    """When the model is on CUDA, generate_greedy must also put the inputs and the cache on CUDA
+    (found on RTX 3090 in 2026-10).
+    """
     model = _tiny_hybrid(2, kind).cuda()
     prompt = [3, 14, 15, 9, 26, 5, 35, 8, 9, 7, 9]
     a = generate_greedy(model, prompt, 20, use_cache=True)

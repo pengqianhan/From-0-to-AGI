@@ -1,17 +1,23 @@
-"""第 20 章 · 极简代码 4：从评测结果 JSON 生成模型卡（model card）
+"""Chapter 20 · Minimal code 4: make a model card from the evaluation results JSON
 
-模型卡是模型仓库首页的 README.md：开头一段 YAML 元数据（许可证、语言、数据集、标签……，
-Hugging Face 用它做检索和展示），后面是给人看的正文。GOAL.md 3.5 规定我们的模型卡必须写：
-训练数据与许可证、每个阶段的配方与花费、预注册协议、全部评测结果（包括落后的项）、去污染检查、已知局限。
+A model card is the README.md on the front page of a model repository. It starts with a block of
+YAML metadata (license, language, data sets, tags, ...). Hugging Face uses the metadata for search
+and display. The text for people comes after it. GOAL.md 3.5 says that our model card must contain:
+the training data and licenses, the recipe and cost of each stage, the preregistration protocol,
+all evaluation results (also the items where we are behind), the decontamination check, and the
+known limitations.
 
-这个脚本的原则：**只填有来源的数**。评测表直接从结果 JSON 生成（格式与 zero/eval/harness.py 的
-results.json 相同：results[模型][任务] = {指标: 值, n: 题数}，comparisons = 配对 bootstrap 的判定）；
-没有数据的地方一律写"待训练"，而不是留空或估一个数。
+The rule of this script: **fill in only numbers that have a source**. The script makes the
+evaluation tables directly from the results JSON. The format is the same as results.json from
+zero/eval/harness.py: results[model][task] = {metric: value, n: number of items}, and
+comparisons = the decisions of the paired bootstrap. Where no data exists, the script always
+writes "TBD after training". It does not leave the cell empty, and it does not estimate a number.
 
-    uv run python chapters/20-release/code/04_model_card.py                 # 默认读 out/smoke（极小配置演示）
+    uv run python chapters/20-release/code/04_model_card.py                 # reads out/smoke by default (tiny-configuration demo)
     uv run python chapters/20-release/code/04_model_card.py --results path/to/results.json --out card.md
 
-out/smoke 由 `uv run python -m zero.smoke` 生成；没有这个目录时，脚本输出一张全是"待训练"的骨架。
+`uv run python -m zero.smoke` makes out/smoke. If this folder does not exist, the script prints a
+skeleton with "TBD after training" in all places.
 """
 
 from __future__ import annotations
@@ -21,26 +27,26 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-TODO = "待训练"
+TODO = "TBD after training"
 
-# 元数据：发布时逐项填写；None 表示还没定，卡片里显示"待定"
+# Metadata: fill in each item at release. None means "not decided yet"; the card shows "undecided"
 META = {
-    "name": "zero-0.7b（暂名）",
-    "license": None,  # 权重许可证：作者决定（见正文"许可证"一节的选项）
+    "name": "zero-0.7b (working name)",
+    "license": None,  # weight license: the author decides (see the options in the "License" section of the chapter)
     "language": ["zh", "en"],
     "library_name": "transformers",
     "pipeline_tag": "text-generation",
     "tags": ["function-calling", "tool-use", "from-scratch", "gguf"],
-    "datasets": [],   # 发布时填 HF 数据集 id，例如预训练用到的 FineWeb-Edu
-    "architecture": "Qwen3ForCausalLM 兼容的稠密 Transformer（Pre-Norm RMSNorm、SwiGLU、RoPE、GQA、QK-Norm、共享 embedding）",
-    "params": "689.5M（configs/main/pretrain.toml 暂定形状）",
+    "datasets": [],   # at release, add the HF data set IDs, for example FineWeb-Edu for pretraining
+    "architecture": "Dense Transformer compatible with Qwen3ForCausalLM (Pre-Norm RMSNorm, SwiGLU, RoPE, GQA, QK-Norm, shared embedding)",
+    "params": "689.5M (provisional shape in configs/main/pretrain.toml)",
 }
 
-STAGES = ["预训练", "中期训练", "长上下文", "SFT", "蒸馏", "DPO", "GRPO"]
+STAGES = ["Pretraining", "Mid-training", "Long context", "SFT", "Distillation", "DPO", "GRPO"]
 
 
 def yaml_front_matter(meta: dict) -> str:
-    lines = ["---", f"license: {meta['license'] or 'other  # 待定'}"]
+    lines = ["---", f"license: {meta['license'] or 'other  # undecided'}"]
     for key in ("language", "tags", "datasets"):
         if meta[key]:
             lines.append(f"{key}:")
@@ -56,102 +62,102 @@ def results_table(results: dict) -> str:
             for k, v in r.items():
                 if isinstance(v, (int, float)) and k != "n" and (task, k) not in cols:
                     cols.append((task, k))
-    out = ["| 模型 | " + " | ".join(f"{t} / {m}" for t, m in cols) + " |",
+    out = ["| Model | " + " | ".join(f"{t} / {m}" for t, m in cols) + " |",
            "|---|" + "---:|" * len(cols)]
     for model, per_task in results.items():
         cells = [f"{per_task.get(t, {}).get(m, float('nan')):.3f}" for t, m in cols]
         out.append(f"| {model} | " + " | ".join(cells) + " |")
     ns = sorted({f"{t} n={r.get('n')}" for pt in results.values() for t, r in pt.items()})
-    return "\n".join(out) + "\n\n题数：" + "，".join(ns)
+    return "\n".join(out) + "\n\nNumber of items: " + ", ".join(ns)
 
 
 def comparison_table(comps: list[dict]) -> str:
-    out = ["| 我们 | 对手 | 基准 | 指标 | 我们 | 对手 | 差值 | 95% CI | 判定 |",
+    out = ["| Ours | Opponent | Benchmark | Metric | Ours | Opponent | Difference | 95% CI | Decision |",
            "|---|---|---|---|---:|---:|---:|---|---|"]
     for c in comps:
         out.append(f"| {c['model']} | {c['baseline']} | {c['task']} | {c['metric']} | {c['mean_a']:.3f} | "
                    f"{c['mean_b']:.3f} | {c['diff']:+.3f} | [{c['ci_low']:+.3f}, {c['ci_high']:+.3f}] | "
                    f"**{c['decision']}** |")
-    tally = {d: sum(c["decision"] == d for c in comps) for d in ("超过", "持平", "落后")}
+    tally = {d: sum(c["decision"] == d for c in comps) for d in ("ahead", "tie", "behind")}
     out.append("")
-    out.append(f"合计：超过 {tally['超过']} 项、持平 {tally['持平']} 项、落后 {tally['落后']} 项（全部列出，不挑选）。")
+    out.append(f"Total: ahead {tally['ahead']}, tie {tally['tie']}, behind {tally['behind']} (all items are listed; none are selected).")
     return "\n".join(out)
 
 
 def stage_table(summary: dict | None) -> str:
-    rows = ["| 阶段 | token / 步数 | 关键指标 | 花费 |", "|---|---|---|---|"]
+    rows = ["| Stage | Tokens / steps | Key metrics | Cost |", "|---|---|---|---|"]
     by_name = {s["stage"]: s for s in (summary or {}).get("stages", [])}
-    alias = {"预训练": "pretrain", "中期训练": "midtrain", "SFT": "sft", "蒸馏": "distill",
+    alias = {"Pretraining": "pretrain", "Mid-training": "midtrain", "SFT": "sft", "Distillation": "distill",
              "DPO": "dpo", "GRPO": "grpo"}
     for st in STAGES:
         s = by_name.get(alias.get(st, ""))
         if s is None:
             rows.append(f"| {st} | {TODO} | {TODO} | {TODO} |")
             continue
-        metrics = "；".join(f"{k}={v}" for k, v in s.items()
+        metrics = "; ".join(f"{k}={v}" for k, v in s.items()
                            if k not in ("stage", "status", "seconds", "steps"))
-        rows.append(f"| {st} | {s.get('steps', '—')} 步 | {metrics} | CPU {s['seconds']:.0f}s，$0 |")
+        rows.append(f"| {st} | {s.get('steps', '—')} steps | {metrics} | CPU {s['seconds']:.0f}s, $0 |")
     return "\n".join(rows)
 
 
 def build_card(results_json: dict | None, summary: dict | None, demo: bool) -> str:
     parts = [yaml_front_matter(META), "", f"# {META['name']}", ""]
     if demo:
-        parts += ["> ⚠️ **极小配置演示**：下面的数字来自 CPU 上约 1.3M 参数的冒烟测试（`zero.smoke`），",
-                  "> 只说明流水线是通的，**不是主线模型的结果**。", ""]
+        parts += ["> ⚠️ **Tiny-configuration demo**: the numbers below come from a CPU smoke test (`zero.smoke`) of a model",
+                  "> with about 1.3M parameters. They only show that the pipeline works. **They are not results of the main-line model.**", ""]
     parts += [
-        "## 模型概要", "",
-        f"- 架构：{META['architecture']}",
-        f"- 参数量：{META['params']}",
-        "- 用途：中英双语、工具调用（function calling）的小模型；可在笔记本上用 llama.cpp / Ollama 运行",
-        f"- 权重许可证：{META['license'] or '待定（作者决定）'}",
-        "- 发布内容：Base、SFT、最终版，以及关键中间 checkpoint（HF safetensors）；GGUF（Q8_0、Q4_K_M）",
+        "## Model summary", "",
+        f"- Architecture: {META['architecture']}",
+        f"- Parameters: {META['params']}",
+        "- Purpose: a small Chinese-English model for tool calling (function calling). It runs on a laptop with llama.cpp / Ollama",
+        f"- Weight license: {META['license'] or 'undecided (the author decides)'}",
+        "- Released files: Base, SFT, final version, and key intermediate checkpoints (HF safetensors); GGUF (Q8_0, Q4_K_M)",
         "",
-        "## 使用方法", "",
+        "## Usage", "",
         "```python",
         "from transformers import AutoModelForCausalLM, AutoTokenizer",
-        "tok = AutoTokenizer.from_pretrained(\"<仓库名>\")",
-        "model = AutoModelForCausalLM.from_pretrained(\"<仓库名>\")",
+        "tok = AutoTokenizer.from_pretrained(\"<repo-name>\")",
+        "model = AutoModelForCausalLM.from_pretrained(\"<repo-name>\")",
         "ids = tok.apply_chat_template(messages, tools=tools, add_generation_prompt=True, return_tensors=\"pt\")",
         "```",
         "",
         "```bash",
-        "llama-cli -m zero-Q4_K_M.gguf          # llama.cpp；Ollama 可直接加载同一个 GGUF",
-        "vllm serve <仓库名> --enable-auto-tool-choice --tool-call-parser hermes",
+        "llama-cli -m zero-Q4_K_M.gguf          # llama.cpp; Ollama can load the same GGUF directly",
+        "vllm serve <repo-name> --enable-auto-tool-choice --tool-call-parser hermes",
         "```",
         "",
-        "## 训练数据与许可证", "",
-        "| 数据集 | 用在哪个阶段 | token 数 | 许可证 | 署名要求 |", "|---|---|---|---|---|",
+        "## Training data and licenses", "",
+        "| Data set | Stage | Tokens | License | Attribution requirement |", "|---|---|---|---|---|",
         f"| {TODO} | {TODO} | {TODO} | {TODO} | {TODO} |",
         "",
-        "教师模型（蒸馏）：名称、版本、许可证是否允许用输出训练其他模型——" + TODO + "。",
+        "Teacher model (distillation): name, version, and whether the license allows training other models on its outputs: " + TODO + ".",
         "",
-        "## 各阶段配方与花费", "",
+        "## Recipe and cost of each stage", "",
         stage_table(summary), "",
-        "完整配置见 `configs/main/`，花费明细见 `runs/ledger.md`。", "",
-        "## 预注册", "",
-        "评测协议在训练前登记：`eval/PREREGISTRATION.md`（登记 commit：" + TODO + "）。",
-        "判定规则：配对 bootstrap 95% 置信区间整体 > 0 为超过，整体 < 0 为落后，跨过 0 为持平。", "",
-        "## 评测结果（全部列出，包括落后的项）", "",
+        "For the full configs, see `configs/main/`. For the cost details, see `runs/ledger.md`.", "",
+        "## Preregistration", "",
+        "We registered the evaluation protocol before training: `eval/PREREGISTRATION.md` (registration commit: " + TODO + ").",
+        "Decision rule (paired bootstrap, 95% confidence interval): the full interval > 0 → ahead; the full interval < 0 → behind; the interval crosses 0 → tie.", "",
+        "## Evaluation results (all items, also the items where we are behind)", "",
     ]
     if results_json:
         parts += [results_table(results_json["results"]), "",
-                  "### 配对比较", "", comparison_table(results_json.get("comparisons", [])), ""]
+                  "### Paired comparisons", "", comparison_table(results_json.get("comparisons", [])), ""]
     else:
-        parts += [f"{TODO}（BFCL、中文工具调用基准、通用基准；每个对手、每个基准一行）", ""]
+        parts += [f"{TODO} (BFCL, a Chinese tool-calling benchmark, general benchmarks; one row for each opponent and each benchmark)", ""]
     parts += [
-        "官方公布的对手分数并列展示，但不作为比较依据。", "",
-        "### 发布后新增对手", "",
-        f"冻结日期之后发布的同尺寸模型：{TODO}（即使它们比我们强，也列在这里）。", "",
-        "## 去污染检查", "",
-        f"- 13-gram 重叠：训练数据（含教师合成数据）vs 全部评测集，命中率 {TODO}",
-        f"- 工具函数名 / 参数 schema 与 BFCL 等评测集的重合：剔除 {TODO} 个", "",
-        "## 已知局限", "",
-        "- 参数少，知识量有限，事实类问题会编造；",
-        "- 工具调用只在预注册的基准和我们自己的环境里评测过，真实场景的工具与参数分布可能不同；",
-        f"- 其他：{TODO}", "",
-        "## 引用与致谢", "",
-        "代码与课程：<https://github.com/…/From-0-to-AGI>（" + TODO + "）",
+        "We show the official scores of the opponents next to our results, but we do not use them for the comparison.", "",
+        "### Opponents added after release", "",
+        f"Models of the same size released after the freeze date: {TODO} (we list them here, also if they are better than ours).", "",
+        "## Decontamination check", "",
+        f"- 13-gram overlap: training data (including synthetic data from the teacher) vs all evaluation sets, hit rate {TODO}",
+        f"- Overlap of tool function names / argument schemas with BFCL and other evaluation sets: removed items {TODO}", "",
+        "## Known limitations", "",
+        "- The model has few parameters and limited knowledge. It makes up answers to factual questions.",
+        "- We evaluated tool calling only on the preregistered benchmarks and in our own environment. Real tools and arguments can have a different distribution.",
+        f"- Other: {TODO}", "",
+        "## Citation and acknowledgments", "",
+        "Code and course: <https://github.com/…/From-0-to-AGI> (" + TODO + ")",
     ]
     return "\n".join(parts) + "\n"
 
@@ -160,7 +166,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", default=str(ROOT / "out/smoke/eval/results.json"))
     ap.add_argument("--summary", default=str(ROOT / "out/smoke/summary.json"))
-    ap.add_argument("--out", default="", help="写到文件；默认打印到终端")
+    ap.add_argument("--out", default="", help="write to this file; by default, print to the terminal")
     args = ap.parse_args()
     res_p, sum_p = Path(args.results), Path(args.summary)
     results = json.loads(res_p.read_text(encoding="utf-8")) if res_p.exists() else None
@@ -169,11 +175,11 @@ def main() -> None:
     card = build_card(results, summary, demo)
     if args.out:
         Path(args.out).write_text(card, encoding="utf-8")
-        print(f"模型卡 → {args.out}")
+        print(f"Model card → {args.out}")
     else:
         print(card)
     n_todo = card.count(TODO)
-    print(f"<!-- 还有 {n_todo} 处'{TODO}'，发布前必须全部填上 -->")
+    print(f"<!-- {n_todo} '{TODO}' placeholders are left. Fill in all of them before release. -->")
 
 
 if __name__ == "__main__":

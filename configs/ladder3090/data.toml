@@ -1,13 +1,17 @@
-# 阶梯实验（runs/ladder-3090）的数据流水线：与主线配方（configs/main/data.toml）相同的清洗、质量、去重、
-# 分词器设置，输入是 configs/ladder3090/download.toml 下载的约 16.8GB 样本（每个数据集分散取多个文件）。
+# Data pipeline for the ladder experiment (runs/ladder-3090). The cleaning, quality, dedup, and
+# tokenizer settings are the same as the main-line recipe (configs/main/data.toml).
+# The input is about 16.8GB of samples from configs/ladder3090/download.toml
+# (several files from different parts of each dataset).
 #
 #   bash runs/ladder-3090/download_all.sh
 #   uv run python -m zero.data.pipeline --config configs/ladder3090/data.toml
 #
-# 与主线配置的不同（都记在 runs/ladder-3090/README.md）：
-# - 代码来源用 UltraData-Code-L2（9 种语言）代替 Stack-Edu（后者要 AWS 凭证取正文）；
-# - 去污染只对这台机器上已有的评测集做（工具调用 dev 集）；MMLU、C-Eval 等评测集文件还没下载；
-# - 分词器训练文本 2GB（主线 20GB），规模只够阶梯用；数据和分片放在 NAS 上，不进 git。
+# Differences from the main-line config (all recorded in runs/ladder-3090/README.md):
+# - The code source is UltraData-Code-L2 (9 languages), not Stack-Edu. Stack-Edu needs AWS credentials to get the text.
+# - Decontamination uses only the evaluation sets on this machine (the tool-calling dev set).
+#   The files of MMLU, C-Eval, and the other evaluation sets are not downloaded yet.
+# - The tokenizer training text is 2GB (main line: 20GB). This is sufficient only for the ladder.
+#   The data and the shards are on the NAS, not in git.
 
 [pipeline]
 name = "ladder3090"
@@ -87,7 +91,7 @@ num_perm = 128
 bands = 16
 ngram = 5
 cross_source = true
-n_jobs = 32                       # 多进程算 MinHash 签名（结果与单进程相同）
+n_jobs = 32                       # Compute MinHash signatures in several processes (same result as one process)
 
 [decontam]
 n = 13

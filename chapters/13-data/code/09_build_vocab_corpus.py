@@ -1,19 +1,26 @@
-"""把 zero.data.download 下载的样本整理成 08_vocab_size.py 用的测量语料（第 10 节）。
+"""Turn the samples from zero.data.download into the measurement corpus for 08_vocab_size.py (Section 10).
 
     uv run python -m zero.data.download --config configs/vocab/download.toml --out <raw>
     uv run python chapters/13-data/code/09_build_vocab_corpus.py --raw <raw> --out <corpus>
     uv run python chapters/13-data/code/08_vocab_size.py --corpus <corpus> --refs --train-mb 30
 
-<raw> 下每个来源一个目录（JSONL 分片 + _manifest.json，带出处和数据集 commit）。本脚本：
-1. 按来源名把文档归到三种"语言"：英文（FineWeb-Edu、DCLM、FineMath）、中文（FineWeb-2、Ultra-FineWeb）、
-   代码（UltraData-Code-L2 的 9 种编程语言）；
-2. 每种语言内部把文档打乱（固定种子）——08 只取训练文件的前 N 字节，打乱后前缀里各来源的比例才和下载
-   比例一致（下载量本身按主线配比分配，见 configs/vocab/download.toml）；
-3. 先切出验证集（按字节数，与正文原来的验证集大小相当），其余是训练集；文档之间空一行；
-4. 写 manifest.json：每种语言、每个来源的文档数和字节数，数据集 repo / config / split / revision，
-   以及输出文件的 sha256，作为这份语料的完整记录。
+<raw> has one directory per source (JSONL shards + _manifest.json, with the provenance and the
+data set commit). This script:
+1. Puts the documents into three "languages" by the source name: English (FineWeb-Edu, DCLM,
+   FineMath), Chinese (FineWeb-2, Ultra-FineWeb), code (the 9 programming languages of
+   UltraData-Code-L2).
+2. Shuffles the documents in each language (fixed seed). 08 takes only the first N bytes of the
+   training file. After the shuffle, the share of each source in this prefix is the same as in
+   the download. (The download amounts follow the main-line mixture; see
+   configs/vocab/download.toml.)
+3. Cuts the validation set first (by bytes, about the size of the original validation set in the
+   text). The rest is the training set. An empty line separates the documents.
+4. Writes manifest.json: the documents and bytes of each language and each source, the data set
+   repo / config / split / revision, and the sha256 of each output file. This is the full record
+   of the corpus.
 
-只读取文本，不做任何过滤和改写：这些数据集在发布前已经做过清洗，测分词器要的就是它们原本的样子。
+The script only reads the text. It does not filter or rewrite anything: the data sets were
+cleaned before release, and the tokenizer measurement needs them in their original form.
 """
 
 from __future__ import annotations
@@ -26,7 +33,7 @@ import random
 from pathlib import Path
 
 SEED = 0
-LANG_OF = {  # 来源名前缀 → 语言
+LANG_OF = {  # source name prefix → language
     "fineweb-edu": "en",
     "dclm-baseline": "en",
     "finemath": "en",
@@ -34,18 +41,18 @@ LANG_OF = {  # 来源名前缀 → 语言
     "ultra-fineweb-zh": "zh",
     "ultradata-code-": "code",
 }
-VAL_BYTES = {"en": 1_750_000, "zh": 800_000, "code": 1_600_000}  # 与正文原来的验证集大小相当
+VAL_BYTES = {"en": 1_750_000, "zh": 800_000, "code": 1_600_000}  # about the size of the original validation set in the text
 
 
 def lang_of(source: str) -> str:
     for prefix, lang in LANG_OF.items():
         if source == prefix or (prefix.endswith("-") and source.startswith(prefix)):
             return lang
-    raise KeyError(f"不认识的来源 {source!r}，先在 LANG_OF 里登记")
+    raise KeyError(f"unknown source {source!r}; add it to LANG_OF first")
 
 
 def read_source(d: Path) -> tuple[list[tuple[str, str]], dict]:
-    """一个来源目录 → [(来源名, 正文)]，以及它的下载清单。"""
+    """One source directory → [(source name, text)], and its download manifest."""
     manifest = json.loads((d / "_manifest.json").read_text("utf-8"))
     docs = []
     for shard in sorted(d.glob("*.jsonl.gz")):
@@ -67,7 +74,7 @@ def sha256(path: Path) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--raw", type=Path, required=True, help="zero.data.download 的 --out 目录")
+    ap.add_argument("--raw", type=Path, required=True, help="the --out directory of zero.data.download")
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
 
@@ -91,7 +98,7 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     rng = random.Random(SEED)
     summary = {}
-    print(f"{'语言':<6}{'集合':<6}{'文档':>8}{'字节':>14}   各来源字节占比")
+    print(f"{'Lang':<6}{'Split':<6}{'Docs':>8}{'Bytes':>14}   Share of bytes per source")
     for lang, docs in by_lang.items():
         rng.shuffle(docs)
         val, train, nval = [], [], 0
@@ -116,12 +123,12 @@ def main() -> None:
                 "sha256": sha256(path),
                 "bytes_by_source": per_src,
             }
-            share = "、".join(f"{s} {b / total:.0%}" for s, b in sorted(per_src.items(), key=lambda x: -x[1]))
+            share = ", ".join(f"{s} {b / total:.0%}" for s, b in sorted(per_src.items(), key=lambda x: -x[1]))
             print(f"{lang:<6}{split:<6}{len(part):>8,}{total:>14,}   {share}")
 
     record = {"seed": SEED, "val_bytes": VAL_BYTES, "sources": sources, "corpus": summary}
     (args.out / "manifest.json").write_text(json.dumps(record, ensure_ascii=False, indent=2), "utf-8")
-    print(f"\n写入 {args.out}（manifest.json 记录了每个来源的 commit 和每个文件的 sha256）")
+    print(f"\nWrote {args.out} (manifest.json records the commit of each source and the sha256 of each file)")
 
 
 if __name__ == "__main__":

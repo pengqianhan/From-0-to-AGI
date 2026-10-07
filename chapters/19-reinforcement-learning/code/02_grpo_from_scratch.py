@@ -1,15 +1,20 @@
-"""第 19 章 · 02：从零实现 GRPO —— 模仿到头了，让验证器接着教（PyTorch，CPU 约一分钟）
+"""Chapter 19 · 02: GRPO from scratch. Imitation reaches its limit; a verifier continues the teaching
+(PyTorch, about 1 min on a CPU).
 
-任务：两个个位数相加，a + b，输出答案的数字再输出 <eos>（例如 7+5 → "1" "2" <eos>）。
-答案对不对，一个函数就能判断——这就是"可验证奖励"（verifiable reward）。
+Task: add two one-digit numbers, a + b. Output the digits of the answer, then <eos>
+(for example, 7+5 → "1" "2" <eos>). One function can tell if the answer is correct.
+This is a "verifiable reward".
 
-1. **模仿（SFT）**：老师是个"不太会进位"的模型——不进位的题全对；进位的题只有 30% 写对，
-   70% 忘了写进位（7+5 写成 "2"）。学生照着老师的示范学，最后连老师的错误也一起学会了。
-2. **GRPO**：同一道题采样 G 个回答，用验证器打分，组内归一化得到优势
-   A_i = (r_i − mean(r)) / std(r)，再做带裁剪的策略梯度（外加对 SFT 模型的 k3 KL）。
-   没有价值模型（critic），基线就是"同一道题其他回答的平均分"。
-3. 和生产级代码对拍：同一批数据上，这里的优势与 zero.post.grpo.group_advantages、
-   损失与 zero.post.grpo.grpo_loss 逐项一致。
+1. **Imitation (SFT)**: the teacher is a model that "is not good at carries". It answers all problems
+   without a carry correctly. On problems with a carry, only 30% of its answers are correct.
+   In 70%, it forgets to write the carry (7+5 becomes "2"). The student learns from the teacher's
+   demos, and at the end it also learns the teacher's errors.
+2. **GRPO**: sample G answers for the same problem and score them with the verifier. Normalize
+   within the group to get the advantage A_i = (r_i − mean(r)) / std(r). Then do a clipped policy
+   gradient (plus a k3 KL to the SFT model). There is no value model (critic): the baseline is
+   "the mean score of the other answers to the same problem".
+3. Parity check with the production code: on the same batch of data, the advantages here are equal to
+   zero.post.grpo.group_advantages, and the loss is equal to zero.post.grpo.grpo_loss.
 
     uv run python chapters/19-reinforcement-learning/code/02_grpo_from_scratch.py
 """
@@ -23,9 +28,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-torch.set_num_threads(1)  # 构建环境多个任务共享 CPU；读者本机可删掉
+torch.set_num_threads(1)  # the build machine shares its CPU between many jobs; you can remove this line
 
-EOS, BOS, V, T = 10, 11, 11, 3  # 词表：0–9 是数字，10 是 <eos>；最多生成 3 个 token
+EOS, BOS, V, T = 10, 11, 11, 3  # vocabulary: 0–9 are digits, 10 is <eos>; generate at most 3 tokens
 PROMPTS = [(a, b) for a in range(10) for b in range(10)]
 
 
@@ -38,7 +43,7 @@ def carry(a: int, b: int) -> bool:
 
 
 class TinyPolicy(nn.Module):
-    """极小的自回归策略：下一个 token 的分布只看 (a, b, 位置, 上一个 token)。"""
+    """A tiny autoregressive policy: the next-token distribution depends only on (a, b, position, previous token)."""
 
     def __init__(self, d: int = 32, h: int = 128):
         super().__init__()
@@ -46,23 +51,23 @@ class TinyPolicy(nn.Module):
         self.ep, self.eprev = nn.Embedding(T, d), nn.Embedding(12, d)
         self.mlp = nn.Sequential(nn.Linear(d, h), nn.GELU(), nn.Linear(h, V))
 
-    def forward(self, a, b, prev):  # a, b: (B,)；prev: (B, T) 每个位置的"上一个 token"
+    def forward(self, a, b, prev):  # a, b: (B,); prev: (B, T), the "previous token" at each position
         pos = torch.arange(prev.shape[1])
         x = self.ea(a)[:, None] + self.eb(b)[:, None] + self.ep(pos)[None] + self.eprev(prev)
         return self.mlp(x)  # (B, T, V)
 
 
 def token_logps(model, a, b, seq):
-    """seq: (B, T) 回复 token（<eos> 之后用 <eos> 填充）→ 每个位置的 log π(y_t | ·)。"""
+    """seq: (B, T) response tokens (padded with <eos> after <eos>) → log π(y_t | ·) at each position."""
     prev = torch.cat([torch.full_like(seq[:, :1], BOS), seq[:, :-1]], dim=1)
     logits = model(a, b, prev)
     return torch.log_softmax(logits, -1).gather(-1, seq[..., None]).squeeze(-1)
 
 
 def response_mask(seq):
-    """回复 token 的掩码：直到并包括第一个 <eos>。"""
+    """Mask of the response tokens: up to and including the first <eos>."""
     is_eos = (seq == EOS).int()
-    before = torch.cumsum(is_eos, 1) - is_eos  # 这个位置之前出现过几个 <eos>
+    before = torch.cumsum(is_eos, 1) - is_eos  # number of <eos> tokens before this position
     return before == 0
 
 
@@ -82,31 +87,31 @@ def sample(model, a, b, greedy=False, gen=None):
 
 
 def verify(a: int, b: int, seq: list[int]) -> float:
-    """可验证奖励：<eos> 之前的数字恰好等于 a + b，且确实输出了 <eos>，得 1 分，否则 0 分。"""
+    """Verifiable reward: 1 if the digits before <eos> are exactly a + b and the output has an <eos>; else 0."""
     if EOS not in seq:
         return 0.0
     return 1.0 if seq[: seq.index(EOS) + 1] == target(a, b) else 0.0
 
 
 # ---------------------------------------------------------------------------
-# GRPO 的两个核心函数（和 zero/post/grpo.py 对拍）
+# The two core functions of GRPO (parity check with zero/post/grpo.py)
 # ---------------------------------------------------------------------------
 
 
 def group_advantages(rewards: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-    """rewards: (P, G) → A = (r − 组均值) / (组标准差 + eps)。全对或全错的组，A 全是 0。"""
+    """rewards: (P, G) → A = (r − group mean) / (group std + eps). If a group is all correct or all wrong, A is all 0."""
     mean = rewards.mean(1, keepdim=True)
-    std = rewards.std(1, keepdim=True)  # 无偏标准差，与 TRL / verl / zero 一致
+    std = rewards.std(1, keepdim=True)  # unbiased std, the same as TRL / verl / zero
     return (rewards - mean) / (std + eps)
 
 
 def grpo_loss(logp, old_logp, ref_logp, adv, mask, eps_clip=0.2, beta=0.02):
-    """逐 token：−min(ρA, clip(ρ, 1−ε, 1+ε)A) + β·k3，再对所有回复 token 取平均（token_mean）。"""
+    """Per token: −min(ρA, clip(ρ, 1−ε, 1+ε)A) + β·k3. Then take the mean over all response tokens (token_mean)."""
     ratio = torch.exp(logp - old_logp)  # ρ_t = π_θ / π_old
     A = adv[:, None]
     per_tok = torch.maximum(-ratio * A, -torch.clamp(ratio, 1 - eps_clip, 1 + eps_clip) * A)
     d = ref_logp - logp
-    kl = torch.exp(d) - d - 1  # k3 估计：非负，期望等于 KL(π_θ ‖ π_ref)
+    kl = torch.exp(d) - d - 1  # k3 estimate: not negative, its expectation is KL(π_θ ‖ π_ref)
     per_tok = per_tok + beta * kl
     m = mask.float()
     loss = (per_tok * m).sum() / m.sum()
@@ -119,7 +124,7 @@ def grpo_loss(logp, old_logp, ref_logp, adv, mask, eps_clip=0.2, beta=0.02):
 
 
 def teacher_demo(a: int, b: int, gen: torch.Generator) -> list[int]:
-    """不太会进位的老师：进位题 70% 忘了写进位（7+5 → "2"）。"""
+    """A teacher that is not good at carries: on carry problems, it forgets the carry 70% of the time (7+5 → "2")."""
     if carry(a, b) and torch.rand(1, generator=gen).item() < 0.7:
         return [(a + b) % 10, EOS]
     return target(a, b)
@@ -134,7 +139,7 @@ def evaluate(model, gen):
     b = torch.tensor([p[1] for p in PROMPTS])
     g = sample(model, a, b, greedy=True).tolist()
     greedy = [verify(x, y, s) for (x, y), s in zip(PROMPTS, g)]
-    rep = 20  # 采样准确率：每题采 20 次
+    rep = 20  # sampled accuracy: 20 samples for each problem
     s = sample(model, a.repeat(rep), b.repeat(rep), gen=gen).tolist()
     samp = [verify(x, y, q) for (x, y), q in zip(PROMPTS * rep, s)]
     car = [i for i, p in enumerate(PROMPTS) if carry(*p)]
@@ -156,7 +161,7 @@ def sft(model, gen, steps=600, n_demo=20):
         idx = torch.randint(len(data), (256,), generator=gen)
         lp = token_logps(model, A[idx], B[idx], S[idx])
         m = response_mask(S[idx]).float()
-        loss = -(lp * m).sum() / m.sum()  # SFT：只在回复 token 上算交叉熵
+        loss = -(lp * m).sum() / m.sum()  # SFT: cross-entropy only on the response tokens
         opt.zero_grad()
         loss.backward()
         opt.step()
@@ -168,17 +173,17 @@ def grpo(model, ref, gen, steps=60, P=16, G=8, lr=1e-3, mu=2, log_every=5, cross
     hist, example = [], None
     for step in range(1, steps + 1):
         idx = torch.randint(len(PROMPTS), (P,), generator=gen)
-        a = torch.tensor([PROMPTS[i][0] for i in idx]).repeat_interleave(G)  # 每题复制 G 份
+        a = torch.tensor([PROMPTS[i][0] for i in idx]).repeat_interleave(G)  # G copies of each problem
         b = torch.tensor([PROMPTS[i][1] for i in idx]).repeat_interleave(G)
-        seq = sample(model, a, b, gen=gen)  # 1. 采样
+        seq = sample(model, a, b, gen=gen)  # 1. sample
         r = torch.tensor([verify(x, y, s) for x, y, s in zip(a.tolist(), b.tolist(), seq.tolist())])
-        rewards = r.view(P, G)  # 2. 打分
-        adv = group_advantages(rewards).view(-1)  # 3. 组内归一化的优势
+        rewards = r.view(P, G)  # 2. score
+        adv = group_advantages(rewards).view(-1)  # 3. advantages, normalized within each group
         mask = response_mask(seq)
         with torch.no_grad():
-            old = token_logps(model, a, b, seq)  # π_old：采样时的策略
-            reflp = token_logps(ref, a, b, seq)  # π_ref：SFT 模型（冻结）
-        if example is None:  # 记下第一组"有对有错"的样本，给视频用
+            old = token_logps(model, a, b, seq)  # π_old: the policy at sampling time
+            reflp = token_logps(ref, a, b, seq)  # π_ref: the SFT model (frozen)
+        if example is None:  # keep the first group with both correct and wrong samples, for the video
             for j in range(P):
                 if rewards[j].std() > 0 and carry(int(a[j * G]), int(b[j * G])):
                     example = {
@@ -191,7 +196,7 @@ def grpo(model, ref, gen, steps=60, P=16, G=8, lr=1e-3, mu=2, log_every=5, cross
                         "adv": group_advantages(rewards[j : j + 1])[0].tolist(),
                     }
                     break
-        for _ in range(mu):  # 4. 同一批样本更新 μ 次；第二次起 ρ ≠ 1，裁剪开始起作用
+        for _ in range(mu):  # 4. update μ times on the same batch; from the 2nd update, ρ ≠ 1 and clipping can act
             logp = token_logps(model, a, b, seq)
             loss, kl, clip = grpo_loss(logp, old, reflp, adv, mask)
             if crosscheck is not None and step == 1:
@@ -205,21 +210,21 @@ def grpo(model, ref, gen, steps=60, P=16, G=8, lr=1e-3, mu=2, log_every=5, cross
         if step % log_every == 0:
             ev = evaluate(model, gen)
             hist[-1].update(ev)
-            print(f"  第 {step:>3} 步 | 批平均奖励 {r.mean():.2f} | 贪心准确率 {ev['greedy']:.2f}"
-                  f"（进位题 {ev['greedy_carry']:.2f}）| 采样准确率 {ev['sampled']:.2f}"
-                  f" | KL {kl:.3f} | 裁剪比例 {clip:.2f} | 零方差组 {hist[-1]['zero_std']:.2f}")
+            print(f"  step {step:>3} | batch mean reward {r.mean():.2f} | greedy acc {ev['greedy']:.2f}"
+                  f" (carry {ev['greedy_carry']:.2f}) | sampled acc {ev['sampled']:.2f}"
+                  f" | KL {kl:.3f} | clip ratio {clip:.2f} | zero-std groups {hist[-1]['zero_std']:.2f}")
     return hist, example
 
 
 def crosscheck_with_zero(rewards, adv, logp, old, ref, mask, loss):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # 仓库根目录，才能 import zero
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # the repository root, so that we can import zero
     from zero.post.grpo import group_advantages as z_adv
     from zero.post.grpo import grpo_loss as z_loss
 
     d_adv = (z_adv(rewards).view(-1) - adv).abs().max().item()
     z, _ = z_loss(logp, old, adv, mask, clip_eps=0.2, ref_logp=ref, kl_coef=0.02, loss_agg="token_mean")
-    print(f"  对拍 zero.post.grpo：优势最大差 {d_adv:.2e}，损失 {loss.item():+.6f} vs {z.item():+.6f}"
-          f"（差 {abs(loss.item() - z.item()):.2e}）")
+    print(f"  Parity check with zero.post.grpo: max advantage diff {d_adv:.2e}, loss {loss.item():+.6f} vs {z.item():+.6f}"
+          f" (diff {abs(loss.item() - z.item()):.2e})")
 
 
 def run(seed: int = 0, verbose: bool = True):
@@ -229,10 +234,10 @@ def run(seed: int = 0, verbose: bool = True):
     teacher_acc = sft(model, gen)
     ev_sft = evaluate(model, gen)
     if verbose:
-        print(f"== 1. 模仿：老师示范的准确率 {teacher_acc:.3f}（不进位全对，进位只对 30%） ==")
-        print(f"  SFT 之后：贪心准确率 {ev_sft['greedy']:.2f}（进位题 {ev_sft['greedy_carry']:.2f}），"
-              f"采样准确率 {ev_sft['sampled']:.2f}")
-        print("\n== 2. GRPO：G=8，每步 16 道题，ε=0.2，β=0.02，μ=2 ==")
+        print(f"== 1. Imitation: accuracy of the teacher demos {teacher_acc:.3f} (all correct without a carry, only 30% with a carry) ==")
+        print(f"  After SFT: greedy accuracy {ev_sft['greedy']:.2f} (carry problems {ev_sft['greedy_carry']:.2f}), "
+              f"sampled accuracy {ev_sft['sampled']:.2f}")
+        print("\n== 2. GRPO: G=8, 16 problems per step, ε=0.2, β=0.02, μ=2 ==")
     ref = TinyPolicy()
     ref.load_state_dict(model.state_dict())
     ref.requires_grad_(False)
@@ -244,9 +249,9 @@ def run(seed: int = 0, verbose: bool = True):
 def main() -> None:
     out = run()
     ex = out["example"]
-    print(f"\n== 3. 一组样本长什么样（第 1 步，题目 {ex['prompt'][0]}+{ex['prompt'][1]}） ==")
+    print(f"\n== 3. One group of samples (step 1, problem {ex['prompt'][0]}+{ex['prompt'][1]}) ==")
     for resp, r, A in zip(ex["responses"], ex["rewards"], ex["adv"]):
-        print(f"  回答 {resp:>3}  奖励 {r:.0f}  优势 {A:+.2f}")
+        print(f"  answer {resp:>3}  reward {r:.0f}  advantage {A:+.2f}")
 
 
 if __name__ == "__main__":

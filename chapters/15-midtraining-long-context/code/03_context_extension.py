@@ -1,14 +1,19 @@
-"""第 15 章 · 极简代码 3：训练长度 64 的小模型，能不能读 128、256？
+"""Chapter 15 · Minimal code 3: a small model trained at length 64. Can it read 128 and 256?
 
-1. 用第 9 章的极简 Transformer（字节级，head_dim 32，θ = 1 万），在莎士比亚上只用长度 64 的片段训练；
-2. 不再训练，直接在长度 64 / 128 / 256 的验证片段上算 loss，四种 RoPE 设置：
-     (a) 什么都不改        (b) 位置内插 PI（÷4）
-     (c) YaRN（s = 4）     (d) 调大基频（θ = 10 万）
-3. 每种设置再用长度 256 的片段微调一小段（150 步，约为预训练的 1/10），重新评测。
+1. Train the minimal Transformer of Chapter 9 (byte level, head_dim 32, θ = 10K) on Shakespeare,
+   with sequences of length 64 only.
+2. Do not train more. Calculate the loss on validation sequences of length 64 / 128 / 256 with
+   four RoPE settings:
+     (a) change nothing    (b) position interpolation PI (÷4)
+     (c) YaRN (s = 4)      (d) larger base frequency (θ = 100K)
+3. Fine-tune each setting for a short time on sequences of length 256 (150 steps, about 1/10 of
+   pretraining). Then evaluate again.
 
-所有设置都只改 RoPE 的 cos/sin，不改任何可学参数；评测时同一个模型对所有长度用同一套 cos/sin（"静态缩放"）。
-运行：uv run python chapters/15-midtraining-long-context/code/03_context_extension.py
-      （单线程约 11 分钟 CPU 时间，机器繁忙时墙钟更长；结果缓存在 code/out/context_extension.pt，视频直接读它；加 --fresh 重跑）
+All settings change only the RoPE cos/sin. No learnable parameter changes. In evaluation, one model
+uses the same cos/sin for all lengths ("static scaling").
+Run: uv run python chapters/15-midtraining-long-context/code/03_context_extension.py
+     (about 11 min of CPU time on one thread; the wall time is longer on a busy machine. The results
+     are cached in code/out/context_extension.pt, and the video reads this file. Add --fresh to run again.)
 """
 
 import argparse
@@ -40,7 +45,8 @@ HEAD_DIM, THETA, ABF_THETA = 32, 10_000.0, 100_000.0
 
 
 def rope_tables(variant: str) -> tuple[torch.Tensor, torch.Tensor]:
-    """返回长度 MAX_LEN 的 cos/sin 表。mscale 直接乘进 cos/sin（与 zero 一样），q·k 因此放大 mscale²。"""
+    """Return the cos/sin tables of length MAX_LEN. mscale multiplies cos/sin directly (as in zero),
+    so q·k becomes mscale² times larger."""
     mscale = 1.0
     if variant == "none":
         w = yarn.rope_inv_freq(HEAD_DIM, THETA)
@@ -76,7 +82,7 @@ def train(model, data, seq_len, batch_size, steps, lr, warmup, seed, log_every=0
     curve = []
     model.train()
     for step, (x, y) in enumerate(batches(data, seq_len, batch_size, steps, seed)):
-        # warmup + 余弦衰减到 10%（第 6 章）
+        # warmup + cosine decay to 10% (Chapter 6)
         f = min(1.0, (step + 1) / warmup) * (0.1 + 0.45 * (1 + math.cos(math.pi * step / steps)))
         for gr in opt.param_groups:
             gr["lr"] = lr * f
@@ -94,8 +100,9 @@ def train(model, data, seq_len, batch_size, steps, lr, warmup, seed, log_every=0
 
 @torch.no_grad()
 def per_position_loss(model, val, n_windows=256, seed=7) -> torch.Tensor:
-    """在 n_windows 个长度 MAX_LEN 的验证片段上，算每个位置的平均 loss（nat/字节），形状 (MAX_LEN,)。
-    因果注意力下，位置 p 的预测只看 [0, p]，所以"长度 L 的 loss"就是前 L 个位置的平均。"""
+    """Mean loss at each position (nat/byte) on n_windows validation sequences of length MAX_LEN.
+    Shape (MAX_LEN,). With causal attention, the prediction at position p sees only [0, p].
+    Thus "the loss at length L" is the mean of the first L positions."""
     g = torch.Generator().manual_seed(seed)
     ix = torch.randint(len(val) - MAX_LEN - 1, (n_windows,), generator=g)
     total = torch.zeros(MAX_LEN)
@@ -120,13 +127,13 @@ def run(fresh: bool = False, pre_steps: int = 1500, ft_steps: int = 150) -> dict
         return torch.load(CACHE, weights_only=False)
     torch.manual_seed(1337)
     train_data, val_data = tt.load_data()
-    cfg = tt.Config(seq_len=MAX_LEN)            # 预计算到 256 的 cos/sin；训练只用前 64 个位置
+    cfg = tt.Config(seq_len=MAX_LEN)            # cos/sin up to 256; training uses only the first 64 positions
     base = tt.TinyTransformer(cfg)
     set_rope(base, "none")
     t0 = time.time()
-    print(f"预训练：长度 {TRAIN_LEN}，{pre_steps} 步，batch 32")
+    print(f"Pretraining: length {TRAIN_LEN}, {pre_steps} steps, batch 32")
     pre_curve = train(base, train_data, TRAIN_LEN, 32, pre_steps, lr=3e-3, warmup=100, seed=1, log_every=300)
-    print(f"   用时 {time.time() - t0:.0f}s")
+    print(f"   time {time.time() - t0:.0f}s")
 
     results = {"zero_shot": {}, "finetuned": {}, "ft_curves": {}}
     variants = ["none", "pi", "yarn", "abf"]
@@ -135,10 +142,10 @@ def run(fresh: bool = False, pre_steps: int = 1500, ft_steps: int = 150) -> dict
     for v in variants:
         t0 = time.time()
         m = set_rope(copy.deepcopy(base), v)
-        # 所有微调用同一份数据顺序（seed=2），只有 RoPE 设置不同
+        # All fine-tuning runs use the same data order (seed=2). Only the RoPE setting is different.
         results["ft_curves"][v] = train(m, train_data, MAX_LEN, 8, ft_steps, lr=1e-3, warmup=10, seed=2)
         results["finetuned"][v] = summarize(per_position_loss(m, val_data))
-        print(f"   微调 {v:<5} 用时 {time.time() - t0:.0f}s")
+        print(f"   fine-tune {v:<5} time {time.time() - t0:.0f}s")
     set_rope(base, "none")
     results.update(pre_curve=pre_curve, pre_steps=pre_steps, ft_steps=ft_steps,
                    tokens_pre=pre_steps * 32 * TRAIN_LEN, tokens_ft=ft_steps * 8 * MAX_LEN)
@@ -147,15 +154,15 @@ def run(fresh: bool = False, pre_steps: int = 1500, ft_steps: int = 150) -> dict
     return results
 
 
-NAMES = {"none": "(a) 什么都不改", "pi": "(b) 位置内插 PI", "yarn": "(c) YaRN", "abf": "(d) 调大基频 θ=10万"}
+NAMES = {"none": "(a) no change", "pi": "(b) PI (÷4)", "yarn": "(c) YaRN", "abf": "(d) ABF θ=100K"}
 
 
 def report(r: dict) -> None:
-    print(f"\n预训练 {r['tokens_pre']:,} 个 token（长度 {TRAIN_LEN}）；每种设置微调 {r['tokens_ft']:,} 个 token（长度 {MAX_LEN}）")
-    for key, title in [("zero_shot", "不训练，直接换 RoPE"), ("finetuned", f"再用长度 {MAX_LEN} 微调 {r['ft_steps']} 步")]:
-        print(f"\n{title}：验证 loss（nat/字节，越低越好）")
-        print(f"   {'设置':<18}" + "".join(f"{'L=' + str(L):>9}" for L in EVAL_LENS)
-              + "".join(f"{'位置' + k:>12}" for k in r[key]["none"]["bucket"]))
+    print(f"\nPretraining {r['tokens_pre']:,} tokens (length {TRAIN_LEN}); fine-tuning {r['tokens_ft']:,} tokens for each setting (length {MAX_LEN})")
+    for key, title in [("zero_shot", "No training, only a new RoPE"), ("finetuned", f"After {r['ft_steps']} fine-tuning steps at length {MAX_LEN}")]:
+        print(f"\n{title}: validation loss (nat/byte, lower is better)")
+        print(f"   {'setting':<16}" + "".join(f"{'L=' + str(L):>9}" for L in EVAL_LENS)
+              + "".join(f"{'pos ' + k:>12}" for k in r[key]["none"]["bucket"]))
         for v, name in NAMES.items():
             s = r[key][v]
             print(f"   {name:<16}" + "".join(f"{s['len'][L]:>9.3f}" for L in EVAL_LENS)
@@ -164,6 +171,6 @@ def report(r: dict) -> None:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--fresh", action="store_true", help="忽略缓存，重新训练")
+    ap.add_argument("--fresh", action="store_true", help="ignore the cache and train again")
     args = ap.parse_args()
     report(run(fresh=args.fresh))

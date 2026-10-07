@@ -1,13 +1,16 @@
-"""第 7 章 · 极简代码 3：数出来的 bigram 语言模型 + bits-per-byte
+"""Chapter 7 · Minimal code 3: a bigram language model from counts, and bits-per-byte
 
-语言模型 = 给定前文，预测下一个 token 的概率分布。bigram 只看前 1 个 token：
+A language model gives the probability distribution of the next token from the text before it.
+A bigram model looks only at the previous token:
     p(x_t | x_<t) ≈ p(x_t | x_{t-1}) = (count[x_{t-1}, x_t] + α) / (Σ_j count[x_{t-1}, j] + α·V)
-"数次数再除以总数"就是最大似然解（第 5 章 04_next_token.py 已经验证过）；加 α 是平滑，
-免得验证集里出现一次训练时没见过的组合，概率就是 0、损失变成无穷大。
+"Count, then divide by the total" is the maximum-likelihood solution (Chapter 5, 04_next_token.py, shows this).
+We add α for smoothing. Without it, one pair in the validation set that training did not see
+gets probability 0, and the loss becomes infinite.
 
-评估：交叉熵（nats/token）→ bits/token → 困惑度 → bits-per-byte。
-bpb = 总损失(nats) / (ln 2 × 这些 token 覆盖的总字节数)，和分词器无关，可以横向比较。
-运行：uv run python chapters/07-tokenization-language-model/code/03_bigram.py
+Evaluation: cross-entropy (nats/token) → bits/token → perplexity → bits-per-byte.
+bpb = total loss (nats) / (ln 2 × total bytes that these tokens cover). It does not depend on the
+tokenizer, so we can compare models that use different tokenizers.
+Run: uv run python chapters/07-tokenization-language-model/code/03_bigram.py
 """
 
 import importlib.util
@@ -20,11 +23,11 @@ _spec = importlib.util.spec_from_file_location("bpe_mod", Path(__file__).with_na
 bpe_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bpe_mod)
 
-ALPHA = 0.03  # 加 α 平滑：在每份语料的 [-40000:-20000] 这段（不参与训练和验证）上从 1、0.3、0.1、0.03、0.01 里挑的
+ALPHA = 0.03  # add-α smoothing: chosen from 1, 0.3, 0.1, 0.03, 0.01 on [-40000:-20000] of each corpus (not used for training or validation)
 
 
 class ByteTok:
-    """字节级：id = UTF-8 字节。"""
+    """Byte level: id = UTF-8 byte."""
     V = 256
 
     def encode(self, s: str) -> list[int]:
@@ -35,7 +38,7 @@ class ByteTok:
 
 
 class CharTok:
-    """字符级：词表 = 训练集里出现过的字符 + 1 个 <unk>（没见过的字符都映射到它）。"""
+    """Character level: the vocabulary is the characters in the training set + 1 <unk> (all unseen characters map to it)."""
 
     def __init__(self, train_text: str) -> None:
         self.chars = sorted(set(train_text))
@@ -50,7 +53,7 @@ class CharTok:
 
 
 class BPETok:
-    """第 2 个脚本里手写的 BPE。"""
+    """The BPE that we wrote by hand in the second script."""
 
     def __init__(self, bpe) -> None:
         self.bpe, self.V = bpe, len(bpe.vocab)
@@ -64,27 +67,27 @@ class BPETok:
 
 def count_bigrams(ids: list[int], V: int) -> np.ndarray:
     a = np.asarray(ids)
-    flat = a[:-1] * V + a[1:]                                 # 把 (前一个, 下一个) 编成一个整数
-    return np.bincount(flat, minlength=V * V).reshape(V, V).astype(np.float64)  # counts[前, 后]
+    flat = a[:-1] * V + a[1:]                                 # encode (previous, next) as one integer
+    return np.bincount(flat, minlength=V * V).reshape(V, V).astype(np.float64)  # counts[previous, next]
 
 
 def bigram_prob(counts: np.ndarray, prev, nxt, alpha: float = ALPHA):
-    """p(下一个 = nxt | 当前 = prev) = (count + α) / (该行总数 + α·V)。prev、nxt 可以是数组。"""
+    """p(next = nxt | current = prev) = (count + α) / (row total + α·V). prev and nxt can be arrays."""
     V = counts.shape[0]
     return (counts[prev, nxt] + alpha) / (counts.sum(axis=1)[prev] + alpha * V)
 
 
 def evaluate(counts: np.ndarray, ids: list[int], n_bytes: list[int]) -> dict:
-    """在一段 token 序列上算交叉熵。n_bytes[i] 是第 i 个 token 在原文里占几个字节。"""
+    """Calculate the cross-entropy on a token sequence. n_bytes[i] is the number of bytes of token i in the original text."""
     x, y = np.array(ids[:-1]), np.array(ids[1:])
-    nats = -np.log(bigram_prob(counts, x, y))                 # 每个位置的 −ln p(正确的下一个 token)
-    total_nats, total_bytes = nats.sum(), sum(n_bytes[1:])   # 只统计被预测的那些 token
+    nats = -np.log(bigram_prob(counts, x, y))                 # −ln p(correct next token) at each position
+    total_nats, total_bytes = nats.sum(), sum(n_bytes[1:])   # count only the tokens that the model predicts
     ce = total_nats / len(y)                                  # nats / token
     return {
         "tokens": len(y),
         "nats": ce,
         "bits": ce / math.log(2),                             # bits / token
-        "ppl": math.exp(ce),                                  # 困惑度 = e^nats = 2^bits
+        "ppl": math.exp(ce),                                  # perplexity = e^nats = 2^bits
         "bpb": total_nats / (math.log(2) * total_bytes),     # bits / byte
     }
 
@@ -96,48 +99,48 @@ def run(tok, train_text: str, val_text: str, n_bytes_fn) -> dict:
 
 
 def sample(counts: np.ndarray, tok, start: int, n: int, seed: int = 0) -> str:
-    """不平滑，直接按计数抽样：下一个 token 只可能是训练时在当前 token 后面出现过的。"""
+    """Sample from the counts with no smoothing: the next token can only be one that followed the current token in training."""
     rng = np.random.default_rng(seed)
     ids = [start]
     for _ in range(n):
         row = counts[ids[-1]]
-        ids.append(int(rng.choice(len(row), p=row / row.sum())))  # 按 p(下一个 | 当前) 抽样
+        ids.append(int(rng.choice(len(row), p=row / row.sum())))  # sample from p(next | current)
     return b"".join(tok.token_bytes(i) for i in ids).decode("utf-8", errors="replace")
 
 
 def splits(key: str) -> tuple[str, str]:
-    """bigram 训练用整份语料除去最后 40,000 字符；验证用最后 20,000 字符（与 02 相同）。"""
+    """Bigram training uses the full corpus without its last 40,000 characters. Validation uses the last 20,000 characters (as in 02)."""
     t = (bpe_mod.CORPUS / bpe_mod.FILES[key]).read_text("utf-8")
     return t[:-40_000], t[-20_000:]
 
 
 if __name__ == "__main__":
     train, _ = bpe_mod.load_splits()
-    bpe = bpe_mod.BPE().train("\n".join(train.values()), vocab_size=1024)  # 分词器只用各 60,000 字符训练
+    bpe = bpe_mod.BPE().train("\n".join(train.values()), vocab_size=1024)  # the tokenizer trains only on 60,000 characters of each corpus
 
-    print(f"bigram 训练：各语料除去最后 40,000 字符；验证：最后 20,000 字符。平滑 α = {ALPHA}\n")
-    print(f"{'语料':<5}{'分词':<14}{'V':>6}{'val token数':>12}{'nats/tok':>10}{'bits/tok':>10}"
-          f"{'困惑度':>9}{'bpb':>8}")
+    print(f"Bigram training: each corpus without its last 40,000 characters. Validation: the last 20,000 characters. Smoothing α = {ALPHA}\n")
+    print(f"{'corpus':<5}{' tokenizer':<14}{'V':>6}{'val tokens':>12}{'nats/tok':>10}{'bits/tok':>10}"
+          f"{'ppl':>9}{'bpb':>8}")
     samples = {}
     for k in ["en", "zh", "code"]:
         tr, va = splits(k)
         char = CharTok(tr)
         n_unk = sum(i == char.V - 1 for i in char.encode(va))
-        for name, tok in [("字节", ByteTok()), ("字符", char), ("BPE", BPETok(bpe))]:
-            if isinstance(tok, CharTok):  # <unk> 按原字符的真实字节数计
+        for name, tok in [("byte", ByteTok()), ("char", char), ("BPE", BPETok(bpe))]:
+            if isinstance(tok, CharTok):  # count <unk> with the true number of bytes of the original character
                 nb = lambda ids, v=va: [len(c.encode()) for c in v]  # noqa: E731
             else:
                 nb = lambda ids, t=tok: [len(t.token_bytes(i)) for i in ids]  # noqa: E731
             r = run(tok, tr, va, nb)
-            if name != "字节":
-                samples[(k, name)] = sample(r["counts"], tok, tok.encode("\n")[0], 50 if name == "字符" else 30, seed=1)
+            if name != "byte":
+                samples[(k, name)] = sample(r["counts"], tok, tok.encode("\n")[0], 50 if name == "char" else 30, seed=1)
             print(f"{k:<6}{name:<12}{tok.V:>8,}{r['tokens']:>11,}{r['nats']:>10.3f}{r['bits']:>10.3f}"
                   f"{r['ppl']:>9.1f}{r['bpb']:>8.3f}")
-        print(f"      （字符级：验证集里有 {n_unk} 个字符训练时没见过，都记成 <unk>）\n")
+        print(f"      (character level: {n_unk} characters in the validation set did not occur in training; all map to <unk>)\n")
 
-    print("对照：均匀乱猜一个字节 = 8 bits/byte。\n")
+    print("For comparison: a uniform random guess of one byte = 8 bits/byte.\n")
 
-    print("从 bigram 里抽样（只看前 1 个 token；抽样用不平滑的计数）：")
+    print("Samples from the bigram model (it looks only at the previous token; sampling uses the counts with no smoothing):")
     for (k, name), text in samples.items():
         if k != "code":
             print(f"  [{k} · {name}] {text.strip()!r}")

@@ -1,4 +1,7 @@
-"""runs/ladder-3090/sweep.py 的步数与采样（阶梯实验的衰减分叉必须恰好从第 k/8 个 checkpoint 开始）。"""
+"""Steps and sampling of runs/ladder-3090/sweep.py.
+
+Each decay branch of the ladder experiment must start exactly at checkpoint k/8.
+"""
 
 from __future__ import annotations
 
@@ -16,7 +19,7 @@ _spec = importlib.util.spec_from_file_location(
     "ladder_sweep", Path(__file__).resolve().parents[1] / "runs" / "ladder-3090" / "sweep.py"
 )
 sweep = importlib.util.module_from_spec(_spec)
-sys.modules[_spec.name] = sweep  # @dataclass 要从 sys.modules 里找到模块
+sys.modules[_spec.name] = sweep  # @dataclass must find the module in sys.modules
 _spec.loader.exec_module(sweep)
 
 
@@ -24,7 +27,7 @@ _spec.loader.exec_module(sweep)
 def test_decay_starts_exactly_at_checkpoint(c: int) -> None:
     m, frac = sweep.with_decay(c)
     assert m == c + round(c / 4)
-    # c 之前学习率是峰值（稳定段），从 c 开始下降，最后一步降到 0
+    # Before c, the learning rate is at the peak (stable phase). It decreases from c and is 0 at the last step
     assert wsd(c - 1, 1, m, frac) == 1.0
     assert wsd(c, 1, m, frac) < 1.0
     assert wsd(m - 1, 1, m, frac) == 0.0
@@ -37,7 +40,7 @@ def test_plan_keeps_budget_and_checkpoint_grid() -> None:
         p = sweep.plan_for(cfg, neff)
         assert p.stable_steps % 8 == 0 and p.every * 8 == p.stable_steps
         assert p.micro * p.accum * sweep.SEQ == tps
-        # 量化到 8 步的整数倍后，token 数与 32 × N_eff 的差不超过 4 步
+        # After rounding to a multiple of 8 steps, the token count is within 4 steps of 32 × N_eff
         assert abs(p.stable_steps * tps - 32 * neff) <= 4 * tps
         assert p.step_at(Fraction(2, 8)) == 2 * p.every
 
@@ -57,7 +60,8 @@ def test_sampling_is_deterministic_and_in_range() -> None:
 
 
 def test_narrow_ranges_follow_trend_and_stay_in_bounds(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
-    # 两个小档：最优学习率随 N 变小（N 翻 4 倍、lr 减半）；收窄的区间应该顺着这个趋势外推到大档
+    # Two small sizes: the best learning rate decreases with N (4× N, half the lr).
+    # The narrowed ranges must extrapolate this trend to the large size
     import csv
     import json
     import math
@@ -73,7 +77,7 @@ def test_narrow_ranges_follow_trend_and_stay_in_bounds(tmp_path: Path, monkeypat
             hp = sweep.sample_full(random.Random(f"{scale}/{i}"))
             cfg = {"id": f"{scale}-{i:03d}", "scale": scale, "space": "full", **hp}
             cfgs.append(cfg)
-            loss = 1 + (math.log(hp["lr"] / best_lr)) ** 2  # 只有学习率重要
+            loss = 1 + (math.log(hp["lr"] / best_lr)) ** 2  # Only the learning rate matters
             rows.append({"id": cfg["id"], "phase": "decay", "k": 8, "val_bpb": loss})
         (tmp_path / "configs" / f"{scale}.jsonl").write_text("\n".join(json.dumps(c) for c in cfgs) + "\n")
         with (tmp_path / "results" / f"{scale}.csv").open("w", newline="") as f:
@@ -86,7 +90,7 @@ def test_narrow_ranges_follow_trend_and_stay_in_bounds(tmp_path: Path, monkeypat
         assert full_lo - 1e-9 <= lo < hi <= full_hi + 1e-9, h
         assert hi - lo >= 2 * sweep.MIN_HALF[h] - 1e-9, h
     center = math.exp(sum(r["lr"]) / 2)
-    assert 3e-4 < center < 2e-3  # 外推到 c 档：比两个小档的最优值都小
+    assert 3e-4 < center < 2e-3  # Extrapolation to size c: smaller than the best values of both small sizes
     for i in range(50):
         hp = sweep.sample_in(random.Random(i), r)
         assert math.exp(r["lr"][0]) - 1e-12 <= hp["lr"] <= math.exp(r["lr"][1]) + 1e-12
@@ -94,7 +98,8 @@ def test_narrow_ranges_follow_trend_and_stay_in_bounds(tmp_path: Path, monkeypat
 
 
 def test_ext_sampling_extends_batch_downward(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
-    # 边界扩展：batch 取 2^13–2^15，其余超参数在这一档自己最好的配置附近；只追加、不改已有配置
+    # Boundary extension: batch is 2^13–2^15, and the other hyperparameters stay near the best config of this size.
+    # Only append; do not change the existing configs
     import argparse
     import csv
     import json
@@ -121,7 +126,8 @@ def test_ext_sampling_extends_batch_downward(tmp_path: Path, monkeypatch) -> Non
 
 
 def test_pruned_run_counts_as_reached(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
-    # prune 删掉 checkpoint 之后，日志里有这一步的评估就算训到过，不能从头重训
+    # After prune deletes the checkpoints, an evaluation of this step in the log means that the run reached the step.
+    # The run must not train again from the start
     import json
 
     monkeypatch.setattr(sweep, "OUT", tmp_path)

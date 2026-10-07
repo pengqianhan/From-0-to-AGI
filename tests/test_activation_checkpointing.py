@@ -1,4 +1,4 @@
-"""激活检查点（第 14 章）：打开后 loss 和梯度必须与不打开时一致。"""
+"""Activation checkpointing (Chapter 14): with it on, the loss and gradients must be the same as with it off."""
 
 import torch
 

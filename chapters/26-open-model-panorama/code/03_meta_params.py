@@ -1,14 +1,19 @@
-"""第 26 章 · 极简代码 3：不下载权重，按 config 数出参数量（总参数 / 激活参数）
+"""Chapter 26 · minimal code 3: count the parameters from the config without the weights.
 
-做法：把 models.json 里抄下来的 config 交给 Hugging Face transformers 的**官方模型类**，
-在 "meta" 设备上建模型——只有形状、不分配内存，2.4T 的模型也是一秒钟建完——然后数参数。
-这些模型类就是各家架构的"生产级参考实现"（DeepseekV4ForCausalLM、Qwen3_5MoeForCausalLM……）。
+The script counts the total parameters and the active parameters.
+Method: give each config from models.json to the **official model class** in Hugging Face
+transformers. Build the model on the "meta" device: it has only shapes and allocates no memory,
+so even a 2.4T model builds in one second. Then count the parameters.
+These model classes are the "production reference implementations" of each architecture
+(DeepseekV4ForCausalLM, Qwen3_5MoeForCausalLM, ...).
 
-激活参数 = 总参数 − 路由专家参数 × (1 − k/E)，k 是每个 token 选几个专家，E 是专家总数。
-各家模型卡的"激活参数"口径不一样（算不算输入 embedding、输出头），下面三种口径都列出来。
+active parameters = total parameters − routed-expert parameters × (1 − k/E).
+k is the number of experts that each token selects. E is the total number of experts.
+The model cards use different definitions of "active parameters" (with or without the input
+embedding and the output head). The script prints all three definitions.
 
-运行：uv run python chapters/26-open-model-panorama/code/03_meta_params.py
-（需要 transformers ≥ 5.x，它是本仓库 dev 依赖；约 10 秒）
+Run: uv run python chapters/26-open-model-panorama/code/03_meta_params.py
+(Needs transformers ≥ 5.x, a dev dependency of this repository. About 10 s.)
 """
 
 from __future__ import annotations
@@ -37,7 +42,7 @@ def experts_k_E(c: dict) -> tuple[int, int] | None:
 
 
 def meta_count(config: dict) -> dict:
-    """用 HF 官方模型类在 meta 设备上建模型并数参数。"""
+    """Build the model with the official HF model class on the meta device and count the parameters."""
     import transformers
     from transformers import CONFIG_MAPPING, AutoModelForCausalLM
 
@@ -46,7 +51,7 @@ def meta_count(config: dict) -> dict:
     cfg = CONFIG_MAPPING[d.pop("model_type")](**d)
     with torch.device("meta"):
         model = AutoModelForCausalLM.from_config(cfg)
-    total = sum(p.numel() for p in model.parameters())  # 共享的张量只数一次
+    total = sum(p.numel() for p in model.parameters())  # a tied tensor counts only once
     experts = sum(p.numel() for n, p in model.named_parameters() if ".experts." in n)
     emb = model.get_input_embeddings().weight.numel()
     tied = model.get_output_embeddings().weight is model.get_input_embeddings().weight
@@ -66,14 +71,18 @@ def meta_count(config: dict) -> dict:
 
 
 def kimi_k3_latent_check(c: dict) -> dict:
-    """HF 的 KimiLinear 类还不支持 K3 的 Latent MoE（路由专家在 3584 维的"潜空间"里算），
-    这里只手算路由专家这一大块，看看 2.8T 是怎么来的（估算）。"""
+    """Count the routed experts of Kimi-K3 by hand (an estimate).
+
+    The HF KimiLinear class does not support the Latent MoE of K3 yet: the routed experts compute
+    in a "latent space" of 3584 dimensions. Here we count only the large block of routed experts,
+    to see where the 2.8T comes from.
+    """
     n_moe = c["num_hidden_layers"] - c["first_k_dense_replace"]
     E, k, f = c["num_experts"], c["num_experts_per_token"], c["moe_intermediate_size"]
     per_expert_latent = (
         3 * c["routed_expert_hidden_size"] * f
-    )  # SwiGLU 三个矩阵，输入输出是潜空间维度
-    per_expert_full = 3 * c["hidden_size"] * f  # 假如专家直接在 7168 维上算
+    )  # 3 SwiGLU matrices; input and output have the latent size
+    per_expert_full = 3 * c["hidden_size"] * f  # if the experts computed directly in 7168 dimensions
     return dict(
         latent=n_moe * E * per_expert_latent,
         full=n_moe * E * per_expert_full,
@@ -82,7 +91,7 @@ def kimi_k3_latent_check(c: dict) -> dict:
 
 
 def main_model_check() -> dict:
-    """主线模型：zero 的公式 vs 同形状的 HF Qwen3 类（两者应完全相等）。"""
+    """Main-line model: the zero formula vs the HF Qwen3 class with the same shapes (they must be equal)."""
     from zero.config import load_model_config
     from zero.model import count_params
 
@@ -105,7 +114,7 @@ def main_model_check() -> dict:
 
 
 def run() -> dict[str, dict]:
-    """返回 {模型 id: 参数统计}；01_panorama.py 也会调用它。"""
+    """Return {model id: parameter counts}. 01_panorama.py also calls this function."""
     data = json.loads((HERE / "models.json").read_text(encoding="utf-8"))
     out: dict[str, dict] = {}
     for m in data["models"]:
@@ -116,12 +125,12 @@ def run() -> dict[str, dict]:
                 active=r["zero"],
                 active_no_emb=None,
                 active_no_vocab=None,
-                cls=f"zero.model.count_params（= HF {r['cls']} {r['hf'] / B:.4f}B）",
+                cls=f"zero.model.count_params (= HF {r['cls']} {r['hf'] / B:.4f}B)",
             )
         elif m["id"] == "kimi-k3":
             r = kimi_k3_latent_check(m["config"])
             out["kimi-k3"] = dict(
-                total=None, active=None, latent=r, cls="手算（HF 类不支持 Latent MoE）"
+                total=None, active=None, latent=r, cls="by hand (HF class has no Latent MoE)"
             )
         else:
             out[m["id"]] = meta_count(m["config"])
@@ -131,14 +140,14 @@ def run() -> dict[str, dict]:
 def main() -> None:
     try:
         res = run()
-    except (ImportError, KeyError) as e:  # transformers 太旧，认不出新架构
-        print(f"需要较新的 transformers（≥ 5.x）：{e!r}")
+    except (ImportError, KeyError) as e:  # transformers is too old to know the new architectures
+        print(f"A newer transformers (≥ 5.x) is necessary: {e!r}")
         return
     data = {
         m["id"]: m for m in json.loads((HERE / "models.json").read_text(encoding="utf-8"))["models"]
     }
     print(
-        f"{'模型':<20}{'HF 模型类':<28}{'总参数':>10}{'激活(含全部)':>13}{'不含输入emb':>12}{'不含词表':>10}   模型卡"
+        f"{'Model':<20}{'HF model class':<28}{'Total':>10}{'Active (all)':>13}{'No in-emb':>12}{'No vocab':>10}   Model card"
     )
     for mid, r in res.items():
         m = data[mid]
@@ -147,28 +156,29 @@ def main() -> None:
         if r.get("total") is None:
             continue
         if mid == "main":
-            print(f"{m['name']:<20}{'zero（见下）':<28}{r['total'] / B:>9.4f}B{'稠密':>13}")
+            # models.json keeps the Chinese name (the video shows it); print the English name
+            print(f"{'Main-line model':<20}{'zero (see below)':<28}{r['total'] / B:>9.4f}B{'dense':>13}")
             continue
         dense = experts_k_E(m["config"]) is None
-        act = "稠密" if dense else f"{r['active'] / B:.2f}B"
+        act = "dense" if dense else f"{r['active'] / B:.2f}B"
         a2 = "" if dense else f"{r['active_no_emb'] / B:.2f}B"
         a3 = "" if dense else f"{r['active_no_vocab'] / B:.2f}B"
         print(
             f"{m['name']:<20}{r['cls']:<28}{r['total'] / B:>9.3f}B{act:>13}{a2:>12}{a3:>10}   {cs}"
         )
-    print(f"\n主线模型：{res['main']['cls']}，zero 的公式 {res['main']['total'] / B:.4f}B")
+    print(f"\nMain-line model: {res['main']['cls']}, zero formula {res['main']['total'] / B:.4f}B")
     k3 = res["kimi-k3"]["latent"]
-    print("\nKimi-K3（手算路由专家，估算）：")
+    print("\nKimi-K3 (routed experts counted by hand, an estimate):")
     print(
-        f"  专家在 3584 维潜空间里算：{k3['latent'] / 1e12:.2f}T（每 token 激活其中 {k3['active_latent'] / B:.1f}B）"
+        f"  Experts compute in the 3584-dim latent space: {k3['latent'] / 1e12:.2f}T ({k3['active_latent'] / B:.1f}B of it active per token)"
     )
     print(
-        f"  假如专家直接在 7168 维上算：{k3['full'] / 1e12:.2f}T —— 模型卡是 2.8T 总 / 104B 激活，"
-        "与模型卡写的「Latent MoE Dimension 3584」对得上"
+        f"  If the experts computed directly in 7168 dims: {k3['full'] / 1e12:.2f}T. The model card says 2.8T total / 104B active: "
+        "only the latent count agrees, as 'Latent MoE Dimension 3584' on the model card says"
     )
     print(
-        "\n说明：DeepSeek-V4、V3.2 的 HF 类不含 MTP 层，所以比模型卡略少；"
-        "MiniMax-M3 的模型卡只给约数（~428B / ~23B），这里只建了语言模型部分。"
+        "\nNote: the HF classes of DeepSeek-V4 and V3.2 do not include the MTP layer, so the counts are a little smaller than the model card. "
+        "The MiniMax-M3 model card gives only approximate numbers (~428B / ~23B); here we build only the language-model part."
     )
 
 

@@ -1,26 +1,35 @@
-"""端到端冒烟测试：一条命令在 CPU 上把整条流水线跑通（对应全书；GOAL.md 9.1）。
+"""End-to-end smoke test: one command runs the full pipeline on a CPU (all chapters; GOAL.md 9.1).
 
-    uv run python -m zero.smoke                     # 输出到 out/smoke（先清空）
-    uv run python -m zero.smoke --out /tmp/smoke    # 换目录
+    uv run python -m zero.smoke                     # output to out/smoke (cleared first)
+    uv run python -m zero.smoke --out /tmp/smoke    # a different directory
 
-阶段（全部用 configs/tiny/*.toml，路径里的 out/tiny 换成 --out 目录，另有几处为了速度的覆盖，见下）：
+Stages (all use configs/tiny/*.toml; out/tiny in the paths becomes the --out directory; some
+overrides make the run faster, see below):
 
- 1. data：生成工具调用格式的文本（tool_env 的标准解答对话）
- 2. tokenizer：在 tiny_corpus（莎士比亚 / 唐诗 / 代码）+ 工具调用文本上训练 byte-level BPE
-    （让分词器见过 JSON 和对话格式，一条带工具说明的对话从约 700 token 降到约 330 token）
- 3. pretrain：configs/tiny/pretrain.toml
- 4. midtrain：configs/tiny/midtrain.toml，数据混合里加入工具调用格式数据（GOAL.md 3.3 的中期训练）
- 5. SFT：configs/tiny/sft.toml（seq_len 1024 → 512）
- 6. distill：configs/tiny/distill.toml（替身教师 = tiny SFT 模型自己，见 zero/post/distill.py 的说明）
- 7. DPO：configs/tiny/dpo.toml
- 8. GRPO：configs/tiny/grpo.toml
- 9. eval：configs/tiny/eval.toml（玩具集 + 工具调用 dev 集，SFT / DPO / GRPO 三个模型，配对 bootstrap）
-10. export：导出 HF 目录（transformers 加载对拍 logits、apply_chat_template 与我们的模板逐字一致）
-    + GGUF（llama.cpp 官方转换脚本；已编译 llama.cpp 时再量化成 Q8_0 并用 llama-simple 生成几个 token）
-11. demo：本地工具调用助手问一个问题
+ 1. data: generate text in the tool-call format (the reference conversations of tool_env)
+ 2. tokenizer: train a byte-level BPE on tiny_corpus (Shakespeare / Tang poems / code) + the
+    tool-call text (when the tokenizer has seen JSON and the chat format, one conversation with
+    tool descriptions decreases from about 700 tokens to about 330 tokens)
+ 3. pretrain: configs/tiny/pretrain.toml
+ 4. midtrain: configs/tiny/midtrain.toml; the data mixture adds tool-call format data
+    (the mid-training of GOAL.md 3.3)
+ 5. SFT: configs/tiny/sft.toml (seq_len 1024 → 512)
+ 6. distill: configs/tiny/distill.toml (stand-in teacher = the tiny SFT model itself; see the
+    notes in zero/post/distill.py)
+ 7. DPO: configs/tiny/dpo.toml
+ 8. GRPO: configs/tiny/grpo.toml
+ 9. eval: configs/tiny/eval.toml (toy sets + tool-call dev set; the SFT / DPO / GRPO models;
+    paired bootstrap)
+10. export: export an HF directory (transformers loads it for a parity check of the logits;
+    apply_chat_template is identical to our template, character by character)
+    + GGUF (the official llama.cpp conversion script; if llama.cpp is built, also quantize to
+    Q8_0 and generate some tokens with llama-simple)
+11. demo: ask the local tool-calling assistant one question
 
-最后打印每个阶段的耗时和关键指标（loss / 奖励），并写 `<out>/SUMMARY.md` 与 `summary.json`。
-tiny 模型只有约 1.3M 参数，所有分数都只说明"代码通路是通的"，不说明任何方法的效果。
+At the end, the script prints the time and the key metrics (loss / reward) of each stage, and
+writes `<out>/SUMMARY.md` and `summary.json`.
+The tiny model has only about 1.3M parameters. All scores show only that "the code paths work".
+They do not show the effect of any method.
 """
 
 from __future__ import annotations
@@ -43,7 +52,7 @@ CONFIGS = REPO / "configs" / "tiny"
 
 
 def _rewrite(obj: Any, out: str) -> Any:
-    """把配置里所有以 out/tiny 开头的路径换成 out。"""
+    """Replace each path in the config that starts with out/tiny with out."""
     if isinstance(obj, dict):
         return {k: _rewrite(v, out) for k, v in obj.items()}
     if isinstance(obj, list):
@@ -57,7 +66,8 @@ def load_tiny(name: str, out: str) -> dict[str, Any]:
     from zero.config import read_toml
 
     d = _rewrite(read_toml(CONFIGS / f"{name}.toml"), out)
-    # 相对仓库根目录的输入路径（assets/…）改成绝对路径，这样可以在任何目录下运行
+    # Make the input paths that are relative to the repository root (assets/…) absolute,
+    # so the script can run from any directory
     if "data" in d and "prepare" in d["data"]:
         d["data"]["prepare"]["raw_files"] = [
             str(REPO / p) for p in d["data"]["prepare"]["raw_files"]
@@ -84,7 +94,7 @@ class Smoke:
         try:
             info = fn()
             status = "ok"
-        except Exception as e:  # noqa: BLE001 - 冒烟测试要把失败记进表里，而不是直接崩掉
+        except Exception as e:  # noqa: BLE001 - the smoke test records a failure in the table; it does not crash
             traceback.print_exc()
             info = {"error": f"{type(e).__name__}: {e}"[:300]}
             status = "FAILED"
@@ -92,13 +102,13 @@ class Smoke:
         row = {"stage": name, "status": status, "seconds": round(dt, 1), **info}
         self.rows.append(row)
         self.log(
-            f"[smoke] {name}: {status}，{dt:.1f}s，{ {k: v for k, v in info.items() if k != 'error'} }"
+            f"[smoke] {name}: {status}, {dt:.1f}s, { {k: v for k, v in info.items() if k != 'error'} }"
         )
         if status != "ok":
-            raise RuntimeError(f"阶段 {name} 失败：{info.get('error')}")
+            raise RuntimeError(f"Stage {name} failed: {info.get('error')}")
         return info
 
-    # ---- 各阶段 ----
+    # ---- Stages ----
     def data_and_tokenizer(self) -> dict[str, Any]:
         from zero.post.chat import render_text
         from zero.post.envs.tool_env import generate_tasks, reference_messages
@@ -146,7 +156,8 @@ class Smoke:
         rows = [
             json.loads(x) for x in (self.out / "corpus" / "toolcall.jsonl").read_text().splitlines()
         ]
-        # 对话文本里的 <|im_start|> 等要保留成特殊 token，所以不走 clean（clean 会去掉特殊 token 字面量）
+        # <|im_start|> and the other markers in the chat text must stay special tokens. Thus skip clean
+        # (clean removes literal special tokens).
         write_shards(
             [r["text"] for r in rows], tok, self.out / "data", "toolcall_train", source="tool_env"
         )
@@ -290,7 +301,7 @@ class Smoke:
                 diff = (hf(ids).logits - model.eval()(ids)).abs().max().item()
             info.update({"hf_template_identical": same, "hf_logits_maxdiff": f"{diff:.1e}"})
         except ImportError:
-            info["hf_check"] = "transformers 未安装，跳过"
+            info["hf_check"] = "transformers is not installed; skipped"
         try:
             f16 = gguf.convert_hf_to_gguf(hf_dir, self.out / "gguf" / "zero-tiny-f16.gguf", "f16")
             info["gguf_f16_MB"] = round(f16.stat().st_size / 1e6, 2)
@@ -303,9 +314,9 @@ class Smoke:
                 info["llama_simple_ok"] = bool(txt.strip())
             else:
                 info["llama_cpp_binaries"] = (
-                    "未编译，跳过量化与试跑（python -m zero.export.gguf --quantize Q8_0 会编译）"
+                    "not built; skipped quantization and test run (python -m zero.export.gguf --quantize Q8_0 builds them)"
                 )
-        except Exception as e:  # noqa: BLE001 - GGUF 依赖外部仓库，失败只记录不中断
+        except Exception as e:  # noqa: BLE001 - GGUF needs an external repository; record a failure, do not stop
             info["gguf_error"] = f"{type(e).__name__}: {e}"[:200]
         return info
 
@@ -335,22 +346,22 @@ def _r(x: Any) -> Any:
 
 
 def summary_table(rows: list[dict[str, Any]]) -> str:
-    lines = ["| 阶段 | 状态 | 耗时 (s) | 指标 |", "|---|---|---:|---|"]
+    lines = ["| Stage | Status | Time (s) | Metrics |", "|---|---|---:|---|"]
     for r in rows:
         metrics = "; ".join(
             f"{k}={v}" for k, v in r.items() if k not in ("stage", "status", "seconds")
         )
         lines.append(f"| {r['stage']} | {r['status']} | {r['seconds']} | {metrics} |")
     total = sum(r["seconds"] for r in rows)
-    lines.append(f"| **合计** | | {total:.1f} | |")
+    lines.append(f"| **Total** | | {total:.1f} | |")
     return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="端到端冒烟测试（CPU）")
+    ap = argparse.ArgumentParser(description="End-to-end smoke test (CPU)")
     ap.add_argument("--out", default="out/smoke")
     ap.add_argument(
-        "--keep", action="store_true", help="不清空输出目录（已有 checkpoint 会被续用）"
+        "--keep", action="store_true", help="do not clear the output directory (existing checkpoints are used again)"
     )
     ap.add_argument("--threads", type=int, default=1)
     args = ap.parse_args(argv)
@@ -376,12 +387,12 @@ def main(argv: list[str] | None = None) -> int:
         s.stage("demo", s.demo)
     except RuntimeError as e:
         ok = False
-        print(f"[smoke] 中止：{e}", file=sys.stderr)
+        print(f"[smoke] Stopped: {e}", file=sys.stderr)
     table = summary_table(s.rows)
     total = time.perf_counter() - t0
     md = (
-        f"# 冒烟测试结果\n\n输出目录：`{out}`，总耗时 {total:.0f}s，torch 线程数 {args.threads}。\n\n{table}\n\n"
-        "tiny 模型约 1.3M 参数；分数只说明代码通路是通的。蒸馏的教师是 tiny SFT 模型自己（替身，见 zero/post/distill.py）。\n"
+        f"# Smoke test results\n\nOutput directory: `{out}`, total time {total:.0f}s, torch threads {args.threads}.\n\n{table}\n\n"
+        "The tiny model has about 1.3M parameters; the scores show only that the code paths work. The distillation teacher is the tiny SFT model itself (a stand-in, see zero/post/distill.py).\n"
     )
     (out / "SUMMARY.md").write_text(md, encoding="utf-8")
     (out / "summary.json").write_text(

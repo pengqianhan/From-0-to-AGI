@@ -98,13 +98,17 @@ def prepare() -> Path:
                 rewrite(src.read_text(encoding="utf-8"), src, dst, site_pages), encoding="utf-8"
             )
         nav.append(dst_en.relative_to(DOCS).as_posix())
-    cfg = yaml.safe_load((REPO / "site" / "mkdocs.base.yml").read_text(encoding="utf-8"))
-    cfg["docs_dir"] = str(DOCS)
-    cfg["site_dir"] = str(BUILD / "site")
     chapters = [p for p in nav if p.startswith("chapters/")]
-    cfg["nav"] = ["index.md", {"Chapters": chapters}, "style-guide.md"]
+    generated = {
+        "docs_dir": str(DOCS),
+        "site_dir": str(BUILD / "site"),
+        "nav": ["index.md", {"Chapters": chapters}, "style-guide.md"],
+    }
+    # Append as text: the base file has a Python tag (the slugify function) that safe_load cannot read.
+    base = (REPO / "site" / "mkdocs.base.yml").read_text(encoding="utf-8")
     (BUILD / "mkdocs.yml").write_text(
-        yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False), encoding="utf-8"
+        base + "\n" + yaml.safe_dump(generated, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
     )
     print(f"prepared {len(nav)} pages ({len(chapters)} chapters) in {DOCS.relative_to(REPO)}")
     return BUILD / "mkdocs.yml"

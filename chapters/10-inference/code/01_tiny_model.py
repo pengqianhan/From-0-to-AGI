@@ -1,13 +1,18 @@
-"""第 10 章 · 极简代码 1：一个能生成文字的小模型（带 KV cache 和 GQA 开关）
+"""Chapter 10 · Minimal code 1: a small model that generates text (with a KV cache and a GQA option)
 
-和第 9 章同一套结构（Pre-Norm RMSNorm、RoPE、SwiGLU、因果注意力），但这里自带一份，
-不依赖第 9 章的文件；多了本章的两样东西：
-  - forward(ids, cache)：传入 KVCache 时，只算新 token 的 q/k/v，旧的 K/V 从缓存里读；
-  - n_kv_heads：K/V 头数可以少于查询头数（GQA / MQA），多个查询头共享一组 K/V。
+The structure is the same as in Chapter 9 (Pre-Norm RMSNorm, RoPE, SwiGLU, causal attention).
+This file has its own copy, so it does not depend on the Chapter 9 files. It adds two things
+from this chapter:
+  - forward(ids, cache): with a KVCache, the model calculates q/k/v only for the new tokens.
+    It reads the old K/V from the cache.
+  - n_kv_heads: the number of K/V heads can be smaller than the number of query heads
+    (GQA / MQA). Then several query heads share one set of K/V.
 
-数据：assets/tiny_corpus/shakespeare.txt，字符级（词表 65 个字符），CPU 单线程训练 600 步约一两分钟。
-训练好的权重缓存在 code/out/*.pt（*.pt 已被 .gitignore 忽略），后面几个脚本直接加载。
-运行：uv run python chapters/10-inference/code/01_tiny_model.py
+Data: assets/tiny_corpus/shakespeare.txt, character level (a vocabulary of 65 characters).
+Training for 600 steps on 1 CPU thread takes about 1 to 2 minutes.
+The script saves the trained weights in code/out/*.pt (.gitignore ignores *.pt).
+The scripts after this one load these weights.
+Run: uv run python chapters/10-inference/code/01_tiny_model.py
 """
 
 from __future__ import annotations
@@ -24,11 +29,12 @@ import torch.nn.functional as F
 ROOT = Path(__file__).resolve().parents[3]
 CORPUS = ROOT / "assets" / "tiny_corpus" / "shakespeare.txt"
 OUT = Path(__file__).resolve().parent / "out"
-# 单线程：极小模型上多线程收益很小，单线程的计时更稳定、结果也更容易复现
+# One thread: more threads help little on a very small model.
+# With one thread, the timing is more stable and the results are easier to reproduce.
 torch.set_num_threads(1)
 
 
-# ── 数据：字符级 ────────────────────────────────────────────────────────────
+# ── Data: character level ───────────────────────────────────────────────────
 class CharData:
     def __init__(self) -> None:
         text = CORPUS.read_text(encoding="utf-8")
@@ -56,13 +62,13 @@ class CharData:
         return x, y
 
 
-# ── KV cache（极简版：每层一个列表，新 K/V 用 torch.cat 接到后面）────────────
+# ── KV cache (minimal version: one list per layer; torch.cat appends the new K/V) ──
 class KVCache:
     def __init__(self, n_layers: int) -> None:
         self.k: list[torch.Tensor | None] = [None] * n_layers
         self.v: list[torch.Tensor | None] = [None] * n_layers
 
-    def __len__(self) -> int:  # 已经缓存了多少个位置
+    def __len__(self) -> int:  # the number of positions in the cache
         return 0 if self.k[0] is None else self.k[0].shape[2]
 
     def append(self, layer: int, k: torch.Tensor, v: torch.Tensor):
@@ -76,14 +82,14 @@ class KVCache:
         return sum(t.numel() * t.element_size() for t in self.k + self.v if t is not None)
 
 
-# ── 模型 ────────────────────────────────────────────────────────────────────
+# ── Model ───────────────────────────────────────────────────────────────────
 @dataclass
 class Config:
     vocab_size: int = 65
     dim: int = 128
     n_layers: int = 4
     n_heads: int = 4
-    n_kv_heads: int = 4  # = n_heads 是 MHA；1 是 MQA；介于两者之间是 GQA
+    n_kv_heads: int = 4  # = n_heads is MHA; 1 is MQA; a value between the two is GQA
     ffn_dim: int = 384
     max_seq_len: int = 1024
 
@@ -107,7 +113,7 @@ def rope_tables(head_dim: int, max_len: int, theta: float = 10000.0):
     return ang.cos(), ang.sin()
 
 
-def apply_rope(x, cos, sin):  # x: (B, H, T, D)；cos/sin: (T, D/2)
+def apply_rope(x, cos, sin):  # x: (B, H, T, D); cos/sin: (T, D/2)
     x1, x2 = x[..., 0::2], x[..., 1::2]
     out = torch.stack([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1)
     return out.flatten(-2)
@@ -118,7 +124,7 @@ class Attention(nn.Module):
         super().__init__()
         self.c = c
         self.wq = nn.Linear(c.dim, c.n_heads * c.head_dim, bias=False)
-        self.wk = nn.Linear(c.dim, c.n_kv_heads * c.head_dim, bias=False)  # GQA：K/V 投影更窄
+        self.wk = nn.Linear(c.dim, c.n_kv_heads * c.head_dim, bias=False)  # GQA: narrower K/V projections
         self.wv = nn.Linear(c.dim, c.n_kv_heads * c.head_dim, bias=False)
         self.wo = nn.Linear(c.n_heads * c.head_dim, c.dim, bias=False)
 
@@ -128,14 +134,15 @@ class Attention(nn.Module):
         q = self.wq(x).view(B, T, c.n_heads, c.head_dim).transpose(1, 2)
         k = self.wk(x).view(B, T, c.n_kv_heads, c.head_dim).transpose(1, 2)
         v = self.wv(x).view(B, T, c.n_kv_heads, c.head_dim).transpose(1, 2)
-        q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)  # 缓存的是已经旋转过的 K
+        q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)  # the cache keeps K after the rotation
         if cache is not None:
-            k, v = cache.append(layer, k, v)  # 旧 K/V + 新 K/V
-        S = k.shape[2]  # 能看到的总长度 = 过去 + 现在
+            k, v = cache.append(layer, k, v)  # old K/V + new K/V
+        S = k.shape[2]  # total visible length = past + now
         g = c.n_heads // c.n_kv_heads
-        k, v = k.repeat_interleave(g, dim=1), v.repeat_interleave(g, dim=1)  # 每 g 个查询头共用一组
+        k, v = k.repeat_interleave(g, dim=1), v.repeat_interleave(g, dim=1)  # g query heads share one set
         att = q @ k.transpose(-2, -1) / math.sqrt(c.head_dim)  # (B, H, T, S)
-        # 因果掩码：新 token 在全局的位置是 S-T+i，只能看位置 ≤ 它自己的 key
+        # Causal mask: the global position of new token i is S-T+i.
+        # It can see only the keys at positions ≤ its own position.
         i = torch.arange(T)[:, None] + (S - T)
         j = torch.arange(S)[None, :]
         att = att.masked_fill(j > i, float("-inf")).softmax(-1)
@@ -163,7 +170,7 @@ class TinyLM(nn.Module):
         super().__init__()
         self.c = c
         self.emb = nn.Embedding(c.vocab_size, c.dim)
-        nn.init.normal_(self.emb.weight, std=0.02)  # 共享 embedding：初始 logits 要小
+        nn.init.normal_(self.emb.weight, std=0.02)  # shared embedding: the initial logits must be small
         self.blocks = nn.ModuleList(Block(c) for _ in range(c.n_layers))
         self.norm = RMSNorm(c.dim)
         cos, sin = rope_tables(c.head_dim, c.max_seq_len)
@@ -172,26 +179,26 @@ class TinyLM(nn.Module):
 
     def forward(self, ids, cache: KVCache | None = None):
         T = ids.shape[1]
-        start = len(cache) if cache is not None else 0  # 新 token 从第几个位置开始
+        start = len(cache) if cache is not None else 0  # the position of the first new token
         cos, sin = self.cos[start : start + T], self.sin[start : start + T]
         x = self.emb(ids)
         for layer, blk in enumerate(self.blocks):
             x = blk(x, cos, sin, cache, layer)
-        return self.norm(x) @ self.emb.weight.T  # 共享 embedding → logits (B, T, V)
+        return self.norm(x) @ self.emb.weight.T  # shared embedding → logits (B, T, V)
 
 
-# ── 训练（带缓存：训练过的权重直接加载）─────────────────────────────────────
+# ── Training (with a weight cache: a later run loads the trained weights) ───
 def train(c: Config, steps: int = 600, bsz: int = 16, seq: int = 64, lr: float = 3e-3,
           seed: int = 0, verbose: bool = True):
     data = CharData()
     torch.manual_seed(seed)
     model = TinyLM(c)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.1)
-    g = torch.Generator().manual_seed(seed)  # 同一个种子 → 所有变体看到同样的数据顺序
+    g = torch.Generator().manual_seed(seed)  # same seed → all variants see the data in the same order
     warm = 100
     t0 = time.time()
     for step in range(steps + 1):
-        for pg in opt.param_groups:  # warmup + cosine（第 6 章）
+        for pg in opt.param_groups:  # warmup + cosine (Chapter 6)
             pg["lr"] = lr * min(1, (step + 1) / warm) * 0.5 * (1 + math.cos(math.pi * step / steps))
         x, y = data.batch("train", bsz, seq, g)
         loss = F.cross_entropy(model(x).flatten(0, 1), y.flatten())
@@ -224,8 +231,8 @@ def load_or_train(n_kv_heads: int = 4, steps: int = 600, seed: int = 0,
         model.load_state_dict(torch.load(path, weights_only=True))
         return model.eval()
     if verbose:
-        print(f"训练 n_kv_heads={n_kv_heads}、种子 {seed} 的小模型（{steps} 步，只需一次，"
-              f"之后从 {path.name} 加载）")
+        print(f"Training the small model with n_kv_heads={n_kv_heads}, seed {seed} ({steps} steps; "
+              f"only once, after that the scripts load {path.name})")
     model = train(c, steps=steps, seed=seed, verbose=verbose)
     OUT.mkdir(exist_ok=True)
     torch.save(model.state_dict(), path)
@@ -236,14 +243,15 @@ if __name__ == "__main__":
     data = CharData()
     model = load_or_train(4)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"配置：{asdict(model.c)}，head_dim={model.c.head_dim}")
-    print(f"参数量 {n_params / 1e6:.2f}M，词表 {data.vocab_size} 个字符")
-    print(f"验证集 loss {val_loss(model):.3f} nats/字符（均匀乱猜是 ln {data.vocab_size} = "
-          f"{math.log(data.vocab_size):.3f}）")
-    # 最朴素的生成：每步把整段序列喂进去，取最后一个位置的 logits，挑最大的那个字
+    print(f"Config: {asdict(model.c)}, head_dim={model.c.head_dim}")
+    print(f"Parameters: {n_params / 1e6:.2f}M, vocabulary: {data.vocab_size} characters")
+    print(f"Validation loss {val_loss(model):.3f} nats/character (a uniform random guess gives "
+          f"ln {data.vocab_size} = {math.log(data.vocab_size):.3f})")
+    # The most basic generation: at each step, give the full sequence to the model,
+    # take the logits at the last position, and pick the character with the largest logit.
     ids = data.encode("ROMEO:\n")
     with torch.no_grad():
         for _ in range(120):
             logits = model(torch.tensor([ids]))[0, -1]
             ids.append(int(logits.argmax()))
-    print("贪心生成（提示词 'ROMEO:\\n'）：\n" + data.decode(ids))
+    print("Greedy generation (prompt 'ROMEO:\\n'):\n" + data.decode(ids))

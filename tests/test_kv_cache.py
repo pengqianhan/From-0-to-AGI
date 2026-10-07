@@ -1,4 +1,4 @@
-"""KV cache 一致性：用缓存和不用缓存生成的结果必须完全一致（GOAL.md 9.1）。"""
+"""KV cache consistency: generation with and without the cache must give exactly the same result (GOAL.md 9.1)."""
 
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ def test_sampling_with_seed_cached_equals_uncached() -> None:
 
 
 def test_chunked_prefill_matches_full_forward() -> None:
-    """有历史又一次喂多个 token（分块 prefill）时的掩码也要对。"""
+    """The mask must also be correct with history and more than one new token at once (chunked prefill)."""
     model = tiny_model(2)
     tokens = torch.randint(0, 97, (2, 50), generator=torch.Generator().manual_seed(3))
     with torch.no_grad():
@@ -82,10 +82,10 @@ def test_sample_next_top_p_and_greedy() -> None:
     logits = torch.tensor([[0.0, 5.0, 4.9, -10.0]])
     assert sample_next(logits, temperature=0).item() == 1
     g = torch.Generator().manual_seed(0)
-    # top_p 很小时只剩概率最大的那个
+    # With a very small top_p, only the token with the highest probability remains
     for _ in range(20):
         assert sample_next(logits, temperature=1.0, top_p=0.1, generator=g).item() == 1
-    # top_p=0.99 时两个大概率 token 都会出现，极小概率的 token 3 永远不会出现
+    # With top_p=0.99, both high-probability tokens occur; token 3, with a very small probability, never occurs
     seen = {sample_next(logits, 1.0, 0.99, g).item() for _ in range(200)}
     assert seen <= {1, 2, 0} and {1, 2} <= seen
 
@@ -95,5 +95,5 @@ def test_kv_cache_nbytes() -> None:
         vocab_size=10, dim=64, n_layers=3, n_heads=4, n_kv_heads=2, ffn_dim=64, max_seq_len=100
     )
     cache = KVCache.from_config(cfg, batch_size=2)
-    # 2(K,V) × 层 × batch × kv头 × 长度 × head_dim × 4 字节
+    # 2(K,V) × layers × batch × KV heads × length × head_dim × 4 bytes
     assert cache.nbytes() == 2 * 3 * 2 * 2 * 100 * 16 * 4

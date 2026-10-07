@@ -1,35 +1,42 @@
-"""BFCL 适配层：用官方 Berkeley Function Calling Leaderboard 评测我们导出的模型（对应第 11、20 章）。
+"""BFCL adapter: evaluate our exported model with the official Berkeley Function Calling Leaderboard (Chapters 11 and 20).
 
-**状态：尚未验证。** 这台机器没有 GPU，也下载不了评测数据以外的模型；下面的代码按 `bfcl-eval`
-2026.3.23 版（PyPI）的源码写成，第二步在 GPU 机器上第一次跑通后再去掉这句话。
+**Status: not verified yet.** This machine has no GPU, and it cannot download models (only the
+evaluation data). The code below follows the source code of `bfcl-eval` version 2026.3.23 (PyPI).
+Remove this sentence after the first successful run on a GPU machine in Step 2.
 
-为什么需要适配：BFCL 的本地模型走"prompt 模式"——评测框架自己拼提示词（`_format_prompt`），
-再调 vLLM / SGLang 的 `/v1/completions`。它内置的 `QwenFCHandler` 手写了一份 Qwen3 模板，关闭思考时
-会在生成提示后塞空的 `<think>\\n\\n</think>\\n\\n`，而我们的模型没见过思考格式。所以这里注册一个
-`ZeroFCHandler`：继承 `QwenFCHandler`（复用它解析 `<tool_call>` 的逻辑），只把拼提示词换成
-**导出目录里的 chat_template**（`tokenizer.apply_chat_template`），保证评测时的提示词与训练时逐字一致。
+Why an adapter is necessary: BFCL runs local models in "prompt mode". The evaluation framework
+makes the prompt itself (`_format_prompt`), and then calls `/v1/completions` of vLLM / SGLang.
+Its built-in `QwenFCHandler` has a hand-written copy of the Qwen3 template. With thinking off, it
+puts an empty `<think>\\n\\n</think>\\n\\n` after the generation prompt, but our model never saw
+the thinking format. So this module registers a `ZeroFCHandler`. It inherits from `QwenFCHandler`
+(to reuse its `<tool_call>` parsing). It replaces only the prompt construction with **the
+chat_template in the export directory** (`tokenizer.apply_chat_template`). Then the evaluation
+prompt is identical, character for character, to the training prompt.
 
-用法（第二步，GPU 机器上）：
+Usage (Step 2, on a GPU machine):
 
-    uv pip install bfcl-eval==2026.3.23 vllm            # 版本在 eval/PREREGISTRATION.md 冻结
-    # 1) 生成（框架自动起 vLLM 服务；或者先自己起服务，再加 --skip-server-setup）
+    uv pip install bfcl-eval==2026.3.23 vllm            # the version is frozen in eval/PREREGISTRATION.md
+    # 1) Generate (the framework starts a vLLM server; or start the server yourself and add --skip-server-setup)
     uv run python -m zero.eval.bfcl generate --hf-dir out/main/hf_final --name zero-0.7b-FC \\
         --test-category simple_python,multiple,parallel,parallel_multiple,irrelevance,live,multi_turn \\
         --backend vllm --num-gpus 1
-    # 2) 判分
+    # 2) Score
     uv run python -m zero.eval.bfcl evaluate --hf-dir out/main/hf_final --name zero-0.7b-FC \\
         --test-category simple_python,multiple,parallel,parallel_multiple,irrelevance,live,multi_turn
-    # 3) 读分数（BFCL 写在 $BFCL_PROJECT_ROOT/score/ 下的 CSV），转成我们的报告格式
+    # 3) Read the scores (BFCL writes CSV files under $BFCL_PROJECT_ROOT/score/) and convert them to our report format
     uv run python -m zero.eval.bfcl collect --score-dir $BFCL_PROJECT_ROOT/score --name zero-0.7b-FC
 
-对手模型（Qwen3.5-0.8B 等）直接用 BFCL 内置的 handler 名（各自官方模板），同一版本、同样的解码参数
-（BFCL 默认 temperature=0.001）。逐题结果在 `$BFCL_PROJECT_ROOT/score/<model>/` 里，
-配对 bootstrap 用 `zero.eval.bootstrap.paired_bootstrap`。
+The opponent models (Qwen3.5-0.8B and others) use the built-in BFCL handler names directly (each
+with its official template), with the same version and the same decoding parameters (BFCL default
+temperature=0.001). The per-item results are in `$BFCL_PROJECT_ROOT/score/<model>/`.
+For the paired bootstrap, use `zero.eval.bootstrap.paired_bootstrap`.
 
-待核实（第二步第一次运行时逐条确认）：
-- `local_inference_model_map` / `MODEL_CONFIG_MAPPING` 两个注册表的名字与 `ModelConfig` 字段；
-- `_format_prompt(messages, function)` 里 `function` 的结构（这里包成 `{"type": "function", "function": f}`）；
-- 分数 CSV 的文件名与列名（`collect` 只做了宽松解析）。
+To be verified (check each item at the first run in Step 2):
+- the names of the two registries `local_inference_model_map` / `MODEL_CONFIG_MAPPING`, and the
+  fields of `ModelConfig`;
+- the structure of `function` in `_format_prompt(messages, function)` (this code wraps it as
+  `{"type": "function", "function": f}`);
+- the file names and column names of the score CSV files (`collect` parses them loosely).
 """
 
 from __future__ import annotations
@@ -52,7 +59,7 @@ def bfcl_available() -> bool:
 
 
 def make_handler_class():  # noqa: ANN201
-    """返回 ZeroFCHandler 类（需要已安装 bfcl-eval）。尚未验证。"""
+    """Return the ZeroFCHandler class (bfcl-eval must be installed). Not verified yet."""
     from bfcl_eval.model_handler.local_inference.qwen_fc import QwenFCHandler
 
     class ZeroFCHandler(QwenFCHandler):
@@ -70,13 +77,13 @@ def make_handler_class():  # noqa: ANN201
 
 
 def register_zero_model(name: str, hf_dir: str | os.PathLike, display_name: str = "") -> None:
-    """把我们的模型登记进 BFCL 的模型表（进程内生效）。尚未验证。"""
+    """Register our model in the model table of BFCL (only in this process). Not verified yet."""
     from bfcl_eval.constants import model_config as mc
 
     cfg = mc.ModelConfig(
         model_name=str(hf_dir),
         display_name=display_name or f"{name} (FC)",
-        url="https://github.com/（发布后填写）",
+        url="https://github.com/(fill in after the release)",
         org="From-0-to-AGI",
         license="apache-2.0",
         model_handler=make_handler_class(),
@@ -90,9 +97,9 @@ def register_zero_model(name: str, hf_dir: str | os.PathLike, display_name: str 
 
 
 def run_cli(cmd: str, hf_dir: str, name: str, extra: list[str]) -> None:
-    """注册模型后，调用 bfcl 的命令行入口（typer app）。尚未验证。"""
+    """Register the model, then call the command-line entry point of bfcl (typer app). Not verified yet."""
     if not bfcl_available():
-        raise SystemExit("没有安装 bfcl-eval：uv pip install bfcl-eval==<预注册冻结的版本>")
+        raise SystemExit("bfcl-eval is not installed: uv pip install bfcl-eval==<version frozen in the preregistration>")
     register_zero_model(name, hf_dir)
     from bfcl_eval.__main__ import cli
 
@@ -104,7 +111,7 @@ def run_cli(cmd: str, hf_dir: str, name: str, extra: list[str]) -> None:
 
 
 def collect_scores(score_dir: str | os.PathLike, name: str) -> dict[str, Any]:
-    """从 BFCL 的分数目录里找出 name 这一行（CSV），返回 {列名: 值}。宽松解析，待核实。"""
+    """Find the row of `name` in the CSV files of the BFCL score directory, and return {column name: value}. Loose parsing, to be verified."""
     out: dict[str, Any] = {}
     for p in sorted(Path(score_dir).rglob("*.csv")):
         with open(p, newline="", encoding="utf-8") as f:
@@ -115,7 +122,7 @@ def collect_scores(score_dir: str | os.PathLike, name: str) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description="BFCL 适配（第二步用，尚未验证）")
+    ap = argparse.ArgumentParser(description="BFCL adapter (for Step 2, not verified yet)")
     ap.add_argument("command", choices=["generate", "evaluate", "collect"])
     ap.add_argument("--hf-dir", default="")
     ap.add_argument("--name", default="zero-FC")

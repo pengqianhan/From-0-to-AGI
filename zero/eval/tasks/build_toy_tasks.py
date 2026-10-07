@@ -1,14 +1,17 @@
-"""生成仓库自带的玩具评测集（对应第 11 章）。输出的 JSONL 已提交进仓库，一般不需要重跑：
+"""Make the toy evaluation sets of the repository (Chapter 11). The output JSONL files are in the repository, so usually you do not need to run this again:
 
     uv run python -m zero.eval.tasks.build_toy_tasks
 
-- toy_mc.jsonl：选择题（算术 + 中英文常识），测"少样本对数似然选择"的代码通路；
-- toy_gen.jsonl：生成式精确匹配（算术、复述）；
-- tool_dev.jsonl：工具调用 dev 集（zero/post/envs/tool_env.py 的固定 dev 集前 100 个），冻结成文件，
-  以后改了任务生成代码也不会悄悄改变评测集。
+- toy_mc.jsonl: multiple choice (arithmetic + general knowledge in Chinese and English). It tests
+  the code path of "few-shot log-likelihood choice".
+- toy_gen.jsonl: generative exact match (arithmetic, repeat a word).
+- tool_dev.jsonl: the tool-call dev set (the first 100 tasks of the fixed dev set in
+  zero/post/envs/tool_env.py), frozen in a file. A later change to the task generator cannot
+  change the evaluation set without notice.
 
-这些都是自己编的玩具数据，只用于验证评测代码；正式基准（MMLU、C-Eval、BFCL……）在第二步按
-eval/PREREGISTRATION.md 用官方评测框架跑。
+All of these are toy data that we wrote, only to verify the evaluation code. The real benchmarks
+(MMLU, C-Eval, BFCL, ...) run in Step 2 with the official evaluation frameworks, as
+eval/PREREGISTRATION.md specifies.
 """
 
 from __future__ import annotations
@@ -85,7 +88,7 @@ def build(seed: int = 0) -> None:
         with open(HERE / name, "w", encoding="utf-8") as f:
             for r in rows:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
-        print(f"{name}: {len(rows)} 条")
+        print(f"{name}: {len(rows)} rows")
 
 
 if __name__ == "__main__":

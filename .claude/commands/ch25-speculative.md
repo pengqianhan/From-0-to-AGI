@@ -1,57 +1,66 @@
 ---
-description: 第 25 章自我检验：多 token 预测与推测解码（decode 受带宽限制、草稿与一次验证、贪心逐字相同、min(1, p/q) 与残差分布、α 与加速比公式、MTP 模块与自推测）
+description: "Chapter 25 self-check: multi-token prediction and speculative decoding — decode is memory-bound, draft and one verification pass, greedy output is token-for-token identical, min(1, p/q) and the residual distribution, α and the speedup formula, the MTP module and self-speculation (第 25 章自检：多 token 预测与推测解码——decode 受带宽限制、草稿与一次验证、贪心逐字相同、min(1, p/q) 与残差分布、α 与加速比公式、MTP 模块与自推测)"
 ---
 
-# 第 25 章自我检验：多 token 预测与推测解码
+# Chapter 25 self-check: multi-token prediction and speculative decoding
 
-用户调用了 `/ch25-speculative`，说明他们刚学完第 25 章（`chapters/25-mtp-speculative-decoding/`）。你的任务是帮他们检验自己是否真正理解了，而不是告诉他们答案。
+The learner typed `/ch25-speculative`. They finished Chapter 25 (`chapters/25-mtp-speculative-decoding/`). Help them check if they understand it. Do not give them the answers.
 
-**检验方式**：逐一提问下面的问题，等用户用自己的话回答后，再给出反馈——哪里说对了，哪里还有偏差，以及如何深化理解。不要一次性把所有问题都抛出去。
+**Language**: Use the language of the learner. If the learner writes in Chinese, ask the questions and give feedback in Chinese. The Chinese text of the chapter is in `README.zh.md`. Write short, clear sentences (see `docs/STYLE_GUIDE.md`).
 
----
-
-## 检验问题（按难度递进）
-
-**第一关：为什么能"白嫖"**
-
-问用户：
-> 推测解码让目标模型一次前向验证 k+1 个位置。为什么这一次前向的耗时和普通 decode 生成 1 个 token 差不多？如果换成 prefill 阶段（一次处理几千个 token），这个说法还成立吗？
-
-期望回答：decode 一次只算一个 token，每一步都要把全部权重（和 KV cache）从显存读一遍，算术强度很低（第 21 章：主线模型 decode 只有 1–5 次/字节，远低于 H100 约 295 的脊点），硬件在等数据；多喂几个 token，读的字节几乎不变、只多了一点计算，所以时间差不多。prefill 已经是算力受限的，多喂 k 倍 token 就要多花约 k 倍时间，推测解码的前提不成立（这也是大 batch 高并发时推测解码收益变小的原因）。能提到本章 `01_models_and_cost.py` 里 T 从 1 到 17 耗时只增加几十个百分点是加分项。
+**Method**: Ask the questions below one at a time. Wait for the learner to answer in their own words. Then give feedback: tell them what is correct, what is not correct, and how to make their understanding deeper. Do not ask all the questions at the same time.
 
 ---
 
-**第二关：贪心时为什么逐字相同**
+## Questions (from easy to difficult)
 
-问用户：
-> 草稿猜了 "t h e _"，目标模型在这 4 个位置的 argmax 是 "t h a t"。这一轮最终产出哪几个 token？下一轮开始前，KV cache 要怎么处理？为什么整个过程的输出和目标模型自己贪心解码逐字相同？
+**Level 1: why is the verification almost free?**
 
-期望回答：接受 "t h"，第 3 个位置 "e" ≠ "a" 被拒，用目标自己的 "a" 替换，本轮产出 "t h a" 3 个 token；后面的 "_" 以及目标对它的判断都作废。两个模型缓存里 "e"、"_" 的 K/V 要回滚（预分配缓存只需把有效长度退回去）。每个被接受的 token 都等于目标模型在同样前缀下的 argmax，纠正的那个也是目标的 argmax，所以逐字相同——草稿只决定"一次前进几步"，不决定"写什么"。
+Ask the learner:
+> In speculative decoding, the target model verifies k+1 positions in one forward pass. Why does this forward pass take about the same time as one normal decode step that generates 1 token? Is this also true in the prefill phase, which processes thousands of tokens at once?
 
----
-
-**第三关：采样时为什么分布不变**
-
-问用户：
-> 词表只有 A、B 两个 token。目标 p = (0.3, 0.7)，草稿 q = (0.6, 0.4)。按推测采样的规则：草稿抽到 A 时以多大概率接受？被拒时从什么分布重抽？请算出最终抽到 A 的总概率，并说明一次接受的平均概率 α 是多少。
-
-期望回答：抽到 A 时接受概率 min(1, 0.3/0.6) = 0.5；抽到 B 时 min(1, 0.7/0.4) = 1，一定接受。残差分布 max(0, p − q) = (0, 0.3)，归一化后是 (0, 1)，即被拒时一定改成 B。P(A) = 0.6 × 0.5 = 0.3 = p(A)；P(B) = 0.4 × 1 + 0.6 × 0.5 × 1 = 0.7 = p(B)。α = Σ min(p, q) = 0.3 + 0.4 = 0.7 = 1 − TV(p, q)。如果用户说"直接用草稿的样本就行"，让他们看 `03_speculative_sampling.py` 第 1 部分的对照组（TV 距离 0.48、卡方检验 p 值 0）。
+Expected answer: decode calculates only one token at a time. Each step reads all weights (and the KV cache) from GPU memory, so the arithmetic intensity is very low. (Chapter 21: decode of the main-line model is only 1–5 operations per byte, much lower than the ridge point of about 295 on an H100.) The hardware waits for data. If we feed a few more tokens, the bytes read almost do not change, and only a little compute is added, so the time is about the same. Prefill is already compute-bound. If prefill gets k times more tokens, it needs about k times more time, so the condition of speculative decoding is not true. (This is also the reason why the benefit of speculative decoding is smaller with large batches and high concurrency.) Extra credit: in `01_models_and_cost.py` of this chapter, T increases from 1 to 17, but the time increases by only some tens of percent.
 
 ---
 
-**第四关：迁移——算账与 MTP**
+**Level 2: why is the greedy output token-for-token identical?**
 
-问用户：
-> DeepSeek-V3 说它的 MTP 模块做草稿时，第二个 token 的接受率是 85%–90%，解码速度提到约 1.8 倍。用加速比公式解释这个数字；再说说：为什么 MTP 模块适合当草稿（和一个独立训练的小模型比）？如果要给我们的主线模型（约 0.6B、不带 MTP）配一个草稿，你会怎么做？
+Ask the learner:
+> The draft guessed "t h e _". At these 4 positions, the argmax of the target model is "t h a t". Which tokens does this round produce? What must you do with the KV cache before the next round? Why is the output of the full process token-for-token identical to greedy decoding of the target model?
 
-期望回答：k = 1 时每次前向期望产出 (1 − α²)/(1 − α) = 1 + α ≈ 1.85–1.9 个 token；再扣掉 MTP 模块自己的开销（c > 0，加上系统开销），实测 1.8 倍很合理。MTP 模块直接读主模型最后一层的表示、共享 embedding 和输出头，又是和主模型一起训练的，所以猜得准（α 高）、本身只有一个 block（c 小）、不需要另外部署一个模型、词表天然一致。主线模型没有 MTP（GOAL 3.3：主线不冒架构风险），可以另训一个同分词器、同数据的小 zero 模型（例如 5000 万到 1 亿参数）当草稿，最好再用主线模型的输出做蒸馏提高 α；或者用零成本的提示词查找（工具调用里大量复制参数名、JSON 键名时 α 可能很高）；也可以事后冻结主线模型、单独训练一个 MTP 模块。推理引擎（vLLM / SGLang）都支持这些方式，但第二步在 GPU 上实测之前不能说加速多少。
+Expected answer: accept "t h". At position 3, "e" ≠ "a", so "e" is rejected and the answer of the target, "a", replaces it. This round produces 3 tokens, "t h a". The "_" after it and the answer of the target for it are discarded. Roll back the K/V of "e" and "_" in the caches of both models (a preallocated cache only needs to set the valid length back). Each accepted token is equal to the argmax of the target model with the same prefix. The correction is also the argmax of the target. Thus the output is token-for-token identical. The draft decides only "how many steps we move forward at once", not "what we write".
 
 ---
 
-## 反馈原则
+**Level 3: why does sampling keep the distribution?**
 
-- 答对了：认可，然后追问一个更深的"为什么"（例如：c 变大时最优 k 为什么变小？温度升高时 α 通常怎么变？）。
-- 答错了：不要直接给答案，给一个提示（比如让他们改 `04_speedup_formula.py` 里的 α、k、c 跑一跑，或者在 `03_speculative_sampling.py` 里换一对 p、q），让他们重新思考。
-- 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
+Ask the learner:
+> The vocabulary has only two tokens, A and B. The target is p = (0.3, 0.7), and the draft is q = (0.6, 0.4). Use the rules of speculative sampling. When the draft samples A, with what probability do we accept it? After a rejection, from which distribution do we sample again? Calculate the total probability that the final token is A. What is α, the mean probability of one acceptance?
 
-四关都通过后，告诉用户可以进入第 26 章（`chapters/26-*/`，当前最先进开源模型全景）。
+Expected answer: when the draft samples A, the acceptance probability is min(1, 0.3/0.6) = 0.5. When it samples B, the probability is min(1, 0.7/0.4) = 1, so B is always accepted. The residual distribution max(0, p − q) = (0, 0.3), which is (0, 1) after normalization. Thus after a rejection, the token always changes to B. P(A) = 0.6 × 0.5 = 0.3 = p(A). P(B) = 0.4 × 1 + 0.6 × 0.5 × 1 = 0.7 = p(B). α = Σ min(p, q) = 0.3 + 0.4 = 0.7 = 1 − TV(p, q). If the learner says "we can use the samples of the draft directly", show them the control group in part 1 of `03_speculative_sampling.py` (TV distance 0.43, chi-square p-value 0).
+
+---
+
+**Level 4: transfer — the cost calculation and MTP**
+
+Ask the learner:
+> DeepSeek-V3 says that when its MTP module is the draft, the acceptance rate of the second token is 85%–90%, and the decoding speed increases to about 1.8×. Use the speedup formula to explain this number. Also: why is the MTP module a good draft (compared with an independent small model)? Our main-line model (about 0.6B, without MTP) needs a draft. What would you do?
+
+Expected answer: with k = 1, the expected output per forward pass is (1 − α²)/(1 − α) = 1 + α ≈ 1.85–1.9 tokens. After we remove the overhead of the MTP module itself (c > 0, plus the system overhead), a measured 1.8× is reasonable. The MTP module reads the last-layer representation of the main model directly, shares the embedding and the output head, and trains together with the main model. Thus its guesses are accurate (high α), it has only one block (small c), it needs no separate deployed model, and it has the same vocabulary automatically.
+
+The main-line model has no MTP (GOAL 3.3: the main line takes no architecture risk). Possible methods:
+- Train a separate small `zero` model with the same tokenizer and the same data as the draft (for example, 50 million to 100 million parameters). It is better to also distill it with the outputs of the main-line model to increase α.
+- Use prompt lookup, which costs nothing. When tool calls copy many parameter names and JSON keys, α can be high.
+- Freeze the main-line model later and train only one MTP module.
+
+The inference engines (vLLM / SGLang) support all of these methods. But before step 2 measures them on a GPU, we cannot say how much faster they are.
+
+---
+
+## Rules for feedback
+
+- If the answer is correct: say so. Then ask a deeper "why" question. For example: when c increases, why does the best k decrease? When the temperature increases, how does α usually change?
+- If the answer is not correct: do not give the answer. Give a hint. For example, ask the learner to change α, k, and c in `04_speedup_formula.py` and run it, or to use a different pair p, q in `03_speculative_sampling.py`. Then let them think again.
+- If the learner says "I do not know": ask them to guess first. A wrong guess is better than no guess.
+
+When the learner passes all four levels, tell them to continue to Chapter 26 (`chapters/26-*/`, a panorama of the current state-of-the-art open models). After Chapter 26, they can check themselves with `/ch26-panorama`.

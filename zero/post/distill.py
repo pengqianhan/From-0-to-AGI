@@ -1,47 +1,65 @@
-"""蒸馏：教师数据生成 + 执行验证 + 序列级 / logits 蒸馏（对应第 17 章）。
+"""Distillation: teacher data generation + execution check + sequence-level / logits distillation.
+
+Chapter 17 uses this module.
 
     uv run python -m zero.post.distill --config configs/tiny/distill.toml
 
-**两种蒸馏**（都属于 GOAL.md 2.1 的"共识"）：
+**Two kinds of distillation** (both are "consensus" in GOAL.md 2.1):
 
-1. **序列级蒸馏**（sequence-level KD）：让教师模型解题，只保留**执行验证通过**的轨迹，当 SFT 数据训学生。
-   对教师只需要"能生成文本"，教师可以是任何模型、任何分词器，也可以是远程的 HTTP 服务；
-2. **logits 蒸馏**：在同一段文本的每个位置，让学生的下一个 token 分布去贴教师的分布：
-       KL(p_T ‖ p_S) = Σ_v p_T(v) · (log p_T(v) − log p_S(v))      （前向 KL，"覆盖教师的全部可能"）
-   两边的 logits 先除以温度 τ 再 softmax，损失乘 τ²（Hinton et al. 2015，保持梯度量级）；
-   `kd_topk > 0` 时只用教师概率最大的 k 个 token（教师分布在 k 个上重新归一化，学生不归一化），
-   省显存/省存储，第二步离线存教师 logits 时用。
-   **logits 蒸馏要求教师和学生用同一个分词器**（同一个词表、同样的切分）：两个分布必须定义在同一组
-   token 上才能逐位比较。本模块会检查两边分词器的哈希，不一致直接报错——换了分词器的教师只能做序列级蒸馏。
+1. **Sequence-level distillation** (sequence-level KD): the teacher model solves the tasks. Only the
+   trajectories that **pass the execution check** stay, and they train the student as SFT data.
+   The teacher only needs to "generate text". It can be any model with any tokenizer, or a remote
+   HTTP service.
+2. **Logits distillation**: at each position of the same text, the next-token distribution of the
+   student moves toward the distribution of the teacher:
+       KL(p_T ‖ p_S) = Σ_v p_T(v) · (log p_T(v) − log p_S(v))      (forward KL: "cover all that the teacher can say")
+   Both logits are divided by the temperature τ before the softmax, and the loss is multiplied by τ²
+   (Hinton et al. 2015; this keeps the gradient magnitude).
+   With `kd_topk > 0`, only the k tokens with the highest teacher probability count. The teacher
+   distribution is normalized again over the k tokens; the student distribution is not. This saves
+   memory and storage. Step 2 uses it when it stores the teacher logits offline.
+   **Logits distillation needs the same tokenizer for the teacher and the student** (the same
+   vocabulary and the same splitting). A position-by-position comparison needs two distributions on
+   the same set of tokens. This module compares the hashes of the two tokenizers and raises an error
+   if they are different. A teacher with a different tokenizer can do only sequence-level distillation.
 
-最终损失 = (1 − α) · 交叉熵（学生在教师轨迹上的 SFT 损失）+ α · KL，α = `kd_alpha`。
+Final loss = (1 − α) · cross-entropy (the SFT loss of the student on the teacher trajectories) + α · KL,
+with α = `kd_alpha`.
 
-**教师后端**（`[teacher] backend`）：
+**Teacher backends** (`[teacher] backend`):
 
-- `"local"`：本地模型，zero 的 checkpoint 或导出的 HF 目录（Qwen3 稠密结构，比如第二步的开源教师），
-  用我们自己的 `zero.generate`（带 KV cache）采样；只有它能做 logits 蒸馏；
-- `"openai"`：任何 OpenAI 兼容的 HTTP 接口（第二步用 vLLM 起教师服务：
-  `vllm serve <教师> --enable-auto-tool-choice --tool-call-parser hermes`），只做序列级蒸馏。
-  单元测试用本地假服务器测它，不联网。
+- `"local"`: a local model, a zero checkpoint or an exported HF folder (Qwen3 dense architecture, for
+  example the open teacher of Step 2). It samples with our own `zero.generate` (with the KV cache).
+  Only this backend can do logits distillation.
+- `"openai"`: any OpenAI-compatible HTTP interface. In Step 2, vLLM serves the teacher:
+  `vllm serve <teacher> --enable-auto-tool-choice --tool-call-parser hermes`. Sequence-level
+  distillation only. The unit tests use a local fake server and no network.
 
-**执行验证**：对每个任务，教师第一轮的工具调用必须拿满 `score_tool_calls`（函数名 + 参数对），
-执行工具、把结果喂回后，最终回答必须通过 `score_final_answer`；不通过的丢掉。
-每条数据和元数据文件（`<out_jsonl>.meta.json`）都记录教师的名称、版本、许可证（GOAL.md 3.3）。
-`backend = "openai"` 或教师不是本项目自己的模型时，必须在配置里写明 `license_allows_distillation = true`
-（许可证允许用输出训练其他模型，如 Apache-2.0 / MIT），否则拒绝运行。
+**Execution check**: for each task, the first-turn tool calls of the teacher must get the full
+`score_tool_calls` score (correct function name + arguments). Then the tools run, and the results go
+back to the teacher. The final answer must pass `score_final_answer`. The other trajectories are dropped.
+Each row and the metadata file (`<out_jsonl>.meta.json`) record the name, version, and license of the
+teacher (GOAL.md 3.3). With `backend = "openai"`, or when the teacher is not a model of this project,
+the config must set `license_allows_distillation = true`. This means that the license allows the use of
+the outputs to train other models (for example Apache-2.0 / MIT). Otherwise the program does not run.
 
-**冒烟测试里的教师是替身**：GOAL.md 希望冒烟测试用一个能在 CPU 上跑的小开源模型当教师，但这个环境
-访问不了 huggingface.co，下载不了任何开源权重，所以 `configs/tiny/distill.toml` 用 tiny SFT 模型
-**自己**当教师（自蒸馏 / 拒绝采样微调）：序列级数据来自它自己采样、再经执行验证筛过的轨迹；
-logits 蒸馏项是对"冻结的 SFT 模型"的 KL，起步时为 0。这只验证代码通路，不代表蒸馏的效果。
-第二步换真教师只需改 `[teacher]`：`backend = "local"` + `path = <开源 Qwen3 系教师的 HF 目录>`
-（同分词器时才能开 logits 蒸馏——我们自训的分词器和任何开源教师都不同，所以实际只做序列级），
-或 `backend = "openai"` + vLLM 服务地址。
+**The teacher in the smoke test is a stand-in.** GOAL.md asks for a small open model that runs on a CPU
+as the teacher of the smoke test. But this environment cannot access huggingface.co, so it cannot
+download open weights. Thus `configs/tiny/distill.toml` uses the tiny SFT model **itself** as the
+teacher (self-distillation / rejection-sampling fine-tuning). The sequence-level data is its own
+samples, filtered by the execution check. The logits distillation term is the KL to "the frozen SFT
+model", and it is 0 at the start. This verifies only the code path. It does not show the effect of
+distillation.
+To use a real teacher in Step 2, change only `[teacher]`: `backend = "local"` +
+`path = <HF folder of an open Qwen3-family teacher>`, or `backend = "openai"` + the address of the
+vLLM service. Logits distillation needs the same tokenizer. Our own tokenizer is different from all
+open teachers, so in practice we do only sequence-level distillation.
 
-**在线策略蒸馏**（on-policy distillation，GOAL.md 2.1 里列为"待核实"，默认关闭）：学生自己采样，
-在学生生成的序列上逐位置最小化反向 KL(p_S ‖ p_T)（Agarwal et al. 2023 的 GKD，λ = 1 的特例）。
-`on_policy_steps > 0` 时在离线蒸馏之后跑这么多步。它是否已达到"共识"待第 17 章写作时核实，
-正文不讲，只放"前沿观察"。
+**On-policy distillation** (GOAL.md 2.1 lists it as "to be verified"; off by default): the student
+samples. On the sequences of the student, the reverse KL(p_S ‖ p_T) is minimized at each position
+(the GKD of Agarwal et al. 2023, the special case λ = 1). With `on_policy_steps > 0`, this many steps
+run after offline distillation. It is not known yet if this method is "consensus"; check it when
+Chapter 17 is written. The main text does not teach it. It is only in "frontier observations".
 """
 
 from __future__ import annotations
@@ -72,15 +90,15 @@ from zero.tokenizer import Tokenizer
 
 @dataclass
 class TeacherConfig:
-    backend: str = "local"  # "local"（zero checkpoint / HF 目录）| "openai"（OpenAI 兼容 HTTP）
-    path: str = ""  # local：checkpoint 目录或 HF 目录
-    base_url: str = ""  # openai：如 http://localhost:8000/v1
-    model: str = ""  # openai：服务端的模型名
-    api_key_env: str = "OPENAI_API_KEY"  # 从这个环境变量读 API key（本地 vLLM 可以不设）
-    name: str = ""  # 记录用：教师名称，如 "Qwen3-8B"
-    version: str = ""  # 记录用：版本 / commit / 发布日期
-    license: str = ""  # 记录用：许可证，如 "Apache-2.0"
-    license_allows_distillation: bool = False  # 许可证是否允许用输出训练其他模型
+    backend: str = "local"  # "local" (zero checkpoint / HF folder) | "openai" (OpenAI-compatible HTTP)
+    path: str = ""  # local: checkpoint folder or HF folder
+    base_url: str = ""  # openai: for example http://localhost:8000/v1
+    model: str = ""  # openai: the model name on the server
+    api_key_env: str = "OPENAI_API_KEY"  # read the API key from this environment variable (a local vLLM does not need it)
+    name: str = ""  # for the record: teacher name, for example "Qwen3-8B"
+    version: str = ""  # for the record: version / commit / release date
+    license: str = ""  # for the record: license, for example "Apache-2.0"
+    license_allows_distillation: bool = False  # the license allows the use of the outputs to train other models
     temperature: float = 0.7
     top_p: float = 0.95
     max_new_tokens: int = 96
@@ -89,26 +107,26 @@ class TeacherConfig:
 
 @dataclass
 class DistillConfig:
-    out_jsonl: str = ""  # 序列级蒸馏数据（验证通过的轨迹）
-    shard_dir: str = ""  # 打包后的窗口
-    n_tasks: int = 64  # 用多少个 tool_env 训练任务
-    samples_per_task: int = 4  # 每个任务教师采样几次
-    keep_per_task: int = 1  # 每个任务最多保留几条通过验证的轨迹
+    out_jsonl: str = ""  # sequence-level distillation data (the trajectories that passed the check)
+    shard_dir: str = ""  # packed windows
+    n_tasks: int = 64  # number of tool_env training tasks
+    samples_per_task: int = 4  # number of teacher samples for each task
+    keep_per_task: int = 1  # maximum number of verified trajectories to keep for each task
     env_seed: int = 0
-    mix_sft_jsonl: str = ""  # 可选：把原 SFT 数据混进来（防止只有少量教师数据时遗忘）
-    mix_sft_max: int = 0  # 最多混多少条
-    logits_kd: bool = True  # 是否加 logits 蒸馏项（需要 local 后端 + 同一个分词器）
+    mix_sft_jsonl: str = ""  # optional: mix in the original SFT data (prevents forgetting with little teacher data)
+    mix_sft_max: int = 0  # maximum number of rows to mix in
+    logits_kd: bool = True  # add the logits distillation term (needs the local backend + the same tokenizer)
     kd_alpha: float = 0.5
     kd_temperature: float = 1.0
     kd_topk: int = 0
-    on_policy_steps: int = 0  # >0：离线蒸馏后再做这么多步在线策略蒸馏（待核实，默认关）
+    on_policy_steps: int = 0  # >0: this many on-policy distillation steps after offline distillation (to be verified; off by default)
     on_policy_lr: float = 1e-4
     on_policy_batch: int = 4
     overwrite: bool = False
 
 
 # ---------------------------------------------------------------------------
-# 损失
+# Loss
 # ---------------------------------------------------------------------------
 
 
@@ -119,13 +137,14 @@ def kd_loss(
     temperature: float = 1.0,
     topk: int = 0,
 ) -> torch.Tensor:
-    """前向 KL(p_T ‖ p_S) 在 mask 位置上的平均值 × τ²。logits: (B, T, V)，mask: (B, T)。
+    """Forward KL(p_T ‖ p_S), mean over the mask positions, × τ². logits: (B, T, V), mask: (B, T).
 
-    **两者必须来自同一个分词器**（同一个词表），否则第 v 维不是同一个 token，比较没有意义。"""
+    **Both must come from the same tokenizer** (the same vocabulary). Otherwise dimension v is not the
+    same token in both, and the comparison has no meaning."""
     if student_logits.shape != teacher_logits.shape:
         raise ValueError(
-            f"学生 logits {tuple(student_logits.shape)} 与教师 {tuple(teacher_logits.shape)} 形状不同："
-            "logits 蒸馏要求两者用同一个分词器"
+            f"The student logits {tuple(student_logits.shape)} and the teacher logits {tuple(teacher_logits.shape)} have different shapes: "
+            "logits distillation needs the same tokenizer for both"
         )
     tau = temperature
     s = student_logits.float() / tau
@@ -145,7 +164,10 @@ def kd_loss(
 def reverse_kl_loss(
     student_logits: torch.Tensor, teacher_logits: torch.Tensor, mask: torch.Tensor
 ) -> torch.Tensor:
-    """反向 KL(p_S ‖ p_T) 在 mask 位置上的平均值（在线策略蒸馏用，梯度只流向学生）。"""
+    """Reverse KL(p_S ‖ p_T), mean over the mask positions.
+
+    On-policy distillation uses it. The gradient goes only to the student.
+    """
     logp_s = F.log_softmax(student_logits.float(), dim=-1)
     logp_t = F.log_softmax(teacher_logits.float(), dim=-1)
     kl = (logp_s.exp() * (logp_s - logp_t)).sum(-1)
@@ -154,12 +176,12 @@ def reverse_kl_loss(
 
 
 # ---------------------------------------------------------------------------
-# 教师后端
+# Teacher backends
 # ---------------------------------------------------------------------------
 
 
 class LocalTeacher:
-    """本地模型（zero checkpoint 或 Qwen3 结构的 HF 目录），用 zero.generate 采样。"""
+    """A local model (zero checkpoint or HF folder with the Qwen3 architecture). It samples with zero.generate."""
 
     def __init__(self, cfg: TeacherConfig, device: str | torch.device = "cpu") -> None:
         self.cfg = cfg
@@ -176,7 +198,10 @@ class LocalTeacher:
 
 
 def to_openai_messages(messages: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-    """我们的消息格式 → OpenAI Chat Completions 格式（tool_calls 的 arguments 是 JSON 字符串，带 id）。"""
+    """Our message format → OpenAI Chat Completions format.
+
+    In tool_calls, the arguments are JSON strings, and each call has an id.
+    """
     out: list[dict[str, Any]] = []
     call_ids: list[str] = []
     k = 0
@@ -211,7 +236,7 @@ def to_openai_messages(messages: Sequence[dict[str, Any]]) -> list[dict[str, Any
 
 
 def openai_message_to_text(msg: dict[str, Any]) -> str:
-    """OpenAI 返回的 assistant message → 我们模板里助手应该生成的文本。"""
+    """Assistant message from OpenAI → the text that the assistant must generate in our template."""
     calls = []
     for tc in msg.get("tool_calls") or []:
         f = tc.get("function", tc)
@@ -220,7 +245,7 @@ def openai_message_to_text(msg: dict[str, Any]) -> str:
             try:
                 args = json.loads(args)
             except json.JSONDecodeError:
-                pass  # 保留原字符串：渲染出来就是坏的 JSON，验证会把它筛掉
+                pass  # keep the original string: it renders as broken JSON, and the check removes it
         calls.append({"name": f.get("name"), "arguments": args})
     return assistant_text(
         {"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls}
@@ -228,11 +253,11 @@ def openai_message_to_text(msg: dict[str, Any]) -> str:
 
 
 class OpenAITeacher:
-    """OpenAI 兼容的 HTTP 接口（vLLM / SGLang / 各家 API）。只用标准库 urllib。"""
+    """OpenAI-compatible HTTP interface (vLLM / SGLang / vendor APIs). It uses only urllib from the standard library."""
 
     def __init__(self, cfg: TeacherConfig) -> None:
         if not cfg.base_url or not cfg.model:
-            raise ValueError("[teacher] backend=openai 需要 base_url 和 model")
+            raise ValueError("[teacher] backend=openai needs base_url and model")
         self.cfg = cfg
 
     def complete(
@@ -271,22 +296,25 @@ def build_teacher(
         return LocalTeacher(cfg, device)
     if cfg.backend == "openai":
         return OpenAITeacher(cfg)
-    raise ValueError(f"[teacher] backend 只能是 local / openai，当前 {cfg.backend!r}")
+    raise ValueError(f"[teacher] backend must be local / openai, not {cfg.backend!r}")
 
 
 def check_license(cfg: TeacherConfig, is_self: bool) -> None:
-    """GOAL.md 3.3：教师的许可证必须允许"用输出训练其他模型"。本项目自己的模型当替身时例外。"""
+    """GOAL.md 3.3: the license of the teacher must allow "the use of the outputs to train other models".
+
+    Exception: a model of this project as a stand-in.
+    """
     if is_self:
         return
     if not cfg.license_allows_distillation:
         raise PermissionError(
-            f"教师 {cfg.name or cfg.path or cfg.model!r} 的许可证未确认允许蒸馏："
-            "核实许可证（如 Apache-2.0 / MIT）后在 [teacher] 里写 license、license_allows_distillation = true"
+            f"The license of the teacher {cfg.name or cfg.path or cfg.model!r} is not confirmed to allow distillation. "
+            "Verify the license (for example Apache-2.0 / MIT), then set license and license_allows_distillation = true in [teacher]"
         )
 
 
 # ---------------------------------------------------------------------------
-# 教师数据：采样 → 执行 → 验证
+# Teacher data: sample → execute → check
 # ---------------------------------------------------------------------------
 
 
@@ -297,8 +325,11 @@ def teacher_trajectories(
     keep: int,
     seed: int,
 ) -> tuple[list[list[dict[str, Any]]], int]:
-    """对一个任务：教师第一轮采样 n 次（一次请求 / 一个 batch），只有工具调用拿满分的继续——执行工具、
-    喂回结果、让教师写最终回答（贪心），最终回答也通过才保留。返回 (通过的完整对话列表, 候选数)。"""
+    """For one task, sample the first turn of the teacher n times (one request / one batch).
+
+    Only the samples with a full tool-call score continue: run the tools, feed back the results, and let
+    the teacher write the final answer (greedy). Keep a sample only if its final answer also passes.
+    Return (list of the full conversations that passed, number of candidates)."""
     from zero.post.chat import parse_assistant
     from zero.post.envs.tool_env import execute_safely, score_final_answer, score_tool_calls
 
@@ -337,7 +368,7 @@ def generate_kd_data(
     dc: DistillConfig,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
-    """生成序列级蒸馏数据，写 out_jsonl 和 out_jsonl.meta.json，返回元数据。"""
+    """Generate the sequence-level distillation data, write out_jsonl and out_jsonl.meta.json, and return the metadata."""
     from zero.post.envs.tool_env import generate_tasks
 
     tasks = generate_tasks(dc.n_tasks, seed=dc.env_seed, split="train")
@@ -375,21 +406,21 @@ def generate_kd_data(
         "n_verified": len(rows),
         "tasks_with_verified": len({r["task_id"] for r in rows}),
         "pass_rate": len(rows) / max(n_cand, 1),
-        "filter": "score_tool_calls == 1 且 score_final_answer.answer_ok（zero/post/envs/tool_env.py）",
+        "filter": "score_tool_calls == 1 and score_final_answer.answer_ok (zero/post/envs/tool_env.py)",
         "seconds": round(time.time() - t0, 1),
     }
     Path(str(dc.out_jsonl) + ".meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2)
     )
     log(
-        f"[distill] 教师 {tcfg.name or tcfg.path}：{n_cand} 个候选 → 验证通过 {len(rows)} 条"
-        f"（通过率 {meta['pass_rate']:.1%}，{meta['seconds']}s）"
+        f"[distill] teacher {tcfg.name or tcfg.path}: {n_cand} candidates → {len(rows)} verified"
+        f" (pass rate {meta['pass_rate']:.1%}, {meta['seconds']}s)"
     )
     return meta
 
 
 # ---------------------------------------------------------------------------
-# 训练：序列级（SFT 损失）+ logits 蒸馏
+# Training: sequence-level (SFT loss) + logits distillation
 # ---------------------------------------------------------------------------
 
 
@@ -397,7 +428,7 @@ def _make_distill_trainer_cls():  # noqa: ANN202
     from zero.train.trainer import Trainer
 
     class DistillTrainer(Trainer):
-        """在通用 Trainer 上只改一处：损失 = (1-α)·CE + α·KL(教师 ‖ 学生)。"""
+        """Change only one thing in the general Trainer: loss = (1-α)·CE + α·KL(teacher ‖ student)."""
 
         def __init__(
             self, cfg: Any, teacher_model: torch.nn.Module, dc: DistillConfig, **kw: Any
@@ -443,7 +474,10 @@ def on_policy_distill(
     seed: int = 0,
     log: Callable[[str], None] = print,
 ) -> list[dict[str, float]]:
-    """在线策略蒸馏（待核实，见模块说明）：学生采样 → 在学生的样本上最小化反向 KL(p_S ‖ p_T)。"""
+    """On-policy distillation (to be verified; see the module docstring).
+
+    The student samples → minimize the reverse KL(p_S ‖ p_T) on the samples of the student.
+    """
     from zero.post.grpo import sample_group
 
     opt = torch.optim.AdamW(
@@ -477,7 +511,10 @@ def run_distill(
     overrides: Sequence[str] | None = None,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
-    """教师数据生成 →（混入 SFT 数据）→ 打包 → 训练学生。返回 {"meta", "history", ...}。"""
+    """Teacher data generation → (mix in SFT data) → packing → train the student.
+
+    Return {"meta", "history", ...}.
+    """
     from zero.post.common import read_jsonl
     from zero.post.sft import build_sft_shards
     from zero.train.dist import DistInfo, pick_device
@@ -492,28 +529,31 @@ def run_distill(
     if tc.cpu_threads > 0:
         torch.set_num_threads(tc.cpu_threads)
     if cfg.train.data.format != "sft":
-        raise ValueError('蒸馏配置需要 [data] format = "sft"（教师轨迹按 SFT 方式打包）')
+        raise ValueError('The distillation config needs [data] format = "sft" (the teacher trajectories are packed as SFT data)')
     tok = Tokenizer.load(tc.data.tokenizer)
 
-    # 教师是不是"本项目自己的模型"（冒烟测试的替身）：local 后端 + zero checkpoint 目录
+    # Is the teacher "a model of this project" (the stand-in of the smoke test)?
+    # Yes for the local backend + a zero checkpoint folder.
     is_self = tcfg.backend == "local" and not (Path(tcfg.path) / "config.json").exists()
     check_license(tcfg, is_self)
-    # 有 CUDA 时本地教师放到 GPU 上：已在单张 RTX 3090 上验证（2026-10，见 runs/2026-10-01-gpu0-check/）
+    # With CUDA, put the local teacher on the GPU. Verified on one RTX 3090
+    # (2026-10, see runs/2026-10-01-gpu0-check/).
     t_device = "cuda" if tc.device in ("auto", "cuda") and torch.cuda.is_available() else "cpu"
     teacher = build_teacher(tcfg, t_device)
-    # 先检查能不能做 logits 蒸馏（分词器不同就尽早报错，别等教师数据生成完）
+    # First check if logits distillation is possible. For different tokenizers, raise the error
+    # early, before the generation of the teacher data.
     use_logits = dc.logits_kd and isinstance(teacher, LocalTeacher)
     if dc.logits_kd and not use_logits:
-        log("[distill] 教师不是本地模型，拿不到 logits：只做序列级蒸馏")
+        log("[distill] the teacher is not a local model, so no logits: sequence-level distillation only")
     if use_logits and teacher.tok.hash() != tok.hash():  # type: ignore[union-attr]
         raise ValueError(
-            "logits 蒸馏要求教师与学生使用同一个分词器（哈希不同）；换了分词器的教师请设 [distill] logits_kd = false"
+            "Logits distillation needs the same tokenizer for the teacher and the student (the hashes are different). For a teacher with a different tokenizer, set [distill] logits_kd = false"
         )
 
     meta_path = Path(str(dc.out_jsonl) + ".meta.json")
     if Path(dc.out_jsonl).exists() and meta_path.exists() and not dc.overwrite:
         meta = json.loads(meta_path.read_text())
-        log(f"[distill] 复用已有的教师数据 {dc.out_jsonl}（{meta['n_verified']} 条）")
+        log(f"[distill] reusing the existing teacher data {dc.out_jsonl} ({meta['n_verified']} rows)")
     else:
         meta = generate_kd_data(teacher, tcfg, dc, log)
 
@@ -521,14 +561,14 @@ def run_distill(
     if dc.mix_sft_jsonl and dc.mix_sft_max > 0:
         extra = read_jsonl(dc.mix_sft_jsonl)[: dc.mix_sft_max]
         rows = rows + extra
-        log(f"[distill] 混入 {len(extra)} 条原 SFT 数据（共 {len(rows)} 条）")
+        log(f"[distill] mixed in {len(extra)} rows of the original SFT data ({len(rows)} rows in total)")
     if not rows:
-        raise ValueError("[distill] 没有任何训练数据：教师轨迹全部没通过验证，且没有混入 SFT 数据")
+        raise ValueError("[distill] no training data: no teacher trajectory passed the check, and no SFT data was mixed in")
     shard_dir = Path(dc.shard_dir or Path(tc.out_dir) / "data")
     mixed = shard_dir / "train_mix.jsonl"
     write_jsonl(mixed, rows)
     stats = build_sft_shards(mixed, tok, tc.data.seq_len, shard_dir / "train.bin")
-    log(f"[distill] 打包：{stats}")
+    log(f"[distill] packing: {stats}")
     from zero.config import DataSourceConfig
 
     tc.data.sources = [DataSourceConfig(name="distill", path=str(shard_dir / "train.bin"))]
@@ -536,8 +576,9 @@ def run_distill(
     tc.eval_every = 0
 
     os.makedirs(tc.out_dir, exist_ok=True)
-    # 单进程；设备按 [train] device 选（原来固定 DistInfo()，即 CPU：有 GPU 时学生仍在 CPU 上训练、
-    # 教师也被搬回 CPU。2026-10 在 RTX 3090 上发现，见 runs/2026-10-01-gpu0-check/）
+    # Single process. [train] device selects the device. Before, the code always used DistInfo(),
+    # that is the CPU: with a GPU, the student still trained on the CPU, and the teacher also moved
+    # back to the CPU. We found this on an RTX 3090 in 2026-10, see runs/2026-10-01-gpu0-check/.
     info = DistInfo(device=pick_device(tc.device))
     if use_logits:
         trainer = _make_distill_trainer_cls()(cfg, teacher.model, dc, info=info, log=log)  # type: ignore[union-attr]
@@ -585,7 +626,7 @@ def run_distill(
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description="蒸馏（第 17 章）")
+    ap = argparse.ArgumentParser(description="Distillation (Chapter 17)")
     ap.add_argument("--config", required=True)
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
     args = ap.parse_args(argv)

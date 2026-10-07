@@ -1,22 +1,26 @@
-"""第 22 章 · 极简代码 2：一个"每层可以有不同窗口"的小 Transformer + 两个任务
+"""Chapter 22 · Minimal code 2: a small Transformer in which each layer can have a different window, and two tasks.
 
-和第 9、10 章同一套结构（Pre-Norm RMSNorm、RoPE、SwiGLU、共享 embedding），只改注意力的掩码：
-  - windows[l] = None：第 l 层是全注意力（能看见全部过去）；
-  - windows[l] = W   ：第 l 层是滑动窗口（只看最近 W 个位置，含自己）；
-  - topk = k（只在 05 里用）：每个 query 只保留分数最高的 k 个键 —— 稀疏注意力的最简形式。
+The structure is the same as in Chapters 9 and 10 (Pre-Norm RMSNorm, RoPE, SwiGLU, tied embeddings).
+Only the attention mask changes:
+  - windows[l] = None: layer l uses full attention (it sees all of the past).
+  - windows[l] = W   : layer l uses a sliding window (it sees only the last W positions, itself included).
+  - topk = k (used only in 05): each query keeps only the k keys with the highest scores.
+    This is the simplest form of sparse attention.
 
-三种配置（都是 4 层）：
+Three configurations (all with 4 layers):
   full       = [None, None, None, None]
-  sliding    = [W, W, W, W]                  （Mistral 7B v0.1 的做法）
-  interleave = [W, W, W, None]               （3 局部 : 1 全局，OLMo 3 的比例）
+  sliding    = [W, W, W, W]                  (the method of Mistral 7B v0.1)
+  interleave = [W, W, W, None]               (3 local : 1 global, the ratio of OLMo 3)
 
-两个任务：
-  - 语言建模：assets/tiny_corpus/shakespeare.txt，字符级；
-  - 大海捞针（needle）：一串随机"填充字符"里藏着一个"针"字符，最后一个位置要说出它是哪个。
-    针离最后一个位置的距离 d 均匀随机，于是能按 d 统计准确率，看滑动窗口在哪里失效。
+Two tasks:
+  - Language modeling: assets/tiny_corpus/shakespeare.txt, character level.
+  - Needle in a haystack (needle): a sequence of random "filler characters" hides one "needle" character.
+    At the last position, the model must tell which needle it is. The distance d from the needle to the
+    last position is uniformly random. Thus we can measure the accuracy for each d and see where the
+    sliding window fails.
 
-权重缓存在 code/out/*.pt（已被 .gitignore 忽略），03–05 直接加载。
-运行：uv run python chapters/22-local-sparse-attention/code/02_swa_model.py   （训练全部 6 个模型，约 5 分钟）
+The weights are cached in code/out/*.pt (.gitignore ignores them). Scripts 03–05 load them directly.
+Run: uv run python chapters/22-local-sparse-attention/code/02_swa_model.py   (trains all 6 models: about 12 minutes on an idle CPU, up to 40 minutes on a busy one)
 """
 
 from __future__ import annotations
@@ -33,9 +37,9 @@ import torch.nn.functional as F
 ROOT = Path(__file__).resolve().parents[3]
 CORPUS = ROOT / "assets" / "tiny_corpus" / "shakespeare.txt"
 OUT = Path(__file__).resolve().parent / "out"
-torch.set_num_threads(1)  # 构建环境里多个任务共享 CPU；读者本机可以删掉这行
+torch.set_num_threads(1)  # many jobs share the CPU of the build machine; on your computer, you can remove this line
 
-W = 16  # 两个任务统一的窗口大小
+W = 16  # the same window size for the two tasks
 VARIANTS = {
     "full": [None, None, None, None],
     "sliding": [W, W, W, W],
@@ -43,11 +47,11 @@ VARIANTS = {
 }
 
 
-# ── 模型 ────────────────────────────────────────────────────────────────────
+# ── Model ──────────────────────────────────────────────────────────────────
 @dataclass
 class Config:
     vocab_size: int
-    windows: list = field(default_factory=lambda: [None] * 4)  # 每层的窗口，None = 全注意力
+    windows: list = field(default_factory=lambda: [None] * 4)  # window of each layer; None = full attention
     dim: int = 96
     n_heads: int = 4
     ffn_dim: int = 256
@@ -63,7 +67,7 @@ class Config:
 
 
 def window_mask(q_pos: torch.Tensor, k_pos: torch.Tensor, window: int | None) -> torch.Tensor:
-    """(Tq, Tk) 布尔掩码：键在查询之前（含自己），且（有窗口时）距离 < window。"""
+    """(Tq, Tk) boolean mask: the key is not after the query and, if there is a window, the distance is < window."""
     q, k = q_pos[:, None], k_pos[None, :]
     mask = k <= q
     if window is not None:
@@ -72,20 +76,21 @@ def window_mask(q_pos: torch.Tensor, k_pos: torch.Tensor, window: int | None) ->
 
 
 class KVCache:
-    """极简 KV cache：每层一个列表。滑动窗口层每次拼接后只留最近 W 个位置（截断），
-    所以这些层的缓存大小封顶在 W；全注意力层照常越存越多。"""
+    """Minimal KV cache: one list for each layer. After each concatenation, a sliding-window layer keeps
+    only the last W positions (truncation). Thus the cache of these layers has a maximum size of W.
+    A full-attention layer continues to grow as usual."""
 
     def __init__(self, n_layers: int) -> None:
         self.k = [None] * n_layers
         self.v = [None] * n_layers
-        self.pos = [None] * n_layers  # 每个缓存槽对应的全局位置（用来构造掩码）
+        self.pos = [None] * n_layers  # the global position of each cache slot (to build the mask)
 
     def append(self, layer: int, k, v, pos, window: int | None):
         if self.k[layer] is not None:
             k = torch.cat([self.k[layer], k], dim=2)
             v = torch.cat([self.v[layer], v], dim=2)
             pos = torch.cat([self.pos[layer], pos])
-        # 先把"旧 + 新"全部返回给这一步的注意力用，再截断存起来
+        # Give all of "old + new" to the attention of this step. Then truncate and store.
         keep = slice(None) if window is None else slice(-window, None)
         self.k[layer], self.v[layer], self.pos[layer] = k[:, :, keep], v[:, :, keep], pos[keep]
         return k, v, pos
@@ -118,7 +123,7 @@ class Attention(nn.Module):
     def __init__(self, c: Config, window: int | None) -> None:
         super().__init__()
         self.c, self.window = c, window
-        self.topk: int | None = None  # 05 里临时打开
+        self.topk: int | None = None  # 05 sets it for a short time
         self.wqkv = nn.Linear(c.dim, 3 * c.dim, bias=False)
         self.wo = nn.Linear(c.dim, c.dim, bias=False)
 
@@ -128,12 +133,12 @@ class Attention(nn.Module):
         q, k, v = self.wqkv(x).view(B, T, 3, c.n_heads, c.head_dim).permute(2, 0, 3, 1, 4)
         q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
         k_pos = pos
-        if cache is not None:  # 旧 K/V + 新 K/V；滑动窗口层之后会被截断到最近 W 个
+        if cache is not None:  # old K/V + new K/V; for a sliding-window layer, the cache then keeps only the last W
             k, v, k_pos = cache.append(layer, k, v, pos, self.window)
         att = q @ k.transpose(-2, -1) / math.sqrt(c.head_dim)  # (B, H, T, S)
         att = att.masked_fill(~window_mask(pos, k_pos, self.window), float("-inf"))
         if self.topk is not None and self.topk < att.shape[-1]:
-            # 稀疏注意力（最简形式）：每个 query 只留分数最高的 k 个键，其余当作看不见
+            # Sparse attention (simplest form): each query keeps only the k keys with the highest scores; the others become invisible
             kth = att.topk(self.topk, dim=-1).values[..., -1:]
             att = att.masked_fill(att < kth, float("-inf"))
         out = (att.softmax(-1) @ v).transpose(1, 2).reshape(B, T, c.dim)
@@ -180,7 +185,7 @@ class TinyLM(nn.Module):
             blk.attn.topk = k
 
 
-# ── 任务 1：字符级语言建模 ──────────────────────────────────────────────────
+# ── Task 1: character-level language modeling ──────────────────────────────
 class CharData:
     def __init__(self) -> None:
         text = CORPUS.read_text(encoding="utf-8")
@@ -204,15 +209,15 @@ class CharData:
         return x, y
 
 
-# ── 任务 2：大海捞针 ─────────────────────────────────────────────────────────
-N_NEEDLE, N_FILL = 8, 32  # 词表：0..7 是"针"，8..39 是填充，40 是"提问"
+# ── Task 2: needle in a haystack ───────────────────────────────────────────
+N_NEEDLE, N_FILL = 8, 32  # vocabulary: 0..7 are "needles", 8..39 are fillers, 40 is the "question"
 QUERY = N_NEEDLE + N_FILL
 NEEDLE_VOCAB = QUERY + 1
-NEEDLE_T = 96  # 序列长度：针与提问的距离 d ∈ [1, 95]
+NEEDLE_T = 96  # sequence length: the distance d from the needle to the question is in [1, 95]
 
 
 def needle_batch(bsz: int, g: torch.Generator, d: torch.Tensor | None = None):
-    """返回 (x, 答案, 距离)。x 的最后一个位置是"提问"，答案是藏在距离 d 处的针。"""
+    """Return (x, answer, distance). The last position of x is the "question". The answer is the needle at distance d."""
     x = torch.randint(N_NEEDLE, N_NEEDLE + N_FILL, (bsz, NEEDLE_T), generator=g)
     x[:, -1] = QUERY
     if d is None:
@@ -222,10 +227,10 @@ def needle_batch(bsz: int, g: torch.Generator, d: torch.Tensor | None = None):
     return x, ans, d
 
 
-# ── 训练与评估 ──────────────────────────────────────────────────────────────
+# ── Training and evaluation ────────────────────────────────────────────────
 def train(task: str, windows: list, steps: int, seed: int = 0, verbose: bool = True) -> TinyLM:
     torch.manual_seed(seed)
-    g = torch.Generator().manual_seed(seed)  # 同一个种子 → 三种配置看到完全相同的数据
+    g = torch.Generator().manual_seed(seed)  # the same seed → the three configurations see exactly the same data
     if task == "lm":
         data = CharData()
         model = TinyLM(Config(len(data.chars), windows))
@@ -236,14 +241,14 @@ def train(task: str, windows: list, steps: int, seed: int = 0, verbose: bool = T
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.1)
     t0 = time.time()
     for step in range(steps + 1):
-        for pg in opt.param_groups:  # warmup + cosine（第 6 章）
+        for pg in opt.param_groups:  # warmup + cosine (Chapter 6)
             pg["lr"] = lr * min(1, (step + 1) / 100) * 0.5 * (1 + math.cos(math.pi * step / steps))
         if task == "lm":
             x, y = data.batch("train", bsz, seq, g)
             loss = F.cross_entropy(model(x).flatten(0, 1), y.flatten())
         else:
             x, ans, _ = needle_batch(bsz, g)
-            loss = F.cross_entropy(model(x)[:, -1], ans)  # 只在"提问"位置算 loss
+            loss = F.cross_entropy(model(x)[:, -1], ans)  # calculate the loss only at the "question" position
         opt.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -268,7 +273,7 @@ def load_or_train(task: str, variant: str, verbose: bool = True) -> TinyLM:
         model.load_state_dict(torch.load(path, weights_only=True))
         return model.eval()
     if verbose:
-        print(f"  训练 {task} / {variant}（{STEPS[task]} 步，只需一次，之后从 {path.name} 加载）")
+        print(f"  Train {task} / {variant} ({STEPS[task]} steps, only once; later runs load {path.name})")
     model = train(task, windows, STEPS[task], verbose=verbose)
     OUT.mkdir(exist_ok=True)
     torch.save(model.state_dict(), path)
@@ -288,7 +293,7 @@ def lm_val_loss(model: TinyLM, seq: int = 128, n_batches: int = 20) -> float:
 
 @torch.no_grad()
 def needle_accuracy(model: TinyLM, n_per_d: int = 64) -> torch.Tensor:
-    """对每个距离 d = 1..NEEDLE_T-1 各测 n_per_d 条，返回每个 d 的准确率。"""
+    """Test n_per_d samples at each distance d = 1..NEEDLE_T-1. Return the accuracy for each d."""
     g = torch.Generator().manual_seed(4321)
     accs = []
     for d in range(1, NEEDLE_T):
@@ -302,4 +307,4 @@ if __name__ == "__main__":
         for variant in VARIANTS:
             m = load_or_train(task, variant)
             n = sum(p.numel() for p in m.parameters())
-            print(f"{task:>6} / {variant:<10} windows={m.c.windows}  参数 {n / 1e3:.0f}K")
+            print(f"{task:>6} / {variant:<10} windows={m.c.windows}  parameters {n / 1e3:.0f}K")

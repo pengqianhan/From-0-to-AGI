@@ -1,14 +1,18 @@
-"""预算规划：给定美元预算，候选模型各能训多少 token（对应第 12 章；闸门 1 的预算表用它）。
+"""Budget planning: for a budget in US dollars, how many tokens each candidate model can train on.
 
-    token 数   = 预算 / 每 token 的费用        （每 token 费用由 estimate_cost 算：FLOPs/token ÷ (峰值 × MFU) × 单价）
-    token/参数 = token 数 / 总参数
-    墙钟时间   = 卡时 / 卡数
-    预测 loss  = 阶梯拟合的 L(N, D)（只有给了 --fit 才算；拟合必须来自同一配方的阶梯实验）
+Chapter 12. The budget table of Gate 1 uses this tool.
 
-`--speedup` 用来做"如果……会怎样"的估算，比如 FP8 训练实测提速 1.3 倍：它等价于把 MFU 乘上这个倍数。
-FP8 路径在 zero 里还没有实现，也尚未在 GPU 上验证——这个参数只用于讨论，不代表承诺。
+    tokens          = budget / cost per token    (estimate_cost gives the cost per token: FLOPs/token ÷ (peak × MFU) × price)
+    tokens/param    = tokens / total parameters
+    wall-clock time = GPU-hours / number of GPUs
+    predicted loss  = L(N, D) from the ladder fit (only with --fit; the fit must come from ladder experiments with the same recipe)
 
-用法：
+Use `--speedup` for "what if" estimates. For example, if FP8 training is 1.3 times faster in a
+measurement, use 1.3. This is the same as multiplying the MFU by that factor.
+zero does not implement an FP8 path yet, and it is not verified on GPUs. Use this flag only for
+discussion. It is not a promise.
+
+Usage:
 
     uv run python -m zero.tools.plan_budget --config configs/main/pretrain.toml --budget 5000 \\
         --mfu 0.4 --mfu 0.5 --candidate "0.5B:dim=1024,ffn_dim=3072" --fit runs/ladder/fit.json
@@ -51,7 +55,7 @@ def tokens_for_budget(
     num_gpus: int = 8,
     speedup: float = 1.0,
 ) -> float:
-    """预算能买多少 token：直接复用 estimate_cost 的"每 token 费用"。"""
+    """How many tokens the budget buys. This uses the "cost per token" from estimate_cost."""
     per_token = estimate_cost(
         config, 1.0, seq_len, gpu, price_per_gpu_hour, min(mfu * speedup, 1.0), num_gpus
     ).cost_usd
@@ -94,13 +98,13 @@ def plan(
 
 
 def apply_candidate(base: ModelConfig, spec: str) -> tuple[str, ModelConfig]:
-    """ "名字:dim=1024,ffn_dim=3072,n_layers=24" → 在 base 上改这几个字段。"""
+    """ "name:dim=1024,ffn_dim=3072,n_layers=24" → change these fields of base."""
     name, _, kv = spec.partition(":")
     cfg = copy.deepcopy(base)
     for item in filter(None, kv.split(",")):
         k, _, v = item.partition("=")
         if not hasattr(cfg, k.strip()):
-            raise ValueError(f"候选 {spec!r}：ModelConfig 没有字段 {k!r}")
+            raise ValueError(f"Candidate {spec!r}: ModelConfig has no field {k!r}")
         cur = getattr(cfg, k.strip())
         setattr(cfg, k.strip(), type(cur)(float(v)) if isinstance(cur, int | float) else v)
     cfg.validate()
@@ -108,25 +112,25 @@ def apply_candidate(base: ModelConfig, spec: str) -> tuple[str, ModelConfig]:
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description="给定预算，候选模型能训多少 token、要多久、预测 loss")
-    ap.add_argument("--config", action="append", required=True, help="含 [model] 的 TOML；可重复")
+    ap = argparse.ArgumentParser(description="For a budget: how many tokens each candidate can train on, how long it takes, and the predicted loss")
+    ap.add_argument("--config", action="append", required=True, help="TOML with [model]; can repeat")
     ap.add_argument(
         "--candidate",
         action="append",
         default=[],
-        help="在第一个 --config 上改形状的候选，如 '0.5B:dim=1024,ffn_dim=3072'；可重复",
+        help="a candidate that changes the shape of the first --config, for example '0.5B:dim=1024,ffn_dim=3072'; can repeat",
     )
     ap.add_argument(
-        "--budget", type=float, default=5000.0, help="美元预算（默认 5000，GOAL.md 3.4 的预训练线）"
+        "--budget", type=float, default=5000.0, help="budget in US dollars (default 5000, the pretraining line in GOAL.md 3.4)"
     )
     ap.add_argument("--gpu", default="h100-sxm", choices=sorted(GPUS))
-    ap.add_argument("--price", type=float, default=2.5, help="每卡时美元")
-    ap.add_argument("--mfu", type=float, action="append", default=[], help="可重复，默认 0.4")
+    ap.add_argument("--price", type=float, default=2.5, help="US dollars per GPU-hour")
+    ap.add_argument("--mfu", type=float, action="append", default=[], help="can repeat; default 0.4")
     ap.add_argument("--num-gpus", type=int, default=8)
-    ap.add_argument("--seq-len", type=int, default=0, help="默认读配置 data.seq_len")
-    ap.add_argument("--speedup", type=float, default=1.0, help="假设的额外提速（如 FP8），未验证")
-    ap.add_argument("--fit", help="fit_scaling --out 写出的 JSON，用来预测 loss")
-    ap.add_argument("--json", help="把表格写成 JSON")
+    ap.add_argument("--seq-len", type=int, default=0, help="default: data.seq_len from the config")
+    ap.add_argument("--speedup", type=float, default=1.0, help="assumed extra speedup (for example FP8); not verified")
+    ap.add_argument("--fit", help="JSON that fit_scaling --out writes; used to predict the loss")
+    ap.add_argument("--json", help="write the table as JSON")
     args = ap.parse_args(argv)
 
     fit = (
@@ -161,12 +165,12 @@ def main(argv: list[str] | None = None) -> None:
             )
     spec = GPUS[args.gpu]
     print(
-        f"预算 ${args.budget:,.0f}，{args.num_gpus}×{spec.name}（峰值 {spec.bf16_dense_tflops} TFLOPS"
-        f"{'' if spec.verified else '，待核实'}），${args.price}/卡时"
-        + (f"，假设额外提速 ×{args.speedup}（未验证）" if args.speedup != 1.0 else "")
+        f"Budget ${args.budget:,.0f}, {args.num_gpus}×{spec.name} (peak {spec.bf16_dense_tflops} TFLOPS"
+        f"{'' if spec.verified else ', not verified'}), ${args.price}/GPU-hour"
+        + (f", assumed extra speedup ×{args.speedup} (not verified)" if args.speedup != 1.0 else "")
     )
-    head = f"{'候选':<14} {'MFU':>4} {'总参数':>8} {'非emb':>8} {'token':>8} {'tok/参数':>8} {'卡时':>7} {'8卡天数':>7}"
-    print(head + (f" {'预测loss':>8}" if fit else ""))
+    head = f"{'candidate':<14} {'MFU':>4} {'params':>8} {'non-emb':>8} {'token':>8} {'D/N':>8} {'GPU-h':>7} {'days':>7}"
+    print(head + (f" {'L(N,D)':>8}" if fit else ""))
     for r in rows:
         line = (
             f"{r.name[:14]:<14} {r.mfu:>4.2f} {r.params_total / 1e6:>7.1f}M {r.params_non_embedding / 1e6:>7.1f}M "

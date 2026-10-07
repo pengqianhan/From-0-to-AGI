@@ -1,12 +1,12 @@
-"""后训练各阶段共用的小工具（对应第 16–19 章）。
+"""Small helpers that all post-training stages share (Chapters 16–19).
 
-- `load_post_config`：读 TOML。通用部分（[model] [train] [data] [optim] [schedule] [checkpoint]
-  [logging]）交给 `zero.config`，各阶段自己的小节（[sft] [distill] [teacher] [dpo] [grpo] [eval]）
-  在这里按 dataclass 解析，同样做未知字段检查；
-- `load_policy`：从 zero 的 checkpoint 目录或导出的 Hugging Face 目录加载 (模型, 分词器)；
-- `chat_complete`：套对话模板 → 带 KV cache 生成 → 解码；
-- `token_logprobs` / `pad_batch`：DPO、GRPO、蒸馏都要算"每个 token 的 log 概率"；
-- JSONL 读写。
+- `load_post_config`: read the TOML file. `zero.config` parses the common sections ([model] [train]
+  [data] [optim] [schedule] [checkpoint] [logging]). This module parses the sections of each stage
+  ([sft] [distill] [teacher] [dpo] [grpo] [eval]) into dataclasses, with the same check for unknown fields.
+- `load_policy`: load (model, tokenizer) from a zero checkpoint folder or an exported Hugging Face folder.
+- `chat_complete`: apply the chat template → generate with the KV cache → decode.
+- `token_logprobs` / `pad_batch`: DPO, GRPO, and distillation all need "the log probability of each token".
+- Read and write JSONL.
 """
 
 from __future__ import annotations
@@ -43,9 +43,12 @@ def load_post_config(
     sections: dict[str, type],
     overrides: Sequence[str] | None = None,
 ) -> tuple[Config, dict[str, Any]]:
-    """读配置：返回 (通用 Config, {小节名: dataclass 实例})。src 可以是路径或已经展开好的 dict。"""
+    """Read the configuration. Return (common Config, {section name: dataclass instance}).
+
+    src can be a path or a dict that is already expanded.
+    """
     if isinstance(src, dict):
-        data = json.loads(json.dumps(src))  # 深拷贝
+        data = json.loads(json.dumps(src))  # deep copy
         source = "<dict>"
     else:
         data = _read_toml_with_base(Path(src))
@@ -55,7 +58,7 @@ def load_post_config(
     extra = {k: data.pop(k) for k in list(data) if k not in CORE_SECTIONS}
     unknown = set(extra) - set(sections)
     if unknown:
-        raise ConfigError(f"未知的配置节 {sorted(unknown)}，本阶段可用：{sorted(sections)}")
+        raise ConfigError(f"Unknown config section {sorted(unknown)}. This stage accepts: {sorted(sections)}")
     parsed = {
         name: _from_dict(cls, extra.get(name, {}), f"[{name}]") for name, cls in sections.items()
     }
@@ -63,7 +66,7 @@ def load_post_config(
 
 
 # ---------------------------------------------------------------------------
-# 模型加载
+# Model loading
 # ---------------------------------------------------------------------------
 
 
@@ -73,13 +76,13 @@ def load_policy(
     device: str | torch.device = "cpu",
     model_overrides: dict[str, Any] | None = None,
 ) -> tuple[Transformer, Tokenizer]:
-    """加载 (模型, 分词器)。
+    """Load (model, tokenizer).
 
-    path 可以是：
-    - 导出的 HF 目录（有 config.json + *.safetensors + tokenizer.json）；
-    - zero 的 checkpoint 目录（`<out>/ckpt` 或某个 `step_xxx`），分词器路径从 meta.json 里的配置读，
-      也可用 tokenizer_path 指定。
-    model_overrides：比如 {"max_seq_len": 1024}（只允许改 RoPE 相关字段）。
+    path can be:
+    - an exported HF folder (with config.json + *.safetensors + tokenizer.json);
+    - a zero checkpoint folder (`<out>/ckpt` or one `step_xxx`). The tokenizer path comes from the
+      configuration in meta.json, or from tokenizer_path.
+    model_overrides: for example {"max_seq_len": 1024} (change only the fields related to RoPE).
     """
     from zero.hf import load_from_hf_qwen3
     from zero.train.checkpoint import find_latest
@@ -96,7 +99,7 @@ def load_policy(
         return model.to(device), tok
     ckpt = find_latest(p)
     if ckpt is None:
-        raise FileNotFoundError(f"{path} 既不是 HF 目录，也找不到 zero checkpoint")
+        raise FileNotFoundError(f"{path} is not an HF folder, and it contains no zero checkpoint")
     meta = json.loads((ckpt / "meta.json").read_text())
     mcfg = dict(meta["config"]["model"])
     mcfg.update(model_overrides or {})
@@ -105,7 +108,8 @@ def load_policy(
     model.load_state_dict(sd)
     tp = Path(tokenizer_path or meta["config"]["train"]["data"]["tokenizer"])
     if not tp.is_absolute() and not tp.exists():
-        # 配置里记的是相对训练时工作目录（通常是仓库根目录）的路径；从别的目录调用时按仓库根目录解析
+        # The configuration stores a path relative to the working folder of the training run (usually
+        # the repository root). When we run from a different folder, resolve it from the repository root.
         repo_root = Path(__file__).resolve().parents[2]
         if (repo_root / tp).exists():
             tp = repo_root / tp
@@ -113,7 +117,7 @@ def load_policy(
 
 
 # ---------------------------------------------------------------------------
-# 生成
+# Generation
 # ---------------------------------------------------------------------------
 
 
@@ -129,8 +133,10 @@ def chat_complete(
     n: int = 1,
     seed: int | None = None,
 ) -> list[str]:
-    """对一段对话生成 n 个助手回复（文本，不含 <|im_end|>）。n 个样本一个 batch 并行（同一提示词，
-    长度相同，不需要 padding），用 KV cache。"""
+    """Generate n assistant replies (text, without <|im_end|>) for one conversation.
+
+    The n samples run in parallel as one batch with the KV cache. They share the same prompt and have
+    the same length, so no padding is necessary."""
     from zero.generate import generate
 
     ids, _ = render(messages, tools, add_generation_prompt=True, tokenizer=tok)
@@ -154,7 +160,7 @@ def chat_complete(
 def make_policy(
     model: Transformer, tok: Tokenizer, max_new_tokens: int = 128, temperature: float = 0.0
 ):  # noqa: ANN201
-    """包装成 tool_env.run_episode 需要的 policy(messages, tools) -> text。"""
+    """Wrap the model as policy(messages, tools) -> text, which tool_env.run_episode needs."""
 
     def policy(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> str:
         return chat_complete(model, tok, messages, tools, max_new_tokens, temperature)[0]
@@ -163,7 +169,7 @@ def make_policy(
 
 
 # ---------------------------------------------------------------------------
-# log 概率
+# Log probabilities
 # ---------------------------------------------------------------------------
 
 
@@ -173,7 +179,10 @@ def pad_batch(
     pad_id: int,
     device: str | torch.device = "cpu",
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """右侧补齐。返回 ids (B, T) 与 mask (B, T)（补齐部分 mask=False）。因果注意力下右侧补齐不影响前面的位置。"""
+    """Pad on the right. Return ids (B, T) and mask (B, T) (mask=False on the padding).
+
+    With causal attention, padding on the right has no effect on the earlier positions.
+    """
     L = max(len(s) for s in seqs)
     ids = torch.full((len(seqs), L), pad_id, dtype=torch.long)
     m = torch.zeros((len(seqs), L), dtype=torch.bool)
@@ -184,7 +193,7 @@ def pad_batch(
 
 
 def token_logprobs(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-    """logits (B, T, V)、targets (B, T) → 每个目标 token 的 log 概率 (B, T)，float32。"""
+    """logits (B, T, V), targets (B, T) → log probability of each target token (B, T), float32."""
     return torch.gather(F.log_softmax(logits.float(), dim=-1), -1, targets.unsqueeze(-1)).squeeze(
         -1
     )
@@ -193,8 +202,8 @@ def token_logprobs(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
 def sequence_token_logprobs(
     model: torch.nn.Module, ids: torch.Tensor, mask: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """整段前向一次，返回 (logp, target_mask)，形状都是 (B, T-1)：
-    logp[:, t] = log π(ids[:, t+1] | ids[:, :t+1])，target_mask = mask[:, 1:]。"""
+    """Do one forward pass on the full sequence. Return (logp, target_mask), both with shape (B, T-1):
+    logp[:, t] = log π(ids[:, t+1] | ids[:, :t+1]), target_mask = mask[:, 1:]."""
     logits = model(ids[:, :-1])
     return token_logprobs(logits, ids[:, 1:]), mask[:, 1:]
 
@@ -226,20 +235,21 @@ def set_threads(n: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# DPO / GRPO / 在线蒸馏共用的"训练循环骨架"：优化器、学习率、梯度裁剪、日志、checkpoint、续训
+# The training-loop skeleton that DPO, GRPO, and on-policy distillation share: optimizer, learning
+# rate, gradient clipping, logging, checkpoint, and resume
 # ---------------------------------------------------------------------------
 
 
 class LoopState:
-    """不走 `Trainer`（数据不是固定的 token 流）的训练阶段共用的部分。
+    """The shared parts of the training stages that do not use `Trainer` (their data is not a fixed token stream).
 
-    用法：
-        loop = LoopState(cfg, model, log)       # 建优化器/调度器；有 checkpoint 就续训
+    Usage:
+        loop = LoopState(cfg, model, log)       # make optimizer/scheduler; resume if a checkpoint exists
         while loop.step < max_steps:
             lr = loop.begin_step()
             ... loss.backward() ...
-            gnorm = loop.end_step()             # 裁剪 + 更新 + step += 1
-            loop.record({...})                  # 打日志、写 JSONL、按需存 checkpoint
+            gnorm = loop.end_step()             # clip + update + step += 1
+            loop.record({...})                  # log, write JSONL, save a checkpoint when necessary
     """
 
     def __init__(
@@ -269,7 +279,7 @@ class LoopState:
             meta = load_checkpoint(latest, model, self.optimizer, self.scheduler, None, self.info)
             self.step = int(meta["step"])
             self.resumed_from = meta["path"]
-            self.log(f"从 {meta['path']} 续训（step {self.step}）")
+            self.log(f"Resumed training from {meta['path']} (step {self.step})")
 
     def log(self, msg: str) -> None:
         if self.info.is_main and self._log is not None:
@@ -279,7 +289,10 @@ class LoopState:
         return self.scheduler.apply(self.step)
 
     def optimizer_step(self) -> float:
-        """梯度裁剪 + 一次参数更新（不增加步数；GRPO 的 ppo_epochs > 1 时一步里会更新多次）。"""
+        """Gradient clipping + one parameter update.
+
+    This does not increase the step count. With GRPO ppo_epochs > 1, one step has several updates.
+    """
         clip = self.cfg.train.optim.grad_clip
         gnorm = torch.nn.utils.clip_grad_norm_(
             self.model.parameters(), clip if clip > 0 else float("inf")
@@ -327,7 +340,7 @@ class LoopState:
 
 
 def build_model_from_init(cfg: Config, device: str | torch.device = "cpu") -> Transformer:
-    """按 cfg.model 建模型，从 cfg.train.init_from（zero checkpoint）加载权重。"""
+    """Build the model from cfg.model, and load the weights from cfg.train.init_from (a zero checkpoint)."""
     from zero.train.checkpoint import load_model_weights
 
     model = Transformer(cfg.model).to(device)

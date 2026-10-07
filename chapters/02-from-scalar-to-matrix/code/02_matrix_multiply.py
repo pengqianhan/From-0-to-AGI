@@ -1,29 +1,29 @@
-"""第 2 章 · 极简代码 2：手写矩阵乘法（不用 NumPy）
+"""Chapter 2 · Minimal code 2: matrix multiplication by hand (without NumPy)
 
-目的：真正理解矩阵乘法的计算过程，以及形状规则 (m, k) @ (k, n) → (m, n)。
-运行：uv run python chapters/02-from-scalar-to-matrix/code/02_matrix_multiply.py
+Purpose: understand each calculation in a matrix multiplication, and the shape rule (m, k) @ (k, n) → (m, n).
+Run: uv run python chapters/02-from-scalar-to-matrix/code/02_matrix_multiply.py
 """
 
 
 def matmul(A, B):
-    """手写矩阵乘法。A: m×k（列表的列表），B: k×n，返回 m×n。"""
-    m = len(A)      # A 的行数
-    k = len(A[0])   # A 的列数（必须等于 B 的行数）
-    n = len(B[0])   # B 的列数
+    """Matrix multiplication by hand. A: m×k (a list of lists), B: k×n. Returns m×n."""
+    m = len(A)      # number of rows of A
+    k = len(A[0])   # number of columns of A (must be equal to the number of rows of B)
+    n = len(B[0])   # number of columns of B
 
-    # 形状规则：中间的 k 必须对上
-    assert len(B) == k, f"维度不匹配：A 有 {k} 列，但 B 有 {len(B)} 行"
+    # Shape rule: the inner dimension k must agree
+    assert len(B) == k, f"Dimensions do not agree: A has {k} columns, but B has {len(B)} rows"
 
     C = [[0.0] * n for _ in range(m)]
-    # 三重循环：i = 行，j = 列，p = 求和维度
+    # Three nested loops: i = row, j = column, p = the dimension that we sum over
     for i in range(m):
         for j in range(n):
             for p in range(k):
-                C[i][j] += A[i][p] * B[p][j]   # C[i][j] = A 第 i 行 · B 第 j 列
+                C[i][j] += A[i][p] * B[p][j]   # C[i][j] = row i of A · column j of B
     return C
 
 
-def print_matrix(M, name="矩阵"):
+def print_matrix(M, name="Matrix"):
     print(f"{name}:")
     for row in M:
         print("  [" + "  ".join(f"{x:6.1f}" for x in row) + "]")
@@ -34,7 +34,7 @@ if __name__ == "__main__":
     import numpy as np
 
     print("=" * 50)
-    print("手写矩阵乘法：C[i][j] = A 第 i 行 · B 第 j 列")
+    print("Matrix multiplication by hand: C[i][j] = row i of A · column j of B")
     print("=" * 50)
 
     A = [[1, 2, 3],
@@ -45,7 +45,7 @@ if __name__ == "__main__":
     print_matrix(A, "A (2×3)")
     print_matrix(B, "B (3×2)")
 
-    print("计算过程：")
+    print("Calculation:")
     for i in range(2):
         for j in range(2):
             terms = " + ".join(f"{A[i][p]}×{B[p][j]}" for p in range(3))
@@ -57,18 +57,18 @@ if __name__ == "__main__":
     print_matrix(C, "C = A @ B (2×2)")
 
     print("=" * 50)
-    print("与 NumPy 对比")
+    print("Compare with NumPy")
     print("=" * 50)
-    C_np = np.array(A) @ np.array(B)   # @ 是 NumPy 的矩阵乘法运算符
-    print(f"NumPy 结果:\n{C_np}")
-    print(f"结果一致: {np.allclose(np.array(C), C_np)}")
+    C_np = np.array(A) @ np.array(B)   # @ is the matrix multiplication operator of NumPy
+    print(f"NumPy result:\n{C_np}")
+    print(f"Results agree: {np.allclose(np.array(C), C_np)}")
 
     print("\n" + "=" * 50)
-    print("形状规则：(m, k) @ (k, n) → (m, n)")
+    print("Shape rule: (m, k) @ (k, n) → (m, n)")
     print("=" * 50)
     for sa, sb in [((4, 3), (3, 1)), ((32, 128), (128, 64)), ((3, 2), (3, 5))]:
         try:
             out = (np.zeros(sa) @ np.zeros(sb)).shape
             print(f"  {sa} @ {sb} → {out}")
         except ValueError:
-            print(f"  {sa} @ {sb} → 报错：中间的 {sa[1]} ≠ {sb[0]}")
+            print(f"  {sa} @ {sb} → error: the inner dimensions {sa[1]} ≠ {sb[0]}")

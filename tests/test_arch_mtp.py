@@ -1,5 +1,7 @@
-"""MTP（zero/arch/mtp.py，第 25 章）的正确性：形状、损失与手算一致、梯度流动、因果性、
-MTP 自推测解码（贪心）与主模型贪心解码逐字相同。"""
+"""Correctness of MTP (zero/arch/mtp.py, Chapter 25): shapes, loss agrees with a hand computation,
+gradient flow, causality, and MTP self-speculative decoding (greedy) is identical to greedy
+decoding of the main model.
+"""
 
 from __future__ import annotations
 
@@ -33,19 +35,19 @@ def test_shapes() -> None:
     logits, mtp_logits = model(tokens)
     assert logits.shape == (3, 12, 41)
     assert [t.shape for t in mtp_logits] == [(3, 11, 41), (3, 10, 41)]
-    # 主模型 logits 与 Transformer.forward 完全一致（MTP 不改变主模型）
+    # The main-model logits are identical to Transformer.forward (MTP does not change the main model).
     assert torch.allclose(logits, model.model(tokens), atol=1e-6)
 
 
 def test_loss_matches_hand_computation() -> None:
-    """深度 1：MTP 在位置 i 的目标是 tokens[i+2]；总损失 = 主损失 + λ · MTP 损失。"""
+    """Depth 1: the MTP target at position i is tokens[i+2]; total loss = main loss + λ · MTP loss."""
     model = _model()
     x = torch.randint(0, 41, (2, 10))
     tokens, targets = x[:, :-1], x[:, 1:]
     total, main, losses = mtp_loss(model, tokens, targets, lam=0.3)
     logits, (lg1,) = model(tokens)
     hand_main = F.cross_entropy(logits.reshape(-1, 41), targets.reshape(-1))
-    hand_mtp = F.cross_entropy(lg1.reshape(-1, 41), x[:, 2:].reshape(-1))  # 下下个 token
+    hand_mtp = F.cross_entropy(lg1.reshape(-1, 41), x[:, 2:].reshape(-1))  # the token after the next
     assert torch.isfinite(total)
     assert torch.allclose(main, hand_main, atol=1e-6)
     assert torch.allclose(losses[0], hand_mtp, atol=1e-6)
@@ -53,15 +55,18 @@ def test_loss_matches_hand_computation() -> None:
 
 
 def test_mtp_is_causal_and_uses_next_token_embedding() -> None:
-    """位置 i 的 MTP 输出只依赖 tokens[0..i+1]：改动 i+2 之后的 token 不影响它，改动 i+1 会影响。"""
+    """The MTP output at position i depends only on tokens[0..i+1].
+
+    A change of tokens from i+2 on has no effect on it. A change of token i+1 has an effect.
+    """
     model = _model().eval()
     a = torch.randint(0, 41, (1, 12))
     b = a.clone()
     b[0, 7:] = (b[0, 7:] + 1) % 41
     _, (la,) = model(a)
     _, (lb,) = model(b)
-    assert torch.allclose(la[0, :6], lb[0, :6], atol=1e-6)  # 位置 0..5 只看到 tokens[..6]
-    assert not torch.allclose(la[0, 6], lb[0, 6])  # 位置 6 用了 Emb(tokens[7])
+    assert torch.allclose(la[0, :6], lb[0, :6], atol=1e-6)  # positions 0..5 see only tokens[..6]
+    assert not torch.allclose(la[0, 6], lb[0, 6])  # position 6 uses Emb(tokens[7])
 
 
 def test_gradient_flows_to_mtp_and_shared_weights() -> None:
@@ -72,7 +77,8 @@ def test_gradient_flows_to_mtp_and_shared_weights() -> None:
     mtp = model.mtp[0]
     for p in (mtp.eh_proj.weight, mtp.block.attn.wq.weight, mtp.enorm.weight, mtp.hnorm.weight):
         assert p.grad is not None and p.grad.abs().sum() > 0
-    # 共享的 embedding / 输出头、以及主模型的层都收到了 MTP 损失的梯度（训练信号"加密"）
+    # The shared embedding / output head and the main-model layers all get gradients from the MTP loss
+    # (a "denser" training signal).
     assert model.model.tok_emb.weight.grad.abs().sum() > 0
     assert model.model.lm_head.weight.grad.abs().sum() > 0
     assert model.model.layers[0].attn.wq.weight.grad.abs().sum() > 0
@@ -99,7 +105,7 @@ def test_self_speculative_greedy_matches_main_greedy() -> None:
     ref = generate(model.model, prompt, 30, temperature=0.0)
     res = mtp_speculative_generate(model, prompt, 30, temperature=0.0)
     assert res.tokens == ref
-    assert res.rounds + res.accepted + 1 >= len(ref)  # prefill 给 1 个，每轮 1 + 接受数
+    assert res.rounds + res.accepted + 1 >= len(ref)  # prefill gives 1; each round gives 1 + number accepted
 
 
 def test_self_speculative_sampling_runs() -> None:

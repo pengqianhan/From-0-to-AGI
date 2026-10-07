@@ -1,13 +1,17 @@
-"""文本清洗：规范化与简单的逐行处理（对应第 13 章）。
+"""Text cleaning: normalization and simple line-by-line processing (Chapter 13).
 
-清洗是流水线的第一步，目标是"同样的内容变成同样的字节"，这样后面的去重才有效：
+Cleaning is the first step of the pipeline. Its goal: the same content becomes the same bytes.
+Only then can the deduplication step work correctly. The rules:
 
-- Unicode NFC 规范化；全角空格等特殊空白统一成普通空格；
-- 换行统一为 \\n，去掉控制字符（保留 \\n 和 \\t）、零宽字符；
-- 每行去掉行尾空白，连续 3 个以上空行压成 2 个；
-- 去掉会和分词器特殊 token 撞车的字面字符串（如 "<|endoftext|>"），见 zero/tokenizer.py 的说明。
+- Apply Unicode NFC normalization. Change special white space (for example the full-width space)
+  to a normal space.
+- Change all line breaks to \\n. Remove control characters (keep \\n and \\t) and zero-width characters.
+- Remove the white space at the end of each line. Change 3 or more blank lines in sequence to 2.
+- Remove literal strings that look like special tokens of the tokenizer (for example "<|endoftext|>").
+  See the notes in zero/tokenizer.py.
 
-这些规则都很保守——只改"格式"，不删"内容"。按内容删文档是 quality.py 的事。
+These rules are conservative: they change only the "format", and they do not remove "content".
+quality.py removes documents because of their content.
 """
 
 from __future__ import annotations
@@ -15,19 +19,19 @@ from __future__ import annotations
 import re
 import unicodedata
 
-# 控制字符：C0/C1 里除 \t \n 之外的全部
+# Control characters: all of C0/C1 except \t and \n
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
-# 零宽字符与 BOM
+# Zero-width characters and BOM
 _ZERO_WIDTH_RE = re.compile(r"[​‌‍⁠﻿]")
-# 各种"看起来像空格"的字符 → 普通空格
+# Characters that "look like a space" → normal space
 _SPACE_RE = re.compile(r"[   -   　]")
 _MANY_BLANK_LINES_RE = re.compile(r"\n{3,}")
-# 形如 <|xxx|> 的特殊 token 字面量
+# Literal special tokens of the form <|xxx|>
 _SPECIAL_TOKEN_RE = re.compile(r"<\|[a-zA-Z0-9_]+\|>")
 
 
 def normalize_text(text: str) -> str:
-    """规范化一段文本（幂等：再调用一次结果不变）。"""
+    """Normalize a text. The function is idempotent: a second call does not change the result."""
     text = unicodedata.normalize("NFC", text)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = _CONTROL_RE.sub("", text)
@@ -39,12 +43,12 @@ def normalize_text(text: str) -> str:
 
 
 def strip_special_tokens(text: str) -> str:
-    """去掉 <|endoftext|> 之类的特殊 token 字面量，避免被分词器当成真的特殊 token。"""
+    """Remove literal special tokens such as <|endoftext|>, so that the tokenizer does not read them as real special tokens."""
     return _SPECIAL_TOKEN_RE.sub("", text)
 
 
 def clean_document(text: str, min_chars: int = 1) -> str | None:
-    """完整清洗一篇文档；清洗后太短（< min_chars）返回 None。"""
+    """Clean one document completely. Return None if the result is too short (< min_chars)."""
     text = normalize_text(strip_special_tokens(text))
     if len(text) < min_chars:
         return None
@@ -52,7 +56,10 @@ def clean_document(text: str, min_chars: int = 1) -> str | None:
 
 
 def split_into_documents(text: str, doc_chars: int = 4000) -> list[str]:
-    """把一个没有文档边界的大文本（比如 tiny_corpus 的 .txt）按空行切段，再拼成约 doc_chars 长的"文档"。"""
+    """Split a large text without document boundaries (for example a .txt file of tiny_corpus) at blank lines.
+
+    Then join the paragraphs into "documents" of about doc_chars characters.
+    """
     paragraphs = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
     docs: list[str] = []
     cur: list[str] = []

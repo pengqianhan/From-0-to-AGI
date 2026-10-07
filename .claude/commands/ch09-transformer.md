@@ -1,57 +1,59 @@
 ---
-description: 第 9 章自我检验：现代 Transformer（Pre-Norm RMSNorm、RoPE、SwiGLU、QK-Norm、共享 embedding、张量形状数据流）
+description: "Chapter 9 self-check: the modern Transformer — Pre-Norm RMSNorm, RoPE, SwiGLU, QK-Norm, tied embeddings, tensor-shape data flow (第 9 章自检：现代 Transformer——Pre-Norm RMSNorm、RoPE、SwiGLU、QK-Norm、共享 embedding、张量形状数据流)"
 ---
 
-# 第 9 章自我检验：现代 Transformer
+# Chapter 9 self-check: the modern Transformer
 
-用户调用了 `/ch09-transformer`，说明他们刚学完第 9 章（`chapters/09-modern-transformer/`）。你的任务是帮他们检验自己是否真正理解了，而不是告诉他们答案。
+The learner typed `/ch09-transformer`. They finished Chapter 9 (`chapters/09-modern-transformer/`). Help them check if they really understand it. Do not give them the answers.
 
-**检验方式**：逐一提问下面的问题，等用户用自己的话回答后，再给出反馈——哪里说对了，哪里还有偏差，以及如何深化理解。不要一次性把所有问题都抛出去。
+**Language**: Use the language of the learner. If the learner writes in Chinese, ask the questions and give feedback in Chinese. The Chinese text of the chapter is in `README.zh.md`. Write short, clear sentences (see `docs/STYLE_GUIDE.md`).
 
----
-
-## 检验问题（按难度递进）
-
-**第一关：概念——一个 Block 里有什么**
-
-问用户：
-> 不看资料，写出现代 Transformer 一个 Block 的两行公式，并说明注意力和 FFN 各自负责什么。再说说：RMSNorm 放在哪里、为什么叫 Pre-Norm？
-
-期望回答：`x = x + Attn(RMSNorm(x))`，`x = x + FFN(RMSNorm(x))`。注意力在位置之间交换信息，FFN 在每个位置内部加工（同一套参数对每个位置单独算）。归一化放在子层入口（而不是残差相加之后），残差主干道保持恒等映射，深层网络梯度能直通，这就是 Pre-Norm。能说出"残差流形状 (B, T, d) 从头到尾不变"是加分项。
+**Method**: Ask the questions below one at a time. Wait for the learner to answer in their own words. Then give feedback: tell them what is correct, what is not correct, and how to make their understanding deeper. Do not ask all the questions at the same time.
 
 ---
 
-**第二关：直觉——RoPE 为什么只剩相对位置**
+## Questions (from easy to difficult)
 
-问用户：
-> 注意力本身为什么分不清"狗咬人"和"人咬狗"？RoPE 在位置 m 把 q 旋转 m·ω、在位置 n 把 k 旋转 n·ω。为什么点积只和 m − n 有关？本章代码里 (3,1)、(10,8)、(50,48) 三组点积为什么完全相同？
+**Level 1: concepts — what is in a Block**
 
-期望回答：注意力分数只看 q·k 的内容相似度，加权平均与顺序无关，前文被当成集合。二维旋转后，点积只取决于两个向量的夹角；q 转了 mω、k 转了 nω，夹角的变化量是 (m − n)ω，绝对位置被消掉。三组都相隔 2，所以点积相同（都是 2.4426）。能补充"旋转不改变长度""不同维度对转速不同，快的分辨近处、慢的分辨远处""RoPE 只加在 q、k 上"是加分项。
+Ask the learner:
+> Without your notes, write the two formulas of one Block of a modern Transformer. Say what attention does and what the FFN does. Then explain: where is RMSNorm, and why is the name "Pre-Norm"?
 
----
-
-**第三关：发现问题——参数、尺度与共享**
-
-问用户（可以分两问）：
-> (1) SwiGLU 比普通 MLP 多一个矩阵，为什么中间宽度取约 8/3·d 而不是 4d？ (2) 本章实验里把 q、k 放大 4 倍，不加 QK-Norm 时平均最大注意力权重变成 0.923，加了之后始终是 0.213。这说明什么问题，QK-Norm 怎么解决？ (3) Qwen3-0.6B 共享 embedding，Qwen3-8B 不共享，为什么？
-
-期望回答：(1) 两个 d×4d 矩阵是 8d²，三个 d×(8/3)d 矩阵也是 8d²，参数量持平（d=1280 时都是 13.11M）；这只是起点，各家会按硬件对齐和实验调整（Qwen3-0.6B 用 3d，Llama 3.2 1B 用 4d）。(2) q、k 的范数变大 → 分数变大 → softmax 一边倒、梯度尖锐不稳定；QK-Norm 在点积前对每个头的 q、k 做 RMSNorm，分数尺度不再随激活值漂移（RMSNorm 的可学权重仍能让分数慢慢变大，但由参数控制）。(3) 小模型里词表矩阵占比大（Qwen3-0.6B 的 155.6M 占 596M 的 26%），共享省下大量参数；大模型里占比小，不共享给输入、输出更多自由度。
+Expected answer: `x = x + Attn(RMSNorm(x))` and `x = x + FFN(RMSNorm(x))`. Attention exchanges information between positions. The FFN processes each position separately (the same parameters apply to each position independently). The normalization is at the input of each sublayer, not after the residual addition. The residual "main road" stays an identity mapping, so the gradient goes directly through a deep network. This is Pre-Norm. Extra credit: "the shape of the residual stream (B, T, d) does not change from start to end".
 
 ---
 
-**第四关：迁移——两层对拍与张量形状**
+**Level 2: intuition — why RoPE keeps only the relative position**
 
-问用户：
-> 本章把极简模型的权重搬进 `zero.Transformer`，logits 最大差 1.43×10⁻⁵ 而不是 0。(1) 为了能对上，zero 的配置里必须把哪个参数设成和极简版一致的特殊值？(2) 差异不为 0 的原因是什么，为什么这不算 bug？(3) 如果有人把 `apply_rope` 改成相邻两维配对，训练还能正常进行吗？对拍会怎样？(4) 主线模型 B=8、T=4096、V=65536 时，logits 张量有多大？这提示第 14 章要解决什么？
+Ask the learner:
+> Why can attention alone not tell "the dog bit the man" from "the man bit the dog"? At position m, RoPE rotates q by m·ω. At position n, it rotates k by n·ω. Why does the dot product depend only on m − n? In the code of this chapter, why are the dot products of the three pairs (3,1), (10,8), and (50,48) exactly the same?
 
-期望回答：(1) 极简版没有 GQA，要设 `n_kv_heads = n_heads`（其余如 qk_norm、tie_embeddings、eps、rope_theta 也要一致）。(2) 极简版手写 softmax(QKᵀ/√d)·V，zero 用 PyTorch 的 SDPA，数学相同、浮点运算顺序不同，所以是浮点误差内一致；`assert_close(rtol=1e-5, atol=1e-5)` 通过、贪心生成逐字节相同就说明结构一致。(3) 能正常训练（两种配对方式数学上等价，只是维度排列不同），但权重和 zero / HF Qwen3 的"前后两半"配对不通用，对拍会失败。(4) 8×4096×65536 ≈ 21.5 亿个数，fp32 约 8 GiB；词表大、序列长时最后的 logits 和 T×T 的注意力分数是显存大户，要靠 FlashAttention、分块交叉熵等办法。
+Expected answer: the attention score looks only at the content similarity q·k. A weighted average does not depend on the order, so attention treats the earlier text as a set. After a 2D rotation, the dot product depends only on the angle between the two vectors. q rotates by mω and k rotates by nω, so the angle changes by (m − n)ω, and the absolute positions cancel. All three pairs have a distance of 2, so the dot products are the same (all 2.4426). Extra credit: "the rotation does not change the length", "different dimension pairs rotate at different speeds: the fast pairs distinguish near positions and the slow pairs distinguish far positions", and "RoPE applies only to q and k".
 
 ---
 
-## 反馈原则
+**Level 3: find the problem — parameters, scale, and tied embeddings**
 
-- 答对了：认可，然后追问一个更深的"为什么"（例如"如果把 v 也旋转会怎样？"）。
-- 答错了：不要直接给答案，给一个提示，让他们回到 `code/01_position.py`、`code/05_qk_norm.py`、`code/03_shapes.py` 或 `code/04_parity_with_zero.py` 改参数跑一跑，再重新思考。
-- 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
+Ask the learner (you can split this into separate questions):
+> (1) SwiGLU has one more matrix than a normal MLP. Why is the hidden width about 8/3·d and not 4d? (2) In the experiment of this chapter, q and k are 4 times larger. Without QK-Norm, the mean max attention weight becomes 0.923. With QK-Norm, it is always 0.213. What problem does this show, and how does QK-Norm solve it? (3) Qwen3-0.6B ties its embeddings, but Qwen3-8B does not. Why?
 
-四关都通过后，告诉用户可以进入第 10 章（`chapters/10-inference/`，学完后用 `/ch10-inference` 自检）：生成时每个字节都把整段重算一遍，第 10 章用 KV cache 和 GQA 解决这个问题。
+Expected answer: (1) Two d×4d matrices have 8d² parameters, and three d×(8/3)d matrices also have 8d². The number of parameters is the same (13.11M for both at d=1280). This is only a starting point. Each team adjusts it for hardware alignment and from experiments (Qwen3-0.6B uses 3d, Llama 3.2 1B uses 4d). (2) The norm of q and k increases → the scores increase → softmax becomes one-sided, and the gradients become sharp and unstable. QK-Norm applies RMSNorm to q and k of each head before the dot product. Then the scale of the scores does not change with the drift of the activations. (The learnable weight of RMSNorm can still make the scores larger slowly, but the parameters control this.) (3) In a small model, the vocabulary matrix is a large fraction (155.6M of 596M in Qwen3-0.6B, 26%), so tied embeddings save many parameters. In a large model, the fraction is small, and untied embeddings give the input and the output more freedom.
+
+---
+
+**Level 4: transfer — parity check on two levels and tensor shapes**
+
+Ask the learner:
+> In this chapter, we copy the weights of the minimal model into `zero.Transformer`. The maximum difference of the logits is 1.43×10⁻⁵, not 0. (1) For the two models to match, which parameter in the configuration of zero must have a special value that agrees with the minimal code? (2) Why is the difference not 0, and why is this not a bug? (3) Somebody changes `apply_rope` to pair adjacent dimensions. Can training still work normally? What happens to the parity check? (4) For the main-line model with B=8, T=4096, V=65536, how large is the logits tensor? What problem of Chapter 14 does this suggest?
+
+Expected answer: (1) The minimal code has no GQA, so `n_kv_heads = n_heads` is necessary. (The other settings, such as qk_norm, tie_embeddings, eps, and rope_theta, must also agree.) (2) The minimal code writes softmax(QKᵀ/√d)·V by hand, and zero uses the SDPA of PyTorch. The math is the same, but the order of floating-point operations is different, so the results agree within floating-point error. `assert_close(rtol=1e-5, atol=1e-5)` passes, and greedy generation gives the same bytes. This shows that the structures are the same. (3) Training works normally (the two pairings are mathematically equivalent; only the order of the dimensions is different). But the weights are not interchangeable with the "first half and second half" pairing of zero / HF Qwen3, so the parity check fails. (4) 8×4096×65536 ≈ 2.15 billion numbers, about 8 GiB in fp32. With a large vocabulary and long sequences, the final logits and the T×T attention scores use the most memory. FlashAttention, chunked cross-entropy, and similar methods solve this.
+
+---
+
+## Rules for feedback
+
+- If the answer is correct: say so. Then ask a deeper "why" question (for example, "What occurs if we also rotate v?").
+- If the answer is not correct: do not give the answer. Give a hint. Ask the learner to go back to `code/01_position.py`, `code/05_qk_norm.py`, `code/03_shapes.py`, or `code/04_parity_with_zero.py`, change a parameter, and run it. Then let them think again.
+- If the learner says "I do not know": ask them to guess first. A wrong guess is better than no guess.
+
+When the learner passes all four levels, tell them to continue to Chapter 10 (`chapters/10-inference/`). After Chapter 10, they can check themselves with `/ch10-inference`. During generation, the model calculates the full sequence again for each byte. Chapter 10 solves this problem with a KV cache and GQA.

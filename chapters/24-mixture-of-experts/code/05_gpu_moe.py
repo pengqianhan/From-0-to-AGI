@@ -1,17 +1,21 @@
-"""第 24 章 · GPU 实测：专家翻倍、每个 token 的算力不变——以及为什么 GPU 上不能按专家写 Python 循环
+"""Chapter 24 · GPU measurement: double the experts and keep the compute per token. Also: why a
+Python loop over the experts is slow on a GPU.
 
-正文的代码都在 CPU 上跑。这个脚本把 02_moe_layer.py 的 MoE 层原样搬到一张 GPU 上（BF16，需要 CUDA）：
-一次 8192 个 token（像训练或 prefill 时的一个批次），d = 1024，每个专家宽 2048，每个 token 选 2 个——
-激活宽度 2 × 2048 = 4096，和一个宽 4096 的稠密 SwiGLU 同算力。专家数 E 从 8 加到 128：总参数翻 16 倍，
-每个 token 的 FLOPs 不变。比三种写法的耗时：
-  - 稠密 SwiGLU（宽 4096，同激活算力的基准）；
-  - 02 的 MoE.forward：Python 里按专家循环，每个专家一次 nonzero（要等 GPU 算完才知道有哪些 token）
-    + 三个小矩阵乘 + index_add_；
-  - 排序分段 + F.grouped_mm：token 按专家排好序，每个矩阵一次 grouped GEMM 调用算完所有专家，
-    整个前向不需要等 GPU（生产级 zero/arch/moe.py 的 MoEFFN 也是"按专家堆叠权重 + 排序分段"的思路）。
+The main code of the chapter runs on a CPU. This script moves the MoE layer of 02_moe_layer.py to one GPU
+without changes (BF16, needs CUDA). It sends 8192 tokens at a time (like one batch in training or prefill),
+with d = 1024, an expert width of 2048, and 2 experts for each token. The active width is 2 × 2048 = 4096,
+so the compute is the same as one dense SwiGLU of width 4096. The number of experts E grows from 8 to 128:
+the total parameters grow 16×, and the FLOPs per token do not change. The script compares the time of three versions:
+  - a dense SwiGLU (width 4096, the baseline with the same active compute);
+  - MoE.forward of 02: a Python loop over the experts. Each expert does one nonzero (it must wait for
+    the GPU to finish before it knows its tokens) + three small matrix multiplications + index_add_;
+  - sort into segments + F.grouped_mm: sort the tokens by expert. One grouped GEMM call for each matrix
+    calculates all experts, and the full forward pass never waits for the GPU. (The MoEFFN in the production
+    code zero/arch/moe.py uses the same idea: "stack the weights by expert + sort into segments".)
 
-路由器、专家都是随机初始化（只测时间；每个 E 都先把两种 MoE 写法的输出对拍一遍，确认算的是同一件事）。
-运行：uv run python chapters/24-mixture-of-experts/code/05_gpu_moe.py（约 15 秒）
+The router and the experts have random initialization, because we only measure time. For each E, a parity
+check first compares the outputs of the two MoE versions to make sure that they calculate the same thing.
+Run: uv run python chapters/24-mixture-of-experts/code/05_gpu_moe.py (about 15 seconds)
 """
 
 from __future__ import annotations
@@ -42,14 +46,16 @@ moe_mod = _load("moe_ch24", HERE / "02_moe_layer.py")
 
 
 def build(cls, *args, **kw):
-    """直接在 GPU 上建模块（省掉 CPU 上初始化几亿参数的时间），再转 BF16。"""
+    """Build the module directly on the GPU (this saves the time to initialize hundreds of millions of
+    parameters on the CPU). Then convert it to BF16."""
     with torch.device(DEV):
         m = cls(*args, **kw)
     return m.to(torch.bfloat16).eval()
 
 
 def stack_experts(m) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """把 E 个专家的权重按专家堆成三维张量：(E, d, h)、(E, d, h)、(E, h, d)。生产级实现直接这样存。"""
+    """Stack the weights of the E experts into 3D tensors: (E, d, h), (E, d, h), (E, h, d).
+    The production code stores the weights in this form."""
     wg = torch.stack([e.w_gate.weight.t() for e in m.experts]).contiguous()
     wu = torch.stack([e.w_up.weight.t() for e in m.experts]).contiguous()
     wd = torch.stack([e.w_down.weight.t() for e in m.experts]).contiguous()
@@ -57,27 +63,28 @@ def stack_experts(m) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
 
 def grouped_moe(m, x: torch.Tensor, w) -> torch.Tensor:
-    """与 02 的 MoE.forward 同样的路由和门控；专家计算换成排序分段 + grouped GEMM，全程不用等 GPU。"""
+    """The same routing and gates as MoE.forward in 02. The experts use sort into segments + grouped GEMM,
+    so the code never waits for the GPU."""
     wg, wu, wd = w
     s = m.router(x).sigmoid() if m.score == "sigmoid" else m.router(x).softmax(-1)
     idx = (s + m.bias).topk(m.K, dim=-1).indices  # (T, K)
     g = s.gather(-1, idx)
     g = g / g.sum(-1, keepdim=True)
-    flat = idx.flatten()  # (T·K,) 每一次"分配"去哪个专家
-    order = flat.argsort(stable=True)  # 按专家排序：同一个专家的 token 连成一段
-    offs = torch.bincount(flat, minlength=m.E).cumsum(0).to(torch.int32)  # 每一段的结尾
-    tok = order // m.K  # 排序后的第 i 行来自哪个 token
-    xs = x[tok]  # dispatch：(T·K, d)
+    flat = idx.flatten()  # (T·K,) the expert of each "assignment"
+    order = flat.argsort(stable=True)  # sort by expert: the tokens of one expert form one segment
+    offs = torch.bincount(flat, minlength=m.E).cumsum(0).to(torch.int32)  # the end of each segment
+    tok = order // m.K  # the token that row i comes from, after the sort
+    xs = x[tok]  # dispatch: (T·K, d)
     h = F.silu(F.grouped_mm(xs, wg, offs=offs)) * F.grouped_mm(xs, wu, offs=offs)
-    y = F.grouped_mm(h, wd, offs=offs)  # 每一段乘自己那个专家的权重
+    y = F.grouped_mm(h, wd, offs=offs)  # each segment uses the weights of its own expert
     out = torch.zeros_like(x)
-    out.index_add_(0, tok, y * g.flatten()[order, None])  # combine：按门控权重加回原位置
+    out.index_add_(0, tok, y * g.flatten()[order, None])  # combine: add back to the original positions, times the gates
     return out
 
 
 @torch.no_grad()
 def gpu_ms(fn, reps: int = 30, warmup: int = 5) -> float:
-    """CUDA event 计时，预热后取中位数（毫秒）。"""
+    """Time with CUDA events. Warm up first, then take the median (milliseconds)."""
     for _ in range(warmup):
         fn()
     times = []
@@ -92,7 +99,8 @@ def gpu_ms(fn, reps: int = 30, warmup: int = 5) -> float:
 
 
 def launch_us(n: int = 2000) -> float:
-    """这台机器上，Python 里下发一个最小的 GPU 算子要多少微秒（一个元素的加法，GPU 本身几乎不花时间）。"""
+    """Microseconds that Python needs on this machine to launch the smallest GPU operation
+    (an addition of one element; the GPU itself needs almost no time)."""
     x = torch.zeros(1, device=DEV)
     for _ in range(100):
         x.add_(1)
@@ -106,7 +114,8 @@ def launch_us(n: int = 2000) -> float:
 
 @torch.no_grad()
 def kernels_per_grouped_mm(E: int = 128, d: int = 1024, h: int = 2048, T: int = 1024) -> dict:
-    """用 profiler 看一次 F.grouped_mm（E 个专家）在这张卡上实际发了哪些 GPU kernel、各几次。"""
+    """Use the profiler to see which GPU kernels one F.grouped_mm call (E experts) launches on this card,
+    and how many of each."""
     from torch.profiler import ProfilerActivity, profile
 
     xs = torch.randn(T, d, device=DEV, dtype=torch.bfloat16)
@@ -133,19 +142,19 @@ def n_params(module) -> int:
 @torch.no_grad()
 def main(d: int = 1024, h: int = 2048, K: int = 2, T: int = 8192) -> None:
     print(
-        f"一次 {T} 个 token，d = {d}，每个专家宽 {h}，每个 token 选 {K} 个；"
-        "BF16，CUDA event 计时，30 次中位数"
+        f"{T} tokens at a time, d = {d}, expert width {h}, {K} experts for each token; "
+        "BF16, CUDA event timing, median of 30 runs"
     )
     x = torch.randn(T, d, device=DEV, dtype=torch.bfloat16)
     dense = build(moe_mod.Expert, d, K * h)
-    flops_tok = 2 * 3 * d * K * h  # 每个 token：激活的专家里三个矩阵，每个参数一次乘加
+    flops_tok = 2 * 3 * d * K * h  # per token: three matrices in each active expert, one multiply-add per parameter
     t_dense = gpu_ms(lambda dense=dense: dense(x))
     print(
-        f"{'':13}{'总参数':>8}{'每 token GFLOP':>15}{'每专家 token 数':>14}{'逐专家循环 ms':>14}"
-        f"{'grouped ms':>12}{'循环/grouped':>12}{'grouped TFLOPS':>16}"
+        f"{'':13}{'params':>8}{'GFLOP/token':>15}{' tokens per expert':>14}{'loop ms':>14}"
+        f"{'grouped ms':>12}{'loop/grp':>12}{'grouped TFLOPS':>16}"
     )
     print(
-        f"{'稠密 宽 ' + str(K * h):13}{n_params(dense) / 1e6:7.0f}M{flops_tok / 1e9:15.4f}"
+        f"{'dense ' + str(K * h):13}{n_params(dense) / 1e6:7.0f}M{flops_tok / 1e9:15.4f}"
         f"{'':>18}{'':>14}{t_dense:12.2f}{'':>13}{flops_tok * T / t_dense / 1e9:16.1f}"
     )
     del dense
@@ -154,8 +163,8 @@ def main(d: int = 1024, h: int = 2048, K: int = 2, T: int = 8192) -> None:
         w = stack_experts(m)
         ref, out = m(x), grouped_moe(m, x, w)
         rel = float((ref - out).abs().max() / ref.abs().max())
-        assert rel < 2e-2, f"两种写法对不上：相对差异 {rel:.1e}"
-        fl = flops_tok + 2 * d * E  # 再加上路由器（很小）
+        assert rel < 2e-2, f"the two versions do not match: relative difference {rel:.1e}"
+        fl = flops_tok + 2 * d * E  # plus the router (small)
         t_loop = gpu_ms(lambda m=m: m(x))
         t_grp = gpu_ms(lambda m=m, w=w: grouped_moe(m, x, w))
         print(
@@ -165,24 +174,25 @@ def main(d: int = 1024, h: int = 2048, K: int = 2, T: int = 8192) -> None:
         del m, w, ref, out
         torch.cuda.empty_cache()
     print(
-        "（每个 E 都先对拍：两种 MoE 写法输出的最大差异 < 最大输出的 2%，是 BF16 舍入误差的量级。）"
+        "(Parity check first for each E: the max difference between the outputs of the two MoE versions "
+        "is < 2% of the max output, the size of BF16 rounding errors.)"
     )
-    print(f"这台机器上 Python 每下发一个最小的 GPU 算子约 {launch_us():.1f} µs")
+    print(f"On this machine, Python needs about {launch_us():.1f} µs to launch the smallest GPU operation")
     kern = kernels_per_grouped_mm()
     print(
-        f"一次 F.grouped_mm（128 个专家）在这张卡上发出的 GPU kernel：共 {sum(kern.values())} 个，"
-        f"其中最多的一种 {max(kern.values())} 个（{max(kern, key=kern.get)[:40]}…）"
+        f"GPU kernels from one F.grouped_mm call (128 experts) on this card: {sum(kern.values())} in total; "
+        f"the most frequent kind: {max(kern.values())} ({max(kern, key=kern.get)[:40]}…)"
     )
 
 
 if __name__ == "__main__":
     if not torch.cuda.is_available():
-        print("本脚本需要 CUDA GPU；没有 GPU 可以跳过，正文里贴了一次 RTX 3090 上的结果。")
+        print("This script needs a CUDA GPU. Without a GPU, skip it: the README shows one result from an RTX 3090.")
         sys.exit(0)
     t0 = time.perf_counter()
     torch.manual_seed(0)
     print(
-        f"GPU：{torch.cuda.get_device_name(0)}，PyTorch {torch.__version__}，CUDA {torch.version.cuda}\n"
+        f"GPU: {torch.cuda.get_device_name(0)}, PyTorch {torch.__version__}, CUDA {torch.version.cuda}\n"
     )
     main()
-    print(f"总用时 {time.perf_counter() - t0:.0f} s")
+    print(f"Total time {time.perf_counter() - t0:.0f} s")
