@@ -1,15 +1,17 @@
-"""阶段 6 第 10 项（单卡版）：HF 导出 + transformers 在 GPU 上加载，与 zero 对拍 logits 和贪心生成。
+"""Stage 6, item 10 (1-GPU version): HF export, then transformers loads the model on the GPU.
+
+Parity check of the logits and of greedy generation against zero.
 
     CUDA_VISIBLE_DEVICES=0 UV_NO_SYNC=1 uv run python runs/2026-10-01-gpu0-check/export_check.py \
-        <zero checkpoint 目录> <输出目录>
+        <zero checkpoint directory> <output directory>
 
-1. `load_policy(ckpt, device="cuda")`（模型直接在 GPU 上）→ `export_to_hf_qwen3(..., chat=True)`，
-   分别导出 FP32 和 BF16 两份；
-2. `transformers.AutoModelForCausalLM.from_pretrained(...).cuda()`：FP32 与 zero 的 FP32 对拍 logits；
-   BF16 与"从同一 HF 目录读回的 zero 模型（BF16）"对拍；
-3. 贪心生成 32 个 token：HF `generate` 与 `zero.generate` 在 GPU（FP32）上是否逐字相同；
-4. `apply_chat_template` 与 `zero.post.chat.render_text` 逐字相同。
-vLLM 未安装，不测。
+1. `load_policy(ckpt, device="cuda")` (the model is directly on the GPU) → `export_to_hf_qwen3(..., chat=True)`,
+   one export in FP32 and one in BF16;
+2. `transformers.AutoModelForCausalLM.from_pretrained(...).cuda()`: parity check of the FP32 logits against
+   the FP32 zero model; parity check of BF16 against "the zero model read back from the same HF directory (BF16)";
+3. greedy generation of 32 tokens: are HF `generate` and `zero.generate` on the GPU (FP32) token-for-token identical?
+4. are the texts from `apply_chat_template` and `zero.post.chat.render_text` character-for-character identical?
+vLLM is not installed, so the script does not test it.
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ from zero.post.envs.tool_env import dev_tasks, reference_messages  # noqa: E402
 def main() -> None:
     import transformers
 
-    assert torch.cuda.device_count() == 1, "只允许看到 1 张卡（CUDA_VISIBLE_DEVICES=0）"
+    assert torch.cuda.device_count() == 1, "Only 1 GPU may be visible (CUDA_VISIBLE_DEVICES=0)"
     ckpt, out = Path(sys.argv[1]), Path(sys.argv[2])
     dev = torch.device("cuda", 0)
     model, tok = load_policy(ckpt, device=dev)
@@ -50,7 +52,7 @@ def main() -> None:
     ids = torch.tensor([tok.encode(text)[: model.config.max_seq_len]], device=dev)
     res["n_tokens"] = ids.shape[1]
 
-    # FP32 导出 → HF FP32（GPU）对拍
+    # FP32 export → parity check with HF FP32 (GPU)
     d32 = export_to_hf_qwen3(
         model, None, out / "hf_fp32", tokenizer=tok, dtype=torch.float32, chat=True
     )
@@ -68,19 +70,19 @@ def main() -> None:
         hf_tok.apply_chat_template(msgs, tools=t.tools, tokenize=False) == text
     )
 
-    # 贪心生成：HF generate vs zero.generate（GPU，FP32）
+    # Greedy generation: HF generate vs zero.generate (GPU, FP32)
     prompt = ids[:, : min(64, ids.shape[1])]
     with torch.no_grad():
         hf_out = hf32.generate(
             prompt, max_new_tokens=32, do_sample=False, eos_token_id=None, pad_token_id=0
         )[0, prompt.shape[1] :].tolist()
     z_out = generate(model, prompt[0].tolist(), 32, temperature=0.0)
-    res["greedy_32_identical"] = z_out[: len(hf_out)] == hf_out  # HF 遇到 eos 会提前停
+    res["greedy_32_identical"] = z_out[: len(hf_out)] == hf_out  # HF stops early at eos
     res["greedy_lens"] = [len(hf_out), len(z_out)]
     del hf32
     torch.cuda.empty_cache()
 
-    # BF16 导出 → HF BF16 vs zero（从 HF 目录读回，转 BF16）
+    # BF16 export → HF BF16 vs zero (read back from the HF directory, converted to BF16)
     d16 = export_to_hf_qwen3(
         model, None, out / "hf_bf16", tokenizer=tok, dtype=torch.bfloat16, chat=True
     )

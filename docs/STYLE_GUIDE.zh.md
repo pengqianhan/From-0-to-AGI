@@ -370,3 +370,38 @@
 | consensus | 共识 | |
 | adopter | 采用方 | |
 | evolution tree | 演化树 | |
+| post-training | 后训练 | |
+| agentic reinforcement learning | 智能体强化学习 | |
+| model soup | 模型汤 | |
+| chunked cross-entropy | 分块交叉熵 | |
+| deterministic algorithms | 确定性算法 | |
+| scaling efficiency | 扩展效率 | multi-GPU |
+| bus bandwidth | 总线带宽 | NCCL |
+| power cap | 功耗上限 | |
+| steady state | 稳定后 | throughput; not the WSD "stable phase" |
+| code path | 通路 | |
+| convention | 口径 | how a number is counted |
+| backend | 后端 | |
+| match / timing only / mismatch / error | 一致 / 仅计时不同 / 不一致 / 报错 | verification records |
+| runbook | 运行手册 | |
+| release checklist | 发布清单 | |
+| cost ledger | 花费账本 | |
+| per-question results | 逐题结果 | |
+| gap analysis | 差距分析 | |
+| project lead | 项目负责人 | |
+| size class | 档位 | |
+| benchmark model | 标杆 | not "benchmark" (基准) |
+| type I error rate | 第一类错误率 | |
+| descriptive report | 描述性报告 | |
+| adapter layer | 适配层 | |
+| Amendments | 修订记录 | section name in eval/PREREGISTRATION.md |
+| narration | 旁白 | video |
+| storyboard / shot | 分镜 / 镜头 | video |
+| opening | 片头 | video |
+| fact list | 事实清单 | video/script.md |
+| delivery check | 交付检查 | video |
+| final video / sample video | 成片 / 样片 | |
+| quick-read text | 速读正文 | |
+| streaming read | 流式读取 | |
+| extrapolation factor | 外推倍数 | |
+| soft metric / hard score | 软指标 / 硬分数 | |

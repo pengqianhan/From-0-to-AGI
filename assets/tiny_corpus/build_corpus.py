@@ -1,4 +1,6 @@
-"""重新生成 assets/tiny_corpus/ 的脚本（记录语料是怎么来的，便于复查与复现）。
+"""Regenerate assets/tiny_corpus/.
+
+This script records how we made the corpus, so that you can check and reproduce it.
 
     git clone --depth 1 https://github.com/chinese-poetry/chinese-poetry.git /tmp/chinese-poetry
     curl -sSLo /tmp/shakespeare.txt \
@@ -6,10 +8,12 @@
     uv run python assets/tiny_corpus/build_corpus.py --poetry-dir /tmp/chinese-poetry \
         --shakespeare /tmp/shakespeare.txt
 
-输出三个纯文本文件，文档之间用空行分隔：
-- shakespeare.txt       英文（原样复制）
-- chinese_poetry.txt    中文：论语、诗经、水墨唐诗、宋词三百首，再用全宋词补足到约 1.2MB（均为简体）
-- code.txt              代码：本仓库 zero/ 下的部分 Python 文件
+It writes three plain-text files. An empty line separates the documents:
+- shakespeare.txt       English (copied unchanged)
+- chinese_poetry.txt    Chinese: the Analects (Lunyu), the Book of Songs (Shijing), Shuimo Tangshi (Tang poems),
+                        Three Hundred Song Ci Poems, then ci poems from the Complete Song Ci until the file
+                        is about 1.2 MB (all in simplified Chinese)
+- code.txt              code: some Python files from zero/ in this repository
 """
 
 from __future__ import annotations

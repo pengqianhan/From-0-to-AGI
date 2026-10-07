@@ -162,7 +162,7 @@ Delphi 的报告给出了一个大尺度上的同类数字。过训练 10 倍时
 
 现在自己做一遍阶梯实验（scaling ladder：一串尺寸逐级变大的模型）。所有结果都是**极小配置演示**。模型是第 9 章的 TinyTransformer（字节级，词表 256），有 1 万到 50 万参数。数据是 `assets/tiny_corpus/shakespeare.txt`。它验证的是方法，不代表主线模型的任何数字。
 
-> **注意：**关于数字。本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同机器、不同版本的底层数学库，浮点运算的顺序略有不同。训练几百步后，这些微小差异会被放大。你本机的数字可能从小数点后第二、三位开始就不一样。请以下文中不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-11-15.md](../../runs/2026-10-01-gpu0-check/chapters-11-15.md)。
+> **注意：**关于数字。本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同机器、不同版本的底层数学库，浮点运算的顺序略有不同。训练几百步后，这些微小差异会被放大。你本机的数字可能从小数点后第二、三位开始就不一样。请以下文中不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-11-15.md](../../runs/2026-10-01-gpu0-check/chapters-11-15.zh.md)。
 
 | 尺寸 | dim | 层 | 非 embedding 参数 N |
 |---|---:|---:|---:|
@@ -317,13 +317,13 @@ This fit says: at compute C = 3.43e+11, the optimum is N ≈ 21,194, D ≈ 2,693
 
 ## 7. 闸门 1：花大钱之前交给人决定
 
-GOAL.md 3.4 的闸门 1，就是把上面的方法用在主线上。第二步有了 GPU 之后的阶梯协议，写在 [`runs/ladder/README.md`](../../runs/ladder/README.md)（**第一步不花 GPU 钱**）：
+GOAL.md 3.4 的闸门 1，就是把上面的方法用在主线上。第二步有了 GPU 之后的阶梯协议，写在 [`runs/ladder/README.md`](../../runs/ladder/README.zh.md)（**第一步不花 GPU 钱**）：
 
 - **尺寸与预算**：`configs/ladder/` 的 4 个尺寸（总参数 23M、71M、160M、319M，与主线同一个词表）。每个尺寸有 20×、80×、320× token/参数三个预算（l300m 只跑 20×、80×）。运行用 WSD 分叉。l20m–l150m 用来拟合，**l300m 留出**。
 - **先扫学习率**：每个尺寸 5 个学习率，最优值在边上就外扩。把 η\*(N) 外推给 l300m 和主线。必要时加上 Delphi 的训练长度修正。
 - **估算**：一轮阶梯（含分叉）约 $340。加上学习率扫描和种子重复，约 $450–550（假设 MFU 0.3）。这在第 12–13 章 $1,200 的预算内。单次超过 $100 的运行要先报批。
 
-闸门 1 报告（模板：[`runs/gate1_report_template.md`](../../runs/gate1_report_template.md)）必须回答三件事：
+闸门 1 报告（模板：[`runs/gate1_report_template.md`](../../runs/gate1_report_template.zh.md)）必须回答三件事：
 
 1. **损失外推**：主线在计划 token 数下的验证损失，以及 95% 区间。拟合残差、留出误差、外推倍数全部列出（`zero.tools.fit_scaling`）。
 2. **基准分数外推**：用两步法，即软指标的 scaling law + 公开模型拟合的 S 形映射（`fit_loss_to_score`）。阶梯规模下接近随机的基准不外推，如实写"无信号"。只用自己的开发集，不碰预注册的测试基准。
@@ -416,7 +416,7 @@ Compare: the original plan of 500B tokens (MFU 0.4, sequence 4096) costs $6,102,
 | `04_mini_ladder.py` 的 `fit_lnd`：网格 + 无约束最小二乘，负系数直接丢弃 | `zero/tools/fit_scaling.py`：`fit_chinchilla`、`fit_power_law`、`bootstrap_chinchilla`、`fit_loss_to_score` | 3 变量**非负**最小二乘（枚举 7 种有效集，精确且向量化）。N、D 先归一化，防止病态。两轮网格细化。指数落在边界时报警。可选 α=β。按组 bootstrap。L(C) 幂律。损失 → 分数的 S 形映射（闸门 1 的第二步）。 |
 | 手动把点写进 JSON | `fit_scaling --run 目录[:配置] --holdout ... --target-config ... --out fit.json` | 直接读训练器的 `log.jsonl`（取最后一次验证损失与 token 数）。用 checkpoint 里的配置算 N。N 的口径可选非 embedding 参数、总参数或 FLOPs。 |
 | `03`、`04` 里手写的 WSD 分叉 | `zero/train/schedule.py` 的 WSD + 从 checkpoint 续训（`runs/ladder/README.md` 第 4 节的命令） | 分叉就是"复制分叉点的 checkpoint，用更小的 `max_steps` 续训"。数据加载器的状态一起恢复，所以分叉看到的是主干接下来的数据。 |
-| `06_muon.py` 的极简 `Muon` | `zero/train/muon.py`：`zeropower_via_newtonschulz5`、`MuonAdamW`、`split_params_for_muon`、`build_muon_optimizer` | 一个优化器对象同时管理 Muon 组和 AdamW 组（调度按组写学习率，checkpoint 只有一个 `state_dict`）。两种尺度规则（rms / spectral）。CUDA 上用 BF16 做 NS5。遇到 FSDP 切片的参数直接报错。（CUDA 上的 BF16 NS5，以及 DDP 下各卡结果一致，已在 RTX 3090 上验证，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 11、14.1 节。） |
+| `06_muon.py` 的极简 `Muon` | `zero/train/muon.py`：`zeropower_via_newtonschulz5`、`MuonAdamW`、`split_params_for_muon`、`build_muon_optimizer` | 一个优化器对象同时管理 Muon 组和 AdamW 组（调度按组写学习率，checkpoint 只有一个 `state_dict`）。两种尺度规则（rms / spectral）。CUDA 上用 BF16 做 NS5。遇到 FSDP 切片的参数直接报错。（CUDA 上的 BF16 NS5，以及 DDP 下各卡结果一致，已在 RTX 3090 上验证，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.zh.md) 第 11、14.1 节。） |
 
 **对拍与测试**：
 

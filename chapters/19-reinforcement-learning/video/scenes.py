@@ -1,11 +1,14 @@
-"""第 19 章视频：强化学习 —— 让模型从自己的尝试里学
+"""Video for Chapter 19: reinforcement learning — the model learns from its own attempts.
 
-画面里的数值都由 ../code/ 中的代码真实计算（见 script.md 事实清单）：
-  01_reinforce_bandit.py、02_grpo_from_scratch.py、03_reward_hacking.py 现算，结果缓存在 video/out/cache.json；
-  删掉缓存会重新计算（03 在繁忙的机器上要几分钟）。
-极小配置的冒烟数字（S13）来自修复工具调用判分器之前那次冒烟测试的 out/smoke/grpo/log.jsonl 与
-out/smoke/eval/report.md（与 README「主线进度」同一次运行），写死在 SMOKE 里；重跑冒烟测试后的 out/smoke 数字不同。
-渲染：bash chapters/19-reinforcement-learning/video/build.sh
+The code in ../code/ calculates all values on screen (see the fact list in script.md):
+  01_reinforce_bandit.py, 02_grpo_from_scratch.py, and 03_reward_hacking.py run at render time.
+  The cache video/out/cache.json keeps the results. Delete the cache to calculate them again
+  (03 takes some minutes on a busy machine).
+The smoke-test numbers of the tiny configuration (S13) come from out/smoke/grpo/log.jsonl and
+out/smoke/eval/report.md of the smoke test before the fix of the tool-call grader. It is the same run
+as in the README section "Main-line progress". The numbers are fixed in SMOKE.
+A new smoke test gives different numbers in out/smoke.
+Render: bash chapters/19-reinforcement-learning/video/build.sh
 """
 
 from __future__ import annotations
@@ -46,7 +49,8 @@ CODE = HERE.parent / "code"
 CACHE = HERE / "out" / "cache.json"
 MONO = "Noto Sans Mono"
 
-# 冒烟测试的真实记录（极小配置演示，修复判分器之前那次）：当时的 out/smoke/grpo/log.jsonl、out/smoke/eval/report.md
+# Real record of the smoke test before the grader fix (tiny-configuration demo):
+# out/smoke/grpo/log.jsonl and out/smoke/eval/report.md of that run
 SMOKE = {
     "reward": [-0.1875, -0.14, -0.40, -0.1225, -0.035, -0.3425, -0.1734, -0.175, -0.0163, -0.0725],
     "format": [0.5, 0.625, 0.46875, 0.65625, 0.71875, 0.4375, 0.65625, 0.5625, 0.71875, 0.625],
@@ -137,7 +141,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(card), FadeOut(sub), run_time=0.5)
 
-        # ── S02 模仿的天花板 ─────────────────────────────────────────────
+        # ── S02 The ceiling of imitation ─────────────────────────────────
         with self.shot("S02"):
             self.play(*self.set_heading("模仿的天花板"), run_time=self.fit(0.6))
             teacher = VGroup(
@@ -167,7 +171,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(teacher, box, bars, msg)), run_time=0.5)
 
-        # ── S03 对数导数技巧 ─────────────────────────────────────────────
+        # ── S03 Log-derivative trick ─────────────────────────────────────
         with self.shot("S03"):
             self.play(*self.set_heading("分数不可导，梯度从哪来"), run_time=self.fit(0.6))
             lines = VGroup(
@@ -190,7 +194,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(lines, hint, note)), run_time=0.5)
 
-        # ── S04 基线 ─────────────────────────────────────────────────────
+        # ── S04 Baseline ─────────────────────────────────────────────────
         with self.shot("S04"):
             self.play(*self.set_heading("基线：期望不变，方差小得多"), run_time=self.fit(0.6))
             f = MathTex(r"\mathbb{E}[(r-b)\nabla\log\pi] = \nabla J", font_size=36).move_to([-3.4, 2.3, 0])
@@ -229,7 +233,7 @@ class ChapterScene(NarratedScene):
             same = VGroup(zh("两个一样大的模型：", 20, theme.MUTED), zh("多一份显存、多训一个模型", 20, theme.MUTED)).arrange(DOWN, buff=0.12).move_to([-4.6, -1.55, 0])
             self.play(FadeIn(g1), FadeIn(g2), run_time=self.fit(1))
             self.play(FadeIn(same), run_time=self.fit(0.6))
-            # 裁剪函数：A>0 时目标 min(ρA, clip(ρ)A)
+            # Clipping function: when A>0, the objective is min(ρA, clip(ρ)A)
             ax = Axes(x_range=[0, 2, 0.5], y_range=[0, 1.6, 0.4], x_length=5.0, y_length=3.0, tips=False,
                       axis_config={"color": theme.MUTED, "stroke_width": 2}).move_to([2.6, 0.2, 0])
             eps = 0.2
@@ -249,7 +253,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(g1, g2, same, ax, curve, lo, hi, lab_lo, lab_hi, xl, title, flat)), run_time=0.5)
 
-        # ── S06 GRPO 一组样本 ────────────────────────────────────────────
+        # ── S06 GRPO: one group of samples ───────────────────────────────
         with self.shot("S06"):
             self.play(*self.set_heading("GRPO：同一道题的其他回答就是基线"), run_time=self.fit(0.6))
             ex = G["example"]
@@ -283,7 +287,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(q, cards, stat, form, advs)), run_time=0.5)
 
-        # ── S07 三个细节 ─────────────────────────────────────────────────
+        # ── S07 Three details ────────────────────────────────────────────
         with self.shot("S07"):
             self.play(*self.set_heading("GRPO 的三个细节"), run_time=self.fit(0.6))
             zs = G["zero_std"]
@@ -319,7 +323,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(col1, col2, col3)), run_time=0.5)
 
-        # ── S08 学生超过老师 ─────────────────────────────────────────────
+        # ── S08 The student does better than the teacher ─────────────────
         with self.shot("S08"):
             self.play(*self.set_heading("GRPO：学生超过了老师"), run_time=self.fit(0.6))
             steps = G["steps"]
@@ -342,7 +346,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(ax, xl, teach, tl, c1, c2, l1, l2, p0)), run_time=0.5)
 
-        # ── S09 可验证奖励 ───────────────────────────────────────────────
+        # ── S09 Verifiable rewards ───────────────────────────────────────
         with self.shot("S09"):
             self.play(*self.set_heading("可验证奖励：让程序判对错"), run_time=self.fit(0.6))
             rows = [("数学", "抽出答案，和标准答案比"), ("代码", "在沙箱里跑测试用例"),
@@ -365,7 +369,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(tbl, r1, r2)), run_time=0.5)
 
-        # ── S10 真实的作弊 ───────────────────────────────────────────────
+        # ── S10 Real reward hacking ──────────────────────────────────────
         with self.shot("S10"):
             self.play(*self.set_heading("真实的作弊：去掉标签"), run_time=self.fit(0.6))
             badge = self.show_badge()
@@ -394,7 +398,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeOut(VGroup(tagged, t1, bare, t2, arr, chat, fix, fbox)), run_time=0.5)
         self.remove(badge)
 
-        # ── S11 玩具重演 ─────────────────────────────────────────────────
+        # ── S11 A toy replay ─────────────────────────────────────────────
         with self.shot("S11"):
             self.play(*self.set_heading("重演：奖励涨了，本事没涨"), run_time=self.fit(0.6))
             H = D["hack"]
@@ -428,7 +432,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(panels, legend, *curves_all)), run_time=0.5)
 
-        # ── S12 怎么防 ───────────────────────────────────────────────────
+        # ── S12 How to prevent it ────────────────────────────────────────
         with self.shot("S12"):
             self.play(*self.set_heading("怎么防：别只看平均奖励"), run_time=self.fit(0.6))
             left = VGroup(*[zh(t, 24, theme.FG) for t in (
@@ -443,7 +447,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(left, right)), run_time=0.5)
 
-        # ── S13 主线进度 ─────────────────────────────────────────────────
+        # ── S13 Main-line progress ───────────────────────────────────────
         with self.shot("S13"):
             self.play(*self.set_heading("主线进度与生产级代码"), run_time=self.fit(0.6))
             badge = self.show_badge()
@@ -473,7 +477,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeOut(VGroup(ax, ylab, r, fr, leg, xl, info)), run_time=0.5)
         self.remove(badge)
 
-        # ── S14 小结 ─────────────────────────────────────────────────────
+        # ── S14 Summary ──────────────────────────────────────────────────
         with self.shot("S14"):
             self.play(*self.set_heading("小结"), run_time=self.fit(0.6))
             steps = ["采样 G 个回答", "验证器打分", "组内优势", "裁剪的策略梯度"]

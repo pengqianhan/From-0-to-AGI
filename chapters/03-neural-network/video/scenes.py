@@ -1,7 +1,7 @@
-"""第 3 章视频：非线性与神经网络 —— 用折线拼出曲线
+"""Chapter 3 video: nonlinearity and neural networks — build a curve from line segments.
 
-画面里的所有数值都由 ../code/ 中的代码真实计算（见 script.md 事实清单）。
-渲染：bash chapters/03-neural-network/video/build.sh
+The code in ../code/ calculates all numbers in the frames (see the fact list in script.md).
+Render: bash chapters/03-neural-network/video/build.sh
 """
 
 from __future__ import annotations
@@ -59,14 +59,14 @@ actm = _load("activations", "02_activations.py")
 mlp = _load("mlp_numpy", "03_mlp_numpy.py")
 ptv = _load("pytorch_version", "04_pytorch_version.py")
 
-# ── 真实计算 ────────────────────────────────────────────────────────────────
+# ── Real calculations ───────────────────────────────────────────────────────
 X, Y = mlp.make_data()
 LINE_A, LINE_B, LINE_MSE = lin.best_line(X, Y)
 VAR_Y = float(np.var(Y))
-STACKS = lin.stack_demo(X)                              # [(名字, 参数量, W, b, 最大差), ...]
-# 代码里的网络名已改成英文；视频仍显示原来的中文名
+STACKS = lin.stack_demo(X)                              # [(name, params, W, b, max diff), ...]
+# The network names in the code are now English. The video still shows the Chinese names.
 STACK_ZH = {"2 layers 1→8→1": "两层 1→8→1", "3 layers 1→8→8→1": "三层 1→8→8→1"}
-_, LIN_LOSSES, _ = mlp.train(X, Y, 8, act="linear")     # 两层线性（无激活）的训练损失
+_, LIN_LOSSES, _ = mlp.train(X, Y, 8, act="linear")     # loss of 2 linear layers, no activation
 SNAP_STEPS = (0, 1000, 5000, mlp.STEPS)
 P64, L64, SNAP64 = mlp.train(X, Y, 64, snapshot_steps=SNAP_STEPS)
 P8, L8, _ = mlp.train(X, Y, 8)
@@ -80,7 +80,7 @@ SEED_MED = {h: float(np.median([mlp.train(X, Y, h, seed=s)[1][-1] for s in range
 PT_TORCH, PT_NUMPY = ptv.run_match(verbose=False)
 PT_DEFAULT, _ = ptv.run_default(verbose=False)
 
-XS = np.linspace(-3, 3, 601).reshape(-1, 1)             # 画曲线用的密集网格
+XS = np.linspace(-3, 3, 601).reshape(-1, 1)             # dense grid for the curves
 MONO = "Noto Sans Mono"
 
 
@@ -89,7 +89,7 @@ def mono(text: str, size: float = 24, color: str = theme.FG) -> Text:
 
 
 def sci(v: float) -> str:
-    """1.1e-10 → 1.1 × 10⁻¹⁰（屏幕上好读）。"""
+    """1.1e-10 → 1.1 × 10⁻¹⁰ (easier to read on the screen)."""
     m, e = f"{v:.1e}".split("e")
     sup = str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹")
     return f"{m} × 10{str(int(e)).translate(sup)}"
@@ -114,7 +114,7 @@ def curve(ax: Axes, xs, ys, color=theme.OUTPUT, width=4) -> VGroup:
 
 
 def net_curve(ax: Axes, params: dict, color=theme.OUTPUT, width=4) -> VMobject:
-    """网络在密集网格上的输出，一整条折线（点数固定，方便 Transform）。"""
+    """Network output on a dense grid as one polyline (fixed point count, for Transform)."""
     y_hat, _ = mlp.forward(params, XS)
     lo, hi = ax.y_range[0], ax.y_range[1]
     pts = [ax.c2p(x, float(np.clip(y, lo, hi))) for x, y in zip(XS[:, 0], y_hat[:, 0], strict=False)]
@@ -128,7 +128,7 @@ class ChapterScene(NarratedScene):
     chapter_title = "非线性与神经网络"
 
     def construct(self) -> None:
-        # ── S01 片头 ─────────────────────────────────────────────────────
+        # ── S01 Opening ──────────────────────────────────────────────────
         with self.shot("S01"):
             card = self.chapter_card()
             sub = zh("用折线拼出曲线", 32, theme.HIGHLIGHT).next_to(card, DOWN, 0.6)
@@ -137,7 +137,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-        # ── S02 直线拟合不了曲线 ─────────────────────────────────────────
+        # ── S02 A straight line cannot fit a curve ───────────────────────
         with self.shot("S02"):
             ax = data_axes([-3.4, 0.2, 0])
             xl = MathTex("x", color=theme.MUTED, font_size=28).next_to(ax.x_axis, RIGHT, 0.1)
@@ -169,7 +169,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [ax, xl, dots, f, line, resid, best, verdict]],
                       run_time=self.fit(0.6))
 
-        # ── S03 多叠几层线性层？ ─────────────────────────────────────────
+        # ── S03 Stack more linear layers? ────────────────────────────────
         with self.shot("S03"):
             self.play(*self.set_heading("多叠几层线性层？"), run_time=self.fit(0.6))
             e1 = MathTex(r"(XW_1+b_1)\,W_2+b_2", font_size=48).move_to([0, 2.0, 0])
@@ -195,7 +195,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [e1, e2, e3, b1, b2, t1, t2, concl]],
                       run_time=self.fit(0.6))
 
-        # ── S04 用数字验证 ───────────────────────────────────────────────
+        # ── S04 Check with numbers ───────────────────────────────────────
         with self.shot("S04"):
             lax = Axes(x_range=[0, 50, 10], y_range=[0, 2.2, 0.5], x_length=5.8, y_length=3.8,
                        axis_config={"color": theme.MUTED, "include_numbers": True, "font_size": 18},
@@ -261,7 +261,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [rax, zl, neg, pos, formula, notes, kink, kl,
                                              no_merge]], run_time=self.fit(0.6))
 
-        # ── S06 其他激活函数 ─────────────────────────────────────────────
+        # ── S06 Other activation functions ───────────────────────────────
         with self.shot("S06"):
             self.play(*self.set_heading("激活函数家族"), run_time=self.fit(0.6))
             zs = np.linspace(-3, 3, 301)
@@ -297,7 +297,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeOut(panels), FadeOut(s_note), FadeOut(m_note), FadeOut(swiglu),
                       run_time=self.fit(0.6))
 
-        # ── S07 两层 MLP 的结构 ──────────────────────────────────────────
+        # ── S07 The structure of a two-layer MLP ─────────────────────────
         with self.shot("S07"):
             self.play(*self.set_heading("两层 MLP：线性 → ReLU → 线性"), run_time=self.fit(0.6))
             inp = VGroup(Circle(0.32, color=theme.INPUT, fill_opacity=0.2),
@@ -348,7 +348,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [inp, out, hidden, dots_v, edges1, edges2, w1l, w2l, hl,
                                              eqs, shapes, npar]], run_time=self.fit(0.6))
 
-        # ── S08 一个隐藏单元 = 一个折点 ───────────────────────────────────
+        # ── S08 One hidden unit = one kink ────────────────────────────────
         with self.shot("S08"):
             hax = Axes(x_range=[-3, 3, 1], y_range=[-2.5, 2.5, 1], x_length=5.8, y_length=4.2,
                        axis_config={"color": theme.MUTED, "include_numbers": True, "font_size": 18},
@@ -392,7 +392,7 @@ class ChapterScene(NarratedScene):
             self.remove(h, kd)
             self.play(*[FadeOut(m) for m in [hax, form, kf, labels, each]], run_time=self.fit(0.6))
 
-        # ── S09 用折线拼形状 ─────────────────────────────────────────────
+        # ── S09 Build shapes from line segments ──────────────────────────
         with self.shot("S09"):
             self.play(*self.set_heading("折线可以相加"), run_time=self.fit(0.6))
             xs = np.linspace(-2, 2, 201)
@@ -428,13 +428,13 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [a1, a2, r1, r2, absx, t1, pcs, tent, t2, tl]],
                       run_time=self.fit(0.6))
 
-        # ── S10 八个折点拼出正弦 ─────────────────────────────────────────
+        # ── S10 Eight kinks build a sine ─────────────────────────────────
         with self.shot("S10"):
             ax = data_axes([-3.2, 0.0, 0], x_len=6.6, y_len=4.4, y_range=(-1.5, 1.5, 0.5))
             dots = data_dots(ax, radius=0.035, opacity=0.5)
             self.play(*self.set_heading("宽 8 的网络：8 条折线之和"), Create(ax), FadeIn(dots),
                       run_time=self.fit(1))
-            # 右上小图：8 条折线本身（幅度很大）
+            # Small plot at the top right: the 8 piecewise-linear pieces (large amplitudes).
             lo = float(np.floor(PIECES8.min() / 2) * 2)
             hi = float(np.ceil(PIECES8.max() / 2) * 2)
             pax = Axes(x_range=[-3, 3, 1], y_range=[lo, hi, 4], x_length=4.6, y_length=2.6,
@@ -452,7 +452,8 @@ class ChapterScene(NarratedScene):
                      theme.MUTED).next_to(pax, DOWN, 0.3)
             self.play(FadeIn(big), run_time=self.fit(0.6))
             self.wait(self.remaining() * 0.1)
-            # 左图：输出从左往右逐段画出，每过一个折点拐一次弯
+            # Left plot: draw the output segment by segment from left to right.
+            # The line bends at each kink.
             inside = sorted(k for k in KINKS8 if -3 < k < 3)
             bounds = [-3.0] + inside + [3.0]
             kink_dots = VGroup(*[Dot(ax.c2p(k, float(mlp.forward(P8, np.array([[k]]))[0][0, 0])),
@@ -481,7 +482,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [ax, dots, pax, pieces, ptitle, big, kink_dots, segs,
                                              eq]], run_time=self.fit(0.6))
 
-        # ── S11 训练：手推梯度 ───────────────────────────────────────────
+        # ── S11 Training: gradients by hand ──────────────────────────────
         with self.shot("S11"):
             self.play(*self.set_heading("训练：从损失往回推梯度"), run_time=self.fit(0.6))
             names = [("X", theme.INPUT), ("Z", theme.FG), ("A", theme.FG), (r"\hat{Y}", theme.OUTPUT),
@@ -533,7 +534,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [chain, fwd, back, back_l, grads, hl, hl_t, ch4, gc]],
                       run_time=self.fit(0.6))
 
-        # ── S12 看着曲线被拟合出来 ───────────────────────────────────────
+        # ── S12 Watch the curve fit the data ─────────────────────────────
         with self.shot("S12"):
             ax = data_axes([-3.4, 0.2, 0])
             dots = data_dots(ax)
@@ -560,7 +561,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in [ax, dots, fit_c, table, same]], run_time=self.fit(0.6))
 
-        # ── S13 宽度的作用 ───────────────────────────────────────────────
+        # ── S13 What the width does ──────────────────────────────────────
         with self.shot("S13"):
             self.play(*self.set_heading("宽度 = 能拼出多少个折"), run_time=self.fit(0.6))
             configs = [(2, P2, L2), (8, P8, L8), (64, P64, L64)]
@@ -591,7 +592,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeOut(panels), FadeOut(gray), FadeOut(med), FadeOut(uat),
                       run_time=self.fit(0.6))
 
-        # ── S14 从极简到生产级 ───────────────────────────────────────────
+        # ── S14 From minimal code to production code ─────────────────────
         with self.shot("S14"):
             left_code = VGroup(*[mono(s, 20) for s in [
                 "z = x @ W1 + b1",
@@ -610,7 +611,7 @@ class ChapterScene(NarratedScene):
                 "optimizer.step()",
             ]]).arrange(DOWN, aligned_edge=LEFT, buff=0.2).move_to([3.4, 0.5, 0])
             for ln in right_code[1:4]:
-                ln.shift(RIGHT * 0.5)                  # Text 会吃掉行首空格，手动缩进
+                ln.shift(RIGHT * 0.5)                  # Text removes leading spaces
             lt = zh("NumPy：手推梯度", 26, theme.MUTED).next_to(left_code, UP, 0.4)
             rt = zh("PyTorch 标准写法", 26, theme.HIGHLIGHT).next_to(right_code, UP, 0.4)
             self.play(*self.set_heading("从极简到生产级"), FadeIn(lt), FadeIn(left_code),
@@ -636,7 +637,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [left_code, right_code, lt, rt, r1, auto, res]],
                       run_time=self.fit(0.6))
 
-        # ── S15 小结与下一章 ─────────────────────────────────────────────
+        # ── S15 Summary and the next chapter ─────────────────────────────
         with self.shot("S15"):
             pts = VGroup(
                 zh("1. 线性层叠多少层，还是线性", 30, theme.FG),

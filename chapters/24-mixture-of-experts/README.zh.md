@@ -132,7 +132,7 @@ for e, expert in enumerate(self.experts):
 - **浪费参数**：闲置专家的参数白占显存。模型实际上退化成了一个更小的模型。
 - **拖慢训练和推理**：大模型的专家分布在不同的 GPU 上（**专家并行**，expert parallelism，第 9 节）。最忙的专家所在的卡决定整层的耗时。如果设了容量上限，还会丢 token（第 5.3 节）。
 
-> **注意：**本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同机器、不同版本的底层数学库，浮点运算的顺序略有不同。训练几百步后，这些微小差异会被放大。你本机跑出的数字可能从小数点后第二三位开始就不一样。请以下文不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-24-26.md](../../runs/2026-10-01-gpu0-check/chapters-24-26.md)。
+> **注意：**本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同机器、不同版本的底层数学库，浮点运算的顺序略有不同。训练几百步后，这些微小差异会被放大。你本机跑出的数字可能从小数点后第二三位开始就不一样。请以下文不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-24-26.md](../../runs/2026-10-01-gpu0-check/chapters-24-26.zh.md)。
 
 在本章的小实验里（第 6 节），不加任何均衡的 MoE，第 1 层的负载在训练中这样变化：
 
@@ -398,7 +398,7 @@ uv run python chapters/24-mixture-of-experts/code/05_gpu_moe.py
 
 | 极简代码（`code/`） | 生产级代码（`zero/arch/moe.py`） | 多做了什么，为什么 |
 |---|---|---|
-| `02_moe_layer.py` 的 `MoE`：用 `nn.ModuleList` 装专家，按专家循环 | `MoEFFN`：专家权重按专家**堆叠**成 `(E, d, h)` 三维张量；token 按专家**稳定排序**后分段计算 | 堆叠权重是 grouped GEMM 和专家并行分片的前提（按第 0 维切给不同的卡）。排序后，每个专家的 token 是连续的，方便换成 GPU kernel。（CUDA + BF16 的前向和反向传播已在 RTX 3090 上验证。这次验证还修了 autocast 下 `index_add_` 的精度 bug，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 12 节。grouped GEMM kernel 尚未接入。） |
+| `02_moe_layer.py` 的 `MoE`：用 `nn.ModuleList` 装专家，按专家循环 | `MoEFFN`：专家权重按专家**堆叠**成 `(E, d, h)` 三维张量；token 按专家**稳定排序**后分段计算 | 堆叠权重是 grouped GEMM 和专家并行分片的前提（按第 0 维切给不同的卡）。排序后，每个专家的 token 是连续的，方便换成 GPU kernel。（CUDA + BF16 的前向和反向传播已在 RTX 3090 上验证。这次验证还修了 autocast 下 `index_add_` 的精度 bug，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.zh.md) 第 12 节。grouped GEMM kernel 尚未接入。） |
 | 固定 sigmoid 或 softmax、top-k 归一化 | `MoEConfig`：`score_func`、`norm_topk_prob`、`routed_scaling_factor`、`n_shared_experts` / `shared_expert_dim`，字段名对齐 HF 配置 | 能表达不同的配方：DeepSeek-V3（sigmoid、归一化、×2.5、1 个共享专家）、Qwen3-MoE（softmax、归一化、无共享专家）、Mixtral 等 |
 | 偏置用这一步的负载更新 | `load_accum` 累计自上次 `update_bias()` 以来的负载；分布式训练时先做 `all_reduce` | 梯度累积时，要按整个全局 batch 的负载更新（DeepSeek-V3："monitoring the expert load on the whole batch"）。多卡路径**尚未在 GPU 上验证** |
 | 偏置只在 `balance="free"` 时参与 | 偏置总是参与选择（不更新时保持为 0），并作为 buffer 进入 `state_dict` | DeepSeek-V3 最后 500B token 把 γ 设为 0，但继续用已学到的偏置。续训时必须恢复偏置 |

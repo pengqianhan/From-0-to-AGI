@@ -1,5 +1,6 @@
-# 多卡 32K 显存试验用：与 longctx_tiny.toml 相同，只把三个来源合成一个。
-# tiny 语料里 code 来源只切得出 2 个 32K 片段，3 个 rank 分不过来；合成一个来源后约 28 个片段。
+# For the multi-GPU 32K memory test: the same as longctx_tiny.toml, but the three sources are merged into one.
+# In the tiny corpus, the code source gives only 2 segments of 32K, which is not enough for 3 ranks.
+# With one merged source, there are about 28 segments.
 base = "longctx_tiny.toml"
 
 [[data.sources]]

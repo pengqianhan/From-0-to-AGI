@@ -1,81 +1,83 @@
-# 发布清单（第二步阶段 10 · 闸门 3 与发布）
+# Release checklist (Step 2, Stage 10 · Gate 3 and release)
 
-> 配套：第 20 章 [`chapters/20-release/`](../chapters/20-release/README.md)、[`runs/RUNBOOK.md`](RUNBOOK.md) 第 6 节、
-> [`eval/PREREGISTRATION.md`](../eval/PREREGISTRATION.md)。本清单在第一步写好，**所有项目都还没有执行**。
-> 逐项打勾，每一项在"证据"一栏写上文件路径或链接；打不了勾的项写原因，不跳过。
-> 发布前**等项目负责人最后确认**（GOAL.md 10 节阶段 10）。
+**English** · [中文](RELEASE_CHECKLIST.zh.md)
 
-## A. 闸门 3：最终评测（按预注册协议，一字不改）
+> Related documents: Chapter 20 [`chapters/20-release/`](../chapters/20-release/README.md), Section 6 of [`runs/RUNBOOK.md`](RUNBOOK.md),
+> [`eval/PREREGISTRATION.md`](../eval/PREREGISTRATION.md). We wrote this checklist in Step 1. **No item has been done yet.**
+> Check the items one by one. For each item, write a file path or a link in the "Evidence" column. If you cannot check an item, write the reason. Do not skip it.
+> Before the release, **wait for the final confirmation of the project lead** (GOAL.md Section 10, Stage 10).
 
-| # | 项目 | 证据 | 状态 |
+## A. Gate 3: final evaluation (follow the preregistered protocol exactly, with no change)
+
+| # | Item | Evidence | Status |
 |---|---|---|---|
-| A1 | 确认 `eval/PREREGISTRATION.md` 已定稿，记录登记 commit；冻结后的修改都在"修订记录"里带日期和理由 | commit hash | [ ] |
-| A2 | 评测框架版本与预注册一致（lm-evaluation-harness、bfcl-eval、vLLM、evalplus），`pip freeze` 存档 | `runs/<日期>-final-eval/env.txt` | [ ] |
-| A3 | 评测对象是**发布的那份权重**：导出的 HF 目录（`export_to_hf_qwen3(..., chat=True)`），不是训练 checkpoint；记下 `model.safetensors` 的 sha256 | sha256 | [ ] |
-| A4 | 模板：我们的模型用导出目录里的 `chat_template`；对手用各自官方模板；解码参数与预注册相同 | 评测日志 | [ ] |
-| A5 | 专项基准（BFCL + 中文工具调用基准）、通用基准全部跑完，保存**逐题**结果（`--log_samples`） | `eval/results/final/` | [ ] |
-| A6 | 对每个对手、每个基准做配对 bootstrap（`zero.eval.bootstrap`，10,000 次，95% CI；对手取思考 / 非思考中较高者） | 比较表 | [ ] |
-| A7 | 按预注册的判定标准写出每一格的"超过 / 持平 / 落后"，**全部列出**，不挑选基准 | `zero.eval.report` 生成的表 | [ ] |
-| A8 | 硬目标是否成立：按预注册的"硬目标成立条件"逐条判断；不成立就**不宣称"超过"**，写差距分析 | 结论段 | [ ] |
-| A9 | 官方公布的对手分数并列展示，但只作参考 | 表格 | [ ] |
-| A10 | 发布后新增对手：查冻结日期之后发布的 0.7–1.3 倍尺寸模型，能跑就跑，写进"发布后新增对手"一节——即使它们比我们强 | 清单 + 结果 | [ ] |
-| A11 | 测试基准只在这里跑了一次；没有用它们挑 checkpoint 或调超参（GOAL.md 11 节） | 说明 | [ ] |
+| A1 | Make sure that `eval/PREREGISTRATION.md` is final, and record the registration commit. Each change after the freeze is in the section "Amendments", with a date and a reason | commit hash | [ ] |
+| A2 | The versions of the evaluation frameworks agree with the preregistration (lm-evaluation-harness, bfcl-eval, vLLM, evalplus). Archive the output of `pip freeze` | `runs/<date>-final-eval/env.txt` | [ ] |
+| A3 | Evaluate **the released weights**: the exported HF folder (`export_to_hf_qwen3(..., chat=True)`), not a training checkpoint. Record the sha256 of `model.safetensors` | sha256 | [ ] |
+| A4 | Templates: our model uses the `chat_template` in the exported folder; each opponent uses its own official template. The decoding parameters are the same as in the preregistration | Evaluation logs | [ ] |
+| A5 | Run all special benchmarks (BFCL + Chinese tool-calling benchmarks) and all general benchmarks. Save the **per-question** results (`--log_samples`) | `eval/results/final/` | [ ] |
+| A6 | Do a paired bootstrap for each opponent and each benchmark (`zero.eval.bootstrap`, 10,000 resamples, 95% CI; for the opponent, use the higher of thinking / non-thinking) | Comparison table | [ ] |
+| A7 | Use the preregistered criteria to write "ahead / tie / behind" in each cell. **List all cells.** Do not select benchmarks | Table from `zero.eval.report` | [ ] |
+| A8 | Is the hard goal reached? Check each item of the "conditions for the hard goal" in the preregistration. If the goal is not reached, **do not claim "ahead"**, and write a gap analysis | Conclusion paragraph | [ ] |
+| A9 | Show the official scores that the opponents published side by side, but only as a reference | Table | [ ] |
+| A10 | Opponents added after release: look for models of 0.7–1.3 times our size that were released after the freeze date. Run them if you can. Write them into the section "Opponents added after release", even if they are better than our model | List + results | [ ] |
+| A11 | The test benchmarks ran only one time, here. We did not use them to select checkpoints or to tune hyperparameters (GOAL.md Section 11) | Statement | [ ] |
 
-## B. 去污染
+## B. Decontamination
 
-| # | 项目 | 证据 | 状态 |
+| # | Item | Evidence | Status |
 |---|---|---|---|
-| B1 | 全部训练数据（预训练、中期、SFT、教师合成数据、偏好数据、RL 任务）与全部评测集的 13-gram 重叠检查（`zero/data/decontam.py`） | 命中率表 | [ ] |
-| B2 | 工具调用数据的函数名、参数 schema 与 BFCL 等评测集比对，重合的剔除并计数 | 计数 | [ ] |
-| B3 | 结果写进模型卡"去污染检查"一节 | 模型卡 | [ ] |
+| B1 | Do the 13-gram overlap check of all training data (pretraining, mid-training, SFT, teacher synthetic data, preference data, RL tasks) with all evaluation sets (`zero/data/decontam.py`) | Table of hit rates | [ ] |
+| B2 | Compare the function names and argument schemas of the tool-calling data with BFCL and the other evaluation sets. Remove the overlaps and count them | Count | [ ] |
+| B3 | Write the results into the section "Decontamination check" of the model card | Model card | [ ] |
 
-## C. 权重与格式
+## C. Weights and formats
 
-| # | 项目 | 证据 | 状态 |
+| # | Item | Evidence | Status |
 |---|---|---|---|
-| C1 | HF 目录：`config.json`（`Qwen3ForCausalLM`）、`generation_config.json`、`model.safetensors`（bf16）、`tokenizer.json`、`tokenizer_config.json`（含 `chat_template`） | 目录列表 | [ ] |
-| C2 | `transformers` 加载后 logits 与 zero 一致（`tests/test_export_hf.py` 的做法，在最终权重上再跑一次） | 最大误差 | [ ] |
-| C3 | `apply_chat_template` 渲染结果与训练时的模板逐字一致（带 tools 的例子） | diff 为空 | [ ] |
-| C4 | vLLM：`vllm serve <dir> --enable-auto-tool-choice --tool-call-parser hermes` 能加载，带 tools 的请求返回结构化 `tool_calls` | 请求 / 响应存档 | [ ] |
-| C5 | GGUF：`python -m zero.export.gguf --hf-dir ... --outtype f16`；`llama-tokenize` 与我们的分词器逐 token 一致（中文、英文、代码、工具调用各一条） | 对拍输出 | [ ] |
-| C6 | f32（或 f16）GGUF 的贪心输出与 zero 逐 token 一致（含 YaRN 配置） | 对拍输出 | [ ] |
-| C7 | 量化：Q8_0、Q4_K_M；用 `llama-perplexity` 在我们自己的开发集上测 PPL 与 KLD（相对 f16），写进模型卡 | PPL / KLD 表 | [ ] |
-| C8 | 量化版在工具调用开发集上的得分（至少 Q4_K_M），与 bf16 对比；掉分明显就在模型卡里写清楚，并推荐 Q8_0 | 表 | [ ] |
-| C9 | Ollama：`Modelfile` 写 `FROM ./zero-Q4_K_M.gguf` + 对话模板，`ollama create` 后能对话 | 录屏 / 日志 | [ ] |
-| C10 | 在一台普通笔记本（记录型号、内存、系统）上跑 Q4_K_M：记录内存占用与 token/s | 表 | [ ] |
+| C1 | HF folder: `config.json` (`Qwen3ForCausalLM`), `generation_config.json`, `model.safetensors` (bf16), `tokenizer.json`, `tokenizer_config.json` (with `chat_template`) | Folder listing | [ ] |
+| C2 | After `transformers` loads the model, the logits agree with zero (use the method of `tests/test_export_hf.py`, and run it again on the final weights) | Maximum error | [ ] |
+| C3 | The output of `apply_chat_template` is identical, character by character, to the template in training (an example with tools) | Empty diff | [ ] |
+| C4 | vLLM: `vllm serve <dir> --enable-auto-tool-choice --tool-call-parser hermes` can load the model, and a request with tools returns structured `tool_calls` | Archived request / response | [ ] |
+| C5 | GGUF: `python -m zero.export.gguf --hf-dir ... --outtype f16`. `llama-tokenize` agrees token by token with our tokenizer (one sample each for Chinese, English, code, and a tool call) | Parity-check output | [ ] |
+| C6 | The greedy output of the f32 (or f16) GGUF agrees token by token with zero (YaRN configuration included) | Parity-check output | [ ] |
+| C7 | Quantization: Q8_0, Q4_K_M. Use `llama-perplexity` on our own development set to measure PPL and KLD (against f16). Write them into the model card | PPL / KLD table | [ ] |
+| C8 | Scores of the quantized versions (at least Q4_K_M) on the tool-calling development set, compared with bf16. If the score drops clearly, say so in the model card, and recommend Q8_0 | Table | [ ] |
+| C9 | Ollama: the `Modelfile` contains `FROM ./zero-Q4_K_M.gguf` + the chat template. After `ollama create`, the model can chat | Screen recording / log | [ ] |
+| C10 | Run Q4_K_M on a normal laptop (record the laptop model, the memory, and the operating system). Record the memory use and token/s | Table | [ ] |
 
-## D. 本地 demo
+## D. Local demo
 
-| # | 项目 | 证据 | 状态 |
+| # | Item | Evidence | Status |
 |---|---|---|---|
-| D1 | `python -m zero.demo.cli --model <最终 HF 目录> --root <演示目录>`：计算器、日期、文件搜索三类问题各录一段 | 录屏 | [ ] |
-| D2 | 失败的例子也录下来（调错工具、参数错误、编造结果），写进模型卡"已知局限" | 录屏 | [ ] |
-| D3 | 文件搜索只在 `--root` 之内（`tests/test_demo.py` 覆盖了 `../` 和符号链接逃逸）；README 提醒用户不要把根目录设成 home | 说明 | [ ] |
+| D1 | `python -m zero.demo.cli --model <final HF folder> --root <demo folder>`: record one video for each of three kinds of questions: calculator, date, and file search | Screen recording | [ ] |
+| D2 | Also record the failure examples (wrong tool, wrong arguments, made-up results). Write them into "Known limitations" in the model card | Screen recording | [ ] |
+| D3 | File search stays inside `--root` (`tests/test_demo.py` covers escapes with `../` and with symbolic links). The README tells users not to set the root folder to their home folder | Statement | [ ] |
 
-## E. 许可证与署名（作者决定，执行者准备材料）
+## E. License and attribution (the author decides; the executor prepares the material)
 
-| # | 项目 | 证据 | 状态 |
+| # | Item | Evidence | Status |
 |---|---|---|---|
-| E1 | 权重许可证：作者在第 20 章列出的选项中选定，写进模型卡 YAML 的 `license:` 与仓库 `LICENSE` | 决定记录 | [ ] |
-| E2 | 每个训练数据集：名称、版本、许可证、署名要求（ODC-By 数据要求署名；CC-BY 要求署名；代码数据按原始许可证），列成表 | 数据表 | [ ] |
-| E3 | 蒸馏教师：名称、版本、许可证原文里关于"用输出训练其他模型"的条款 | 条款摘录 | [ ] |
-| E4 | 代码仓库的许可证与模型许可证分别写明 | LICENSE 文件 | [ ] |
+| E1 | Weights license: the author selects one of the options listed in Chapter 20. Write it into `license:` in the YAML of the model card and into the `LICENSE` of the repository | Decision record | [ ] |
+| E2 | For each training data set: the name, the version, the license, and the attribution requirement (ODC-By data requires attribution; CC-BY requires attribution; code data follows its original license). Put them in a table | Data table | [ ] |
+| E3 | Distillation teacher: the name, the version, and the terms in the license text about "use of the outputs to train other models" | Extract of the terms | [ ] |
+| E4 | Write the license of the code repository and the license of the model separately | LICENSE file | [ ] |
 
-## F. 发布物（GOAL.md 3.5）
+## F. Release items (GOAL.md 3.5)
 
-| # | 项目 | 证据 | 状态 |
+| # | Item | Evidence | Status |
 |---|---|---|---|
-| F1 | Hugging Face：Base、SFT、最终版三个仓库（或一个仓库多分支），关键中间 checkpoint 用 `revision` 分支发布（命名写清步数与 token 数） | 链接 | [ ] |
-| F2 | GGUF 仓库：Q8_0、Q4_K_M（可选 f16） | 链接 | [ ] |
-| F3 | 模型卡：用 `chapters/20-release/code/04_model_card.py` 从评测 JSON 生成骨架，再人工补文字；**所有"待训练"占位必须清零** | 模型卡 | [ ] |
-| F4 | 可复现配方：`configs/main/`、数据处理脚本、训练日志摘要、`runs/ledger.md` 的花费 | 链接 | [ ] |
-| F5 | 评测报告（逐题结果 + 日志）与模型一起公开 | 链接 | [ ] |
-| F6 | 课程回填：第 11–20 章"主线进度"补真实结果；第 20 章视频里标"极小配置演示"的镜头换成真实数据重渲染 | PR | [ ] |
-| F7 | 花费记入 `runs/ledger.md` | 行号 | [ ] |
-| F8 | **等项目负责人最后确认**再把仓库设为公开 | 确认记录 | [ ] |
+| F1 | Hugging Face: three repositories for Base, SFT, and the final version (or one repository with several branches). Publish the important intermediate checkpoints as `revision` branches (the name gives the number of steps and the number of tokens) | Link | [ ] |
+| F2 | GGUF repository: Q8_0, Q4_K_M (f16 is optional) | Link | [ ] |
+| F3 | Model card: use `chapters/20-release/code/04_model_card.py` to make the skeleton from the evaluation JSON. Then add the text by hand. **No "TBD after training" placeholder can be left** | Model card | [ ] |
+| F4 | Reproducible recipe: `configs/main/`, the data-processing scripts, the training log summaries, and the costs in `runs/ledger.md` | Link | [ ] |
+| F5 | Publish the evaluation report (per-question results + logs) together with the model | Link | [ ] |
+| F6 | Put the results back into the course: add the real results to "Main-line progress" in Chapters 11–20. In the Chapter 20 video, replace the shots labeled "tiny-configuration demo" with real data, and render them again | PR | [ ] |
+| F7 | Record the costs in `runs/ledger.md` | Line number | [ ] |
+| F8 | **Wait for the final confirmation of the project lead** before you make the repository public | Confirmation record | [ ] |
 
-## G. 发布之后
+## G. After the release
 
-- 开 issue 模板 / 讨论区收集反馈：失败的工具调用例子（附输入、工具定义、输出）、量化版的问题、许可证问题；
-- 别人复现出的评测分数与我们不同时，先核对框架版本、模板、解码参数，再更新模型卡，**改动写明日期和原因**；
-- 不根据发布后的反馈悄悄改评测表；新的评测结果以"修订"追加。
+- Open an issue template / a discussion area to collect feedback: failed tool calls (with the input, the tool definitions, and the output), problems with the quantized versions, and license problems.
+- If other people get evaluation scores that differ from ours, first check the framework versions, the templates, and the decoding parameters. Then update the model card, and **write the date and the reason of each change**.
+- Do not change the evaluation tables silently because of feedback after the release. Add new evaluation results as "revisions".

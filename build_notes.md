@@ -1,2 +1,2 @@
-- 写一个根据读者问问题来判断读者的理解程度的skill，然后根据读者的理解程度来进行讲解 
-- 教学视频可以跟着看，那么是不是可以用一个推理速度不快的LLM来慢慢生成来让读者更加沉浸式的跟着学习呢？甚至还可以暂停，提问，暂停的时候之前的kvcache也可以保存下来，如果读者提问了，那自动添加fork，从而利用了之前的kvcache，同时又添加了新的信息，这样可以让读者在学习过程中有更多的互动和参与感。
+- Write a skill that finds out how well the reader understands from the questions that the reader asks, and then explains the topic at that level.
+- Readers can follow the teaching videos step by step. Can a slow LLM (one with a low inference speed) generate the content slowly, so that readers can follow and learn in a more immersive way? The reader could also pause and ask a question. During a pause, the system could keep the KV cache so far. If the reader asks a question, the system automatically adds a fork. The fork reuses the earlier KV cache and adds the new information at the same time. This gives readers more interaction and participation while they learn.

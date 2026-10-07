@@ -254,7 +254,7 @@ S = b[..., -1, None, None].exp() * S + u.mT @ (kc * (b[..., -1:] - b).exp()[...,
 
 `04_hybrid_lm.py` 用第 10 章同款的字符级莎士比亚语料，训练四个 4 层小模型（宽度 128、4 个头、SwiGLU FFN、同样的数据顺序和超参数，各 800 步）。只换每层的 **token mixer**。（token mixer 是层里负责在 token 之间混合信息的部分。）A = softmax 注意力（带 RoPE），L = 朴素线性注意力，G = Gated DeltaNet。L 和 G 都带短卷积和输出归一化。
 
-> **注意：**本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同的机器、不同版本的底层数学库，浮点运算的顺序略有不同。训练几百步以后，这些微小差异会变大。你本机的数字可能从小数点后第二、三位开始就不一样。请以下文不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照，见 [runs/2026-10-01-gpu0-check/chapters-21-23.md](../../runs/2026-10-01-gpu0-check/chapters-21-23.md)。
+> **注意：**本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同的机器、不同版本的底层数学库，浮点运算的顺序略有不同。训练几百步以后，这些微小差异会变大。你本机的数字可能从小数点后第二、三位开始就不一样。请以下文不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照，见 [runs/2026-10-01-gpu0-check/chapters-21-23.md](../../runs/2026-10-01-gpu0-check/chapters-21-23.zh.md)。
 
 | 结构 | 参数量 | 验证集损失（nats/字符） | 另一台服务器复跑（2026-10） | 推理缓存 T=1,024 | T=65,536 |
 |---|---:|---:|---:|---:|---:|
@@ -389,7 +389,7 @@ decode 一步：已有 T 个 token 的上下文，再来 1 个。Gated DeltaNet 
 - **flash-linear-attention（fla-org）**：用 Triton 写的线性注意力 kernel 库。`fla.ops.gated_delta_rule.chunk_gated_delta_rule` / `fused_recurrent_gated_delta_rule` 就是本章两种形式的 GPU 实现。Kimi Linear 的 KDA kernel（`fla.ops.kda`）也开源在里面。装了 fla 和 causal-conv1d 时，HF transformers 的 Qwen3.5 实现会自动换用这些 kernel。否则，它退回到和本章同构的纯 PyTorch 版本。
 - **vLLM**：`vllm/model_executor/models/qwen3_next.py`、`qwen3_5.py` 等文件支持这些混合模型。它的混合 KV cache 管理器（见 Hybrid KV Cache Manager 设计文档）为不同类型的层分配不同的缓存。全注意力层按 token 数分配 KV 页。Mamba / 线性层按请求分配固定大小的状态。
 
-我们在 RTX 3090 上验证了 `zero/arch/linear_attention.py` 在 CUDA 上的前向传播、反向传播和生成。验证时顺带修了一个 bug：`generate_greedy` 把输入建在了 CPU 上。在 BF16 下，Gated DeltaNet 的梯度与 FP32 的相对差约 20%。所以纯 PyTorch 分块实现在低精度下不够准。见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 11、12 节。fla、causal-conv1d 这些 CUDA kernel 没有安装，所以没有验证。
+我们在 RTX 3090 上验证了 `zero/arch/linear_attention.py` 在 CUDA 上的前向传播、反向传播和生成。验证时顺带修了一个 bug：`generate_greedy` 把输入建在了 CPU 上。在 BF16 下，Gated DeltaNet 的梯度与 FP32 的相对差约 20%。所以纯 PyTorch 分块实现在低精度下不够准。见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.zh.md) 第 11、12 节。fla、causal-conv1d 这些 CUDA kernel 没有安装，所以没有验证。
 
 ---
 

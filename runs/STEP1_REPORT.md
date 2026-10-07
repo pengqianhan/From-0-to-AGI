@@ -1,94 +1,96 @@
-# 第一步完成汇报（GOAL.md 第 10 节阶段 5）
+# Step 1 completion report (GOAL.md Section 10, Stage 5)
 
-日期：2026-09-30。分支：`claude/transformer-learning-roadmap-euhvze`。
+**English** · [中文](STEP1_REPORT.zh.md)
 
-## 1. 课程完成情况
+Date: 2026-09-30. Branch: `claude/transformer-learning-roadmap-euhvze`.
 
-26 章全部完成。每章都有：
+## 1. Status of the course
 
-- 速读正文（`chapters/NN-*/README.md`，含"从极简到生产级""采用方与来源""引导问题""动手任务"，第 7 章起有"想深入：CS336"）；
-- 极简代码（`code/`，CPU 上几秒到几分钟跑完，正文里的数字都来自它的真实输出）；
-- 视频源码（`video/script.md` 事实清单 + 分镜旁白，`video/scenes.py`，`video/build.sh`），480p 样片都已渲染并逐镜检查版式，交付检查 `problems` 为空，时长 5–10 分钟（各章时长见根目录 README）；
-- 自检 Skill（`.claude/commands/chNN-*.md`）。
+All 26 chapters are complete. Each chapter has these parts:
 
-26 章的 1080p 成片都已渲染（`bash chapters/NN-*/video/build.sh`），交付检查全部通过：1920×1080、有音轨、峰值约 −6 dB、`problems` 为空，时长 5.2–9.5 分钟；字幕 `video/subtitles.srt` 已提交。MP4 按 GOAL.md 第 7 节不进 git，发布到 B 站 / YouTube 后把链接写回各章 README。
+- **Quick-read text** (`chapters/NN-*/README.md`). It has the sections "From minimal code to production code", "Adopters and sources", "Guided questions", and "Hands-on tasks". From Chapter 7, it also has "Go deeper: CS336".
+- **Minimal code** (`code/`). It runs on a CPU in a few seconds to a few minutes. All numbers in the text come from its real output.
+- **Video source code**: `video/script.md` (the fact list + the storyboard and the narration), `video/scenes.py`, and `video/build.sh`. All 480p sample videos are rendered, and we checked the layout of each shot. The delivery check gives an empty `problems` list. Each video is 5–10 minutes long (the root README gives the length of each chapter).
+- **Self-check skill** (`.claude/commands/chNN-*.md`).
 
-生产级代码（`zero/`）：
+The 1080p final videos of all 26 chapters are rendered (`bash chapters/NN-*/video/build.sh`). All of them passed the delivery check: 1920×1080, an audio track, a peak of about −6 dB, an empty `problems` list, and a length of 5.2–9.5 minutes. The subtitles `video/subtitles.srt` are committed. GOAL.md Section 7 says that the MP4 files do not go into git. After the publication on Bilibili / YouTube, write the links back into the README of each chapter.
 
-| 检查 | 结果 |
+Production code (`zero/`):
+
+| Check | Result |
 |---|---|
 | `uv run pytest` | 324 passed |
-| `uv run ruff check zero tests` | 通过 |
-| `uv run python -m zero.smoke`（CPU，约 1.3M 参数的 tiny 配置） | 10 个阶段全部通过（数据与分词器 → 预训练 → 中期训练 → SFT → 蒸馏 → DPO → GRPO → 评测 → HF/GGUF 导出（llama.cpp 跑通）→ demo），单线程 315 秒 |
+| `uv run ruff check zero tests` | Passed |
+| `uv run python -m zero.smoke` (CPU, the tiny configuration with about 1.3M parameters) | All 10 stages passed (data and tokenizer → pretraining → mid-training → SFT → distillation → DPO → GRPO → evaluation → HF/GGUF export (runs in llama.cpp) → demo), 315 seconds on a single thread |
 
-## 2. 与 GOAL.md 的偏差（需要你知道）
+## 2. Differences from GOAL.md (you must know these)
 
-1. **旁白 TTS**：构建环境的代理拦截了 edge-tts 的 WebSocket，改用离线的 sherpa-onnx + MeloTTS 中英混读模型（MIT）。`video_kit/tts.py` 保留了 edge-tts 后端，网络允许时设 `VIDEO_TTS=edge` 即可切换。**所有旁白都未经人工试听**，发布前需要听一遍（专有名词读法最可能出问题）。
-2. **数据**：构建环境访问不了 huggingface.co，极简代码和冒烟测试用的是 `assets/tiny_corpus/` 里的小语料（来源与许可证见 `assets/tiny_corpus/LICENSES.md`）。
-3. **冒烟测试的蒸馏教师**是 tiny SFT 模型自己（下载不了开源权重），只验证通路。
-4. **阶段 0 试点没有停下来等确认**：按你"直到完成最终的课程，再交给我"的指示一路做完。第 1 章的风格如果需要调整，其余各章会跟着改。
-5. **判分器修复**：写第 17 章时发现 `tool_env` 的两处漏洞（"执行结果碰巧相同就给满分"、"不需要工具的题不查回答内容"），已修复并加了回归测试。第 11、16–20 章引用的冒烟测试数字来自修复前的那次运行（各章有注明），修复后重跑的差异见各章"主线进度"。
+1. **Narration TTS**: the proxy of the build environment blocked the WebSocket connection of edge-tts. We changed to the offline sherpa-onnx + MeloTTS model, which reads mixed Chinese and English (MIT). `video_kit/tts.py` keeps the edge-tts backend. When the network allows it, set `VIDEO_TTS=edge` to change back. **No person has listened to the narration yet.** Listen to all of it before the publication. The pronunciation of technical names is the most probable problem.
+2. **Data**: the build environment could not access huggingface.co. The minimal code and the smoke test use the small corpus in `assets/tiny_corpus/`. The sources and licenses are in `assets/tiny_corpus/LICENSES.md`.
+3. **The distillation teacher of the smoke test** is the tiny SFT model itself, because we could not download open weights. This verifies only the path.
+4. **The Stage 0 pilot did not stop to wait for confirmation**: we followed your instruction "continue until the final course is complete, then give it to me". Thus we did all of the work without a stop. If the style of Chapter 1 needs changes, the other chapters will change with it.
+5. **Fix of the grader**: when we wrote Chapter 17, we found two bugs in `tool_env`. Bug 1: "full score when the execution result is the same by chance". Bug 2: "for a question that needs no tool, the grader does not check the answer text". We fixed both bugs and added regression tests. The smoke-test numbers in Chapters 11 and 16–20 come from the run before the fix (each chapter says so). For the differences in the rerun after the fix, see "Main-line progress" in each chapter.
 
-## 3. 主线模型相对 GOAL.md 的调整（第 12–15 章的结论）
+## 3. Changes to the main-line model relative to GOAL.md (conclusions of Chapters 12–15)
 
-| 项目 | GOAL.md 初稿 | 现在 | 依据 |
+| Item | GOAL.md first draft | Now | Reason |
 |---|---|---|---|
-| 预训练 token | 500B | **约 400B**（`max_steps = 762940`） | 500B 在 MFU 0.4 下约 $6.1K，超过 $5K 线；400B 约 $4.9K。WSD 稳定段随时可停，实测 MFU 后在闸门 1 定稿 |
-| 每卡 batch | micro 8 × 累积 2 | **micro 4 × 累积 4**（每步仍是 524,288 token） | micro 8 在 DDP 下约 114 GiB/卡，放不下；micro 4 约 64 GiB。另加了激活检查点开关（约 27 GiB） |
-| 优化器 | AdamW | AdamW 默认，**Muon 进阶梯实验和 AdamW 正面对比** | Muon 核实为共识（Kimi K2、GLM-4.5、DeepSeek-V4），迷你阶梯上领先 |
-| 词表 | 待定 | 65,536，byte-level BPE，Qwen3.5 预切分正则 | 第 13 章的词表扫描与正则对比 |
-| 架构 | 稠密 GQA | 不变（MLA、稀疏注意力、混合线性注意力都核实为共识，但对 0.69B / 32K 的收益不足以抵消风险，理由见第 21–23、26 章） | |
+| Pretraining tokens | 500B | **About 400B** (`max_steps = 762940`) | At MFU 0.4, 500B costs about $6.1K, which is above the $5K line. 400B costs about $4.9K. The WSD stable phase can stop at any time. The final value is set at Gate 1, after we measure the MFU |
+| Batch for each GPU | micro 8 × accumulation 2 | **micro 4 × accumulation 4** (each step is still 524,288 tokens) | With DDP, micro 8 needs about 114 GiB for each GPU and does not fit. micro 4 needs about 64 GiB. We also added a switch for activation checkpointing (about 27 GiB) |
+| Optimizer | AdamW | AdamW is the default. **Muon goes into the ladder experiments for a direct comparison with AdamW** | Muon is verified as a consensus method (Kimi K2, GLM-4.5, DeepSeek-V4). It was ahead on the mini ladder |
+| Vocabulary | To be decided | 65,536, byte-level BPE, Qwen3.5 pre-tokenization regex | The vocabulary sweep and the regex comparison of Chapter 13 |
+| Architecture | Dense GQA | No change. MLA, sparse attention, and hybrid linear attention are all verified as consensus methods. But for 0.69B / 32K, their benefit is too small for their risk. Chapters 21–23 and 26 give the reasons | |
 
-共识核实的逐项结论已追加到 GOAL.md 2.1 表格下方。
+The item-by-item conclusions of the consensus verification are added below the table in GOAL.md 2.1.
 
-## 4. 尚未在 GPU 上验证的部分
+## 4. Parts not verified on a GPU yet
 
-> **2026-10 更新**：下面这份清单是第一步结束时的记录，保持原样。其中 BF16、FlashAttention（`enable_gqa=True` 默认走 Flash）、`torch.compile`、激活检查点、DDP / FSDP2 与跨卡断点续训（2 卡）、SFT / 蒸馏 / DPO / GRPO 的单卡 CUDA 通路、Muon 已在单张和 2 张 RTX 3090 上验证，见 [`runs/2026-10-01-gpu0-check/`](2026-10-01-gpu0-check/README.md)；32K 在 24GB 的卡上（单卡、2 卡、3 卡 FSDP）都放不下；vLLM、BFCL、ACEBench 仍未验证。
+> **2026-10 update**: the list below is the record from the end of Step 1. We keep it as it was. Since then, we verified these items on one and on two RTX 3090 GPUs: BF16, FlashAttention (with `enable_gqa=True`, the default path is Flash), `torch.compile`, activation checkpointing, DDP / FSDP2 and resume across GPUs (2 GPUs), the single-GPU CUDA paths of SFT / distillation / DPO / GRPO, and Muon. See [`runs/2026-10-01-gpu0-check/`](2026-10-01-gpu0-check/README.md). 32K does not fit on GPUs with 24 GB (one GPU, 2 GPUs, or 3 GPUs with FSDP). vLLM, BFCL, and ACEBench are still not verified.
 
-以下代码都在 CPU 上测过逻辑，但**没有在 GPU 上跑过**（`runs/RUNBOOK.md` 第 2 节"阶段 6"逐项列了验证命令和通过标准，预算 ≤ $50）：
+We tested the logic of all code below on a CPU, but the code **did not run on a GPU**. Section 2 "Stage 6" of `runs/RUNBOOK.md` lists the verification command and the pass criterion for each item, with a budget of ≤ $50. The items are:
 
-- BF16 autocast、SDPA 走 FlashAttention 后端（`enable_gqa=True` 能否走 Flash 待核实）、`torch.compile`；
-- 多卡 DDP、FSDP2、断点续训的跨卡一致性；激活检查点在 GPU 上的显存与吞吐；
-- 32K 长序列训练（YaRN 配置）的显存；
-- SFT / DPO / GRPO 在 GPU 上的通路（DPO、GRPO 目前是单进程实现；GRPO 吞吐不够时换 verl，先对拍）；
-- vLLM 加载导出的 HF 模型、`hermes` 工具调用解析器；
-- BFCL 的 `ZeroFCHandler`（`zero/eval/bfcl.py`）、ACEBench 适配层；
-- Muon 在多卡上的实现（`zero/train/muon.py`）。
+- BF16 autocast, the FlashAttention backend of SDPA (to be verified: can `enable_gqa=True` use Flash?), and `torch.compile`;
+- Multi-GPU DDP, FSDP2, and the consistency of resume across GPUs; the GPU memory and the throughput of activation checkpointing on a GPU;
+- The GPU memory of training with 32K long sequences (the YaRN configuration);
+- The paths of SFT / DPO / GRPO on a GPU (DPO and GRPO are single-process implementations now; if the GRPO throughput is not enough, change to verl, and do a parity check first);
+- vLLM with the exported HF model, and the `hermes` tool-call parser;
+- The BFCL `ZeroFCHandler` (`zero/eval/bfcl.py`) and the ACEBench adapter layer;
+- The multi-GPU implementation of Muon (`zero/train/muon.py`).
 
-## 5. 第二步预计花费（H100 SXM $2.5/卡时，MFU 0.4）
+## 5. Expected cost of Step 2 (H100 SXM at $2.5 for each GPU-hour, MFU 0.4)
 
-| 阶段 | 内容 | 估算 | 需要批准（> $100） |
+| Stage | Work | Estimate | Approval necessary (> $100) |
 |---|---|---:|---|
-| 6 | GPU 验证 + 实测 MFU | ≤ $50 | 否 |
-| 7 | 对手重跑、预注册定稿 | $60–200 | 是（超 $100 时） |
-| 8 | 阶梯实验（4 个尺寸 < $40）+ 消融、配方验证 | ≤ $1,200 | 是 |
-| 9 | 预训练约 400B token | ~$4,900 | 是 |
-| 9 | 中期训练约 26B token | ~$320 | 是 |
-| 9 | 长上下文扩展到 32K 约 4.2B token | ~$196 | 是 |
-| 10 | SFT | ~$17 | 否 |
-| 10 | 蒸馏、DPO、GRPO | 阶段 6 实测后估算，预算 ~$1,500 | 是 |
-| 10 | 最终评测与发布 | ~$200 | 视情况 |
-| — | 第五部分约 1 亿参数的架构对比（可选） | ~$400 | 是 |
-| **合计** | | **约 $8,500–9,000** | 在 $10K 内，余量约 $1,000 |
+| 6 | GPU verification + MFU measurement | ≤ $50 | No |
+| 7 | Opponent reruns, final preregistration | $60–200 | Yes (when above $100) |
+| 8 | Ladder experiments (4 sizes < $40) + ablations, recipe validation | ≤ $1,200 | Yes |
+| 9 | Pretraining, about 400B tokens | ~$4,900 | Yes |
+| 9 | Mid-training, about 26B tokens | ~$320 | Yes |
+| 9 | Long-context extension to 32K, about 4.2B tokens | ~$196 | Yes |
+| 10 | SFT | ~$17 | No |
+| 10 | Distillation, DPO, GRPO | Estimate after the measurements of Stage 6; budget ~$1,500 | Yes |
+| 10 | Final evaluation and release | ~$200 | It depends |
+| — | Part 5: architecture comparison with about 100M parameters (optional) | ~$400 | Yes |
+| **Total** | | **About $8,500–9,000** | Inside $10K, with a reserve of about $1,000 |
 
-预训练的余量很小：实测 MFU 低于 0.391 时，400B token 就会超过 $5K 线，需要在闸门 1 减 token 或换更便宜的卡。
+The reserve for pretraining is small. If the measured MFU is lower than 0.391, 400B tokens cost more than the $5K line. Then, at Gate 1, reduce the number of tokens or change to cheaper GPUs.
 
-## 6. 需要你决定的事
+## 6. Decisions for you
 
-1. **预注册（`eval/PREREGISTRATION.md` 草案）**：
-   - E1 用 BFCL V4 去掉 Agentic（web search 依赖 SerpAPI、不可复现）后按官方权重重新归一化，是否同意？
-   - 解码参数：所有模型统一贪心，还是对手用各自推荐的采样参数？
-   - 思考模式对手的最大生成长度。
-   - 冻结日期与最终对手清单（`eval/opponents.md`）。
-2. **长上下文阶段的学习率**：中期训练把学习率退火到 0 之后，长上下文阶段要不要重新 warmup 到 1e-4（Qwen3、Llama 3、DeepSeek-V3、SmolLM3 的做法各不相同，见第 15 章），以及两者的先后顺序。
-3. **批准**：中期训练（~$320）和长上下文（~$196）这两项超过 $100，需要你批准；预训练和后训练同理。
-4. **模型权重的许可证**（第 20 章列了选项，比如 Apache-2.0）。
-5. **蒸馏教师**：许可证允许的候选是 Qwen3 / Qwen3.5 系列（Apache-2.0）、DeepSeek-R1 / V4（MIT）、GLM-5、MiMo-V2-Flash（MIT）、gpt-oss（Apache-2.0）；Gemma 和 Llama 的条款会传到学生身上，不用。主线词表和它们都不同，只能做序列级蒸馏（第 17 章）。
-6. **GPU 环境**：阶段 6 需要 8×H100（或同级）约 1.5 小时。
+1. **Preregistration (the draft `eval/PREREGISTRATION.md`)**:
+   - For E1, we use BFCL V4 without the Agentic category (its web search depends on SerpAPI and is not reproducible), and normalize again with the official weights. Do you agree?
+   - Decoding parameters: greedy decoding for all models, or the recommended sampling parameters of each opponent?
+   - The maximum generation length for opponents in thinking mode.
+   - The freeze date and the final opponent list (`eval/opponents.md`).
+2. **Learning rate of the long-context stage**: mid-training anneals the learning rate to 0. After that, does the long-context stage do a new warmup to 1e-4? Qwen3, Llama 3, DeepSeek-V3, and SmolLM3 do this differently (see Chapter 15). Also decide the order of the two stages.
+3. **Approval**: mid-training (~$320) and long context (~$196) each cost more than $100, so they need your approval. The same is true for pretraining and post-training.
+4. **License of the model weights**: Chapter 20 lists the options, for example Apache-2.0.
+5. **Distillation teacher**: the licenses allow these candidates: the Qwen3 / Qwen3.5 series (Apache-2.0), DeepSeek-R1 / V4 (MIT), GLM-5, MiMo-V2-Flash (MIT), and gpt-oss (Apache-2.0). The terms of Gemma and Llama pass to the student, so we do not use them. The main-line vocabulary is different from all of these vocabularies, so only sequence-level distillation is possible (Chapter 17).
+6. **GPU environment**: Stage 6 needs 8×H100 (or equivalent GPUs) for about 1.5 hours.
 
-## 7. 仍标注"待核实"的主要事项
+## 7. Main items that are still marked "to be verified"
 
-- H100 SXM 稠密 BF16 峰值取 989.5 TFLOPS（成本估算的分母）；
-- 第 26 章：Kimi-K3 技术报告里的若干细节、GLM-5.3 参数量沿用 GLM-5 的模型卡、MiniMax-M3 的 MTP 配置；
-- GRPO 的 clip-higher 是否已达共识；最新旗舰是否仍用 DPO；
-- 部分数据集的许可证（SmolTalk2，xLAM / ToolACE / Hermes 数据生成模型的条款，Tülu 3 偏好混合的部分子集不可商用）。
+- The dense BF16 peak of the H100 SXM: we use 989.5 TFLOPS (the denominator of the cost estimates);
+- Chapter 26: some details in the Kimi-K3 technical report; the parameter count of GLM-5.3, which we copy from the model card of GLM-5; the MTP configuration of MiniMax-M3;
+- Is clip-higher in GRPO a consensus method yet? Do the newest flagship models still use DPO?
+- The licenses of some data sets: SmolTalk2; the terms of the data-generation models of xLAM / ToolACE / Hermes; some subsets of the Tülu 3 preference mixture do not allow commercial use.

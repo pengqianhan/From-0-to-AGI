@@ -1,10 +1,11 @@
-"""多卡第一步：NCCL 能不能在这几张卡之间跑通，all-reduce 的实测总线带宽是多少。
+"""First multi-GPU step: does NCCL work between these GPUs, and what is the measured all-reduce bus bandwidth?
 
     CUDA_VISIBLE_DEVICES=0,2 UV_NO_SYNC=1 uv run torchrun --standalone --nproc_per_node=2 \
         runs/2026-10-01-gpu0-check/nccl_probe.py
 
-每个 rank 放一个 256 MiB 的 FP32 张量，值为 rank + 1；预热一次后连续 all-reduce 10 次。
-结果应为 (1 + 2) · 2^10 = 3072（2 卡）。总线带宽按 NCCL 的口径：2 · (n − 1) / n · 字节数 / 耗时。
+Each rank holds a 256 MiB FP32 tensor with the value rank + 1. After one warmup call, the script runs
+all-reduce 10 times in sequence. The result must be (1 + 2) · 2^10 = 3072 (2 GPUs).
+The bus bandwidth uses the NCCL definition: 2 · (n − 1) / n · bytes / time.
 """
 
 from __future__ import annotations
@@ -31,8 +32,8 @@ def main() -> None:
     dt = (time.perf_counter() - t0) / 10
     busbw = 2 * (n - 1) / n * x.numel() * 4 / dt / 1e9
     print(
-        f"rank {rank}：{torch.cuda.get_device_name(rank)}，结果 {x[0].item():.0f}，"
-        f"all-reduce 256 MiB 用时 {dt * 1e3:.1f} ms，总线带宽 {busbw:.1f} GB/s",
+        f"rank {rank}: {torch.cuda.get_device_name(rank)}, result {x[0].item():.0f}, "
+        f"all-reduce of 256 MiB took {dt * 1e3:.1f} ms, bus bandwidth {busbw:.1f} GB/s",
         flush=True,
     )
     dist.destroy_process_group()

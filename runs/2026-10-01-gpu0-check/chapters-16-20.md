@@ -1,162 +1,165 @@
-# GPU0 验证：第 16–20 章
+# GPU0 verification: Chapters 16–20
 
-日期：2026-10-01。分支 `gpu0-verification`。负责范围：`chapters/16-*` 到 `chapters/20-*`（SFT / 蒸馏 / DPO / RL / 发布）。
+**English** · [中文](chapters-16-20.zh.md)
 
-## 环境
+Date: 2026-10-01. Branch: `gpu0-verification`. Scope: `chapters/16-*` to `chapters/20-*` (SFT / distillation / DPO / RL / release).
 
-- CPU：AMD Ryzen Threadripper PRO 3995WX（64 核，Zen 2，AVX2，无 AVX-512），共享服务器，运行期间 load average 在 5–40 之间浮动（其他 agent 与视频渲染同时在跑）。
-- PyTorch 2.11.0+cu128，CUDA 12.8。
-- GPU：NVIDIA GeForce RTX 3090（只用 GPU0，`CUDA_VISIBLE_DEVICES=0`，所有 GPU 命令经 `gpu0.lock` 排队；运行前确认 `torch.cuda.device_count() == 1`）。
-- CPU 复现命令：`CUDA_VISIBLE_DEVICES= UV_NO_SYNC=1 uv run python chapters/.../code/xx.py`，同时最多 4 个进程。原始输出在 `/tmp/claude-1006/-home-phan635-Opensource-From-0-to-AGI/1d40fca9-4469-49a7-88b9-4e96bf8f0051/scratchpad/ch16-20/logs/`（复跑在 `logs_rerun/`，GPU 输出在 `gpu/`，探针在 `probe/`）。
+## Environment
 
-## 一、CPU 复现表
+- CPU: AMD Ryzen Threadripper PRO 3995WX (64 cores, Zen 2, AVX2, no AVX-512). This is a shared server. During the runs, the load average varied between 5 and 40 (other agents and video rendering ran at the same time).
+- PyTorch 2.11.0+cu128, CUDA 12.8.
+- GPU: NVIDIA GeForce RTX 3090 (GPU0 only, `CUDA_VISIBLE_DEVICES=0`). All GPU commands waited in the queue of `gpu0.lock`. Before the runs, we confirmed `torch.cuda.device_count() == 1`.
+- CPU reproduction command: `CUDA_VISIBLE_DEVICES= UV_NO_SYNC=1 uv run python chapters/.../code/xx.py`, with at most 4 processes at the same time. The raw output is in `/tmp/claude-1006/-home-phan635-Opensource-From-0-to-AGI/1d40fca9-4469-49a7-88b9-4e96bf8f0051/scratchpad/ch16-20/logs/` (reruns in `logs_rerun/`, GPU output in `gpu/`, probes in `probe/`).
 
-"CPU 耗时"是 `uv run` 整个进程的墙钟时间（最多 4 个并行、机器繁忙时测得，只作量级参考）。分类：`一致` / `仅计时不同` / `不一致` / `报错`。23 个脚本全部 rc=0，**没有报错**。
+## 1. CPU reproduction table
 
-| 章 | 脚本 | CPU 耗时 | 分类 | 说明 |
+"CPU time" is the wall-clock time of the full `uv run` process. We measured it with at most 4 runs in parallel on a busy machine, so use it only for the order of magnitude. Categories: `match` / `timing only` / `mismatch` / `error`. All 23 scripts returned rc=0: **no errors**.
+
+| Ch. | Script | CPU time | Category | Notes |
 |---|---|---:|---|---|
-| 16 | `01_chat_template.py` | 0.1 s | 一致 | 渲染全文、逐段表、1126 / 197 / 17.5%、各角色字符数、最后 40 个字符、与 `render_text` 对拍"一致 / 一致"全对 |
-| 16 | `02_loss_mask.py` | 2.2 s | 一致 | 65 → 89、137 / 53（39%）、1.091 / 1.500 全对 |
-| 16 | `03_sft_tiny.py` | 351 s | **不一致** | 首次运行要训练第 10 章底座 + 3 个 SFT 模型；训练出的底座与 README 用的不是同一个，下游数字在第 2–3 位小数上漂移，见细节 1（耗时：README"负载很重时约 17 分钟"，这里 5.9 分钟） |
-| 16 | `04_packing.py` | 3.1 s | **不一致** | 打包统计（200 条、130–390、43% / 91%、94 个窗口、2.1 条、第 154 个位置）全对；串门那三行 loss 不同，且**方向相反**，见细节 2 |
-| 16 | `05_smoke_samples.py` | 2.2 s | 无法对照（无报错） | 仓库根目录没有 `out/smoke/`，脚本按设计只打印"先运行 zero.smoke"。按任务说明，没有重跑冒烟测试 |
-| 17 | `01_soft_labels.py` | 2.3 s | 一致 | 软标签表、温度表、两行梯度表、1.16e-11 / 3.10e-11、梯度范数 0.268 / 0.100 / 0.035 / 0.011（0.6741 / 64 = 0.01053 → 0.011）、zero 对拍三行全对 |
-| 17 | `02_toy_distill.py` | 106 s | **不一致** | A、R 两行和教师（429,665 参数、2.439）逐位一致；B、C、D 三行变了，B 最多（验证 3.362 → 3.382），见细节 3。耗时与 README"约 2 分钟"一致 |
-| 17 | `03_forward_reverse_kl.py` | 9.4 s | 一致 | 教师质量 0.596 / 0.016 / 0.388 与三行 μ、σ、质量全对 |
-| 17 | `04_rejection_sampling.py` | 2.5 s | 一致 | 漏斗 1600 / 1303 / 596 / 497 / 172、291 → 43、24 + 19、68.9%、21 个无工具任务留 0 条全对 |
-| 17 | `05_shared_vocab.py` | 2.2 s | 一致 | 切分、报错信息、词表参数账三行全对 |
-| 18 | `01_bradley_terry.py` | 4.1 s | 一致 | σ 表、训练表、0.803 / 0.805、0.428393 全对 |
-| 18 | `02_rlhf_kl.py` | 5.2 s | 一致 | 8 个回答表、β 扫描 7 行、PPO 4 行、1.6112、0.00021 全对 |
-| 18 | `03_dpo_derivation.py` | 4.6 s | 不一致（舍入级） | 第 (1) 步"两边最大差"README 2.2×10⁻¹⁶，实测 3.3×10⁻¹⁶（float64 舍入，与机器 / BLAS 有关）；(2)(3)⑤⑥⑦ 全对 |
-| 18 | `04_toy_dpo.py` | 26 s | **不一致**（小） | 所有数字在第 3–4 位小数漂移，结论不变，见细节 4。耗时与"约半分钟"一致 |
-| 18 | `05_dpo_pitfalls.py` | 35 s | **不一致** | 坑 2、坑 3 的表逐位一致；坑 1 里 lr = 1e-2、5e-2 两行差别大，正文一句话不再成立，见细节 5 |
-| 19 | `01_reinforce_bandit.py` | 1.0 s | 一致 | 三张表、1589 倍全对 |
-| 19 | `02_grpo_from_scratch.py` | 7.5 s | 一致 | 模仿表、GRPO 表、零方差组 0.56 → 0.94、裁剪 0.00–0.02、±0.94 样本表、对拍 0.00e+00 / −0.046469 全对 |
-| 19 | `03_reward_hacking.py` | 13 s | 不一致（仅一句正文） | 表格和样本逐位一致；但"最后一批里全都猜 7"不对，见细节 6 |
-| 19 | `04_tool_env_rewards.py` | 0.1 s | 一致 | 7 行奖励表全对 |
-| 20 | `01_blockwise_quant.py` | 0.3 s | 一致 | 第一块的 w / q / ŵ、8 行误差表全对 |
-| 20 | `02_quantize_tiny_model.py` | 48 s | **不一致** | 与 16/03 同一个原因（第 10 章底座不同），整张表和生成样本都变了，正文有几句具体描述不再成立，见细节 7 |
-| 20 | `03_memory_calculator.py` | 0.1 s | 一致 | 689.5M / 83.9M、4 行大小表、KV 112 KiB / 0.44 / 3.50 GiB 全对 |
-| 20 | `04_model_card.py` | 0.1 s | 无法对照（无报错） | 没有 `out/smoke/`，脚本按设计输出全是"待训练"的骨架（34 处占位；README 贴的是有冒烟结果时的 15 处） |
+| 16 | `01_chat_template.py` | 0.1 s | match | Full rendered text, per-segment table, 1126 / 197 / 17.5%, characters per role, last 40 characters, and the parity check with `render_text` ("full conversation same, generation prompt same"): all correct |
+| 16 | `02_loss_mask.py` | 2.2 s | match | 65 → 89, 137 / 53 (39%), 1.091 / 1.500: all correct |
+| 16 | `03_sft_tiny.py` | 351 s | **mismatch** | The first run must train the base model of Chapter 10 + 3 SFT models. The trained base model is not the same as the one that the README used, so the downstream numbers drift at the 2nd–3rd decimal place. See Detail 1 (time: the README says "about 17 minutes under heavy load"; here 5.9 minutes) |
+| 16 | `04_packing.py` | 3.1 s | **mismatch** | The packing statistics (200 conversations, 130–390, 43% / 91%, 94 windows, 2.1 conversations, position 154) are all correct. The three loss lines of cross-contamination differ, and the **direction is reversed**. See Detail 2 |
+| 16 | `05_smoke_samples.py` | 2.2 s | cannot compare (no error) | The repository root has no `out/smoke/`, so by design the script only prints "out/smoke/ not found. First run `uv run python -m zero.smoke` …". As the task instructions said, we did not run the smoke test again |
+| 17 | `01_soft_labels.py` | 2.3 s | match | Soft-label table, temperature table, two-row gradient table, 1.16e-11 / 3.10e-11, gradient norms 0.268 / 0.100 / 0.035 / 0.011 (0.6741 / 64 = 0.01053 → 0.011), and the three rows of the zero parity check: all correct |
+| 17 | `02_toy_distill.py` | 106 s | **mismatch** | Rows A and R and the teacher (429,665 parameters, 2.439) are bit-identical. Rows B, C, and D changed, B the most (validation 3.362 → 3.382). See Detail 3. The time agrees with the README ("about 2 minutes") |
+| 17 | `03_forward_reverse_kl.py` | 9.4 s | match | Teacher mass 0.596 / 0.016 / 0.388 and the three rows of μ, σ, and mass: all correct |
+| 17 | `04_rejection_sampling.py` | 2.5 s | match | Funnel 1600 / 1303 / 596 / 497 / 172, 291 → 43, 24 + 19, 68.9%, and 0 kept for the 21 tasks without tools: all correct |
+| 17 | `05_shared_vocab.py` | 2.2 s | match | Segmentation, error message, and the three rows of the vocabulary parameter ledger: all correct |
+| 18 | `01_bradley_terry.py` | 4.1 s | match | σ table, training table, 0.803 / 0.805, 0.428393: all correct |
+| 18 | `02_rlhf_kl.py` | 5.2 s | match | Table of 8 answers, 7 rows of the β sweep, 4 PPO rows, 1.6112, 0.00021: all correct |
+| 18 | `03_dpo_derivation.py` | 4.6 s | mismatch (rounding level) | Step (1), "largest difference for 5 random π": README 2.2×10⁻¹⁶, measured 3.3×10⁻¹⁶ (float64 rounding, which depends on the machine / BLAS). (2), (3), ⑤, ⑥, and ⑦ are all correct |
+| 18 | `04_toy_dpo.py` | 26 s | **mismatch** (small) | All numbers drift at the 3rd–4th decimal place, and the conclusions do not change. See Detail 4. The time agrees with "about half a minute" |
+| 18 | `05_dpo_pitfalls.py` | 35 s | **mismatch** | The tables of Pitfalls 2 and 3 are bit-identical. In Pitfall 1, the two rows lr = 1e-2 and 5e-2 differ a lot, and one sentence of the text is no longer true. See Detail 5 |
+| 19 | `01_reinforce_bandit.py` | 1.0 s | match | Three tables and 1589×: all correct |
+| 19 | `02_grpo_from_scratch.py` | 7.5 s | match | Imitation table, GRPO table, zero-variance groups 0.56 → 0.94, clipping 0.00–0.02, sample table for ±0.94, parity check 0.00e+00 / −0.046469: all correct |
+| 19 | `03_reward_hacking.py` | 13 s | mismatch (one sentence of text only) | The tables and the samples are bit-identical. But "in the last batch, all guess 7" is not correct. See Detail 6 |
+| 19 | `04_tool_env_rewards.py` | 0.1 s | match | 7-row reward table: all correct |
+| 20 | `01_blockwise_quant.py` | 0.3 s | match | w / q / ŵ of the first block and the 8-row error table: all correct |
+| 20 | `02_quantize_tiny_model.py` | 48 s | **mismatch** | Same cause as 16/03 (a different base model of Chapter 10). The full table and the generated samples changed, and some specific sentences of the text are no longer true. See Detail 7 |
+| 20 | `03_memory_calculator.py` | 0.1 s | match | 689.5M / 83.9M, 4-row size table, KV 112 KiB / 0.44 / 3.50 GiB: all correct |
+| 20 | `04_model_card.py` | 0.1 s | cannot compare (no error) | There is no `out/smoke/`, so by design the output is a skeleton with "TBD after training" in all places (34 placeholders; the README shows the version with smoke-test results, which has 15) |
 
-**确定性检查**：`18/04`、`18/05`、`17/02` 在本机各复跑一次，输出逐字相同（只有"用时"不同）。所以上面的不一致不是随机性，而是**本机与写作时的机器算出来的浮点数不同**（最可能是 CPU 指令集 / 数学库内核不同导致的舍入差，被训练过程放大）。
+**Determinism check**: we ran `18/04`, `18/05`, and `17/02` again on this machine, once each. The outputs were identical word for word (only the time differed). So the mismatches above do not come from randomness. **This machine and the machine used for writing calculate different floating-point numbers**. The most probable cause is a different CPU instruction set / different math-library kernels: they give rounding differences, and training amplifies them.
 
-**`code/out/` 的处理**：`16/03` 首次运行会重新训练并覆盖 3 个已提交的 `ch16_*.json`（本机训练出的曲线不同）。已把新文件和 diff 复制到 scratchpad 的 `ch16-20/ch16_out_new/`，再用 `git checkout` 还原；`git status` 里 `chapters/16-sft/code/out/` 干净。训练产生的 `ch16_masked.pt`、`ch16_unmasked.pt`、`ch16_small40.pt`（`*.pt` 被 gitignore）留在原处——删掉的话，下一个运行 `03`（或视频渲染）的进程会重新训练并再次覆盖已提交的 json。`chapters/10-inference/code/out/tiny_kv4_s600.pt` 也是这次首次训练出来的（同样被 gitignore）。
+**Handling of `code/out/`**: the first run of `16/03` trains again and overwrites 3 committed `ch16_*.json` files (the curves trained on this machine are different). We copied the new files and the diff to `ch16-20/ch16_out_new/` in the scratchpad, then restored the files with `git checkout`. In `git status`, `chapters/16-sft/code/out/` is clean. The trained files `ch16_masked.pt`, `ch16_unmasked.pt`, and `ch16_small40.pt` (`*.pt` is in gitignore) stay in place. If we delete them, the next process that runs `03` (or the video rendering) trains again and overwrites the committed json files again. `chapters/10-inference/code/out/tiny_kv4_s600.pt` was also trained in this first run (it is also in gitignore).
 
-### 不一致的细节
+### Details of the mismatches
 
-**细节 1：`16-sft/03_sft_tiny.py`**（根因：第 10 章底座 `tiny_kv4_s600.pt` 不进 git，首次运行时重新训练，本机训练出的和写作时的不是同一个）
+**Detail 1: `16-sft/03_sft_tiny.py`** (root cause: the base model of Chapter 10, `tiny_kv4_s600.pt`, is not in git. The first run trains it again, and the model trained on this machine is not the same as the model used for writing)
 
-| README | 实测 |
+| README | Measured |
 |---|---|
-| 底座续写 `\nCAMILLANUS:\nI will the son the shall the prove the shall th` | `\nCAMILLA:\nI will the sent the such the shall the prince the ` |
-| 底座套模板 `'The shall the then the shally the the the the the the th'` | `'The shall the the the shalleath the the the thear the the th'` |
-| 底座验证 loss：助手 4.640，全部 4.160 | 4.669，4.161 |
-| `'Compute 20+55.'` → `"a": 19, "b": 15` | `"a": 19, "b": 12`（其余 3 条回答逐字相同） |
-| 表格验证 loss：0.102 / 0.110 / 0.366 | 0.104 / 0.110 / 0.350（格式、函数名、参数三列全对） |
-| 拆开看：参数 310 个 1.146，其余 3364 个 0.006 | 310 个 1.141，3364 个 0.008 |
-| 40 条曲线：step 1 4.561 / 4.537；100 0.086 / 0.316；200 0.046 / 0.343；300 0.055 / 0.366 | 4.597 / 4.559；0.084 / 0.316；0.055 / 0.343；0.065 / 0.350 |
+| Base model continues the text (no template): `\nCAMILLANUS:\nI will the son the shall the prove the shall th` | `\nCAMILLA:\nI will the sent the such the shall the prince the ` |
+| Base model "answer" with the chat template: `'The shall the then the shally the the the the the the th'` | `'The shall the the the shalleath the the the thear the the th'` |
+| Base model loss on the validation set: assistant tokens only 4.640, all tokens 4.160 | 4.669, 4.161 |
+| `'Compute 20+55.'` → `"a": 19, "b": 15` | `"a": 19, "b": 12` (the other 3 answers are identical word for word) |
+| Table, validation loss: 0.102 / 0.110 / 0.366 | 0.104 / 0.110 / 0.350 (the three columns `format`, `name ok`, and `args ok` are all correct) |
+| By type: 310 argument values 1.146, the other 3364 tokens 0.006 | 310 tokens 1.141, 3364 tokens 0.008 |
+| Curve of 40 samples: step 1 4.561 / 4.537; 100 0.086 / 0.316; 200 0.046 / 0.343; 300 0.055 / 0.366 | 4.597 / 4.559; 0.084 / 0.316; 0.055 / 0.343; 0.065 / 0.350 |
 
-结论（格式先学会、参数抄不对、有无 mask 几乎打平、40 条数据第 100 步后验证 loss 回升）全部仍然成立。
+All conclusions are still true: the model learns the format first; it does not copy the arguments correctly; with mask and without mask are almost equal; with 40 samples, the validation loss goes up again after step 100.
 
-**细节 2：`16-sft/04_packing.py`**（同一根因：用的是 03 训练出的模型）
+**Detail 2: `16-sft/04_packing.py`** (same root cause: it uses the model that 03 trained)
 
-| | README | 实测 |
+| | README | Measured |
 |---|---:|---:|
-| 单独一条 | 0.5596 | 0.5095 |
-| 打包在 A 后，普通因果 mask | 0.4967，logits 最大差 9.90 | **0.7323**，最大差 8.39 |
-| 打包在 A 后，文档 mask | 0.5596，最大差 4.92e-05 | 0.5095，最大差 8.15e-05 |
+| alone | 0.5596 | 0.5095 |
+| packed after A (Paris), causal mask | 0.4967, max logits difference 9.90 | **0.7323**, max difference 8.39 |
+| packed after A, document mask | 0.5596, max difference 4.92e-05 | 0.5095, max difference 8.15e-05 |
 
-README 5.2 节写"loss 反而**降**了：……B'抄了邻居的作业'"。本机上 loss 是**升**的。稳健的结论只有"普通因果 mask 下 B 的 logits 被 A 改了很多（最大差 8–10），文档 mask 让它和单独计算一样"；loss 往哪个方向变取决于具体权重。建议把这句改成不依赖方向的说法（例如"loss 从 0.56 变成了 0.50——换一台机器训练出的模型上它反而升到 0.73，方向不固定，但变了"），由你决定。
+README Section 5.2 says: "the loss even **decreased**: … B 'copies the homework of its neighbor'". On this machine, the loss **increased**. Only one conclusion is robust: "with the normal causal mask, A changes the logits of B a lot (max difference 8–10); the document mask makes the result the same as for B alone". The direction of the loss change depends on the specific weights. Recommendation: change this sentence into a statement that does not depend on the direction. For example: "the loss changed from 0.56 to 0.50 — on a model trained on another machine, it increased to 0.73. The direction is not fixed, but the loss changed". You decide.
 
-**细节 3：`17-distillation/02_toy_distill.py`**
+**Detail 3: `17-distillation/02_toy_distill.py`**
 
-| 训练信号 | README（训练 / 验证 / 各种子） | 实测 |
+| Training signal | README (train / validation / per seed) | Measured |
 |---|---|---|
-| A | 2.678 / 3.679 / 3.626 · 3.739 · 3.673 | 相同 |
+| A | 2.678 / 3.679 / 3.626 · 3.739 · 3.673 | Same |
 | B | 3.302 / 3.362 / 3.327 · 3.387 · 3.371 | 3.360 / **3.382** / 3.348 · 3.409 · 3.389 |
 | C | 2.867 / 3.290 / 3.258 · 3.326 · 3.286 | 2.866 / 3.286 / 3.252 · 3.323 · 3.283 |
 | D | 2.693 / 3.344 / 3.326 · 3.374 · 3.332 | 2.692 / 3.341 / 3.321 · 3.369 · 3.333 |
-| R | 3.123 / 3.143 | 相同 |
+| R | 3.123 / 3.143 | Same |
 
-A、R 不经过教师，逐位一致；B、C、D 都用到教师，教师验证 2.439 也一致（到第 3 位），但教师权重的微小差别在 B（从教师**采样**写 2 万字符）里被放大最多。正文结论（C 最好且比 A 好 0.39 bit、B 与 D 都好于 A、D 介于中间）不变；"离数据管够只差 0.15 bit"实测为 0.14。
+A and R do not use the teacher, and they are bit-identical. B, C, and D all use the teacher. The teacher validation value 2.439 also agrees (to the 3rd digit). But very small differences of the teacher weights are amplified most in B, because B **samples** 20,000 characters from the teacher. The conclusions of the text do not change: C is the best and 0.39 bit better than A; B and D are both better than A; D is between them. "Only 0.15 bit from 'enough data'" is 0.14 measured.
 
-**细节 4：`18-preference-alignment/04_toy_dpo.py`**：SFT 参考模型 0.369 / 1.000 / 0.360 → 0.368 / 1.000 / 0.357；训练表每行在第 3–4 位小数变（例如第 150 步 log π(chosen) −0.551 → −0.550，log π(rejected) −8.919 → −8.913）；留出 0.369 → 0.430 变为 0.368 → 0.430，采样答对 0.360 → 0.413 变为 0.357 → 0.412；β 扫描表同样在第 3 位变（β = 0.3：0.2601 / +1.540 / +5.13 / +0.722 / −4.411 / 0.529 → 0.2599 / +1.544 / +5.15 / +0.723 / −4.425 / 0.530）。结论不变。
+**Detail 4: `18-preference-alignment/04_toy_dpo.py`**: SFT reference model 0.369 / 1.000 / 0.360 → 0.368 / 1.000 / 0.357. Each row of the training table changes at the 3rd–4th decimal place (for example, at step 150, log π(chosen) −0.551 → −0.550, and log π(rejected) −8.919 → −8.913). Held-out 0.369 → 0.430 becomes 0.368 → 0.430, and correct samples 0.360 → 0.413 become 0.357 → 0.412. The β sweep table also changes at the 3rd digit (β = 0.3: 0.2601 / +1.540 / +5.13 / +0.722 / −4.411 / 0.529 → 0.2599 / +1.544 / +5.15 / +0.723 / −4.425 / 0.530). The conclusions do not change.
 
-**细节 5：`18-preference-alignment/05_dpo_pitfalls.py`** 坑 1 的表：
+**Detail 5: `18-preference-alignment/05_dpo_pitfalls.py`**, table of Pitfall 1:
 
-| lr | README（margin / acc / 留出 / 格式 / 采样答对） | 实测 |
+| lr | README (margin / train acc / held-out P(correct) / well-formed samples / correct samples) | Measured |
 |---|---|---|
 | SFT | — / — / 0.369 / 1.000 / 0.360 | 0.368 / 1.000 / 0.357 |
-| 1e-4 | +0.05 / 0.95 / 0.432 / 1.000 / 0.447 | 相同 |
-| 1e-3 | +0.60 / 0.95 / 0.430 / 0.995 / 0.413 | 采样答对 0.412，其余相同 |
+| 1e-4 | +0.05 / 0.95 / 0.432 / 1.000 / 0.447 | Same |
+| 1e-3 | +0.60 / 0.95 / 0.430 / 0.995 / 0.413 | Correct samples 0.412, the rest the same |
 | 1e-2 | +4.26 / 1.00 / 0.071 / **0.473** / 0.063 | +4.20 / 1.00 / 0.068 / **0.618** / 0.068 |
 | 5e-2 | +6.61 / 1.00 / 0.031 / 0.300 / 0.032 | +5.73 / 1.00 / 0.000 / 0.172 / 0.000 |
 
-学习率大的两行训练很不稳定，浮点差被放大。正文"lr = 1e-2 时……采样出来的回答一半多连格式都不对"在本机不成立（格式正确 0.618，即不到四成格式错）；"margin 高 ≠ 模型好"的结论仍成立。坑 2（0.353 → 0.223 等）和坑 3（0.95 / 0.84 vs 0.83 / 0.63）逐位一致。
+The training in the two rows with a large learning rate is very unstable, so the floating-point differences are amplified. The text says "at lr = 1e-2 … more than half of the sampled answers do not even have the correct format". This is not true on this machine (well-formed 0.618, so fewer than 40% have a wrong format). The conclusion "a high margin ≠ a good model" is still true. Pitfall 2 (0.353 → 0.223 and others) and Pitfall 3 (0.95 / 0.84 vs 0.83 / 0.63) are bit-identical.
 
-**细节 6：`19-reinforcement-learning/03_reward_hacking.py`**：所有数字和样本逐位一致（说明本机与写作时结果相同），但 7.2 节"工具题的答案仍然基本靠猜（最后一批里全都猜 7）"与脚本自己的输出矛盾：打印的样本里 `2+1 → <call> 字 8 </call>`。我另外统计了修好的奖励第 120 步那一批全部 120 个工具题回答：猜 7 的 77 个（64%），其余是 0（14）、8（7）、1（6）、5（6）、3（5）等。建议改成"多数猜 7（约三分之二）"。
+**Detail 6: `19-reinforcement-learning/03_reward_hacking.py`**: all numbers and samples are bit-identical, so this machine gives the same result as the machine used for writing. But Section 7.2 says "the answers to the tool tasks are still mostly guesses (in the last batch, all guess 7)". This contradicts the output of the script itself: one printed sample is `2+1 → <call> 字 8 </call>` (`字` is the "word" token of the toy vocabulary). I also counted all 120 tool-task answers in the batch at step 120 with the fixed reward. 77 guess 7 (64%). The others are 0 (14), 8 (7), 1 (6), 5 (6), 3 (5), and other values. Recommendation: change it to "most guess 7 (about two thirds)".
 
-**细节 7：`20-release/02_quantize_tiny_model.py`**（根因同细节 1）
+**Detail 7: `20-release/02_quantize_tiny_model.py`** (same root cause as Detail 1)
 
-| 方案 | README val loss / Δ / 一致 | 实测 |
+| Method | README val loss / Δ loss / top-1 agreement | Measured |
 |---|---|---|
 | fp32 | 1.8385 / — / 100.0% | 1.8308 / — / 100.0% |
-| INT8 整张 | 1.8386 / +0.0002 / 99.4% | 1.8310 / +0.0002 / 99.4% |
-| INT8 分块 32 | 1.8384 / −0.0001 / 99.6% | 1.8307 / −0.0001 / 99.5% |
-| INT4 整张 | 1.8525 / +0.0141 / 90.3% | 1.8456 / +0.0147 / 91.1% |
-| INT4 每行 | 1.8446 / +0.0061 / 93.5% | 1.8385 / +0.0076 / 91.9% |
-| INT4 分块 32 | 1.8435 / +0.0050 / 94.1% | 1.8374 / +0.0066 / 93.3% |
-| INT4 两级 | 1.8437 / +0.0052 / 94.9% | 1.8355 / +0.0046 / 94.6% |
-| INT3 分块 32 | 1.8776 / +0.0391 / 85.9% | 1.8729 / +0.0421 / 85.4% |
-| INT2 分块 32 | 2.3439 / +0.5055 / 46.4% | 2.4079 / +0.5771 / 44.1% |
+| INT8, 1 scale/tensor | 1.8386 / +0.0002 / 99.4% | 1.8310 / +0.0002 / 99.4% |
+| INT8 block32 (≈Q8_0) | 1.8384 / −0.0001 / 99.6% | 1.8307 / −0.0001 / 99.5% |
+| INT4, 1 scale/tensor | 1.8525 / +0.0141 / 90.3% | 1.8456 / +0.0147 / 91.1% |
+| INT4, 1 scale/row | 1.8446 / +0.0061 / 93.5% | 1.8385 / +0.0076 / 91.9% |
+| INT4 block32 (≈Q4_0) | 1.8435 / +0.0050 / 94.1% | 1.8374 / +0.0066 / 93.3% |
+| INT4 2-level (≈Q4_K) | 1.8437 / +0.0052 / 94.9% | 1.8355 / +0.0046 / 94.6% |
+| INT3 block32 | 1.8776 / +0.0391 / 85.9% | 1.8729 / +0.0421 / 85.4% |
+| INT2 block32 | 2.3439 / +0.5055 / 46.4% | 2.4079 / +0.5771 / 44.1% |
 
-（权重大小一列全对。）不再成立的具体描述：
-- "两级 scale 和普通分块在 loss 上也分不出高下（1.8437 vs 1.8435，一致率 94.9% vs 94.1%）"——本机两级 scale 明显更好（1.8355 vs 1.8374，94.6% vs 93.3%）；
-- "3 bit 的代价是 4 bit 的 8 倍"——本机 0.0421 / 0.0066 ≈ 6.4 倍；"每 17 个位置就有 1 个最可能的字变了"——本机约每 15 个；
-- "贪心生成从第 9 个字符起就和 fp32 分叉（'And the course…' vs 'And the such…'）"——本机 fp32 生成 `Ay so the soul, and the prove…`，INT4 分块 32 生成 `Ay the send the prove…`，第 4 个字符起分叉；2 bit 生成的是 `How, would are a worlous…` 而不是 "is is apeeng"。
-- 仍成立："8 bit 基本无损、贪心前 60 个字符与 fp32 一字不差""4 bit 开始有代价""4 bit 往下是悬崖""量化效果取决于具体权重"。
+(The column of weight sizes is all correct.) These specific statements are no longer true:
 
-**建议（不改代码，供你决定）**：16/03、16/04、20/02 以及其他章节里凡是依赖第 10 章 `tiny_kv4_s600.pt` 的数字，都会因为"首次运行在本机重新训练底座"而和正文对不上。要让读者复现出正文的数字，可以考虑把这几个小 `.pt`（约 3.4 MB 一个）作为资产提交，或在正文里注明"不同机器上第 2–3 位小数会不同，个别定性描述（如 16/04 的 loss 方向）也可能变"。
+- "two-level scales and normal blocks also cannot be separated by the loss (1.8437 vs 1.8435, agreement 94.9% vs 94.1%)": on this machine, two-level scales are clearly better (1.8355 vs 1.8374, 94.6% vs 93.3%);
+- "the cost of 3 bit is 8 times the cost of 4 bit": on this machine, 0.0421 / 0.0066 ≈ 6.4 times. "The most probable character changes at 1 position in 17": on this machine, at about 1 position in 15;
+- "greedy generation diverges from fp32 at the 9th character ('And the course…' vs 'And the such…')": on this machine, fp32 generates `Ay so the soul, and the prove…`, and INT4 block32 generates `Ay the send the prove…`, so they diverge at the 4th character. 2 bit generates `How, would are a worlous…`, not "is is apeeng".
+- Still true: "8 bit is almost lossless, and the first 60 characters of greedy generation are identical to fp32", "4 bit starts to have a cost", "below 4 bit is a cliff", and "the effect of quantization depends on the specific weights".
 
-## 二、GPU 实测
+**Recommendation (no code change; you decide)**: in 16/03, 16/04, 20/02, and in other chapters, all numbers that depend on `tiny_kv4_s600.pt` of Chapter 10 do not agree with the text. The reason is that "the first run trains the base model again on this machine". To let readers reproduce the numbers in the text, you can commit these small `.pt` files (about 3.4 MB each) as assets. Or add a note in the text: "on different machines, the 2nd–3rd decimal places differ, and some qualitative descriptions (such as the direction of the loss in 16/04) can also change".
 
-所有写进 README 的数字都来自 GPU0（`CUDA_VISIBLE_DEVICES=0`，经 `gpu0.lock`），每个脚本最终版本各跑一次，原始输出在 scratchpad 的 `ch16-20/gpu/ch16_final.log`、`ch20_final.log`（其余 `*_try*.log` 是调试过程）。两个脚本都通过 `uv run ruff check`；没有 CUDA 时都打印规定的提示并 exit 0（已用 `CUDA_VISIBLE_DEVICES=` 验证）。协调者后来允许用 GPU1 做调试，但我提交的 GPU1 命令被权限系统拒绝，所以全程只用了 GPU0。
+## 2. GPU measurements
 
-### 第 16 章：新增 `chapters/16-sft/code/06_gpu_packing.py`，README 新增"GPU 实测（单张 RTX 3090）"一节
+All numbers written into the README come from GPU0 (`CUDA_VISIBLE_DEVICES=0`, via `gpu0.lock`). The final version of each script ran once. The raw output is in `ch16-20/gpu/ch16_final.log` and `ch20_final.log` in the scratchpad (the other `*_try*.log` files are from debugging). Both scripts pass `uv run ruff check`. Without CUDA, both print the required message and exit 0 (verified with `CUDA_VISIBLE_DEVICES=`). The coordinator later allowed GPU1 for debugging. But the permission system refused my GPU1 commands, so I used only GPU0 the whole time.
 
-- 对应正文 5.1（补齐浪费算力）和 5.3（zero 不隔离打包对话的取舍：好处是"能直接用最快的因果注意力 kernel"）。
-- ① 用 zero 的 `Transformer`、`configs/main/sft.toml` 的主线形状（689.5M），对 04 里同一份 200 条对话前向 + 反向：补齐到 513 用 14.57 s（3,019 真实 token/s），补齐到批内最长 10.32 s（1.41×），首次适配打包 7.03 s（**2.07×**）。两遍相差 ≤ 0.2%。
-- ② 8192 窗口（装 40 条对话，文档 mask 只占因果 mask 的 2.9%），一层注意力前向 + 反向：普通因果 FlashAttention 18.20 ms；布尔矩阵传给 SDPA → PyTorch 选 MATH 实现，227.95 ms、16.70 GiB；FlexAttention 2.48 ms（7.34×）；varlen FlashAttention 2.43 ms（7.49×）。普通因果与 varlen 输出最大差 4.62（串门），三种文档 mask 之间差 ≤ 1.56e-02（BF16 舍入）。
-- 这把 5.3 节的"取舍"讲得更清楚：用 varlen / Flex 隔离对话在长窗口里不但不慢，反而省掉大部分注意力算力；只有"布尔矩阵"写法才慢。**我没有改正文 5.3 节和"尚未实现、尚未在 GPU 上验证"的标注**，是否据此调整 zero 的路线由你决定。
-- 运行总时长 77.7 s（墙钟）。第 ① 部分每种排法只跑两遍取中位数（每遍 7–15 s；三遍会超过 2 分钟），在 README 和脚本里都写明了。
+### Chapter 16: new `chapters/16-sft/code/06_gpu_packing.py`, and a new section "GPU measurements (one RTX 3090)" in the README
 
-### 第 20 章：新增 `chapters/20-release/code/05_gpu_quant_matvec.py`，README 新增"GPU 实测（单张 RTX 3090）"一节
+- It relates to Section 5.1 of the text (padding wastes compute) and Section 5.3 (the trade-off: zero does not isolate packed conversations; the advantage is that zero "can use the fastest causal attention kernel directly").
+- ① With the `Transformer` of zero and the main-line shape of `configs/main/sft.toml` (689.5M), a forward + backward pass on the same 200 conversations as in 04: "one per row, pad to 513" takes 14.57 s (3,019 real tokens/s), "one per row, batch max" (padded to the longest in the batch) 10.32 s (1.41×), and "first-fit" packing 7.03 s (**2.07×**). The two passes differ by ≤ 0.2%.
+- ② An 8192 window holds 40 conversations, and the document mask has only 2.9% of the pairs of the causal mask. Forward + backward pass of one attention layer: "causal FlashAttention (mixes docs)" 18.20 ms; "doc mask: boolean matrix to SDPA" → PyTorch selects the MATH implementation, 227.95 ms, 16.70 GiB; "doc mask: FlexAttention" 2.48 ms (7.34×); "doc mask: varlen FlashAttention" 2.43 ms (7.49×). The max output difference between normal causal and varlen is 4.62 (cross-contamination). The three document-mask versions differ by ≤ 1.56e-02 (BF16 rounding).
+- This makes the "trade-off" in Section 5.3 clearer. In a long window, isolation of conversations with varlen / Flex is not slower: it removes most of the attention compute. Only the "boolean matrix" version is slow. **I did not change Section 5.3 of the text or the label "not implemented yet, not verified on a GPU yet"**. You decide whether to change the plan of zero because of this result.
+- Total run time 77.7 s (wall-clock). In part ①, each layout ran only two passes, and we took the median (7–15 s per pass; three passes would take more than 2 minutes). The README and the script both say this.
 
-- 对应正文 3.1"decode 瓶颈是带宽，权重小一半、读得就快近一倍"和第 4 节（笔记本 llama.cpp vs 服务器 vLLM）。
-- 主线模型全部 197 个矩阵、batch 1、CUDA Graph：BF16 cuBLAS 2.567 ms（537 GB/s）；BF16 torch.compile 2.589 ms；INT8（每行 scale，torch.compile 融合反量化）2.294 ms，**只快 1.12×**；INT4（tinygemm，每 32 个一组，5 bit）1.157 ms，**快 2.22×**；INT8 先反量化再乘 11.527 ms（0.22×）。复制 1 GiB 张量的参照带宽 851 GB/s。
-- batch 扫描：INT4 在 B = 1、8 时快 2.27×、2.05×，B = 32 起变慢（0.82×、0.39×、0.28×）。
-- 单种矩阵的带宽：wk（2.5 MiB）BF16 只有 429 GB/s，矩阵越小越跑不满。
-- 结论写进 README：量化提速成立，但幅度取决于内核（通用编译内核的 INT8 只 1.12×），这个 0.7B 模型的矩阵太小也吃掉一部分收益，大 batch 时反而变慢。
-- 运行总时长 22 s（墙钟）。
-- 调试中的另一个观察（没写进 README）：PyTorch 自带的 `torch._weight_int8pack_mm` 在 CUDA 上 batch 1 要 13.2 ms（0.20×，只有 52 GB/s），B = 32 时 94 ms，是没为 decode 优化的内核，所以最终版改用 torch.compile 生成 INT8 内核。另外 lm_head 单个矩阵的 BF16 带宽两次运行分别是 560 和 683 GB/s（单内核计时对频率 / cuBLAS 选算法敏感），README 解读里没有引用这一格。
-- GPU0 功耗上限 240 W（协调者告知），带宽类的绝对值可能偏低；比例关系（2.22×、0.28× 等）受影响应较小。
+### Chapter 20: new `chapters/20-release/code/05_gpu_quant_matvec.py`, and a new section "GPU measurements (one RTX 3090)" in the README
 
-### 第 17、18、19 章：不加 GPU 脚本，理由
+- It relates to Section 3.1 of the text ("the bottleneck of decode is bandwidth; with weights of half the size, reading is almost twice as fast") and Section 4 (llama.cpp on a laptop vs vLLM on a server).
+- All 197 matrices of the main-line model, batch 1, CUDA Graph: "BF16, cuBLAS (F.linear)" 2.567 ms (537 GB/s); "BF16, torch.compile kernel" 2.589 ms; "INT8, compiled fused dequant" (one scale per row, torch.compile fuses the dequantization) 2.294 ms, **only 1.12× faster**; "INT4, tinygemm kernel" (groups of 32, 5 bit) 1.157 ms, **2.22× faster**; "INT8, dequant to BF16 first" (dequantize first, then multiply) 11.527 ms (0.22×). Reference bandwidth from a copy of a 1 GiB tensor: 851 GB/s.
+- Batch sweep: INT4 is 2.27× and 2.05× faster at B = 1 and 8. From B = 32, it is slower (0.82×, 0.39×, 0.28×).
+- Bandwidth for each matrix type: wk (2.5 MiB) reaches only 429 GB/s in BF16. The smaller the matrix, the less of the bandwidth it uses.
+- Conclusion written in the README: quantization gives a speedup, but the size of the speedup depends on the kernel (INT8 with a general compiled kernel is only 1.12×). The matrices of this 0.7B model are too small, and this also removes part of the gain. With a large batch, quantization is slower.
+- Total run time 22 s (wall-clock).
+- Another observation during debugging (not in the README): PyTorch's built-in `torch._weight_int8pack_mm` on CUDA takes 13.2 ms at batch 1 (0.20×, only 52 GB/s) and 94 ms at B = 32. This kernel is not optimized for decode, so the final version uses torch.compile to make the INT8 kernel. Also, the BF16 bandwidth of the single lm_head matrix was 560 and 683 GB/s in two runs (the timing of a single kernel is sensitive to the clock frequency and to the algorithm that cuBLAS selects). The interpretation in the README does not quote this cell.
+- The power limit of GPU0 is 240 W (the coordinator told us). The absolute bandwidth values can be too low. The ratios (2.22×, 0.28×, and others) should be less affected.
 
-- **第 17 章**：极简代码是 8,905 / 429,665 参数的字符级 MLP，GPU 只会让它更快，不会让任何论点更清楚。"在线蒸馏时教师前向与学生训练的开销比例"本质是 FLOP 算术（教师前向 ≈ 2N_T、学生前向 + 反向 ≈ 6N_S），正文没有依赖它的论点；主线又只做序列级蒸馏（教师在 vLLM 上生成），测训练循环里的教师前向不对应主线的做法。
-- **第 18 章**：约 2 万参数的 GRU 和老虎机；DPO 的论点（β、学习率、chosen 概率下降、隐式奖励）与设备无关。正文里唯一和 GPU 有关的一句（chosen / rejected 拼成一批前向"省一半 kernel 启动"）是实现细节，不值得单独一个脚本。
-- **第 19 章**：老虎机和个位数加法的 GRPO，同样与设备无关。真正值得在 GPU 上量的是"主线 GRPO 的采样（生成）与训练各占多少时间"——它直接对应正文"zero 采样没有连续批处理、吞吐不够就换 verl"的判断——但这依赖 zero 的 GRPO GPU 通路，正由另一个 agent 验证，建议等那边结果出来后再考虑。
+### Chapters 17, 18, 19: no GPU scripts, and the reasons
 
-## 三、需要你决定的事
+- **Chapter 17**: the minimal code is a character-level MLP with 8,905 / 429,665 parameters. A GPU only makes it faster; it does not make any argument clearer. "The cost ratio between the teacher forward pass and the student training in online distillation" is FLOP arithmetic (teacher forward pass ≈ 2N_T, student forward + backward pass ≈ 6N_S), and no argument in the text depends on it. Also, the main line uses only sequence-level distillation (the teacher generates on vLLM). A measurement of the teacher forward pass in the training loop does not correspond to the method of the main line.
+- **Chapter 18**: a GRU with about 20,000 parameters, and a bandit. The arguments about DPO (β, learning rate, the probability of chosen goes down, implicit reward) do not depend on the device. Only one sentence in the text relates to the GPU: "put chosen / rejected into one batch for the forward pass, and save half of the kernel launches". It is an implementation detail and does not need a separate script.
+- **Chapter 19**: GRPO on a bandit and on single-digit addition. This also does not depend on the device. The real thing to measure on a GPU is "how much time the sampling (generation) and the training of the main-line GRPO each take". It relates directly to a statement in the text: "zero sampling has no continuous batching; if the throughput is not sufficient, change to verl". But this measurement depends on the GPU path of GRPO in zero, which another agent is verifying. Recommendation: consider it after that result is available.
 
-1. 16/04 的"loss 反而降了"在本机方向相反（细节 2）；20/02 有几句具体描述不再成立（细节 7）；18/05 的"一半多连格式都不对"不成立（细节 5）；19/03 的"全都猜 7"与脚本输出矛盾（细节 6）。是否改正文措辞？
-2. 是否把第 10 章的 `tiny_kv4_s600.pt`（以及 16 章的 `ch16_*.pt`）作为资产提交，让读者复现出正文里的数字；或者在正文注明跨机器会有小差异。
-3. 16 章 GPU 结果显示 varlen / FlexAttention 做文档隔离在 8192 窗口里比普通因果还快，是否据此把"打包隔离"从"第二步的选项"提前。
+## 3. Items for you to decide
 
-## 四、改动清单
+1. In 16/04, "the loss even decreased" has the opposite direction on this machine (Detail 2). In 20/02, some specific sentences are no longer true (Detail 7). In 18/05, "more than half do not even have the correct format" is not true (Detail 5). In 19/03, "all guess 7" contradicts the script output (Detail 6). Do you want to change the wording of the text?
+2. Do you want to commit `tiny_kv4_s600.pt` of Chapter 10 (and the `ch16_*.pt` files of Chapter 16) as assets, so that readers can reproduce the numbers in the text? Or add a note in the text that there are small differences between machines?
+3. The GPU results of Chapter 16 show that document isolation with varlen / FlexAttention is even faster than normal causal attention in an 8192 window. Do you want to move "isolation of packed conversations" earlier, so that it is no longer only "an option for the second step"?
 
-- 新建：`chapters/16-sft/code/06_gpu_packing.py`、`chapters/20-release/code/05_gpu_quant_matvec.py`、本文件。
-- 修改：`chapters/16-sft/README.md`、`chapters/20-release/README.md`（各在"从极简到生产级"前新增一节，原有正文和数字未动）。
-- 未改动：其他章节、`code/` 里已有脚本、`code/out/` 已提交的 json（已还原）、`video/`、`zero/`、`configs/`。
-- 运行留下的被 gitignore 的文件：`chapters/10-inference/code/out/tiny_kv4_s600.pt`，`chapters/16-sft/code/out/ch16_{masked,unmasked,small40}.pt`。
+## 4. List of changes
+
+- New: `chapters/16-sft/code/06_gpu_packing.py`, `chapters/20-release/code/05_gpu_quant_matvec.py`, and this file.
+- Changed: `chapters/16-sft/README.md` and `chapters/20-release/README.md` (each got a new section before "From minimal code to production code"; the existing text and numbers did not change).
+- Not changed: other chapters, the existing scripts in `code/`, the committed json files in `code/out/` (restored), `video/`, `zero/`, `configs/`.
+- Files from the runs that are in gitignore: `chapters/10-inference/code/out/tiny_kv4_s600.pt`, `chapters/16-sft/code/out/ch16_{masked,unmasked,small40}.pt`.

@@ -1,12 +1,15 @@
-"""阶段 6 第 7、8 项（单卡版）：主线 689.5M 配置在 24GB 上开 / 关激活检查点时不 OOM 的最大 micro batch，
-以及 32K 长序列能否放下；与 zero/tools/memory_calc.py 的估算对照。
+"""Stage 6, items 7 and 8 (1-GPU version): memory limits of the main-line 689.5M configuration on 24 GB.
+
+It finds the largest micro batch that does not cause OOM, with and without activation checkpointing.
+It also checks if a 32K sequence fits. It compares the results with the estimate of zero/tools/memory_calc.py.
 
     CUDA_VISIBLE_DEVICES=0 UV_NO_SYNC=1 uv run python runs/2026-10-01-gpu0-check/mem_probe.py main
     CUDA_VISIBLE_DEVICES=0 UV_NO_SYNC=1 uv run python runs/2026-10-01-gpu0-check/mem_probe.py longctx
 
-每次试探在一个新的子进程里用真正的 `Trainer` 跑 3 步（前向 + 反向 + fused AdamW；stop_at=3，不存 checkpoint），
-记录 `torch.cuda.max_memory_allocated`（PyTorch 分配的张量）与 `max_memory_reserved`（缓存分配器实际占的），
-以及第 3 步的 tok/s 和 MFU（按 3090 稠密 BF16 71 TFLOPS）。
+Each trial runs the real `Trainer` for 3 steps in a new subprocess (forward + backward + fused AdamW;
+stop_at=3, no checkpoint). It records `torch.cuda.max_memory_allocated` (the tensors that PyTorch allocates)
+and `max_memory_reserved` (the memory that the caching allocator really holds).
+It also records tok/s and MFU of step 3 (MFU uses the 3090 dense BF16 peak of 71 TFLOPS).
 """
 
 from __future__ import annotations
@@ -127,7 +130,7 @@ def main() -> None:
     out = REPO / f"out/gpu0-check/mem_probe_{which}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(res, ensure_ascii=False, indent=1))
-    print(f"写入 {out}")
+    print(f"Wrote {out}")
 
 
 if __name__ == "__main__":

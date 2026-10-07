@@ -159,7 +159,7 @@ API（见 `video_kit/scene.py`）：
 bash chapters/NN-slug/video/build.sh --preview    # 480p sample, about 2 minutes
 ```
 
-- 看终端最后的"交付检查"：`problems` 必须为空，时长必须在 5–10 分钟内（样片也会报告时长）。
+- 看终端最后的交付检查（`[build] Delivery check:` 那一行）：`problems` 必须为空，时长必须在 5–10 分钟内（样片也会报告时长）。
 - 打开 `video/out/frames/` 里每镜中点的截图，检查版式。可以用 ffmpeg 拼成一张图，再用 Read 工具查看：
   `ffmpeg -i a.png -i b.png -i c.png -i d.png -filter_complex "[0][1]hstack[x];[2][3]hstack[y];[x][y]vstack" grid.png`
 - 检查这些问题：文字重叠、超出画面、进入字幕区、标题叠在一起、线条溢出坐标轴。修到干净为止。

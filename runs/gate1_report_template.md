@@ -1,118 +1,120 @@
-# 闸门 1 报告（模板）—— 花大钱之前：外推预测 + 配方验证
+# Gate 1 report (template) — before the large spending: extrapolated prediction + recipe validation
 
-> 依据 GOAL.md 3.4"闸门 1"与第 12 章。第二步阶段 8 结束时复制本文件为 `runs/<日期>-gate1/README.md` 填写，
-> 连同 `runs/ladder/fit.json`、预算表一起交给项目负责人。**批准之前不启动主线预训练。**
-> 填写规则：每个数字写来源（运行目录 / 命令 / 提交号）；没跑的写"未做"；和预期不符的如实写，不删点、不挑点。
+**English** · [中文](gate1_report_template.zh.md)
 
-## 0. 摘要（最后写，一屏以内）
+> Based on GOAL.md 3.4 "Gate 1" and Chapter 12. At the end of Step 2, Stage 8, copy this file to `runs/<date>-gate1/README.md` and fill it in.
+> Give it to the project owner together with `runs/ladder/fit.json` and the budget table. **Do not start the main-line pretraining before the approval.**
+> Rules for filling in: write the source of each number (run folder / command / commit hash). For work that you did not run, write "not done". If a result does not agree with the expectation, write it honestly. Do not delete points, and do not pick points.
 
-- 主线配置：`configs/main/pretrain.toml`（提交号 ____），总参数 ____M，非 embedding ____M
-- 计划 token 数：____B（____ token/参数），预计费用 $____（实测 MFU ____，单价 $____/卡时）
-- 外推 Base 验证 loss：____（95% 区间 ____–____）
-- 外推通用基准（Base，少样本）：见第 3 节表；工具调用（后训练后）：见第 4 节
-- **结论：预测 能 / 不能 达到预注册的硬目标**；建议：开始预训练 / 调整配方 ____ / 调整目标 ____
+## 0. Summary (write it last, at most one screen)
 
-## 1. 配方与版本
+- Main-line configuration: `configs/main/pretrain.toml` (commit ____), total parameters ____M, non-embedding ____M
+- Planned tokens: ____B (____ tokens/parameter), expected cost $____ (measured MFU ____, price $____/GPU-hour)
+- Extrapolated Base validation loss: ____ (95% interval ____–____)
+- Extrapolated general benchmarks (Base, few-shot): see the table in Section 3; tool calling (after post-training): see Section 4
+- **Conclusion: the prediction CAN / CANNOT reach the preregistered hard goal**; recommendation: start pretraining / adjust the recipe ____ / adjust the goal ____
 
-| 项 | 取值 | 与主线是否一致 |
+## 1. Recipe and versions
+
+| Item | Value | Same as the main line? |
 |---|---|---|
-| 分词器（`data/tokenizer/tokenizer.json` 的哈希） | | 必须一致 |
-| 数据配比（第 13 章结论） | | 必须一致 |
-| 序列长度 / 每步 token | | 阶梯 2048 / 262K；主线 4096 / 524K（差异写明影响） |
-| 优化器（AdamW / Muon）、β、权重衰减、裁剪 | | |
-| 学习率规则（η\*(N) 拟合式，是否含训练长度修正） | | |
-| 调度（WSD：warmup、衰减比例、衰减形状） | | |
-| 精度（BF16 / FP8） | | |
-| 代码提交号 | | |
+| Tokenizer (hash of `data/tokenizer/tokenizer.json`) | | Must be the same |
+| Data mixture (conclusion of Chapter 13) | | Must be the same |
+| Sequence length / tokens per step | | Ladder 2048 / 262K; main line 4096 / 524K (write the effect of the difference) |
+| Optimizer (AdamW / Muon), β, weight decay, clipping | | |
+| Learning-rate rule (fit formula of η\*(N); with or without the correction for training length) | | |
+| Schedule (WSD: warmup, decay fraction, decay shape) | | |
+| Precision (BF16 / FP8) | | |
+| Code commit | | |
 
-## 2. 阶梯结果与 loss 外推
+## 2. Ladder results and loss extrapolation
 
-### 2.1 学习率扫描
+### 2.1 Learning-rate sweep
 
-| 尺寸 | 扫描的学习率（val_loss） | 选中 η\* | 最优是否在网格内部 |
+| Size | Swept learning rates (val_loss) | Selected η\* | Is the best value inside the grid? |
 |---|---|---|---|
 
-拟合：η\*(N) = ____ · N^(−____)；外推到 l300m：____；外推到主线：____。
+Fit: η\*(N) = ____ · N^(−____); extrapolated to l300m: ____; extrapolated to the main line: ____.
 
-### 2.2 L(N, D) 拟合
+### 2.2 Fit of L(N, D)
 
-- 拟合点：____ 个（尺寸 × 预算），N 口径：非 embedding / 总参数 / FLOPs（选一个并说明理由）
-- `L(N, D) = E + A/N^α + B/D^β`：E=____，A=____，α=____，B=____，β=____
-- 拟合残差：RMSE ____，最大相对误差 ____%（标准：< 1%）
-- 种子噪声（l60m 20×，2 个种子）：____%
+- Fit points: ____ (sizes × budgets). Definition of N: non-embedding / total parameters / FLOPs (select one and give the reason)
+- `L(N, D) = E + A/N^α + B/D^β`: E=____, A=____, α=____, B=____, β=____
+- Fit residuals: RMSE ____, maximum relative error ____% (criterion: < 1%)
+- Seed noise (l60m 20×, 2 seeds): ____%
 
-| 运行 | N | D | 实际 val_loss | 拟合 | 误差 |
+| Run | N | D | Actual val_loss | Fit | Error |
 |---|---:|---:|---:|---:|---:|
 
-### 2.3 留出检验（l300m，不参与拟合）
+### 2.3 Held-out test (l300m, not in the fit)
 
-| 预算 | 实际 | 外推 | 95% 区间 | 误差 | 在区间内？ |
+| Budget | Actual | Extrapolated | 95% interval | Error | Inside the interval? |
 |---|---:|---:|---|---:|---|
 
-不在区间内或误差 > 1% 时：诊断 ____，处理 ____（修配方后重跑阶梯，不在原拟合上打补丁）。
+If a point is outside the interval or the error is > 1%: diagnosis ____, action ____ (fix the recipe and run the ladder again; do not patch the old fit).
 
-### 2.4 外推到主线
+### 2.4 Extrapolation to the main line
 
-| 目标 | N | D | 外推 loss | 95% 区间 | 外推倍数（N / D 相对阶梯最大拟合点） |
+| Target | N | D | Extrapolated loss | 95% interval | Extrapolation factor (N / D relative to the largest fitted ladder point) |
 |---|---:|---:|---:|---|---|
-| 主线 @ ____B | | | | | |
-| 主线 @ ____B（预算上限） | | | | | |
+| Main line @ ____B | | | | | |
+| Main line @ ____B (budget limit) | | | | | |
 
-`fit_scaling` 命令与输出原文附在 `runs/<日期>-gate1/fit.log`。
+Attach the `fit_scaling` command and its original output in `runs/<date>-gate1/fit.log`.
 
-## 3. 基准分数外推（Base）
+## 3. Benchmark score extrapolation (Base)
 
-两步法（第 12 章；Delphi、Llama 3 技术报告的做法）：
+Use the two-step method (Chapter 12; the method of Delphi and of the Llama 3 technical report):
 
-1. 对每个基准的**软指标**（正确选项的对数概率 / 参考答案 bits-per-byte）在阶梯上拟合与 loss（或算力）的关系；
-2. 用一批公开模型（同一评测框架、同一模板重跑）拟合"软指标 → 硬分数"的 S 形映射（`zero.tools.fit_scaling.fit_loss_to_score` 或同类），
-   两者复合得到主线的预测分数。
+1. For the **soft metric** of each benchmark (the log probability of the correct option / the bits-per-byte of the reference answer), fit its relation to the loss (or to the compute) on the ladder.
+2. With a set of public models (run again with the same evaluation framework and the same template), fit an S-shaped mapping "soft metric → hard score" (`zero.tools.fit_scaling.fit_loss_to_score` or a similar tool).
+   Combine the two steps to get the predicted scores of the main line.
 
-| 基准（开发集版本，不是预注册测试集） | 随机水平 | 阶梯最大模型实测 | 外推到主线 | 区间 | 可信度说明 |
+| Benchmark (development-set version, not the preregistered test set) | Random level | Measured on the largest ladder model | Extrapolated to the main line | Interval | Notes on reliability |
 |---|---:|---:|---:|---|---|
 
-- 阶梯模型全都接近随机水平的基准：**不外推**，写"阶梯规模下无信号"。
-- 预注册的测试基准在闸门 1 **不跑**（GOAL.md 第 11 节）；这里全部用自己的开发集。
+- A benchmark where all ladder models are near the random level: **do not extrapolate**. Write "no signal at the ladder scale".
+- Do **not run** the preregistered test benchmarks at Gate 1 (GOAL.md Section 11). Here, use only our own development sets.
 
-## 4. 配方验证
+## 4. Recipe validation
 
-### 4.1 (a) 后训练配方套在阶梯 Base 上
+### 4.1 (a) The post-training recipe applied to ladder Base models
 
-| 阶梯 Base | Base val_loss | 后训练后 工具调用开发集得分 | 通用开发集得分 |
+| Ladder Base | Base val_loss | Tool-calling dev-set score after post-training | General dev-set score |
 |---|---:|---:|---:|
 
-拟合"Base loss → 工具调用得分"：____（形式、系数、残差）。外推到主线 Base 的预测 loss（2.4 节）：工具调用得分 ____（区间 ____）。
-小模型后训练后可能全部接近 0 分——那样就只能写"阶梯规模下无信号"，改以 (b) 为主要依据，并说明。
+Fit "Base loss → tool-calling score": ____ (form, coefficients, residuals). Extrapolate to the predicted loss of the main-line Base (Section 2.4): tool-calling score ____ (interval ____).
+After post-training, all small models can be near a score of 0. In that case, write only "no signal at the ladder scale", use (b) as the main evidence, and explain why.
 
-### 4.2 (b) 后训练配方套在现成同尺寸开源 Base 上（只验证，不发布）
+### 4.2 (b) The post-training recipe applied to an existing open Base model of the same size (only for validation, not for release)
 
-- Base：____（许可证 ____，与主线 Base 的差距：通用开发集 ____）
-- 后训练后：工具调用开发集 ____；与预注册对手（重跑成绩）的差距 ____
-- 解读：这是"配方上限"的参考；我们的 Base 弱于这个开源 Base 时，按 4.1 的斜率折算。
+- Base: ____ (license ____; gap to the main-line Base: general dev set ____)
+- After post-training: tool-calling dev set ____; gap to the preregistered opponents (rerun scores) ____
+- Interpretation: this is a reference for the "upper limit of the recipe". If our Base is weaker than this open Base, convert the result with the slope from 4.1.
 
-## 5. 预算
+## 5. Budget
 
-| 项 | 数值 | 来源 |
+| Item | Value | Source |
 |---|---|---|
-| 实测 MFU / tok/s（阶段 6） | | `runs/<日期>-gpu-check/` |
-| 单价 | | 租用合同 |
-| 主线 token 数 | | `plan_budget` 输出 |
-| 预训练费用 | | 同上 |
-| 已花费（截至本报告） | | `runs/ledger.md` |
-| 剩余预算 | | |
+| Measured MFU / tok/s (Stage 6) | | `runs/<date>-gpu-check/` |
+| Price | | Rental contract |
+| Main-line tokens | | Output of `plan_budget` |
+| Pretraining cost | | Same as above |
+| Spent (up to this report) | | `runs/ledger.md` |
+| Remaining budget | | |
 
-`plan_budget` 输出原文附后（含 MFU 的几个取值，看敏感性）。
+Attach the original output of `plan_budget` below (with several values of MFU, to show the sensitivity).
 
-## 6. 风险与未验证项
+## 6. Risks and items not verified
 
-- 外推倍数与区间宽度；配方在主线的长训练下是否仍成立（Delphi 的教训）
-- 阶梯与主线的差异（序列长度、batch）带来的系统误差
-- 尚未在 GPU 上验证的路径：____
-- 其他：____
+- The extrapolation factor and the interval width; does the recipe still hold for the long training of the main line? (the lesson of Delphi)
+- Systematic error from the differences between the ladder and the main line (sequence length, batch)
+- Paths not verified on a GPU yet: ____
+- Other: ____
 
-## 7. 决策请求
+## 7. Decision request
 
-- [ ] 批准主线预训练：____B token，预算 $____（上限 $____，超出先停下报告）
-- [ ] 或：调整配方 / 目标：____
+- [ ] Approve the main-line pretraining: ____B tokens, budget $____ (limit $____; if the cost goes above the limit, stop first and report)
+- [ ] Or: adjust the recipe / goal: ____
 
-> 本报告的所有预测都来自阶梯外推，不是主线模型的实测结果。
+> All predictions in this report come from the ladder extrapolation. They are not measured results of the main-line model.

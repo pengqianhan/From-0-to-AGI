@@ -1,27 +1,29 @@
-"""全课程统一的视觉语言：配色、字体、版式。
+"""One visual language for the full course: colors, fonts, and layout.
 
-同一个概念在所有章节的视频里用同一种颜色：
-    输入 = 蓝、参数 = 橙、梯度 = 红、注意力权重 = 紫、输出/预测 = 绿。
+A concept has the same color in the videos of all chapters:
+    input = blue, parameter = orange, gradient = red, attention weight = purple,
+    output/prediction = green.
 """
 
 from __future__ import annotations
 
 from functools import lru_cache
 
-# ── 语义配色（深色背景上对比度足够） ─────────────────────────────────────────
-BG = "#101418"          # 背景
-FG = "#E8EAED"          # 正文文字
-MUTED = "#9AA0A6"       # 次要文字、坐标轴
-INPUT = "#4C9BE8"       # 输入 / 数据
-PARAM = "#F29E4C"       # 参数 / 权重
-GRAD = "#E8615A"        # 梯度 / 误差
-ATTN = "#B07CE8"        # 注意力权重
-OUTPUT = "#5CC98A"      # 输出 / 预测
-HIGHLIGHT = "#F4D35E"   # 强调
+# ── Semantic colors (enough contrast on a dark background) ──────────────────
+BG = "#101418"          # background
+FG = "#E8EAED"          # body text
+MUTED = "#9AA0A6"       # secondary text, axes
+INPUT = "#4C9BE8"       # input / data
+PARAM = "#F29E4C"       # parameter / weight
+GRAD = "#E8615A"        # gradient / error
+ATTN = "#B07CE8"        # attention weight
+OUTPUT = "#5CC98A"      # output / prediction
+HIGHLIGHT = "#F4D35E"   # emphasis
 
-# ── 版式 ────────────────────────────────────────────────────────────────────
-# 画面底部留出字幕安全区：字幕由 ffmpeg 烧录在这一带，动画内容不要放进去。
-SUBTITLE_SAFE_BOTTOM = -2.75  # Manim 坐标（画面高 8 个单位，y 从 -4 到 4）
+# ── Layout ──────────────────────────────────────────────────────────────────
+# Keep a subtitle safe area at the bottom of the frame. ffmpeg burns the subtitles
+# into this area, so do not put animation content there.
+SUBTITLE_SAFE_BOTTOM = -2.75  # Manim coordinates (the frame is 8 units high, y from -4 to 4)
 TITLE_Y = 3.3
 
 _FONT_CANDIDATES = [
@@ -35,12 +37,12 @@ _FONT_CANDIDATES = [
 
 @lru_cache(maxsize=1)
 def cjk_font() -> str:
-    """返回本机可用的第一个中文字体名。"""
+    """Return the name of the first Chinese font that is available on this machine."""
     try:
         import manimpango
 
         available = set(manimpango.list_fonts())
-    except Exception:  # noqa: BLE001 - manimpango 缺失时退回默认
+    except Exception:  # noqa: BLE001 - if manimpango is missing, use the default
         available = set()
     for name in _FONT_CANDIDATES:
         if name in available:

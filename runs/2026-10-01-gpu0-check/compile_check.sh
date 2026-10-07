@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# 阶段 6 第 5 项（单卡版）：torch.compile 开 / 关各跑 60 步（l60m 形状 + tiny 数据），比较 loss 与吞吐。
-#   flock <gpu0.lock> bash runs/2026-10-01-gpu0-check/compile_check.sh        # 默认内核：关 ×2、开 ×1
-#   flock <gpu0.lock> env PART=det bash runs/2026-10-01-gpu0-check/compile_check.sh   # 确定性算法：关、开各 1 次（再汇总）
-# GPU 默认内核有非确定性（见第 3 项），所以另跑两次"关 compile"看同一配置两次运行本身差多少，
-# 再用 DET=1（确定性算法）各跑一次开 / 关，把"编译带来的数值差"和"运行间噪声"分开。
+# Stage 6, item 5 (1-GPU version): run 60 steps with torch.compile on and 60 steps with it off
+# (l60m shape + tiny data). Compare the loss and the throughput.
+#   flock <gpu0.lock> bash runs/2026-10-01-gpu0-check/compile_check.sh        # default kernels: off ×2, on ×1
+#   flock <gpu0.lock> env PART=det bash runs/2026-10-01-gpu0-check/compile_check.sh   # deterministic algorithms: off ×1, on ×1 (then a summary)
+# The default GPU kernels are not deterministic (see item 3). Thus the script runs "compile off" two times
+# to see how much two runs of the same configuration differ. Then it runs off / on one time each with
+# DET=1 (deterministic algorithms). This separates "the numerical difference from compilation" from
+# "run-to-run noise".
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 common=(--set train.max_steps=60 --set schedule.warmup_steps=10 --set train.eval_every=0

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 渲染第 5 章视频。加 --preview 渲染 480p 样片。
+# Render the video of Chapter 5. Add --preview to render a 480p sample.
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 uv run --extra video python -m video_kit.build "chapters/05-classification-probability" "$@"

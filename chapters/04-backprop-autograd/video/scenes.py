@@ -1,8 +1,9 @@
-"""第 4 章视频：反向传播与自动微分 —— 让计算机替你求导
+"""Chapter 4 video: backpropagation and autograd — the computer finds the derivatives.
 
-画面里的数值由 ../code/ 中的代码真实计算（见 script.md 事实清单）；
-S11 的计时数字（F8）用 04_pytorch_compare.py 同样的测法在渲染时现场实测，每次运行会不同。
-渲染：bash chapters/04-backprop-autograd/video/build.sh
+The code in ../code/ calculates the numbers in the frames (see the fact list in script.md).
+The timings in S11 (F8) use the same method as 04_pytorch_compare.py. They are measured
+during the render, so they are different in each run.
+Render: bash chapters/04-backprop-autograd/video/build.sh
 """
 
 from __future__ import annotations
@@ -57,20 +58,20 @@ def _load(name: str, filename: str):
 
 
 tm = _load("train_mlp", "03_train_mlp.py")
-eng = tm.engine  # 和 03_train_mlp.py 共用同一个 Value 类
+eng = tm.engine  # the same Value class as in 03_train_mlp.py
 gc = _load("grad_check", "02_grad_check.py")
 cmp = _load("pytorch_compare", "04_pytorch_compare.py")
 V = eng.Value
 
-# ── 所有画面数字：在这里用代码算出来 ──────────────────────────────────────────
-# S03 链式法则：u = 3x，y = u²，x = 2
+# ── All numbers in the frames: calculate them here with the code ──────────────
+# S03 chain rule: u = 3x, y = u², x = 2
 _x = V(2.0)
 _u = _x * 3
 _y = _u**2
 _y.backward()
 CHAIN = dict(x=_x.data, u=_u.data, y=_y.data, du_dx=3.0, dy_du=_u.grad, dy_dx=_x.grad)
 
-# S04/S05 计算图：L = (a·b + c)²
+# S04/S05 computational graph: L = (a·b + c)²
 A, B, C = V(2.0), V(-3.0), V(10.0)
 D = A * B
 E = D + C
@@ -78,13 +79,13 @@ L = E**2
 L.backward()
 G = {k: v for k, v in dict(a=A, b=B, c=C, d=D, e=E, L=L).items()}
 
-# S07 分叉：y = x·x + x，x = 3
+# S07 branch: y = x·x + x, x = 3
 FX = V(3.0)
 FM = FX * FX
 FY = FM + FX
 FY.backward()
 
-# S09 梯度检验
+# S09 gradient check
 _f, _leaves = gc.expression_case(eng)
 _, EXPR_REL, EXPR_AUTO, EXPR_NUM = gc.check(_f, _leaves)
 _f, _params = gc.mlp_case(eng)
@@ -94,7 +95,7 @@ _, BUG_EXPR_REL, _, _ = gc.check(*gc.expression_case(_buggy))
 _, BUG_MLP_REL, _, _ = gc.check(*gc.mlp_case(_buggy))
 N_PARAMS = len(_params)
 
-# S10 训练
+# S10 training
 XS, YS = tm.make_data()
 SNAP_STEPS = [0, 10, 50, 100, 200, 300, 500]
 NET, LOSSES, SNAPS = tm.train(steps=500, lr=0.1, snapshot_at=SNAP_STEPS)
@@ -102,7 +103,7 @@ random.seed(0)
 _probe = eng.MLP(1, [8, 8, 1])
 N_NODES = tm.count_nodes(tm.mse(_probe, XS, YS))
 
-# S12 与 PyTorch 对拍
+# S12 parity check with PyTorch
 random.seed(0)
 _net = tm.MLP(1, [8, 8, 1])
 _model = cmp.to_torch(_net)
@@ -138,16 +139,17 @@ def _loss_of_params(*ps):
 GRADCHECK = torch.autograd.gradcheck(_loss_of_params, tuple(_gc_params.values()), eps=1e-6,
                                      atol=1e-6)
 
-# S11 计时：和 04_pytorch_compare.py 第 3 部分同样的测法，渲染时现场实测（毫秒），每次运行都会不同
+# S11 timings: the same method as part 3 of 04_pytorch_compare.py, measured during the render (ms).
+# They are different in each run.
 TIMING = []
 random.seed(0)
-_tnet = cmp.train_mlp.MLP(1, [8, 8, 1])   # 用 04 自己加载的引擎建网络，Value 类才对得上
+_tnet = cmp.train_mlp.MLP(1, [8, 8, 1])   # engine that 04 loads: same Value class
 for _n in (20, 200):
     _xs_n = [-3 + 6 * i / (_n - 1) for i in range(_n)]
     _ys_n = [math.sin(v) for v in _xs_n]
     _tv = cmp.time_value_step(_tnet, _xs_n, _ys_n, reps=10)
     _xt_n, _yt_n = torch.tensor(_xs_n).unsqueeze(1), torch.tensor(_ys_n).unsqueeze(1)
-    cmp.time_torch_step(_model, _xt_n, _yt_n, reps=20)   # 预热
+    cmp.time_torch_step(_model, _xt_n, _yt_n, reps=20)   # warmup
     _tt = cmp.time_torch_step(_model, _xt_n, _yt_n, reps=500)
     TIMING.append((_n, _tv * 1000, _tt * 1000))
 
@@ -159,7 +161,10 @@ def mono(text: str, size: float = 20, color: str = theme.FG) -> Text:
 
 
 def code_block(lines: list[str], size: float = 20, buff: float = 0.14) -> VGroup:
-    """多行代码：Text 不渲染行首空格，这里按缩进宽度手动右移，保留 Python 缩进。"""
+    """Multi-line code. Shift each line right by its indentation.
+
+    Text does not render leading spaces. The shift keeps the Python indentation.
+    """
     char_w = mono("x" * 20, size).width / 20
     ms = [mono(line.lstrip(), size) for line in lines]
     block = VGroup(*ms).arrange(DOWN, aligned_edge=LEFT, buff=buff)
@@ -169,12 +174,12 @@ def code_block(lines: list[str], size: float = 20, buff: float = 0.14) -> VGroup
 
 
 def fmt(v: float) -> str:
-    """-6.0 → '-6'；2.5 → '2.5'。"""
+    """-6.0 → '-6'; 2.5 → '2.5'."""
     return f"{v:g}"
 
 
 def vbox(tex: str, color: str = theme.FG, width: float = 1.45) -> VGroup:
-    """值节点：圆角框 + 里面的 MathTex。"""
+    """Value node: a rounded box with a MathTex in it."""
     label = MathTex(tex, font_size=30, color=color)
     box = RoundedRectangle(width=max(width, label.width + 0.3), height=0.62, corner_radius=0.12,
                            color=color, stroke_width=2.5)
@@ -200,7 +205,7 @@ class ChapterScene(NarratedScene):
     chapter_title = "反向传播与自动微分"
 
     def build_graph(self):
-        """L = (a·b + c)² 的计算图（S04、S05 共用）。"""
+        """Computational graph of L = (a·b + c)² (used in S04 and S05)."""
         nodes = {
             "a": vbox(r"a", theme.PARAM).move_to([-5.7, 1.55, 0]),
             "b": vbox(r"b", theme.PARAM).move_to([-5.7, 0.05, 0]),
@@ -227,7 +232,10 @@ class ChapterScene(NarratedScene):
         return nodes, edges
 
     def pulse(self, arrow: Arrow, color: str, reverse: bool = False, run_time: float = 0.6):
-        """一个小圆点沿边移动：前向从左到右，反向从右到左。"""
+        """A small dot moves along an edge.
+
+        It moves left to right in the forward pass, and right to left in the backward pass.
+        """
         s, e = arrow.get_start(), arrow.get_end()
         if reverse:
             s, e = e, s
@@ -237,7 +245,7 @@ class ChapterScene(NarratedScene):
         self.remove(dot)
 
     def construct(self) -> None:
-        # ── S01 片头 ─────────────────────────────────────────────────────
+        # ── S01 Opening ──────────────────────────────────────────────────
         with self.shot("S01"):
             card = self.chapter_card()
             sub = zh("让计算机替你求导", 32, theme.HIGHLIGHT).next_to(card, DOWN, 0.6)
@@ -246,7 +254,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.05, self.remaining() - 0.8))
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-        # ── S02 手推梯度的痛 ─────────────────────────────────────────────
+        # ── S02 The pain of gradients by hand ────────────────────────────
         with self.shot("S02"):
             self.play(*self.set_heading("手推梯度：模型每变一次，就要重推一次"),
                       run_time=self.fit(0.8))
@@ -270,7 +278,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.05, self.remaining() - 0.6))
             self.play(FadeOut(row1), FadeOut(row2), FadeOut(r3), run_time=self.fit(0.6))
 
-        # ── S03 链式法则 ─────────────────────────────────────────────────
+        # ── S03 The chain rule ───────────────────────────────────────────
         with self.shot("S03"):
             self.play(*self.set_heading("链式法则：沿路的局部导数相乘"), run_time=self.fit(0.8))
             bx = vbox(rf"x={fmt(CHAIN['x'])}", theme.INPUT, 1.8).move_to([-4.5, 1.2, 0])
@@ -291,7 +299,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() * 0.12)
             self.play(FadeIn(l2), FadeIn(n2), run_time=self.fit(0.8))
             self.pulse(e2, theme.HIGHLIGHT, run_time=self.fit(0.8))
-            # 小变化被逐段放大：Δx = 0.01 → Δu = 0.03 → Δy ≈ 0.36
+            # Each step makes the small change larger: Δx = 0.01 → Δu = 0.03 → Δy ≈ 0.36
             dx = 0.01
             du = CHAIN["du_dx"] * dx
             dy_true = (CHAIN["u"] + du) ** 2 - CHAIN["y"]
@@ -313,7 +321,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [bx, bu, by, e1, e2, l1, l2, n1, n2, deltas, rule]],
                       run_time=self.fit(0.6))
 
-        # ── S04 计算图：前向 ─────────────────────────────────────────────
+        # ── S04 Computational graph: the forward pass ────────────────────
         nodes, edges = self.build_graph()
         formula = MathTex(r"L=(a\cdot b+c)^2", font_size=40).move_to([4.6, 2.3, 0])
         with self.shot("S04"):
@@ -323,7 +331,7 @@ class ChapterScene(NarratedScene):
                       LaggedStart(*[GrowArrow(e) for e in edges.values()], lag_ratio=0.1),
                       run_time=self.fit(2))
             self.wait(self.remaining() * 0.08)
-            # 叶子节点先有值
+            # The leaf nodes get their values first.
             leaf_vals = [Transform(nodes[k][1], set_label(nodes[k], rf"{k}={fmt(G[k].data)}",
                                                            theme.PARAM)) for k in "abc"]
             self.play(*leaf_vals, run_time=self.fit(0.8))
@@ -346,7 +354,7 @@ class ChapterScene(NarratedScene):
             note.move_to([2.6, -1.9, 0])
             self.play(FadeIn(note), run_time=self.fit(0.8))
 
-        # ── S05 反向传播 ─────────────────────────────────────────────────
+        # ── S05 Backpropagation ──────────────────────────────────────────
         with self.shot("S05"):
             self.play(*self.set_heading("反向：上游梯度 × 局部导数"), FadeOut(note),
                       run_time=self.fit(0.8))
@@ -372,13 +380,13 @@ class ChapterScene(NarratedScene):
             locs["mul_a"].next_to(edges[("a", "mul")].get_center(), UP, 0.12)
             locs["mul_b"].next_to(edges[("b", "mul")].get_center(), DOWN, 0.12)
             per = (self.remaining() - 3) / 4
-            # ² 节点
+            # ² node
             self.play(FadeIn(locs["pow"]), run_time=self.fit(per * 0.3))
             self.pulse(edges[("pow", "L")], theme.GRAD, reverse=True, run_time=self.fit(per * 0.2))
             self.pulse(edges[("e", "pow")], theme.GRAD, reverse=True, run_time=self.fit(per * 0.2))
             ge = grad_lbl("e")
             self.play(FadeIn(ge), run_time=self.fit(per * 0.3))
-            # + 节点：原样分给 d 和 c
+            # + node: passes the gradient unchanged to d and c
             self.play(FadeIn(locs["add"]), run_time=self.fit(per * 0.3))
             self.pulse(edges[("add", "e")], theme.GRAD, reverse=True, run_time=self.fit(per * 0.2))
             dots = [Dot(edges[k].get_end(), radius=0.08, color=theme.GRAD)
@@ -391,7 +399,7 @@ class ChapterScene(NarratedScene):
             gd, gc_ = grad_lbl("d"), grad_lbl("c")
             self.play(FadeIn(gd), FadeIn(gc_), run_time=self.fit(per * 0.3))
             self.wait(max(0.1, per * 0.3))
-            # × 节点：交换相乘
+            # × node: multiplies by the other input
             self.play(FadeIn(locs["mul_a"]), FadeIn(locs["mul_b"]), run_time=self.fit(per * 0.3))
             self.pulse(edges[("mul", "d")], theme.GRAD, reverse=True, run_time=self.fit(per * 0.2))
             dots = [Dot(edges[k].get_end(), radius=0.08, color=theme.GRAD)
@@ -411,7 +419,7 @@ class ChapterScene(NarratedScene):
                                ga, gb, calc, legend, formula)
             self.play(FadeOut(graph_all), run_time=self.fit(0.7))
 
-        # ── S06 每种运算只写一次 ─────────────────────────────────────────
+        # ── S06 Write each operation only once ───────────────────────────
         with self.shot("S06"):
             self.play(*self.set_heading("每种运算：前向一行 + 局部导数一行"), run_time=self.fit(0.8))
             rows = [
@@ -451,7 +459,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeOut(table), FadeOut(code), FadeOut(hl), FadeOut(tag),
                       run_time=self.fit(0.6))
 
-        # ── S07 分叉：梯度要相加 ─────────────────────────────────────────
+        # ── S07 A branch: the gradients add ──────────────────────────────
         with self.shot("S07"):
             self.play(*self.set_heading("分叉：一个节点被用了几次，梯度就加几次"),
                       run_time=self.fit(0.8))
@@ -475,8 +483,9 @@ class ChapterScene(NarratedScene):
                       GrowArrow(s3), GrowArrow(e_mm), GrowArrow(e_ma), GrowArrow(e_ay),
                       Write(title), run_time=self.fit(1.5))
             self.wait(self.remaining() * 0.12)
-            # 三条路各带回一份梯度：乘法给两个 x 各 x·1 = 3，加法给 x 1
-            g_mul = FX.data  # ∂m/∂x（每个乘数位置）× ∂y/∂m(=1)
+            # Each of the three paths brings back a gradient: the product gives x·1 = 3 to each x,
+            # and the sum gives 1 to x.
+            g_mul = FX.data  # ∂m/∂x (for each factor) × ∂y/∂m (=1)
             g1 = MathTex(fmt(g_mul), font_size=34, color=theme.GRAD).move_to(c1.point_from_proportion(0.5) + UP * 0.3 + LEFT * 0.2)
             g2 = MathTex(fmt(g_mul), font_size=34, color=theme.GRAD).move_to(c2.point_from_proportion(0.5) + DOWN * 0.3 + RIGHT * 0.25)
             g3 = MathTex("1", font_size=34, color=theme.GRAD).next_to(s3, DOWN, 0.12)
@@ -504,7 +513,7 @@ class ChapterScene(NarratedScene):
                                              title, g1, g2, g3, total, code, box, bug]],
                       run_time=self.fit(0.6))
 
-        # ── S08 拓扑排序 ─────────────────────────────────────────────────
+        # ── S08 Topological sort ─────────────────────────────────────────
         with self.shot("S08"):
             self.play(*self.set_heading("拓扑排序：先收齐梯度，再往上游传"), run_time=self.fit(0.8))
             order = ["a", "b", "d", "c", "e", "L"]
@@ -552,7 +561,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [row, nums, links, topo_note, grads, code]],
                       run_time=self.fit(0.6))
 
-        # ── S09 梯度检验 ─────────────────────────────────────────────────
+        # ── S09 Gradient check ───────────────────────────────────────────
         with self.shot("S09"):
             self.play(*self.set_heading("梯度检验：autograd 对不对？"), run_time=self.fit(0.8))
             numf = MathTex(r"\frac{\partial L}{\partial p}\approx\frac{L(p+\varepsilon)-L(p-\varepsilon)}{2\varepsilon}",
@@ -582,7 +591,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.05, self.remaining() - 0.6))
             self.play(*[FadeOut(m) for m in [numf, cap, tbl, res]], run_time=self.fit(0.6))
 
-        # ── S10 训练 MLP ─────────────────────────────────────────────────
+        # ── S10 Train an MLP ─────────────────────────────────────────────
         with self.shot("S10"):
             axes = Axes(x_range=[-3.2, 3.2, 1], y_range=[-1.5, 1.5, 0.5], x_length=6.2,
                         y_length=4.2, tips=False,
@@ -633,7 +642,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [axes, dots, sin_curve, sin_lbl, code, table, curve,
                                              nohand]], run_time=self.fit(0.6))
 
-        # ── S11 代价：标量图很慢 ─────────────────────────────────────────
+        # ── S11 The cost: a scalar graph is slow ─────────────────────────
         with self.shot("S11"):
             self.play(*self.set_heading("代价：标量计算图很慢"), run_time=self.fit(0.8))
             cols = 62
@@ -672,7 +681,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.05, self.remaining() - 0.6))
             self.play(*[FadeOut(m) for m in [grid, cnt, tcap, tbl, vjp]], run_time=self.fit(0.6))
 
-        # ── S12 从极简到生产级 ───────────────────────────────────────────
+        # ── S12 From minimal code to production code ─────────────────────
         with self.shot("S12"):
             self.play(*self.set_heading("从极简到生产级：和 torch.autograd 对拍"),
                       run_time=self.fit(0.8))
@@ -701,7 +710,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.05, self.remaining() - 0.6))
             self.play(*[FadeOut(m) for m in [lt, rt, rows, summary]], run_time=self.fit(0.6))
 
-        # ── S13 小结与下一章 ─────────────────────────────────────────────
+        # ── S13 Summary and the next chapter ─────────────────────────────
         with self.shot("S13"):
             steps_ = [("前向：记录计算图", theme.OUTPUT),
                       ("反向：按拓扑序的逆序", theme.GRAD),

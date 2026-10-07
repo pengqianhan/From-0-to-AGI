@@ -1,9 +1,13 @@
-"""第 11 章视频：评测：先定考卷 —— 考什么、怎么判、差多少才算赢
+"""Chapter 11 video: evaluation: set the exam first.
 
-画面里的数值都由 ../code/ 中的代码真实计算（见 script.md 事实清单）；已核实的外部数字（基准题量、
-BFCL 权重、Qwen3.5-0.8B 模型卡分数）写在本文件的常量里并注明出处。
-较慢的模拟（04 的 simulations()，单线程约 10 秒）缓存到 video/out/cache.json。
-渲染：bash chapters/11-evaluation/video/build.sh
+What to test, how to score, and what counts as a win.
+
+The code in ../code/ calculates the numbers in the frames (see the fact list in script.md).
+Verified external numbers (number of questions in the benchmarks, BFCL weights, the scores in the
+Qwen3.5-0.8B model card) are constants in this file, with their sources.
+The slow simulation (simulations() of 04, about 10 s on one thread) is cached in
+video/out/cache.json.
+Render: bash chapters/11-evaluation/video/build.sh
 """
 
 from __future__ import annotations
@@ -59,7 +63,10 @@ def _load(name: str):  # noqa: ANN202
 
 @lru_cache(maxsize=1)
 def data() -> dict:
-    """所有画面数字：优先读缓存，否则调用 code/ 里的函数现算。"""
+    """All numbers in the frames.
+
+    Read the cache first. If the cache is missing, call the functions in code/.
+    """
     if CACHE.exists():
         d = json.loads(CACHE.read_text(encoding="utf-8"))
         if d.get("version") == CACHE_VERSION:
@@ -88,7 +95,7 @@ def data() -> dict:
     vals, counts = np.unique(np.round(stats, 6), return_counts=True)
     a = [1, 1, 0, 1, 0, 1, 1, 0, 1, 1]
     b = [1, 0, 0, 1, 0, 1, 0, 0, 1, 1]
-    rng = np.random.default_rng(1)  # 与 04 的手算例子相同的种子
+    rng = np.random.default_rng(1)  # the same seed as the worked example of 04
     resamples = [rng.integers(0, 10, size=10).tolist() for _ in range(2)]
 
     sims = boot.simulations()
@@ -115,8 +122,9 @@ def data() -> dict:
     return d
 
 
-# code/ 里的格式名、判定结论、变体名已改成英文；视频仍显示原来的中文。
-# 旧缓存里存的是中文，所以查不到时原样返回。
+# The format names, verdicts, and variant names in code/ are now English. The video still
+# shows the Chinese names. An old cache stores the Chinese names, so name_zh() returns a name
+# that is not in the table unchanged.
 NAME_ZH = {
     "Cloze": "完形填空",
     "Cloze + trailing space": "完形填空 + 末尾空格",
@@ -139,8 +147,8 @@ def name_zh(s: str) -> str:
     return NAME_ZH.get(s, s)
 
 
-# 已核实的外部数字（出处见 README 与 script.md 事实清单）
-QWEN35 = {"MMLU-Redux": (48.5, 59.5), "IFEval": (52.1, 44.0)}  # (非思考, 思考)，Qwen3.5-0.8B 模型卡
+# Verified external numbers (for the sources, see the README and the fact list in script.md)
+QWEN35 = {"MMLU-Redux": (48.5, 59.5), "IFEval": (52.1, 44.0)}  # (non-thinking, thinking), model card
 BFCL_WEIGHTS = [("Non-Live", 10), ("Live", 10), ("相关性", 10), ("Multi-Turn", 30), ("Agentic", 40)]
 BENCH_CARDS = [
     ("MMLU-Redux", "英文知识（修过错）", "5,700 题"),
@@ -166,14 +174,14 @@ class ChapterScene(NarratedScene):
     def construct(self):  # noqa: C901, PLR0915
         d = data()
 
-        # ── S01 片头 ─────────────────────────────────────────────────────────
+        # ── S01 Opening ──────────────────────────────────────────────────────
         with self.shot("S01"):
             c = self.chapter_card()
             self.play(FadeIn(c), run_time=self.fit(1.2))
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(c), run_time=self.fit(0.6))
 
-        # ── S02 凭什么说"超过" ──────────────────────────────────────────────
+        # ── S02 How can we say "ahead" ──────────────────────────────────────
         with self.shot("S02"):
             self.play(*self.set_heading("凭什么说“超过”？"), run_time=self.fit(0.6))
             ours = VGroup(card(3.4, 1.1, theme.OUTPUT), zh("我们的模型", 30, theme.OUTPUT))
@@ -193,7 +201,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(ours, them, q, lines)), run_time=self.fit(0.5))
 
-        # ── S03 时间线 ───────────────────────────────────────────────────────
+        # ── S03 Timeline ─────────────────────────────────────────────────────
         with self.shot("S03"):
             self.play(*self.set_heading("先定考卷，再开始训练"), run_time=self.fit(0.6))
             axis = Arrow([-6.4, 0.9, 0], [6.4, 0.9, 0], buff=0, stroke_width=3, color=theme.MUTED)
@@ -226,7 +234,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeOut(VGroup(axis, nodes, dev, dev_t, box, box_t, arrow)),
                       run_time=self.fit(0.5))
 
-        # ── S04 在测试集上挑，分数会虚高 ─────────────────────────────────────
+        # ── S04 A pick on the test set inflates the score ────────────────────
         with self.shot("S04"):
             self.play(*self.set_heading("在测试集上挑：分数会虚高"), run_time=self.fit(0.6))
             ax = Axes(x_range=[0, 4, 1], y_range=[0.45, 0.58, 0.05], x_length=8, y_length=4.2,
@@ -265,7 +273,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeOut(VGroup(ax, ylabels, base, base_t, bars, legend, note)),
                       run_time=self.fit(0.5))
 
-        # ── S05 通用组 ───────────────────────────────────────────────────────
+        # ── S05 The general group ────────────────────────────────────────────
         with self.shot("S05"):
             self.play(*self.set_heading("通用组：如实报告"), run_time=self.fit(0.6))
             cards = VGroup()
@@ -286,7 +294,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(cards, hl, lock)), run_time=self.fit(0.5))
 
-        # ── S06 专项组 ───────────────────────────────────────────────────────
+        # ── S06 The target group ─────────────────────────────────────────────
         with self.shot("S06"):
             self.play(*self.set_heading("专项组：决定“超过”与否"), run_time=self.fit(0.6))
             title = zh("BFCL V4 总分的权重", 24, theme.MUTED).move_to([0, 2.45, 0])
@@ -330,7 +338,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(title, segs, ast_t, mt_t, ag_t, ace, tau)), run_time=self.fit(0.5))
 
-        # ── S07 对数似然 vs 生成 ─────────────────────────────────────────────
+        # ── S07 Log-likelihood vs generation ─────────────────────────────────
         with self.shot("S07"):
             self.play(*self.set_heading("两种判分：对数似然 vs 生成"), run_time=self.fit(0.6))
             ex = d["example"]
@@ -372,7 +380,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(stem, hdr2, labels, b2, foot)), run_time=self.fit(0.5))
 
-        # ── S08 提示词敏感性 ─────────────────────────────────────────────────
+        # ── S08 Prompt sensitivity ───────────────────────────────────────────
         with self.shot("S08"):
             self.play(*self.set_heading("只换提示词格式，分数差几倍"), run_time=self.fit(0.6))
             rows = d["formats"]
@@ -403,7 +411,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(chance, chance_t, items, ref)), run_time=self.fit(0.5))
 
-        # ── S09 思考模式 ─────────────────────────────────────────────────────
+        # ── S09 Thinking mode ────────────────────────────────────────────────
         with self.shot("S09"):
             self.play(*self.set_heading("对手两种模式都测，取较高分"), run_time=self.fit(0.6))
             ax = Axes(x_range=[0, 2, 1], y_range=[0, 70, 10], x_length=7, y_length=3.8,
@@ -431,7 +439,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(ax, src, bars, rule)), run_time=self.fit(0.5))
 
-        # ── S10 配对 bootstrap ───────────────────────────────────────────────
+        # ── S10 Paired bootstrap ─────────────────────────────────────────────
         with self.shot("S10"):
             self.play(*self.set_heading("配对 bootstrap：差几分才算赢"), run_time=self.fit(0.6))
             a, b = d["hand"]["a"], d["hand"]["b"]
@@ -481,7 +489,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(nums, ra, rb, legend, dr, mean_t, rule)), run_time=self.fit(0.5))
 
-        # ── S11 极小配置演示：bootstrap 直方图 ───────────────────────────────
+        # ── S11 Tiny-configuration demo: bootstrap histogram ─────────────────
         with self.shot("S11"):
             self.play(*self.set_heading("冒烟测试：grpo vs sft（toy_mc，30 题）"), run_time=self.fit(0.6))
             badge = self.show_badge()
@@ -527,7 +535,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(warn), FadeOut(badge), run_time=self.fit(0.5))
 
-        # ── S12 题数与区间宽度 ───────────────────────────────────────────────
+        # ── S12 Number of questions and interval width ───────────────────────
         with self.shot("S12"):
             self.play(*self.set_heading("题数决定能看清多小的差距"), run_time=self.fit(0.6))
             lo_v, hi_v, x_lo, x_hi = -0.15, 0.2, -3.0, 6.3
@@ -557,7 +565,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(zero, zero_t, true_l, true_t, rows, note)), run_time=self.fit(0.5))
 
-        # ── S13 污染：13-gram ────────────────────────────────────────────────
+        # ── S13 Contamination: 13-gram ───────────────────────────────────────
         with self.shot("S13"):
             self.play(*self.set_heading("数据污染：13-gram 重叠检查"), run_time=self.fit(0.6))
             toks = d["item_tokens"]
@@ -602,7 +610,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(cap, words, win_t, tab, toy)), run_time=self.fit(0.5))
 
-        # ── S14 预注册 ───────────────────────────────────────────────────────
+        # ── S14 Preregistration ──────────────────────────────────────────────
         with self.shot("S14"):
             self.play(*self.set_heading("预注册：把考卷锁进 git"), run_time=self.fit(0.6))
             doc = card(7.6, 4.6, theme.PARAM).move_to([-2.7, 0.0, 0])
@@ -628,7 +636,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(doc, title, lines, side, opp, cost)), run_time=self.fit(0.5))
 
-        # ── S15 小结 ─────────────────────────────────────────────────────────
+        # ── S15 Summary ──────────────────────────────────────────────────────
         with self.shot("S15"):
             self.play(*self.set_heading("小结"), run_time=self.fit(0.6))
             kws = ["先定考卷", "看清考什么", "写死提示词", "配对 bootstrap", "防污染", "锁进 git"]

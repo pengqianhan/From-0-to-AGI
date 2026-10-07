@@ -1,7 +1,7 @@
-"""第 1 章视频：y = ax + b —— 从一条直线学会"训练"
+"""Chapter 1 video: y = ax + b — learn "training" with a straight line.
 
-画面里的所有数值都由 ../code/ 中的代码真实计算（见 script.md 事实清单 F4–F8）。
-渲染：bash chapters/01-linear-regression/video/build.sh
+The code in ../code/ calculates all numbers in the frames (see the fact list F4–F8 in script.md).
+Render: bash chapters/01-linear-regression/video/build.sh
 """
 
 from __future__ import annotations
@@ -63,7 +63,8 @@ N = len(X)
 HIST = fit.gradient_descent(X, Y, lr=0.05, steps=200)
 A_LS, B_LS = np.polyfit(X, Y, deg=1)
 LR_C = lrmod.critical_lr(X)
-# 损失是二次函数：L(θ) = L* + ½ (θ−θ*)ᵀ H (θ−θ*)，等高线是精确的椭圆
+# The loss is a quadratic function: L(θ) = L* + ½ (θ−θ*)ᵀ H (θ−θ*).
+# Thus the contour lines are exact ellipses.
 H = 2 / N * np.array([[np.sum(X**2), np.sum(X)], [np.sum(X), N]])
 THETA_STAR = np.array([A_LS, B_LS])
 L_STAR = fit.mse_loss(A_LS, B_LS, X, Y)
@@ -76,7 +77,10 @@ def mono(text: str, size: float = 24, color: str = theme.FG) -> Text:
 
 
 def loss_ellipse(axes: Axes, level: float, color=theme.MUTED, width=1.5) -> VGroup:
-    """损失 = L* + level 的等高线（椭圆），只画坐标范围内的部分。"""
+    """Contour line (an ellipse) where the loss = L* + level.
+
+    Draw only the part in the range of the axes.
+    """
     evals, evecs = np.linalg.eigh(H)
     radii = np.sqrt(2 * level / evals)
     pts = []
@@ -87,7 +91,10 @@ def loss_ellipse(axes: Axes, level: float, color=theme.MUTED, width=1.5) -> VGro
 
 
 def clipped_path(axes: Axes, points: list[tuple[float, float]], color: str) -> VMobject:
-    """参数轨迹折线；超出坐标范围的部分截断（发散时会飞出画面）。"""
+    """Polyline of the parameter path.
+
+    Cut the parts outside the axes (a diverging path flies out of the frame).
+    """
     xr, yr = axes.x_range, axes.y_range
     kept = []
     for a, b in points:
@@ -105,7 +112,7 @@ class ChapterScene(NarratedScene):
     chapter_title = "y = ax + b"
 
     def construct(self) -> None:
-        # ── S01 片头 ─────────────────────────────────────────────────────
+        # ── S01 Opening ──────────────────────────────────────────────────
         with self.shot("S01"):
             card = self.chapter_card()
             sub = zh("从一条直线学会“训练”", 32, theme.HIGHLIGHT).next_to(card, DOWN, 0.6)
@@ -114,7 +121,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-        # 左侧数据坐标系，S02–S07 一直保留
+        # Data axes on the left. They stay from S02 to S07.
         axes = Axes(
             x_range=[0, 5.5, 1], y_range=[-2, 14, 2], x_length=6.2, y_length=4.2,
             axis_config={"color": theme.MUTED, "include_numbers": True, "font_size": 20},
@@ -124,7 +131,7 @@ class ChapterScene(NarratedScene):
         yl = MathTex("y", color=theme.MUTED, font_size=30).next_to(axes.y_axis, UP, 0.1)
         dots = VGroup(*[Dot(axes.c2p(x, y), radius=0.05, color=theme.INPUT) for x, y in zip(X, Y)])
 
-        # ── S02 一堆点 ───────────────────────────────────────────────────
+        # ── S02 A set of points ──────────────────────────────────────────
         with self.shot("S02"):
             self.play(*self.set_heading("问题：给定数据，找一条最合适的直线"), Create(axes), FadeIn(xl), FadeIn(yl), run_time=self.fit(1.5))
             self.play(LaggedStart(*[FadeIn(d, scale=0.5) for d in dots], lag_ratio=0.08),
@@ -135,7 +142,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() * 0.45)
             self.play(Write(q), run_time=self.fit(1.5))
 
-        # ── S03 模型 ─────────────────────────────────────────────────────
+        # ── S03 The model ────────────────────────────────────────────────
         a_t, b_t = ValueTracker(0.8), ValueTracker(5.0)
         line = always_redraw(lambda: axes.plot(
             lambda x: a_t.get_value() * x + b_t.get_value(), x_range=[0, 5.3],
@@ -159,7 +166,7 @@ class ChapterScene(NarratedScene):
             params = zh("参数 = 模型知道的一切", 26, theme.FG).move_to([3.4, -0.8, 0])
             self.play(FadeIn(params), run_time=self.fit(1))
 
-        # ── S04 损失 ─────────────────────────────────────────────────────
+        # ── S04 The loss ─────────────────────────────────────────────────
         with self.shot("S04"):
             self.play(FadeOut(a_lbl), FadeOut(params),
                       a_t.animate.set_value(HIST[0][0]), b_t.animate.set_value(HIST[0][1]),
@@ -180,7 +187,7 @@ class ChapterScene(NarratedScene):
             val = zh(f"现在：L = {HIST[0][2]:.2f}", 28, theme.HIGHLIGHT).move_to([3.4, -1.5, 0])
             self.play(FadeIn(val), run_time=self.fit(1))
 
-        # ── S05 损失是一个碗 ─────────────────────────────────────────────
+        # ── S05 The loss is a bowl ───────────────────────────────────────
         cax = Axes(
             x_range=[-1.5, 4, 1], y_range=[-2, 6, 2], x_length=4.8, y_length=3.5,
             axis_config={"color": theme.MUTED, "include_numbers": True, "font_size": 18},
@@ -204,7 +211,7 @@ class ChapterScene(NarratedScene):
             bottom = zh("碗底", 24, theme.HIGHLIGHT).next_to(star, RIGHT, 0.1)
             self.play(FadeIn(bottom), run_time=self.fit(0.6))
 
-        # ── S06 梯度 ─────────────────────────────────────────────────────
+        # ── S06 The gradient ─────────────────────────────────────────────
         start = Dot(cax.c2p(HIST[0][0], HIST[0][1]), color=theme.FG, radius=0.07)
         with self.shot("S06"):
             self.play(*self.set_heading("梯度：脚下的坡度"), FadeOut(bowl),
@@ -235,7 +242,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeOut(box), FadeOut(grads), FadeOut(up_arrow), FadeOut(up_lbl),
                       FadeOut(down_arrow), run_time=self.fit(0.6))
 
-        # ── S07 梯度下降 ─────────────────────────────────────────────────
+        # ── S07 Gradient descent ─────────────────────────────────────────
         with self.shot("S07"):
             rule = MathTex(r"a \leftarrow a-\eta\,\frac{\partial L}{\partial a}", r"\quad",
                            r"b \leftarrow b-\eta\,\frac{\partial L}{\partial b}",
@@ -274,7 +281,7 @@ class ChapterScene(NarratedScene):
                 )
             step_t.set_value(200)
 
-        # ── S08 为什么不直接用公式算 ─────────────────────────────────────
+        # ── S08 Why not calculate it with the formula ────────────────────
         with self.shot("S08"):
             everything = VGroup(axes, xl, yl, dots, cax, cal, cbl, ellipses, star, bottom, start,
                                 trail, table, model)
@@ -302,7 +309,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [gd, ls, curve_ax, curve, qmark]],
                       run_time=self.fit(0.6))
 
-        # ── S09 学习率三种情况 ───────────────────────────────────────────
+        # ── S09 Three cases of the learning rate ─────────────────────────
         with self.shot("S09"):
             self.play(*self.set_heading("学习率 η：太小、合适、太大"), run_time=self.fit(0.6))
             configs = [(0.005, "太小：慢", theme.INPUT), (0.05, "合适：收敛", theme.OUTPUT),
@@ -328,7 +335,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(panels), FadeOut(final), run_time=self.fit(0.6))
 
-        # ── S10 临界学习率 ───────────────────────────────────────────────
+        # ── S10 The critical learning rate ───────────────────────────────
         with self.shot("S10"):
             nl = NumberLine(x_range=[0, 0.15, 0.025], length=10, color=theme.MUTED,
                             include_numbers=True, decimal_number_config={"num_decimal_places": 3},
@@ -354,7 +361,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [nl, good, bad, crit, crit_lbl, ok, ng]],
                       run_time=self.fit(0.6))
 
-        # ── S11 从极简到生产级 ───────────────────────────────────────────
+        # ── S11 From minimal code to production code ─────────────────────
         with self.shot("S11"):
             left_code = VGroup(*[mono(s, 22) for s in [
                 "err = (a*x + b) - y",
@@ -398,7 +405,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [lt, rt, left_code, right_code, prev, same]],
                       run_time=self.fit(0.6))
 
-        # ── S12 和大模型的关系 ───────────────────────────────────────────
+        # ── S12 The link to large models ─────────────────────────────────
         with self.shot("S12"):
             names = [("模型", theme.OUTPUT), ("损失", theme.GRAD), ("梯度", theme.GRAD),
                      ("更新", theme.PARAM)]

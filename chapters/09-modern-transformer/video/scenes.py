@@ -1,8 +1,8 @@
-"""第 9 章视频：现代 Transformer —— 把注意力搭成一个会写字的模型
+"""Chapter 9 video: the modern Transformer — build attention into a model that writes text.
 
-画面里的所有数值都由 ../code/ 中的代码真实计算（见 script.md 事实清单 F2–F12）。
-训练结果读自 code/out/tiny_transformer.pt（先运行 code/02_tiny_transformer.py）。
-渲染：bash chapters/09-modern-transformer/video/build.sh
+The code in ../code/ calculates all numbers in the frames (see the fact list F2–F12 in script.md).
+The training results come from code/out/tiny_transformer.pt (run code/02_tiny_transformer.py first).
+Render: bash chapters/09-modern-transformer/video/build.sh
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ sys.path.insert(0, str(ROOT))
 def _load(name: str, filename: str):
     spec = importlib.util.spec_from_file_location(name, CODE / filename)
     mod = importlib.util.module_from_spec(spec)
-    with contextlib.redirect_stdout(io.StringIO()):  # 这些脚本在导入时会打印结果
+    with contextlib.redirect_stdout(io.StringIO()):  # the scripts print results at import
         spec.loader.exec_module(mod)
     return mod
 
@@ -67,7 +67,7 @@ pos = _load("position", "01_position.py")
 qkn = _load("qk_norm", "05_qk_norm.py")
 shp = _load("shapes", "03_shapes.py")
 
-# 03_shapes.py 的形状标签已改成英文；视频仍显示原来的中文标签
+# The shape labels in 03_shapes.py are now English. The video still shows the Chinese labels.
 FLOW_ZH = {
     "embedding lookup": "embedding 查表",
     "q = x·Wq → split heads": "q = x·Wq → 拆头",
@@ -99,10 +99,13 @@ def box(label: str, color: str, w: float = 3.0, h: float = 0.62, size: float = 2
     return VGroup(r, t)
 
 
-# ── 由代码算出的数字 ────────────────────────────────────────────────────────
+# ── Numbers that the code calculates ────────────────────────────────────────
 @lru_cache(maxsize=1)
 def position_numbers():
-    """S04：打乱前文前后，最后一个位置的输出差；S05：不同 (m, n) 的点积。"""
+    """S04: output difference at the last position, before and after a shuffle of the context.
+
+    S05: dot products for different (m, n).
+    """
     diffs = []
     for rope in (False, True):
         oa = pos.causal_attention(pos.a, pos.wq, pos.wk, pos.wv, rope)[-1]
@@ -115,7 +118,10 @@ def position_numbers():
 
 @lru_cache(maxsize=1)
 def qk_rows():
-    """S08：放大 s 倍时第 0 行的注意力权重（不加 / 加 QK-Norm），以及平均最大权重。"""
+    """S08: attention weights of row 0 when s scales them, and the mean max weight.
+
+    Without and with QK-Norm.
+    """
     out = {}
     for s in (1, 4, 16):
         q, k = qkn.q0 * s, qkn.k0 * s
@@ -135,7 +141,10 @@ def trained():
 
 @lru_cache(maxsize=1)
 def parity_numbers():
-    """S12：极简 vs zero 的 logits 差、贪心生成是否一致（与 code/04_parity_with_zero.py 相同）。"""
+    """S12: logits difference of minimal vs zero, and whether greedy generation agrees.
+
+    The same check as code/04_parity_with_zero.py.
+    """
     from zero.config import ModelConfig
     from zero.generate import generate as zero_generate
     from zero.model import Transformer
@@ -161,7 +170,10 @@ def parity_numbers():
 
 
 def printable(s: str, width: int, lines: int) -> list[str]:
-    """把采样文本整理成可显示的若干行：不可打印的字符（非法字节、控制字符）显示成 ·。"""
+    """Make sampled text into lines that can be shown.
+
+    Characters that cannot be printed (invalid bytes, control characters) show as ·.
+    """
     out = []
     for raw in s.split("\n"):
         clean = "".join(ch if 32 <= ord(ch) < 127 else "·" for ch in raw)
@@ -182,7 +194,7 @@ class ChapterScene(NarratedScene):
     chapter_title = "现代 Transformer"
 
     def construct(self) -> None:
-        # ── S01 片头 ─────────────────────────────────────────────────────
+        # ── S01 Opening ──────────────────────────────────────────────────
         with self.shot("S01"):
             card = self.chapter_card()
             sub = zh("把注意力搭成一个会写字的模型", 32, theme.HIGHLIGHT).next_to(card, DOWN, 0.6)
@@ -191,7 +203,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-        # ── S02 全景 ─────────────────────────────────────────────────────
+        # ── S02 The full view ────────────────────────────────────────────
         with self.shot("S02"):
             self.play(*self.set_heading("全景：查表 → N 个 Block → 打分"), run_time=self.fit(0.8))
             specs = [("token id：R O M E O …", theme.INPUT), ("Embedding 查表", theme.PARAM),
@@ -221,7 +233,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(stack), FadeOut(n_lbl), FadeOut(steps), run_time=self.fit(0.6))
 
-        # ── S03 Block 内部 ───────────────────────────────────────────────
+        # ── S03 Inside a Block ───────────────────────────────────────────
         with self.shot("S03"):
             self.play(*self.set_heading("Block：Pre-Norm + 残差"), run_time=self.fit(0.8))
             y0 = -1.3
@@ -264,7 +276,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in (stream, s_lbl, b1, b2, l1, l2, f, hl, pn)],
                       run_time=self.fit(0.6))
 
-        # ── S04 注意力分不清顺序 ─────────────────────────────────────────
+        # ── S04 Attention cannot tell the order ──────────────────────────
         (d_none, d_rope), dots = position_numbers()
         with self.shot("S04"):
             self.play(*self.set_heading("问题：注意力分不清顺序"), run_time=self.fit(0.8))
@@ -282,7 +294,8 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(r1[0]), FadeIn(r2[0]), run_time=self.fit(1))
             self.play(Create(r1[1]), Create(r2[1]), run_time=self.fit(1.5))
             t1 = zh("“了”的输出，两句的最大差", 24, theme.FG).move_to([3.6, 1.3, 0])
-            # 两句的差别在浮点误差以内；有的机器上恰好是 0（sci(0) 会显示成 0.00×10⁰）
+            # The difference between the two sentences is in the floating-point error.
+            # On some machines it is exactly 0 (sci(0) shows 0.00×10⁰).
             v1 = VGroup(zh("无位置信息：", 24, theme.MUTED),
                         MathTex(sci(d_none) if d_none > 0 else "0", font_size=38,
                                 color=theme.GRAD)).arrange(RIGHT, buff=0.2)
@@ -300,7 +313,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in (r1, r2, t1, v1, note, v2)], run_time=self.fit(0.6))
 
-        # ── S05 RoPE：旋转 ───────────────────────────────────────────────
+        # ── S05 RoPE: rotation ───────────────────────────────────────────
         with self.shot("S05"):
             self.play(*self.set_heading("RoPE：按位置把 q、k 旋转"), run_time=self.fit(0.8))
             center = np.array([-3.6, -0.1, 0])
@@ -356,7 +369,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in (circ, rot, key, rows, head, q_arrow, k_arrow, ang, labels)],
                       run_time=self.fit(0.6))
 
-        # ── S06 不同的转速 ───────────────────────────────────────────────
+        # ── S06 Different rotation speeds ────────────────────────────────
         with self.shot("S06"):
             self.play(*self.set_heading("不同维度对，转速不同"), run_time=self.fit(0.8))
             inv = (10000.0 ** (-torch.arange(0, pos.D, 2).float() / pos.D)).tolist()
@@ -408,7 +421,8 @@ class ChapterScene(NarratedScene):
                 Arrow(mul.get_right(), down.get_left(), buff=0.08, stroke_width=3, color=theme.MUTED),
             )
             cont = zh("内容", 20, theme.PARAM).next_to(upb, DOWN, 0.12)
-            # 右侧：8 个维度上的门、内容、相乘（随机向量真实计算）
+            # Right: the gate, the content, and their product on 8 dimensions
+            # (real calculation with random vectors).
             g = torch.Generator().manual_seed(3)
             z, u = torch.randn(8, generator=g) * 2, torch.randn(8, generator=g)
             gv = torch.nn.functional.silu(z)
@@ -485,7 +499,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in (lab_t, lab_b, base_t, base_b, bt, bb, inf, cap)],
                       run_time=self.fit(0.6))
 
-        # ── S09 共享 embedding ───────────────────────────────────────────
+        # ── S09 Tied embeddings ──────────────────────────────────────────
         with self.shot("S09"):
             self.play(*self.set_heading("共享 embedding：一张表，两头用"), run_time=self.fit(0.8))
             emb = VGroup(Rectangle(width=1.6, height=3.0, color=theme.PARAM, fill_opacity=0.25),
@@ -499,7 +513,7 @@ class ChapterScene(NarratedScene):
             same = zh("同一个矩阵：lm_head.weight = tok_emb.weight", 22, theme.HIGHLIGHT).move_to([-3.6, -1.6, 0])
             self.play(Transform(head[0], emb[0].copy()), FadeOut(head[1]), run_time=self.fit(1.2))
             self.play(FadeIn(same), run_time=self.fit(0.8))
-            # 右侧：参数账本（由 zero.model.count_params 计算）
+            # Right: the parameter ledger (calculated by zero.model.count_params)
             rows = []
             for name, cfg in (("Qwen3-0.6B", shp.qwen3_06b), ("主线 configs/main", shp.m)):
                 cfg.tie_embeddings = True
@@ -527,7 +541,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in (emb, head[0], same, chart, rule)], run_time=self.fit(0.6))
 
-        # ── S10 张量形状数据流 ───────────────────────────────────────────
+        # ── S10 Tensor-shape data flow ───────────────────────────────────
         with self.shot("S10"):
             self.play(*self.set_heading("主线模型一次前向（B = 8, T = 4096）"), run_time=self.fit(0.8))
             flow = [(_flow_zh(a.strip()), _flow_zh(b.split("  ←")[0])) for a, b in shp.flow]
@@ -562,7 +576,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(lines), FadeOut(cursor), *[FadeOut(n) for n in shown], run_time=self.fit(0.6))
 
-        # ── S11 训练 ─────────────────────────────────────────────────────
+        # ── S11 Training ─────────────────────────────────────────────────
         _, ck = trained()
         hist = ck["history"]
         with self.shot("S11"):
@@ -599,7 +613,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in (ax, xl, yl, curve, dots, lbls, agrp)], run_time=self.fit(0.6))
 
-        # ── S12 两层对拍 ─────────────────────────────────────────────────
+        # ── S12 Two-level parity check ───────────────────────────────────
         diff, same = parity_numbers()
         with self.shot("S12"):
             self.play(*self.set_heading("两层对拍：极简版 = zero = Qwen3"), run_time=self.fit(0.8))
@@ -638,7 +652,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in (b1, b2, b3, a1, a2, t1, t2, res, tests, cmd)],
                       run_time=self.fit(0.6))
 
-        # ── S13 历史对照与下一章 ─────────────────────────────────────────
+        # ── S13 History and the next chapter ─────────────────────────────
         with self.shot("S13"):
             self.play(*self.set_heading("GPT-2（2019）→ 现代 Transformer"), run_time=self.fit(0.8))
             pairs = [("LayerNorm", "RMSNorm"), ("学出来的位置表（1024）", "RoPE"),
@@ -660,7 +674,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - total * 0.45))
             self.play(FadeOut(table), FadeOut(same_bone), *self.set_heading("为什么生成这么慢？"),
                       run_time=self.fit(0.6))
-            # 生成：每出一个字节都把整段重算一遍
+            # Generation: calculate the full sequence again for each new byte
             text = "ROMEO:  And yield for what be"
             line = mono(text.replace(" ", "·"), 30, theme.FG).move_to([0, 0.8, 0])
             chars = VGroup(*line.submobjects)

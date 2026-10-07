@@ -1,10 +1,12 @@
-"""第 17 章视频：蒸馏 —— 让小模型向大模型学
+"""Video for Chapter 17: distillation — a small model learns from a large model.
 
-画面里的数值都由 ../code/ 中的代码真实计算（见 script.md 事实清单）：
-  01_soft_labels.py（软标签、温度、梯度）、02_toy_distill.py（玩具实验，结果缓存在 out/toy_cache.json）、
-  03_forward_reverse_kl.py（双峰）、04_rejection_sampling.py（漏斗）、05_shared_vocab.py（参数账）；
-S11 的数字读自冒烟测试的真实输出 out/smoke/distill/（极小配置演示）。
-渲染：bash chapters/17-distillation/video/build.sh --preview
+The code in ../code/ calculates all values on screen (see the fact list in script.md):
+  01_soft_labels.py (soft labels, temperature, gradient),
+  02_toy_distill.py (toy experiment; the cache out/toy_cache.json keeps the results),
+  03_forward_reverse_kl.py (two peaks), 04_rejection_sampling.py (funnel),
+  05_shared_vocab.py (parameter count).
+The numbers in S11 come from the real smoke-test output out/smoke/distill/ (tiny-configuration demo).
+Render: bash chapters/17-distillation/video/build.sh --preview
 """
 
 from __future__ import annotations
@@ -62,7 +64,10 @@ soft = _load("soft_labels", "01_soft_labels.py")
 
 @lru_cache(maxsize=1)
 def toy_results() -> dict:
-    """02 的玩具实验单线程 CPU 约 2 分钟：第一次跑完缓存到 out/toy_cache.json。"""
+    """Run the toy experiment of 02 (about 2 min on 1 CPU thread).
+
+    The first run caches the results in out/toy_cache.json.
+    """
     cache = HERE / "out" / "toy_cache.json"
     if cache.exists():
         return json.loads(cache.read_text())
@@ -104,7 +109,10 @@ def vocab_params() -> list[tuple[str, int, float]]:
 
 @lru_cache(maxsize=1)
 def smoke() -> dict:
-    """修复判分器之前那次冒烟测试的记录（冻结在 data/ 里；重跑冒烟测试会覆盖 out/smoke）。"""
+    """Return the record of the smoke test before the grader fix.
+
+    The record is frozen in data/, because a new smoke test overwrites out/smoke.
+    """
     return json.loads((HERE / "data" / "smoke_before_fix.json").read_text(encoding="utf-8"))
 
 
@@ -119,7 +127,10 @@ def box(w: float, h: float, color: str, opacity: float = 0.85) -> Rectangle:
 
 def bars(values, labels, x0: float, y0: float, width: float, max_h: float, color: str,
          vmax: float = 1.0, fmt: str = "{:.3f}", size: float = 18) -> VGroup:
-    """底边在 y0 的竖直柱状图（值都 ≥ 0）。返回 VGroup(柱子们, 标签们, 数值们)。"""
+    """Draw a vertical bar chart with its base at y0 (all values ≥ 0).
+
+    Return VGroup(bars, labels, values).
+    """
     n = len(values)
     step = width / n
     cols, labs, nums = VGroup(), VGroup(), VGroup()
@@ -135,7 +146,10 @@ def bars(values, labels, x0: float, y0: float, width: float, max_h: float, color
 
 def signed_bars(values, labels, x0: float, y0: float, width: float, scale: float,
                 size: float = 18) -> VGroup:
-    """以 y0 为零线的正负柱状图：正值（往下压）红色，负值（往上推）绿色。"""
+    """Draw a bar chart with positive and negative values; y0 is the zero line.
+
+    Positive values (push down) are red. Negative values (push up) are green.
+    """
     n = len(values)
     step = width / n
     g = VGroup(Line([x0, y0, 0], [x0 + width, y0, 0], color=theme.MUTED, stroke_width=2))
@@ -162,7 +176,7 @@ class ChapterScene(NarratedScene):
     def clear_all(self, *mobs) -> None:
         self.play(FadeOut(VGroup(*mobs)), run_time=self.fit(0.6))
 
-    # ── S01 片头 ─────────────────────────────────────────────────────────
+    # ── S01 Opening ──────────────────────────────────────────────────────
     def s01(self) -> None:
         with self.shot("S01"):
             card = self.chapter_card()
@@ -172,7 +186,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-    # ── S02 大家都这么做 ─────────────────────────────────────────────────
+    # ── S02 All developers do this ───────────────────────────────────────
     def s02(self) -> None:
         with self.shot("S02"):
             self.play(*self.set_heading("今天的小模型，几乎都是蒸馏出来的"), run_time=self.fit(0.8))
@@ -201,7 +215,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.clear_all(t, tl, s, sl, ar, g)
 
-    # ── S03 one-hot vs 软标签 ────────────────────────────────────────────
+    # ── S03 One-hot vs soft labels ───────────────────────────────────────
     def s03(self) -> None:
         with self.shot("S03"):
             self.play(*self.set_heading("one-hot 与教师的软标签"), run_time=self.fit(0.8))
@@ -225,7 +239,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.clear_all(ctx, left, right, lt, rt, note)
 
-    # ── S04 温度 ─────────────────────────────────────────────────────────
+    # ── S04 Temperature ──────────────────────────────────────────────────
     def s04(self) -> None:
         with self.shot("S04"):
             self.play(*self.set_heading("温度：把暗知识放大"), run_time=self.fit(0.8))
@@ -255,7 +269,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.clear_all(f, cur, inf, keep)
 
-    # ── S05 KD 损失与梯度 ────────────────────────────────────────────────
+    # ── S05 KD loss and gradient ─────────────────────────────────────────
     def s05(self) -> None:
         with self.shot("S05"):
             self.play(*self.set_heading("KD 损失与它的梯度"), run_time=self.fit(0.8))
@@ -280,11 +294,11 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.clear_all(loss, grad, g1, g2, t1, t2, leg)
 
-    # ── S06 同一个词表 ───────────────────────────────────────────────────
+    # ── S06 The same vocabulary ──────────────────────────────────────────
     def s06(self) -> None:
         with self.shot("S06"):
             self.play(*self.set_heading("logits 蒸馏要求同一个分词器"), run_time=self.fit(0.8))
-            cw = 0.62  # 每个汉字的宽度
+            cw = 0.62  # Width of one Chinese character
 
             def row(tokens, y, color, name):
                 g, x = VGroup(), -2.0
@@ -325,7 +339,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.clear_all(s_row, t_row, x2, tab, cap)
 
-    # ── S07 序列级蒸馏 + 玩具实验 ────────────────────────────────────────
+    # ── S07 Sequence-level distillation + toy experiment ─────────────────
     def s07(self) -> None:
         with self.shot("S07"):
             self.play(*self.set_heading("序列级蒸馏：教师写，学生抄"), run_time=self.fit(0.8))
@@ -370,7 +384,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.clear_all(flow, note, g, axis, cap)
 
-    # ── S08 前向 vs 反向 KL ──────────────────────────────────────────────
+    # ── S08 Forward vs reverse KL ────────────────────────────────────────
     def s08(self) -> None:
         with self.shot("S08"):
             self.play(*self.set_heading("前向 KL 覆盖，反向 KL 挑模式"), run_time=self.fit(0.8))
@@ -410,12 +424,12 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.clear_all(ax, pc, valley, vl, leg_p, fc, leg_f, leg_f2, rv, leg_r, leg_r2)
 
-    # ── S09 在线策略蒸馏 ─────────────────────────────────────────────────
+    # ── S09 On-policy distillation ───────────────────────────────────────
     def s09(self) -> None:
         with self.shot("S09"):
             self.play(*self.set_heading("在线策略蒸馏：学生写，教师逐 token 打分"), run_time=self.fit(0.8))
             toks = ["我", "来", "算", "：", "12", "+", "30", "=", "44"]
-            shade = [0.05, 0.05, 0.1, 0.05, 0.1, 0.1, 0.15, 0.1, 0.9]  # 示意：最后一个 token 被重罚
+            shade = [0.05, 0.05, 0.1, 0.05, 0.1, 0.1, 0.15, 0.1, 0.9]  # Schematic: a large penalty on the last token
             g = VGroup()
             x = -6.2
             for tk, s in zip(toks, shade):
@@ -431,7 +445,7 @@ class ChapterScene(NarratedScene):
             f = MathTex(r"\text{advantage}_t = -\left(\log p_S(y_t) - \log p_T(y_t)\right)",
                         font_size=34, color=theme.PARAM).move_to([-2.9, 0.1, 0])
             self.play(Write(f), run_time=self.fit(1.2))
-            # Qwen3 表 21
+            # Qwen3 report, Table 21
             hdr = VGroup(zh("Qwen3-8B", 20, theme.MUTED), zh("AIME'24", 20, theme.MUTED),
                          zh("GPU 时", 20, theme.MUTED))
             data = [("+ 强化学习", "67.6", "17,920", theme.INPUT), ("+ 在线策略蒸馏", "74.4", "1,800", theme.OUTPUT)]
@@ -455,7 +469,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.clear_all(g, lab1, lab2, f, tab, src, who, no)
 
-    # ── S10 拒绝采样的漏斗 ───────────────────────────────────────────────
+    # ── S10 The funnel of rejection sampling ─────────────────────────────
     def s10(self) -> None:
         with self.shot("S10"):
             self.play(*self.set_heading("拒绝采样：多采几个，只留验证过的"), run_time=self.fit(0.8))
@@ -486,7 +500,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.clear_all(g, sim, moto)
 
-    # ── S11 验证器漏洞（极小配置演示）──────────────────────────────────────
+    # ── S11 A hole in the verifier (tiny-configuration demo) ───────────────
     def s11(self) -> None:
         with self.shot("S11"):
             self.play(*self.set_heading("验证器只保证它检查的东西"), run_time=self.fit(0.8))
@@ -519,7 +533,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.clear_all(badge, nums, sub, u, a, ut, at, why, loss)
 
-    # ── S12 许可证 ───────────────────────────────────────────────────────
+    # ── S12 Licenses ─────────────────────────────────────────────────────
     def s12(self) -> None:
         with self.shot("S12"):
             self.play(*self.set_heading("教师的许可证：读原文"), run_time=self.fit(0.8))
@@ -546,7 +560,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.clear_all(g, rule)
 
-    # ── S13 小结 ─────────────────────────────────────────────────────────
+    # ── S13 Summary ──────────────────────────────────────────────────────
     def s13(self) -> None:
         with self.shot("S13"):
             self.play(*self.set_heading("小结"), run_time=self.fit(0.6))

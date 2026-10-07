@@ -1,10 +1,12 @@
-# 花费账本（ledger）
+# Cost ledger
 
-所有花钱的运行都记在这里（GOAL.md 3.4）。单次预计超过 $100 的运行，"批准"一栏写批准日期与方式。
-第一步（课程阶段）不花 GPU 钱，本表为空。
+**English** · [中文](ledger.zh.md)
 
-| 日期 | 阶段 / 用途 | GPU 型号 × 数量 | 卡时 | 单价 ($/卡时) | 金额 ($) | 批准 | 结果链接 |
+Record all runs that cost money here (GOAL.md 3.4). For a single run with an expected cost of more than $100, write the date and the method of the approval in the "Approval" column.
+Step 1 (the course phase) spends no money on GPUs, so this table is empty.
+
+| Date | Stage / purpose | GPU type × count | GPU-hours | Price ($/GPU-hour) | Amount ($) | Approval | Results link |
 |---|---|---|---:|---:|---:|---|---|
 | | | | | | | | |
 
-**累计：$0 / 预算 $10,000**
+**Total: $0 / budget $10,000**

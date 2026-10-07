@@ -1,14 +1,18 @@
-"""阶段 6 第 9 项的补充：主线 689.5M 模型在单张 RTX 3090 上做 GRPO 采样要多久（随机权重，只测速度）。
+"""Addition to Stage 6, item 9: time of GRPO sampling for the main-line 689.5M model on one RTX 3090.
+
+The weights are random. The script measures only the speed.
 
     CUDA_VISIBLE_DEVICES=0 UV_NO_SYNC=1 uv run python runs/2026-10-01-gpu0-check/grpo_sample_bench.py
 
-`zero.post.grpo.sample_group` 对每个提示词调用一次 `zero.generate.generate`（batch = G，带 KV cache），
-而且**不在 autocast 里**，所以 CUDA 上采样是 FP32。这里按 configs/main/grpo.toml 的 G=16、max_new_tokens=512，
-提示词长度取 300（带工具说明的对话大约这么长），比较：
-  - FP32（与 run_grpo 现在的写法相同）
-  - BF16 autocast 包住 generate（KV cache 仍是 FP32）
-  - 模型整体 .bfloat16()（KV cache 也是 BF16）
-随机权重不会提前遇到 eos，每条都生成满 512 个 token，是"最长回复"的上界。
+`zero.post.grpo.sample_group` calls `zero.generate.generate` one time for each prompt (batch = G,
+with KV cache). The call is **not** inside autocast, so sampling on CUDA is FP32. This script uses
+G=16 and max_new_tokens=512 from configs/main/grpo.toml, and a prompt length of 300
+(a conversation with tool descriptions has about this length). It compares:
+  - FP32 (the same as the current code of run_grpo)
+  - BF16 autocast around generate (the KV cache is still FP32)
+  - the full model in .bfloat16() (the KV cache is also BF16)
+With random weights, generation does not stop early at eos. Each sequence gets all 512 tokens,
+so the result is the upper bound for the "longest response".
 """
 
 from __future__ import annotations
@@ -33,7 +37,7 @@ def bench(model, G: int, prompt_len: int, new: int, autocast: bool) -> dict:
     prompt = torch.randint(0, model.config.vocab_size, (G, prompt_len), device="cuda")
     ctx = torch.autocast("cuda", dtype=torch.bfloat16) if autocast else contextlib.nullcontext()
     with ctx:
-        generate(model, prompt, 8, temperature=1.0, seed=0)  # 预热
+        generate(model, prompt, 8, temperature=1.0, seed=0)  # warmup
         torch.cuda.synchronize()
         torch.cuda.reset_peak_memory_stats()
         t0 = time.perf_counter()
@@ -50,9 +54,9 @@ def bench(model, G: int, prompt_len: int, new: int, autocast: bool) -> dict:
 
 
 def main() -> None:
-    assert torch.cuda.device_count() == 1, "只允许看到 1 张卡（CUDA_VISIBLE_DEVICES=0）"
+    assert torch.cuda.device_count() == 1, "Only 1 GPU may be visible (CUDA_VISIBLE_DEVICES=0)"
     cfg = load_model_config(REPO / "configs/main/grpo.toml")
-    cfg.max_seq_len = 1024  # 只需要 300 + 512；RoPE 表小一点
+    cfg.max_seq_len = 1024  # 300 + 512 is sufficient; the RoPE table is then smaller
     torch.manual_seed(0)
     G, P, NEW = 16, 300, 512
     res: dict = {"G": G, "prompt_len": P, "max_new_tokens": NEW}
@@ -64,7 +68,7 @@ def main() -> None:
     m = m.bfloat16()
     res["bf16_weights"] = bench(m, G, P, NEW, autocast=False)
     print("bf16 weights", res["bf16_weights"], flush=True)
-    # 按 configs/main/grpo.toml：每步 64 个提示词 × G=16，逐个提示词采样
+    # As in configs/main/grpo.toml: 64 prompts × G=16 per step, sampled one prompt at a time
     for k in ("fp32", "bf16_autocast", "bf16_weights"):
         res[k]["per_grpo_step_sampling_s(64 prompts)"] = round(res[k]["seconds"] * 64, 1)
     out = REPO / "out/gpu0-check/grpo_sample_bench.json"

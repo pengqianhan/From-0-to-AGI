@@ -257,7 +257,7 @@ KL(π_DPO‖π*) = 0.0017（起点 KL(π_ref‖π*) = 2.0082）。同一个目�
 2. **偏好数据**：70 道题 × 4 对 = 280 对。chosen = 正确答案，rejected = 参考模型会写出的错答案。另外 30 道题留出，训练时从不出现。
 3. **DPO**：β = 0.1，lr = 1e-3，Adam，每步 32 对，150 步。参考模型的 log 概率在训练前算好。
 
-> **注意：** 本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同的机器、不同版本的底层数学库，浮点运算的顺序略有不同。训练几百步后，这些微小差异会被放大。你在本机跑出的数字，可能从小数点后第二三位开始就不一样。请以下文中不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-16-20.md](../../runs/2026-10-01-gpu0-check/chapters-16-20.md)。
+> **注意：** 本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同的机器、不同版本的底层数学库，浮点运算的顺序略有不同。训练几百步后，这些微小差异会被放大。你在本机跑出的数字，可能从小数点后第二三位开始就不一样。请以下文中不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-16-20.md](../../runs/2026-10-01-gpu0-check/chapters-16-20.zh.md)。
 
 SFT 参考模型在 30 道留出题上：答对的概率是 0.369，采样格式正确的比例是 1.000，采样答对的比例是 0.360。DPO 训练中（训练集上）：
 
@@ -360,7 +360,7 @@ lr = 1e-2 时，margin 冲到 4 以上，训练 acc 是 1.00，看起来"学得�
 | 参考 log 概率在训练前算好 | `[dpo] ref_mode = "precompute"`（训练前对全部数据算一遍参考 log 概率）或 `"online"`（每步用一份冻结的拷贝现算） | precompute 省下一整份模型的显存。online 适合边生成数据边训练的情况。 |
 | 固定的 280 对 | `make_env_preferences`：当 `generate_pairs > 0` 且文件不存在时，使用工具调用环境 `zero/post/envs/tool_env.py` 的任务。从当前策略采样 `samples_per_prompt` 个回答，用可验证奖励打分。最高分（满分才算）当 chosen，否则用标准解答当 chosen。最低分当 rejected。都是满分时，把标准调用改坏当 rejected | **on-policy 偏好数据**：rejected 是模型自己真会犯的错。不需要人工标注。 |
 | Adam、固定学习率 | `zero.post.common.LoopState`：AdamW、warmup + cosine、梯度裁剪、梯度累积、JSONL 日志、checkpoint、断点续训 | 和其他后训练阶段共用一套训练循环。 |
-| 单进程 CPU | 单进程；CUDA 上用 BF16 autocast | 多卡 DDP 还没有实现。单卡 CUDA + BF16 的通路已在 RTX 3090 上验证（见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 9 节）。 |
+| 单进程 CPU | 单进程；CUDA 上用 BF16 autocast | 多卡 DDP 还没有实现。单卡 CUDA + BF16 的通路已在 RTX 3090 上验证（见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.zh.md) 第 9 节）。 |
 
 **对拍**（[`tests/test_dpo.py`](../../tests/test_dpo.py)）：`test_dpo_loss_hand_computed` 用两对手算的例子验证损失、acc、margin。它还检查 policy = ref 时损失为 ln 2，以及梯度抬高 chosen、压低 rejected。`test_batch_logps_only_counts_response` 验证序列 log 概率只计入回复 token，并与逐 token 手算一致。`test_run_dpo_end_to_end` 在 precompute 和 online 两种模式下各跑 3 步，检查第一步损失 = ln 2、之后损失下降、checkpoint 写入磁盘。本章 `03` 的 ⑤ 又把从零写的损失和 `dpo_loss` 在数值与梯度上对了一遍。
 

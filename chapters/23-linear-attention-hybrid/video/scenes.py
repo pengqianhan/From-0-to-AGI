@@ -1,7 +1,10 @@
-"""第 23 章视频：线性注意力与混合架构 —— 把 KV cache 压成一个固定大小的矩阵
+"""Video for Chapter 23: linear attention and hybrid architectures.
 
-画面里的数字都由 ../code/ 中的代码真实计算（见 script.md 事实清单），结果缓存在 video/out/cache.json。
-渲染：bash chapters/23-linear-attention-hybrid/video/build.sh
+Compress the KV cache into one fixed-size matrix.
+
+The code in ../code/ calculates all numbers on screen (see the fact list in script.md).
+The cache video/out/cache.json keeps the results.
+Render: bash chapters/23-linear-attention-hybrid/video/build.sh
 """
 
 from __future__ import annotations
@@ -50,7 +53,7 @@ def _load(name: str, filename: str):
 
 
 def compute() -> dict:
-    """从 ../code 真实计算视频要用的全部数字。"""
+    """Calculate all numbers for the video with the real code in ../code."""
     import torch
 
     m1 = _load("ch23_linear", "01_linear_attention.py")
@@ -61,7 +64,7 @@ def compute() -> dict:
     F = torch.nn.functional
     d: dict = {}
 
-    # 01：结合律、KV vs 状态、解码一步
+    # 01: associativity, KV vs state, one decode step
     torch.manual_seed(0)
     q, k, v = torch.randn(256, 16), torch.randn(256, 16), torch.randn(256, 16)
     par, rec = m1.linear_attention_parallel(q, k, v), m1.linear_attention_recurrent(q, k, v)
@@ -69,7 +72,7 @@ def compute() -> dict:
     d["kv_vs_state"] = m1.kv_cache_vs_state()
     d["decode"] = [(T, *m1.decode_step_time(T)) for T in (1024, 8192, 65536, 262144)]
 
-    # 02：分块一致、衰减曲线、速度
+    # 02: chunkwise form gives the same result, decay curves, speed
     torch.manual_seed(0)
     T, dd = 512, 64
     q = F.normalize(torch.randn(T, dd), dim=-1)
@@ -94,7 +97,7 @@ def compute() -> dict:
                       m2.timed(m2.chunked, q, k, v, g)[1], m2.timed(m2.parallel, q, k, v, g)[1]))
     d["speed"] = speed
 
-    # 03：覆盖、容量、分块一致
+    # 03: overwrite, capacity, chunkwise form gives the same result
     torch.manual_seed(0)
     kk = F.normalize(torch.randn(64), dim=0)
     v1, v2 = torch.tensor([1.0, 0.0]), torch.tensor([0.0, 1.0])
@@ -119,14 +122,14 @@ def compute() -> dict:
     o2, _ = m3.gated_delta_chunked(q, k, v, g, beta, C=32)
     d["gdn_chunk_err"] = float((o1 - o2).abs().max())
 
-    # 04：Qwen3.5-0.8B 的层类型与缓存；小语言模型的验证 loss
+    # 04: layer types and cache of Qwen3.5-0.8B; validation loss of the small language model
     c = m4.QWEN35_08B
     d["qwen_layers"] = c["layer_types"] * c["repeat"]
     d["qwen_cache"] = [(T, *m4.qwen35_cache_mib(T), sum(m4.qwen35_cache_mib(T, all_full=True)))
                        for T in (4096, 32768, 262144)]
     d["lm"] = [(p, m4.val_loss(m4.train_lm(p)[0])) for p in m4.PATTERNS]
 
-    # 05：联想回忆
+    # 05: associative recall
     d["recall"] = m5.results()
     return d
 
@@ -152,7 +155,7 @@ def mono(text: str, size: float = 24, color: str = theme.FG) -> Text:
 
 
 def grid(n: int, cell: float, color: str, opacity: float = 0.25) -> VGroup:
-    """n×n 的小方格矩阵（状态 S 的示意）。"""
+    """Draw an n×n grid of small squares (schematic of the state S)."""
     g = VGroup(*[Square(cell, stroke_width=1, stroke_color=color, fill_color=color,
                         fill_opacity=opacity) for _ in range(n * n)])
     return g.arrange_in_grid(n, n, buff=0)
@@ -166,7 +169,10 @@ def cells(n: int, w: float, h: float, color: str, opacity: float = 0.35) -> VGro
 
 def table(rows: list[tuple], col_w: list[float], size: float = 22,
           colors: list[str] | None = None, row_h: float = 0.46) -> VGroup:
-    """简单表格：第一行是表头（灰色）。每格一个中文或等宽文本。"""
+    """Draw a simple table. The first row is the header (gray).
+
+    Each cell holds one Chinese text or one monospace text.
+    """
     out = VGroup()
     for r, row in enumerate(rows):
         x = 0.0
@@ -189,7 +195,7 @@ class ChapterScene(NarratedScene):
         for i in range(1, 15):
             getattr(self, f"s{i:02d}")()
 
-    # ── S01 片头 ─────────────────────────────────────────────────────────
+    # ── S01 Opening ──────────────────────────────────────────────────────
     def s01(self):
         with self.shot("S01"):
             card = self.chapter_card()
@@ -199,7 +205,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.8))
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-    # ── S02 KV cache 越长越大 ────────────────────────────────────────────
+    # ── S02 The KV cache grows with the length ───────────────────────────
     def s02(self):
         with self.shot("S02"):
             self.play(*self.set_heading("问题：KV cache 随上下文增长"), run_time=self.fit(0.8))
@@ -236,7 +242,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeOut(VGroup(k_lbl, v_lbl, t_lbl, krow, vrow, kv_txt, S, s_lbl, s_txt,
                                      note)), run_time=self.fit(0.6))
 
-    # ── S03 结合律 ───────────────────────────────────────────────────────
+    # ── S03 Associativity ────────────────────────────────────────────────
     def s03(self):
         with self.shot("S03"):
             self.play(*self.set_heading("去掉 softmax：矩阵乘法换个顺序"), run_time=self.fit(0.8))
@@ -264,7 +270,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeOut(VGroup(top, big, big_lbl, bot, small, small_lbl, eq, sm, cross)),
                       run_time=self.fit(0.6))
 
-    # ── S04 递推形式 ─────────────────────────────────────────────────────
+    # ── S04 Recurrent form ───────────────────────────────────────────────
     def s04(self):
         with self.shot("S04"):
             self.play(*self.set_heading("递推形式：注意力变成了 RNN"), run_time=self.fit(0.8))
@@ -292,7 +298,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(S, s_lbl, f1, f2, w1, w2, ok)), run_time=self.fit(0.6))
 
-    # ── S05 解码一步 ─────────────────────────────────────────────────────
+    # ── S05 One decode step ──────────────────────────────────────────────
     def s05(self):
         with self.shot("S05"):
             self.play(*self.set_heading("解码一步的开销（单头，CPU）"), run_time=self.fit(0.8))
@@ -325,7 +331,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(ax, ylab, bars, leg, note)), run_time=self.fit(0.6))
 
-    # ── S06 分块形式 ─────────────────────────────────────────────────────
+    # ── S06 Chunkwise form ───────────────────────────────────────────────
     def s06(self):
         with self.shot("S06"):
             self.play(*self.set_heading("训练：块内并行 + 块间递推"), run_time=self.fit(0.8))
@@ -353,7 +359,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(chunks, arrows, s_lbls, tb, same)), run_time=self.fit(0.6))
 
-    # ── S07 容量 ─────────────────────────────────────────────────────────
+    # ── S07 Capacity ─────────────────────────────────────────────────────
     def s07(self):
         with self.shot("S07"):
             self.play(*self.set_heading("代价：固定大小的记忆会满"), run_time=self.fit(0.8))
@@ -375,7 +381,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(S, s_lbl, tb, cap)), run_time=self.fit(0.6))
 
-    # ── S08 衰减门 ───────────────────────────────────────────────────────
+    # ── S08 Decay gate ───────────────────────────────────────────────────
     def s08(self):
         with self.shot("S08"):
             self.play(*self.set_heading("衰减门：学会遗忘"), run_time=self.fit(0.8))
@@ -402,7 +408,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(f, ax, xl, labs, vals, fam)), run_time=self.fit(0.6))
 
-    # ── S09 delta 规则 ───────────────────────────────────────────────────
+    # ── S09 Delta rule ───────────────────────────────────────────────────
     def s09(self):
         with self.shot("S09"):
             self.play(*self.set_heading("delta 规则：覆盖，而不是累加"), run_time=self.fit(0.8))
@@ -456,7 +462,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(f, tags, ok)), run_time=self.fit(0.6))
 
-    # ── S11 Qwen3.5 的 3:1 堆叠 ──────────────────────────────────────────
+    # ── S11 The 3:1 stack of Qwen3.5 ─────────────────────────────────────
     def s11(self):
         with self.shot("S11"):
             self.play(*self.set_heading("混合：Qwen3.5-0.8B 的 24 层"), run_time=self.fit(0.8))
@@ -500,13 +506,13 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(blocks, idx, leg, src, bars, cap)), run_time=self.fit(0.6))
 
-    # ── S12 小实验 ───────────────────────────────────────────────────────
+    # ── S12 Small experiment ─────────────────────────────────────────────
     def s12(self):
         with self.shot("S12"):
             self.play(*self.set_heading("小实验：混合把回忆找回来"), run_time=self.fit(0.8))
             badge = self.demo_badge("极小规模实验")
             self.play(FadeIn(badge), run_time=0.3)
-            # 左：验证 loss
+            # Left: validation loss
             lm = D["lm"]
             lo = min(v for _, v in lm) - 0.1
             hi = max(v for _, v in lm) + 0.05
@@ -522,7 +528,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(lt), LaggedStart(*[FadeIn(b) for b in bars], lag_ratio=0.2),
                       run_time=self.fit(2.0))
             self.wait(self.remaining() * 0.25)
-            # 右：联想回忆准确率
+            # Right: accuracy of associative recall
             rc = D["recall"]
             Ns = rc["N"]
             ax = Axes(x_range=[0, max(Ns) + 4, 16], y_range=[0, 1.05, 0.5], x_length=5.2,
@@ -544,7 +550,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeOut(VGroup(badge, bars, lt, ax, ylab, xlab, rt, lines)),
                       run_time=self.fit(0.6))
 
-    # ── S13 谁在用 ───────────────────────────────────────────────────────
+    # ── S13 Adopters ─────────────────────────────────────────────────────
     def s13(self):
         with self.shot("S13"):
             self.play(*self.set_heading("谁在用：少量全注意力 + 大量线性层"), run_time=self.fit(0.8))
@@ -566,7 +572,7 @@ class ChapterScene(NarratedScene):
             self.wait(max(0.1, self.remaining() - 0.6))
             self.play(FadeOut(VGroup(tb, mm)), run_time=self.fit(0.6))
 
-    # ── S14 从极简到生产级 ───────────────────────────────────────────────
+    # ── S14 From minimal code to production code ─────────────────────────
     def s14(self):
         with self.shot("S14"):
             self.play(*self.set_heading("从极简到生产级"), run_time=self.fit(0.8))

@@ -90,7 +90,7 @@ branches = {
 | C 恒定 + 新配比 | 2.803 | 3.168 | 2.223 | 2.731 |
 | D 衰减 + 新配比 | 2.642 | 3.097 | **2.091** | **2.610** |
 
-> **关于数字：**本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同的机器、不同版本的底层数学库，浮点运算的顺序略有不同。训练几百步以后，这些微小的差异会被放大。你在本机跑出的数字，可能从小数点后第二、三位开始就不一样。请以下文中不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-11-15.md](../../runs/2026-10-01-gpu0-check/chapters-11-15.md)。
+> **关于数字：**本章训练类实验的数字来自课程构建机上的一次 CPU 运行。不同的机器、不同版本的底层数学库，浮点运算的顺序略有不同。训练几百步以后，这些微小的差异会被放大。你在本机跑出的数字，可能从小数点后第二、三位开始就不一样。请以下文中不依赖具体数值的结论为准。2026-10 在另一台服务器上的复跑对照见 [runs/2026-10-01-gpu0-check/chapters-11-15.md](../../runs/2026-10-01-gpu0-check/chapters-11-15.zh.md)。
 
 以 A（"继续恒定学习率、不换数据"）为基准。代码的 bits-per-byte 分别下降了：只衰减（B）0.160，只换数据（C）0.409，两者一起（D）0.541。请注意以下几点：
 
@@ -375,7 +375,7 @@ uv run pytest tests/test_model_hf_parity.py tests/test_kv_cache.py tests/test_ne
 | `model.rope_theta` | 1,000,000 | ABF：1 万 → 100 万，与 Qwen3 的长上下文阶段相同 |
 | `model.max_seq_len`、`data.seq_len` | 32768 | 直接在目标长度上训练（不靠推理时外推） |
 | `micro_batch_size × grad_accum × 8 卡 × 32768` | 1 × 4 × 8 × 32768 = 1,048,576 token/步 | 32K 序列的激活很大，每张卡一次只放一条 |
-| `train.parallel` | `fsdp` | 把参数、梯度、优化器状态切到 8 张卡上，给激活腾出显存。（FSDP2 本身已在 2×RTX 3090 上验证。但在 24GB 的卡上，2 卡、3 卡 FSDP 跑 32K 都会 OOM：每张卡自己的 logits 和激活切不掉，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.md) 第 14.5 节。8×H100 上仍需实测） |
+| `train.parallel` | `fsdp` | 把参数、梯度、优化器状态切到 8 张卡上，给激活腾出显存。（FSDP2 本身已在 2×RTX 3090 上验证。但在 24GB 的卡上，2 卡、3 卡 FSDP 跑 32K 都会 OOM：每张卡自己的 logits 和激活切不掉，见 [runs/2026-10-01-gpu0-check](../../runs/2026-10-01-gpu0-check/README.zh.md) 第 14.5 节。8×H100 上仍需实测） |
 | `train.max_steps` | 4000（≈ 4.2B token） | 待定。参照 DeepSeek-V3 每段 1000 步、SmolLM3 每段 50B token，4.2B 偏保守 |
 | `optim.lr`、`[schedule]` | 1e-4，cosine，200 步 warmup，降到 10% | 待定，见下方"待决定的问题" |
 | 推理时更长 | 可再加 `model.rope_scaling = {type = "yarn", factor = 4, original_max_position_embeddings = 32768}` | Qwen3 模型卡推荐的做法：原生 32K，YaRN ×4 到 128K。只在需要时打开（静态 YaRN 会略微影响短文本） |

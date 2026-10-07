@@ -1,8 +1,11 @@
-"""第 7 章视频：语言建模与分词 —— 从"猜下一个字"到 byte-level BPE
+"""Chapter 7 video: language modeling and tokenization.
 
-画面里的所有数值都由 ../code/ 中的代码真实计算（见 script.md 事实清单）。较慢的计算
-（训练 BPE、扫词表大小、bigram 评估）结果缓存到 video/out/cache.json。
-渲染：bash chapters/07-tokenization-language-model/video/build.sh
+From "guess the next character" to byte-level BPE.
+
+The code in ../code/ calculates all numbers in the frames (see the fact list in script.md).
+The results of the slow calculations (BPE training, the vocabulary-size sweep, the bigram
+evaluation) are cached in video/out/cache.json.
+Render: bash chapters/07-tokenization-language-model/video/build.sh
 """
 
 from __future__ import annotations
@@ -65,9 +68,12 @@ HEAT_CHARS = [" ", "e", "t", "o", "a", "h", "s", "n", "r", "i"]
 
 
 def merge_steps(bpe, text: str) -> list[list[list[int]]]:
-    """记录编码 text 时每一步合并后的状态：状态 = token 列表，每个 token 是它的字节列表。"""
+    """Record the state after each merge when text is encoded.
+
+    State = list of tokens. Each token is its list of bytes.
+    """
     chunks = [list(c.encode("utf-8")) for c in bpe_mod.pretokenize(text)]
-    ids = [list(c) for c in chunks]  # 每个词块的 id 序列
+    ids = [list(c) for c in chunks]  # id sequence of each chunk
     states = []
 
     def snapshot():
@@ -107,7 +113,7 @@ def compute_data() -> dict:
         sweep.append((tok.vocab_size, sum(len(tok.encode(v)) for v in val.values())))
     data["sweep"] = sweep
 
-    # bigram：三种分词在三份语料上的评估 + 抽样
+    # bigram: evaluate three tokenizations on three corpora, and sample
     evals, samples = {}, {}
     for k in ["en", "zh", "code"]:
         tr, va = bigram.splits(k)
@@ -124,7 +130,7 @@ def compute_data() -> dict:
                                            30 if name == "BPE" else 50, seed=1)
     data["evals"], data["samples"] = evals, samples
 
-    # 英文字符 bigram 计数（热力图）
+    # Character bigram counts for English (heat map)
     tr, _ = bigram.splits("en")
     char = bigram.CharTok(tr)
     counts = bigram.count_bigrams(char.encode(tr), char.V)
@@ -145,7 +151,7 @@ def mono(text: str, size: float = 24, color: str = theme.FG) -> Text:
 
 
 def show_bytes(b: list[int]) -> str:
-    """token 的字节能按 UTF-8 解码就显示文字，否则显示十六进制。"""
+    """Show the text of a token if its bytes decode as UTF-8. Otherwise show hex."""
     try:
         return bytes(b).decode("utf-8").replace(" ", "␣").replace("\n", "↵")
     except UnicodeDecodeError:
@@ -153,7 +159,7 @@ def show_bytes(b: list[int]) -> str:
 
 
 def token_box(b: list[int], unit: float = 0.62, color=theme.INPUT, size: float = 22) -> VGroup:
-    """一个 token 的方块：宽度与字节数成正比。"""
+    """Box for one token: the width is proportional to the number of bytes."""
     w = unit * len(b) - 0.08
     rect = RoundedRectangle(width=w, height=0.62, corner_radius=0.08, color=color,
                             fill_color=color, fill_opacity=0.18, stroke_width=2)
@@ -180,7 +186,7 @@ class ChapterScene(NarratedScene):
     chapter_title = "语言建模与分词"
 
     def construct(self) -> None:
-        # ── S01 片头 ─────────────────────────────────────────────────────
+        # ── S01 Opening ──────────────────────────────────────────────────
         with self.shot("S01"):
             card = self.chapter_card()
             sub = zh("从“猜下一个字”到 byte-level BPE", 32, theme.HIGHLIGHT).next_to(card, DOWN, 0.6)
@@ -189,7 +195,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-        # ── S02 语言模型：猜下一个 token ─────────────────────────────────
+        # ── S02 A language model: guess the next token ───────────────────
         with self.shot("S02"):
             self.play(*self.set_heading("语言模型：已知前文，猜下一个 token"), run_time=self.fit(0.8))
             chars = "学而时习之"
@@ -224,7 +230,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [boxes, conds, chain, loss, note, q]],
                       run_time=self.fit(0.6))
 
-        # ── S03 按字符切 ─────────────────────────────────────────────────
+        # ── S03 Split by characters ──────────────────────────────────────
         with self.shot("S03"):
             self.play(*self.set_heading("按字符切：每个不同的字符一个编号"), run_time=self.fit(0.8))
             en = VGroup(*[token_box(list(c.encode()), 0.7, size=26) for c in "To be"]).arrange(RIGHT, buff=0.08)
@@ -257,7 +263,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in [en, zhrow, en_stat, zh_stat, row]], run_time=self.fit(0.6))
 
-        # ── S04 按字节切 ─────────────────────────────────────────────────
+        # ── S04 Split by bytes ───────────────────────────────────────────
         with self.shot("S04"):
             self.play(*self.set_heading("按字节切：UTF-8，词表固定 256"), run_time=self.fit(0.8))
             xue = VGroup(RoundedRectangle(width=1.1, height=1.1, corner_radius=0.1, color=theme.INPUT,
@@ -305,7 +311,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [xue, bx, arr, utf, rule, five, fifteen, l5, l15, cost]],
                       run_time=self.fit(0.6))
 
-        # ── S05 BPE 合并动画 ─────────────────────────────────────────────
+        # ── S05 Animation of the BPE merges ──────────────────────────────
         with self.shot("S05"):
             self.play(*self.set_heading("BPE：反复把最常见的相邻一对合并成新 token"), run_time=self.fit(0.8))
             algo = VGroup(
@@ -325,7 +331,7 @@ class ChapterScene(NarratedScene):
             for k in range(1, len(states)):
                 prev, cur = states[k - 1], states[k]
                 new_row = token_row(cur, -0.5, color=theme.PARAM, size=20)
-                # 找出被合并的位置 j：prev[j] + prev[j+1] == cur[j]
+                # Find the merge position j: prev[j] + prev[j+1] == cur[j]
                 j = next(i for i in range(len(cur)) if cur[i] != prev[i])
                 anims = []
                 for i in range(len(cur)):
@@ -347,7 +353,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in list(self.mobjects) if m is not self._heading],
                       run_time=self.fit(0.6))
 
-        # ── S06 最先学到的合并 ───────────────────────────────────────────
+        # ── S06 The first merges that BPE learns ─────────────────────────
         with self.shot("S06"):
             self.play(*self.set_heading("最先学到的合并（英文 + 中文 + 代码各 6 万字符）"),
                       run_time=self.fit(0.8))
@@ -390,7 +396,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(rows), FadeOut(marks), FadeOut(longtok), run_time=self.fit(0.6))
 
-        # ── S07 词表大小的取舍 ───────────────────────────────────────────
+        # ── S07 The trade-off of the vocabulary size ─────────────────────
         with self.shot("S07"):
             self.play(*self.set_heading("词表大小：序列长度 vs embedding 参数"), run_time=self.fit(0.8))
             sweep = D["sweep"]
@@ -416,7 +422,7 @@ class ChapterScene(NarratedScene):
             self.play(FadeIn(a_lab), FadeIn(b_lab), run_time=self.fit(0.8))
             self.wait(self.remaining() * 0.12)
             self.play(FadeIn(c_lab), run_time=self.fit(0.8))
-            # 右边：embedding 参数条形图
+            # Right: bar chart of the embedding parameters
             models = [("GPT-2", 50_257, 768), ("本课主线（暂定）", 65_536, 1280),
                       ("Qwen3-0.6B", 151_936, 1024), ("Qwen3.5-0.8B", 248_320, 1024)]
             bar_title = zh("embedding 参数 = V × d", 24, theme.PARAM).move_to([3.6, 1.95, 0])
@@ -442,7 +448,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [ax, xt, xl, yl, curve, dots, a_lab, b_lab, c_lab,
                                               bar_title, bars]], run_time=self.fit(0.6))
 
-        # ── S08 bigram 计数表 ────────────────────────────────────────────
+        # ── S08 The bigram count table ───────────────────────────────────
         with self.shot("S08"):
             self.play(*self.set_heading("bigram：只看前 1 个 token，数一数"), run_time=self.fit(0.8))
             heat = np.array(D["heat"], dtype=float)
@@ -486,7 +492,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in [grid, rlab, clab, rt, ct, hl, th, formula, mle, smooth, sl]],
                       run_time=self.fit(0.6))
 
-        # ── S09 抽样 ────────────────────────────────────────────────────
+        # ── S09 Sampling ────────────────────────────────────────────────
         with self.shot("S09"):
             self.play(*self.set_heading("从 bigram 抽样：只看前 1 个 token"), run_time=self.fit(0.8))
             en_lines = [x for x in D["samples"]["en"].strip().split("\n") if x]
@@ -509,7 +515,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(en_t), FadeOut(zh_t), FadeOut(verdict), run_time=self.fit(0.6))
 
-        # ── S10 评估：nats → bits → 困惑度 → bpb ─────────────────────────
+        # ── S10 Evaluation: nats → bits → perplexity → bpb ───────────────
         with self.shot("S10"):
             self.play(*self.set_heading("评估：从 nats 到 bits-per-byte"), run_time=self.fit(0.8))
             nats = VGroup(zh("nats / token", 26, theme.GRAD), MathTex(r"-\tfrac{1}{T}\sum \ln p", font_size=34))
@@ -541,7 +547,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in [chain, arrows, per_tok, pt, bpb, same]], run_time=self.fit(0.6))
 
-        # ── S11 真实数字：困惑度会骗人 ───────────────────────────────────
+        # ── S11 Real numbers: perplexity can mislead ─────────────────────
         with self.shot("S11"):
             self.play(*self.set_heading("英文验证集上的 bigram：困惑度 vs bpb"), run_time=self.fit(0.8))
             ev = D["evals"]
@@ -586,7 +592,7 @@ class ChapterScene(NarratedScene):
             self.play(*[FadeOut(m) for m in list(self.mobjects) if m is not self._heading],
                       run_time=self.fit(0.6))
 
-        # ── S12 从极简到生产级 ───────────────────────────────────────────
+        # ── S12 From minimal code to production code ─────────────────────
         with self.shot("S12"):
             self.play(*self.set_heading("从极简到生产级：zero/tokenizer.py"), run_time=self.fit(0.8))
             src = '''tok = HFTokenizer(models.BPE())
@@ -597,7 +603,8 @@ tok.pre_tokenizer = Sequence([
 trainer = BpeTrainer(vocab_size=...,
     special_tokens=DEFAULT_SPECIAL_TOKENS)'''
             code = code_block(src, 17)
-            # code_block 左对齐时行首空白没有宽度，缩进会丢；这里按等宽字符宽度手动补回
+            # With code_block aligned left, leading spaces have no width, and the indentation
+            # is lost. Add the indentation back by hand with the width of a monospace character.
             cw = Text("M" * 20, font="Noto Sans Mono", font_size=17).width / 20
             for line_m, line in zip(code, src.splitlines()):
                 line_m.shift(RIGHT * cw * (len(line) - len(line.lstrip(" "))))
@@ -627,7 +634,7 @@ trainer = BpeTrainer(vocab_size=...,
             self.wait(self.remaining() - 0.6)
             self.play(*[FadeOut(m) for m in [code, tags, ttl, table, ok]], run_time=self.fit(0.6))
 
-        # ── S13 下一章 ───────────────────────────────────────────────────
+        # ── S13 The next chapter ─────────────────────────────────────────
         with self.shot("S13"):
             self.play(*self.set_heading("bigram 只看前 1 个 token"), run_time=self.fit(0.8))
             s = "学而时习之，不亦说乎"

@@ -1,9 +1,12 @@
-"""第 26 章视频：当前最先进开源模型全景 —— 把整门课的架构放进一棵树
+"""Video for Chapter 26: the state of open models.
 
-画面里的所有数值都由 ../code/ 中的代码真实计算（见 script.md 事实清单）：
-01_panorama.py（层的构成、KV cache、采用矩阵、主线"下一版"）、02_evolution_tree.py（演化树）、
-03_meta_params.py（按 config 数参数）。结果缓存在 video/out/cache.json；删掉它会重新计算。
-渲染：bash chapters/26-open-model-panorama/video/build.sh
+Put the architectures of the whole course into one tree.
+
+The code in ../code/ calculates all values on screen (see the fact list in script.md):
+01_panorama.py (layer composition, KV cache, adoption matrix, the "next version" of the main-line model),
+02_evolution_tree.py (evolution tree), 03_meta_params.py (count the parameters from the config).
+The cache video/out/cache.json keeps the results. Delete it to calculate them again.
+Render: bash chapters/26-open-model-panorama/video/build.sh
 """
 
 from __future__ import annotations
@@ -51,13 +54,13 @@ def _load(name: str, filename: str):
 
 
 def _num(s: str) -> float:
-    """模型卡上的 "2.8T" "104B" "~23B" → 参数个数。"""
+    """Convert "2.8T", "104B", "~23B" from a model card → number of parameters."""
     s = s.strip().lstrip("~")
     return float(s[:-1]) * {"T": 1e12, "B": 1e9, "M": 1e6}[s[-1]]
 
 
 def compute() -> dict:
-    """从 ../code 真实计算视频要用的全部数字。"""
+    """Calculate all numbers for the video with the real code in ../code."""
     pan = _load("panorama", "01_panorama.py")
     tree = _load("evolution_tree", "02_evolution_tree.py").build_tree()
     meta = _load("meta_params", "03_meta_params.py").run()
@@ -72,7 +75,8 @@ def compute() -> dict:
                  "minimax-m3", "qwen3.5-0.8b", "main"]
     d["strips"] = [dict(name=ms[m]["name"], kinds=pan.layer_kinds(ms[m]),
                         comp=pan.composition(pan.layer_kinds(ms[m]))) for m in strip_ids]
-    # 参数：旗舰取模型卡；稠密小模型取按 config 数出的值
+    # Parameters: for flagship models, use the model card.
+    # For small dense models, use the count from the config.
     param_ids = ["main", "qwen3.5-0.8b", "gpt-oss-120b", "minimax-m3", "glm-5.3", "deepseek-v4-pro",
                  "qwen3.8-2.4t-a95b", "kimi-k3"]
     d["params"] = []
@@ -111,7 +115,8 @@ def get_data() -> dict:
 D = get_data()
 NODES = {n["id"]: n for n in D["tree"]["nodes"]}
 
-# 演化树的版式（示意）：第 0 列是稠密块，右边三列是分枝
+# Layout of the evolution tree (schematic): column 0 is the dense block.
+# The 3 columns at the right are the branches.
 C1, C2, C3 = -1.25, 1.75, 4.8
 POS = {
     "moe": (C1, 2.35), "auxfree": (C2, 2.65), "latentmoe": (C2, 2.05),
@@ -138,7 +143,10 @@ def hbar(width: float, color: str, height: float = 0.36, opacity: float = 0.85) 
 
 
 def node_box(nid: str) -> VGroup:
-    """一个演化树节点：绿 = 共识，黄 = 新晋，灰虚线 = 前沿观察。"""
+    """Draw one node of the evolution tree.
+
+    Green = consensus, yellow = new, gray dashed = frontier note.
+    """
     n = NODES[nid]
     status = n["status"]
     color = {"consensus": theme.OUTPUT, "new": theme.HIGHLIGHT, "frontier": theme.MUTED}.get(status, theme.FG)
@@ -167,7 +175,7 @@ class ChapterScene(NarratedScene):
         for i in range(1, 15):
             getattr(self, f"s{i:02d}")()
 
-    # ── S01 片头 ─────────────────────────────────────────────────────────
+    # ── S01 Opening ──────────────────────────────────────────────────────
     def s01(self) -> None:
         with self.shot("S01"):
             card = self.chapter_card()
@@ -177,7 +185,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(card), FadeOut(sub), run_time=self.fit(0.8))
 
-    # ── S02 最新旗舰 ─────────────────────────────────────────────────────
+    # ── S02 The newest flagship models ───────────────────────────────────
     def s02(self) -> None:
         with self.shot("S02"):
             self.play(*self.set_heading("2026-09 各家最新旗舰（读自 Hugging Face）"), run_time=self.fit(0.8))
@@ -198,7 +206,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(cards), run_time=self.fit(0.6))
 
-    # ── S03 树根与主干 ───────────────────────────────────────────────────
+    # ── S03 Root and trunk of the tree ───────────────────────────────────
     def s03(self) -> None:
         with self.shot("S03"):
             self.play(*self.set_heading("一棵树：整门课的架构演化"), run_time=self.fit(0.8))
@@ -228,7 +236,10 @@ class ChapterScene(NarratedScene):
             self.boxes: dict[str, VGroup] = {}
 
     def grow(self, ids: list[str], run: float = 2.0) -> None:
-        """从父节点长出一组新节点（父节点是稠密块或已画出的节点）。"""
+        """Grow a group of new nodes from their parent.
+
+        The parent is the dense block or a node that is already on screen.
+        """
         anims = []
         for nid in ids:
             b = node_box(nid)
@@ -256,7 +267,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.5)
             self.play(FadeOut(note), run_time=self.fit(0.5))
 
-    # ── S05 KV 压缩 ──────────────────────────────────────────────────────
+    # ── S05 KV compression ───────────────────────────────────────────────
     def s05(self) -> None:
         with self.shot("S05"):
             self.play(*self.set_heading("分枝二：每个位置少存点（第 10、21 章）"), run_time=self.fit(0.8))
@@ -272,7 +283,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.5)
             self.play(FadeOut(note), run_time=self.fit(0.5))
 
-    # ── S06 只看一部分 / 不存 ────────────────────────────────────────────
+    # ── S06 Look at only a part / do not store ───────────────────────────
     def s06(self) -> None:
         with self.shot("S06"):
             self.play(*self.set_heading("分枝三、四：只看一部分，或者干脆不存（第 22、23 章）"),
@@ -290,7 +301,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.5)
             self.play(FadeOut(note), run_time=self.fit(0.5))
 
-    # ── S07 MTP 与残差流 ─────────────────────────────────────────────────
+    # ── S07 MTP and the residual stream ──────────────────────────────────
     def s07(self) -> None:
         with self.shot("S07"):
             self.play(*self.set_heading("分枝五、六：MTP 与残差流改造"), run_time=self.fit(0.8))
@@ -306,7 +317,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.8)
             self.play(FadeOut(self.tree), FadeOut(leg), run_time=self.fit(0.8))
 
-    # ── S08 层的颜色 ─────────────────────────────────────────────────────
+    # ── S08 Colors of the layers ─────────────────────────────────────────
     def s08(self) -> None:
         with self.shot("S08"):
             self.play(*self.set_heading("逐层拆开：每一格是一层"), run_time=self.fit(0.8))
@@ -339,11 +350,11 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(rows, leg)), run_time=self.fit(0.6))
 
-    # ── S09 参数 ─────────────────────────────────────────────────────────
+    # ── S09 Parameters ───────────────────────────────────────────────────
     def s09(self) -> None:
         with self.shot("S09"):
             self.play(*self.set_heading("总参数（暗色长条）与激活参数（亮色），对数刻度"), run_time=self.fit(0.8))
-            x0, per_dec, lo = -1.9, 1.62, 8  # 1e8 在 x0，每十倍 1.62 个单位
+            x0, per_dec, lo = -1.9, 1.62, 8  # 1e8 is at x0; each factor of 10 is 1.62 units
 
             def xpos(v: float) -> float:
                 return x0 + (math.log10(v) - lo) * per_dec
@@ -398,7 +409,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(rows, mb, mn, mv)), run_time=self.fit(0.6))
 
-    # ── S11 共识与分化 ───────────────────────────────────────────────────
+    # ── S11 Consensus and divergence ─────────────────────────────────────
     def s11(self) -> None:
         with self.shot("S11"):
             self.play(*self.set_heading("按“至少 3 家”判定（6 个最新旗舰 + 前几章）"), run_time=self.fit(0.8))
@@ -431,7 +442,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(left, right, fr)), run_time=self.fit(0.6))
 
-    # ── S12 为什么主线只用主干 ───────────────────────────────────────────
+    # ── S12 Why the main-line model uses only the trunk ──────────────────
     def s12(self) -> None:
         with self.shot("S12"):
             self.play(*self.set_heading("主线模型：只用稠密共识块（GOAL 3.3）"), run_time=self.fit(0.8))
@@ -461,7 +472,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(strip, lab, rows, bottom)), run_time=self.fit(0.6))
 
-    # ── S13 下一版 ───────────────────────────────────────────────────────
+    # ── S13 The next version ─────────────────────────────────────────────
     def s13(self) -> None:
         with self.shot("S13"):
             self.play(*self.set_heading("主线“下一版”：32K 上下文的 KV cache"), run_time=self.fit(0.8))
@@ -488,7 +499,7 @@ class ChapterScene(NarratedScene):
             self.wait(self.remaining() - 0.6)
             self.play(FadeOut(VGroup(rows, plan)), run_time=self.fit(0.6))
 
-    # ── S14 回到起点 ─────────────────────────────────────────────────────
+    # ── S14 Back to the start ────────────────────────────────────────────
     def s14(self) -> None:
         with self.shot("S14"):
             self.play(*self.set_heading("从 y = ax + b 到最先进的开源模型"), run_time=self.fit(0.8))
