@@ -27,6 +27,13 @@ data = [
     "zstandard>=0.22",
 ]
 
+# Course website (site/build.py): MkDocs Material with an English / Chinese language button
+site = [
+    "mkdocs>=1.6,<2",  # MkDocs 2.0 removes the plugin system that the i18n plugin needs
+    "mkdocs-material>=9.7",
+    "mkdocs-static-i18n>=1.3",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.4.2",

@@ -1,57 +1,59 @@
 ---
-description: 第 1 章自我检验：y = ax + b 与梯度下降
+description: "Chapter 1 self-check: y = ax + b and gradient descent (第 1 章自检：y = ax + b 与梯度下降)"
 ---
 
-# 第 1 章自我检验：y = ax + b 与梯度下降
+# Chapter 1 self-check: y = ax + b and gradient descent
 
-用户调用了 `/ch01-linear`，说明他们刚学完第 1 章（`chapters/01-linear-regression/`）。你的任务是帮他们检验自己是否真正理解了，而不是告诉他们答案。
+The learner typed `/ch01-linear`. They finished Chapter 1 (`chapters/01-linear-regression/`). Help them check if they understand it. Do not give them the answers.
 
-**检验方式**：逐一提问下面的问题，等用户用自己的话回答后，再给出反馈——哪里说对了，哪里还有偏差，以及如何深化理解。不要一次性把所有问题都抛出去。
+**Language**: Use the language of the learner. If the learner writes in Chinese, ask the questions and give feedback in Chinese. The Chinese text of the chapter is in `README.zh.md`. Write short, clear sentences (see `docs/STYLE_GUIDE.md`).
 
----
-
-## 检验问题（按难度递进）
-
-**第一关：四个步骤**
-
-问用户：
-> 不看资料，说出"训练一个模型"的四个步骤，每一步用一句话解释它在 y = ax + b 这个例子里具体做了什么。
-
-期望回答：模型（ŷ = ax + b）、损失（均方误差，衡量猜得多差）、梯度（损失对 a、b 的偏导，指向损失上升最快的方向）、更新（参数减去学习率乘梯度）。缺哪一步就追问那一步。
+**Method**: Ask the questions below one at a time. Wait for the learner to answer in their own words. Then give feedback: tell them what is correct, what is not correct, and how to make their understanding deeper. Do not ask all the questions at the same time.
 
 ---
 
-**第二关：读懂梯度**
+## Questions (from easy to difficult)
 
-问用户：
-> 某一步算出来 ∂L/∂b = 3.2，∂L/∂a = −0.5。这说明模型现在整体是猜高了还是猜低了？下一步 a 和 b 分别会变大还是变小？
+**Level 1: the four steps**
 
-期望回答：∂L/∂b 为正说明残差平均为正，模型整体猜高了；b 会变小（减去正数），a 会变大（减去负数）。
+Ask the learner:
+> Without your notes, name the four steps of training a model. For each step, write one sentence that tells what the step does in the example y = ax + b.
 
----
-
-**第三关：学习率**
-
-问用户：
-> 同一份数据，学习率 0.05 能收敛，学习率 0.11 却发散到 10⁹。发散时参数在做什么？为什么步子大了反而离谷底越来越远？
-
-期望回答：步子太大会越过谷底落到对面更高的位置，下一步梯度更大、步子更大，来回震荡且幅度越来越大。能提到"临界值 2/λ_max 由碗最陡方向的弯曲程度决定"是加分项。
+Expected answer: model (ŷ = ax + b); loss (the mean squared error, which measures how bad the predictions are); gradient (the partial derivatives of the loss for a and b, which point in the direction in which the loss increases fastest); update (each parameter minus the learning rate times its gradient). If a step is missing, ask about that step.
 
 ---
 
-**第四关：迁移**
+**Level 2: read a gradient**
 
-问用户：
-> PyTorch 训练循环里有一行 `optimizer.zero_grad()`。如果删掉它，第 2 步用的梯度会是什么？训练会怎样？
+Ask the learner:
+> At one step, ∂L/∂b = 3.2 and ∂L/∂a = −0.5. Are the predictions of the model too high or too low on average? In the next step, does a increase or decrease? Does b increase or decrease?
 
-期望回答：PyTorch 默认累加梯度，删掉后第 2 步的梯度是第 1、2 步梯度之和，越往后梯度越大，相当于学习率不断变大，很可能发散。
+Expected answer: ∂L/∂b is positive, so the mean residual is positive and the predictions are too high. b decreases (we subtract a positive number). a increases (we subtract a negative number).
 
 ---
 
-## 反馈原则
+**Level 3: learning rate**
 
-- 答对了：认可，然后追问一个更深的"为什么"。
-- 答错了：不要直接给答案，给一个提示（比如让他们回到 `code/02_learning_rate.py` 改参数跑一跑），让他们重新思考。
-- 说"我不知道"：让他们先猜一个，哪怕猜错也要先猜。
+Ask the learner:
+> On the same data, a learning rate of 0.05 converges, but a learning rate of 0.11 diverges to 10⁹. What do the parameters do when they diverge? Why does a larger step move the parameters farther from the bottom of the valley?
 
-四关都通过后，告诉用户可以进入第 2 章（`chapters/02-from-scalar-to-matrix/`，学完后用 `/ch02-matrix` 自检）。
+Expected answer: a step that is too large goes past the bottom and lands at a higher point on the other side. There, the gradient is larger, so the next step is larger. The parameters oscillate, and each oscillation is larger than the last. Extra credit: the critical value 2/λ_max comes from how much the bowl curves in its steepest direction.
+
+---
+
+**Level 4: transfer**
+
+Ask the learner:
+> The PyTorch training loop has the line `optimizer.zero_grad()`. If you remove this line, what gradient does step 2 use? What happens to the training?
+
+Expected answer: by default, PyTorch adds each new gradient to the old one. Without the line, the gradient in step 2 is the sum of the gradients of steps 1 and 2. The gradient becomes larger at each step. This has the same effect as a learning rate that increases. The training will probably diverge.
+
+---
+
+## Rules for feedback
+
+- If the answer is correct: say so. Then ask a deeper "why" question.
+- If the answer is not correct: do not give the answer. Give a hint. For example, ask the learner to change a parameter in `code/02_learning_rate.py` and run it. Then let them think again.
+- If the learner says "I do not know": ask them to guess first. A wrong guess is better than no guess.
+
+When the learner passes all four levels, tell them to continue to Chapter 2 (`chapters/02-from-scalar-to-matrix/`). After Chapter 2, they can check themselves with `/ch02-matrix`.

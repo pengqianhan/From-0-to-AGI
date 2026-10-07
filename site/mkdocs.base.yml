@@ -1,0 +1,56 @@
+# Base configuration of the course website. site/build.py adds docs_dir, site_dir, and nav.
+site_name: "From 0 to AGI"
+site_description: "From y = ax + b to state-of-the-art open models: a course with text, videos, and code."
+site_url: "https://pengqianhan.github.io/From-0-to-AGI/"
+repo_url: "https://github.com/pengqianhan/From-0-to-AGI"
+repo_name: "pengqianhan/From-0-to-AGI"
+edit_uri: ""
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Light mode
+
+plugins:
+  - search
+  - i18n:
+      docs_structure: suffix
+      fallback_to_default: true
+      reconfigure_material: true
+      reconfigure_search: true
+      languages:
+        - locale: en
+          default: true
+          name: English
+          build: true
+        - locale: zh
+          name: 中文
+          build: true
+          site_name: "From 0 to AGI：从 y = ax + b 到最先进的开源模型"
+          nav_translations:
+            Chapters: 章节
+
+markdown_extensions:
+  - tables
+  - admonition
+  - attr_list
+  - toc:
+      permalink: true
+  - pymdownx.superfences
+  - pymdownx.highlight

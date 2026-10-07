@@ -1,15 +1,18 @@
-"""学习率调度：cosine 与 WSD（对应第 6、12、15 章）。
+"""Learning-rate schedules: cosine and WSD (Chapters 6, 12, and 15).
 
-所有调度都返回一个"倍率" m(step) ∈ [0, 1]，实际学习率 = 峰值 lr × m(step)。
+Each schedule returns a multiplier m(step) ∈ [0, 1]. The learning rate is the peak lr × m(step).
 
-- **warmup**：前 warmup_steps 步从接近 0 线性升到 1。刚开始参数是随机的，梯度方向很乱，
-  直接用大学习率容易发散；
-- **cosine**：warmup 之后按余弦曲线从 1 降到 min_lr_ratio（GPT-3、Llama 的默认选择）。
-  缺点：总步数必须事先定好，中途想多训一些就得重来；
-- **WSD（Warmup-Stable-Decay）**：warmup → 长时间保持峰值 → 最后 decay_frac 比例的步数快速衰减。
-  好处是"稳定段"的任何 checkpoint 都可以接一小段衰减得到一个可用模型，想多训就从稳定段接着训，
-  很适合阶梯实验和"预训练 → 中期训练（退火）"的分阶段做法（由 MiniCPM 提出，arXiv:2404.06395；
-  采用方见第 12 章的来源列表）。
+- **warmup**: in the first warmup_steps steps, the multiplier increases linearly from about 0 to 1.
+  At the start, the parameters are random and the gradient directions are noisy.
+  A large learning rate at this time can make the training diverge.
+- **cosine**: after warmup, the multiplier follows a cosine curve from 1 down to min_lr_ratio.
+  GPT-3 and Llama use this schedule. Its problem: you must set the total number of steps
+  before you start. To train for more steps, you must start again.
+- **WSD (Warmup-Stable-Decay)**: warmup, then a long stable phase at the peak, then a fast decay
+  in the last decay_frac of the steps. You can take any checkpoint from the stable phase and add
+  a short decay to get a usable model. To train for more steps, continue from the stable phase.
+  This is good for ladder experiments and for the "pretraining → mid-training (annealing)" stages.
+  MiniCPM introduced WSD (arXiv:2404.06395). Chapter 12 lists the models that use it.
 """
 
 from __future__ import annotations
@@ -59,7 +62,7 @@ def wsd(
     elif decay_shape == "sqrt":
         f = 1 - math.sqrt(progress)
     else:
-        raise ValueError(f"未知的 decay_shape：{decay_shape}")
+        raise ValueError(f"Unknown decay_shape: {decay_shape}")
     return min_lr_ratio + (1 - min_lr_ratio) * f
 
 
@@ -72,11 +75,14 @@ def lr_multiplier_fn(cfg: ScheduleConfig, total_steps: int) -> Callable[[int], f
         )
     if cfg.kind == "constant":
         return lambda s: warmup_factor(s, cfg.warmup_steps)
-    raise ValueError(f"未知的调度：{cfg.kind}")
+    raise ValueError(f"Unknown schedule: {cfg.kind}")
 
 
 class LRScheduler:
-    """给优化器的每个参数组设置 lr = base_lr × m(step)。状态只有 step，存进 checkpoint。"""
+    """Set lr = base_lr × m(step) for each parameter group of the optimizer.
+
+    The only state is the step. The checkpoint stores it.
+    """
 
     def __init__(
         self, optimizer: Any, cfg: ScheduleConfig, base_lr: float, total_steps: int
@@ -90,7 +96,7 @@ class LRScheduler:
         return self.base_lr * self.fn(step)
 
     def apply(self, step: int) -> float:
-        """把第 step 步的学习率写进优化器，返回这个学习率。"""
+        """Write the learning rate of this step into the optimizer, and return the learning rate."""
         self.step_count = step
         lr = self.lr_at(step)
         for group in self.optimizer.param_groups:

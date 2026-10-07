@@ -1,140 +1,145 @@
-# From 0 to AGI：从 y = ax + b 到最先进的开源模型
+# From 0 to AGI: from y = ax + b to state-of-the-art open models
+
+**English** · [中文](README.zh.md)
 
 > *You can outsource your thinking, but you cannot outsource your understanding.*
 
-一门**中文**课程：从一条直线 `y = ax + b` 出发，讲到亲手搭建 Transformer、Scaling Law、预训练工程、SFT / 蒸馏 / DPO / GRPO 强化学习，再到为了更长上下文、更小 KV cache 而演进出的最新架构。**只讲已经形成共识的主流技术**（判定规则见 [GOAL.md](GOAL.md) 2.1）。
+This course starts with one straight line, `y = ax + b`. It continues to a Transformer that you build yourself, scaling laws, pretraining engineering, SFT, distillation, DPO, GRPO reinforcement learning, and the newest architectures for longer context and a smaller KV cache. **The course teaches only mainstream methods that the field agrees on** (the rule is in [GOAL.md](GOAL.md), Section 2.1). The course is in English and Chinese. Each page has a button or a link to the other language.
 
-每一章有三样东西：
+Each chapter has three parts:
 
-- **文字速读版**：15–30 分钟读完，直觉 → 公式 → 极简代码 → 小结。
-- **讲解视频**：5–10 分钟，画面里的数字全部由本章代码真实算出。
-- **两层代码**：先是 CPU 上几秒到几分钟跑完的**极简代码**（`chapters/NN-*/code/`），再是同一个想法在主线模型里的**生产级写法**（[`zero/`](zero/DESIGN.md)），两层互相对拍。
+- **A short text**: You can read it in 15–30 minutes. The order is intuition → formulas → minimal code → summary.
+- **A video**: 5–10 minutes. The chapter code calculates every number in the video.
+- **Two levels of code**: First, **minimal code** that runs on a CPU in seconds or minutes (`chapters/NN-*/code/`). Second, the **production code** for the same idea in the main-line model ([`zero/`](zero/DESIGN.md)). A parity check makes sure that the two levels give the same result.
 
-课程的后半程贯穿一个**主线模型**：用约 1 万美元算力从零训练一个中英双语、约 0.69B 参数的小模型，目标是在**工具调用**上超过同尺寸的所有公开模型（包括 Qwen3.5-0.8B），通用基准如实报告。生产级代码已经全部写好并在 CPU 上用极小配置跑通；真实训练在第二步、有 GPU 之后进行（见 [runs/RUNBOOK.md](runs/RUNBOOK.md)）。
+The second half of the course follows one **main-line model**. We train a bilingual (Chinese and English) model with about 0.69B parameters from zero, with a compute budget of about 10,000 US dollars. The goal is to be better at **tool calling** than all public models of the same size, Qwen3.5-0.8B included. We report the general benchmarks as they are. The production code is complete, and it runs end to end on a CPU with a tiny configuration. The real training occurs in Step 2, when GPUs are available (see [runs/RUNBOOK.md](runs/RUNBOOK.md)).
 
-## 和斯坦福 CS336 的关系
+## Relation to Stanford CS336
 
-本课定位为 [CS336（Language Modeling from Scratch）](https://cs336.stanford.edu/) 的**中文入门与导读**：第 1–6 章补上 CS336 默认你已经会的深度学习基础；第 7 章起每章末尾有"想深入：CS336"，指向 Spring 2026 对应的讲次和作业。本课多出来的两条主线是：真实训练并发布一个模型的全过程（预注册、闸门、公平评测），以及第五部分的架构演进。
+This course is an **introduction and guide** to [CS336 (Language Modeling from Scratch)](https://cs336.stanford.edu/). Chapters 1–6 teach the deep-learning basics that CS336 expects you to know. From Chapter 7, each chapter ends with "Go deeper: CS336", which points to the matching lecture and assignment of Spring 2026. This course adds two main topics: the full process of training and releasing a real model (preregistration, gates, and fair evaluation), and the architecture changes in Part 5.
 
-## 怎么学
+## How to study
 
-1. 读章节 README 的**一句话目标**和速读正文（最好配合视频；视频还没发布，目前请按下面的命令在本地渲染）。
-2. 运行本章 `code/` 里的极简代码，对照正文里的数字。
-3. 读"从极简到生产级"，打开 `zero/` 里对应的文件。
-4. 带着"引导问题"去问 Claude Code，完成"动手任务"。
-5. 在 Claude Code 里输入 `/chNN-...` 做自我检验（Skill 在 `.claude/commands/`）。
+1. Read the **goal** and the text of the chapter README. The video helps. The videos are not published yet, so render them on your computer with the commands below.
+2. Run the minimal code in the `code/` folder of the chapter. Compare the output with the numbers in the text.
+3. Read "From minimal code to production code" and open the related file in `zero/`.
+4. Ask Claude Code the "Guided questions" and do the "Hands-on tasks".
+5. Type `/chNN-...` in Claude Code to check yourself (the skills are in `.claude/commands/`).
 
 ```bash
-# 安装依赖（需要 uv：https://docs.astral.sh/uv/）
-uv sync                       # 文字 + 代码
-uv sync --extra video         # 还想自己渲染视频（另需系统依赖，见下面的"渲染视频前的准备"）
+# Install the dependencies (uv is necessary: https://docs.astral.sh/uv/)
+uv sync                       # text + code
+uv sync --extra video         # also render the videos yourself (see "Before you render the videos" below)
 
-# 跑第 1 章
+# Run Chapter 1
 uv run python chapters/01-linear-regression/code/01_fit_line.py
 
-# 渲染第 1 章视频（480p 样片加 --preview）
+# Render the video of Chapter 1 (add --preview for a 480p sample)
 bash chapters/01-linear-regression/video/build.sh
 
-# 生产级代码的测试与端到端冒烟（CPU）
+# Tests and end-to-end smoke test of the production code (CPU)
 uv run pytest
 uv run python -m zero.smoke
 ```
 
-**渲染视频前的准备**：
+**Before you render the videos**:
 
-- 系统里装好 `ffmpeg` 和 LaTeX（Manim 的公式要用）；
-- 字体：中文字体（WenQuanYi Zen Hei、Noto Sans CJK SC、Source Han Sans SC 任一）和等宽字体 Noto Sans Mono（代码块用）；
-- 第一次渲染会从 GitHub 自动下载离线 TTS 模型（sherpa-onnx 的 MeloTTS 中英混读模型）到 `~/.cache/tts`，之后离线可用；换目录用环境变量 `VIDEO_TTS_MODEL_DIR`；TTS 默认用满所有 CPU 核，在共享服务器上用 `VIDEO_TTS_THREADS=8` 之类的设置限制线程数；
-- 一章 1080p 成片在 4 核 CPU 上约 6–8 分钟，加 `--preview` 出 480p 样片更快；成片在 `chapters/NN-*/video/out/`（不进 git）。
+- Install `ffmpeg` and LaTeX (Manim uses LaTeX for formulas).
+- Fonts: install a Chinese font (WenQuanYi Zen Hei, Noto Sans CJK SC, or Source Han Sans SC) and the monospace font Noto Sans Mono (for code blocks).
+- The first render downloads an offline TTS model (the MeloTTS Chinese–English model of sherpa-onnx) from GitHub to `~/.cache/tts`. After that, it works offline. To use a different folder, set `VIDEO_TTS_MODEL_DIR`. By default, TTS uses all CPU cores. On a shared server, limit the threads, for example with `VIDEO_TTS_THREADS=8`.
+- A 1080p video of one chapter takes about 6–8 minutes on a 4-core CPU. A 480p sample with `--preview` is faster. The videos go to `chapters/NN-*/video/out/` (not in git).
+- The videos are in Chinese at this time.
 
-## 目录
+## Contents
 
-表中"视频"一列是 1080p 成片的时长（`bash chapters/NN-*/video/build.sh` 可重新生成）；视频发布后会把链接写回各章 README。
+The "Video" column gives the length of the 1080p video (run `bash chapters/NN-*/video/build.sh` to make it again). When the videos are published, we add the links to each chapter README.
 
-### 第一部分：从一条直线开始（NumPy，CPU）
+### Part 1: Start from a straight line (NumPy, CPU)
 
-| 章 | 标题 | 自检 | 视频 |
+| Chapter | Title | Self-check | Video |
 |---|---|---|---|
-| 1 | [y = ax + b —— 从一条直线学会"训练"](chapters/01-linear-regression/) | `/ch01-linear` | 5.2 分钟 |
-| 2 | [从标量到矩阵 —— y = XW + b](chapters/02-from-scalar-to-matrix/) | `/ch02-matrix` | 7.4 分钟 |
-| 3 | [非线性与神经网络 —— 用折线拼出曲线](chapters/03-neural-network/) | `/ch03-neural-network` | 7.9 分钟 |
-| 4 | [反向传播与自动微分 —— 让计算机替你求导](chapters/04-backprop-autograd/) | `/ch04-backprop` | 6.3 分钟 |
-| 5 | [分类与概率 —— 从"猜一个数"到"猜哪一类"](chapters/05-classification-probability/) | `/ch05-classification` | 8.7 分钟 |
-| 6 | [让训练稳定 —— 初始化、归一化、残差、AdamW 与学习率调度](chapters/06-training-stability/) | `/ch06-training-stability` | 9.4 分钟 |
+| 1 | [y = ax + b — Learn "training" from a straight line](chapters/01-linear-regression/README.md) | `/ch01-linear` | 5.2 min |
+| 2 | [From scalars to matrices — y = XW + b](chapters/02-from-scalar-to-matrix/README.md) | `/ch02-matrix` | 7.4 min |
+| 3 | [Nonlinearity and neural networks — Build a curve from line segments](chapters/03-neural-network/README.md) | `/ch03-neural-network` | 7.9 min |
+| 4 | [Backpropagation and automatic differentiation — Let the computer calculate the derivatives](chapters/04-backprop-autograd/README.md) | `/ch04-backprop` | 6.3 min |
+| 5 | [Classification and probability — From "predict a number" to "predict a class"](chapters/05-classification-probability/README.md) | `/ch05-classification` | 8.7 min |
+| 6 | [Stable training — Initialization, normalization, residual connections, AdamW, and learning-rate schedules](chapters/06-training-stability/README.md) | `/ch06-training-stability` | 9.4 min |
 
-### 第二部分：构建现代 Transformer（PyTorch）
+### Part 2: Build a modern Transformer (PyTorch)
 
-| 章 | 标题 | 自检 | 视频 |
+| Chapter | Title | Self-check | Video |
 |---|---|---|---|
-| 7 | [语言建模与分词 —— 从"猜下一个字"到 byte-level BPE](chapters/07-tokenization-language-model/) | `/ch07-tokenization` | 7.5 分钟 |
-| 8 | [注意力 —— 让每个位置自己决定看哪里](chapters/08-attention/) | `/ch08-attention` | 7.8 分钟 |
-| 9 | [现代 Transformer —— 把注意力搭成一个会写字的模型](chapters/09-modern-transformer/) | `/ch09-transformer` | 6.3 分钟 |
-| 10 | [推理 —— 让模型开口说话，而且说得快](chapters/10-inference/) | `/ch10-inference` | 9.4 分钟 |
+| 7 | [Language modeling and tokenization — From "predict the next character" to byte-level BPE](chapters/07-tokenization-language-model/README.md) | `/ch07-tokenization` | 7.5 min |
+| 8 | [Attention — Each position decides where to look](chapters/08-attention/README.md) | `/ch08-attention` | 7.8 min |
+| 9 | [The modern Transformer — Build a model that writes text from attention](chapters/09-modern-transformer/README.md) | `/ch09-transformer` | 6.3 min |
+| 10 | [Inference — Make the model generate text, and make it fast](chapters/10-inference/README.md) | `/ch10-inference` | 9.4 min |
 
-### 第三部分：训练一个真正的模型（主线模型开始）
+### Part 3: Train a real model (the main-line model starts)
 
-| 章 | 标题 | 自检 | 视频 |
+| Chapter | Title | Self-check | Video |
 |---|---|---|---|
-| 11 | [评测：先定考卷 —— 考什么、怎么判、差多少才算赢](chapters/11-evaluation/) | `/ch11-evaluation` | 8.0 分钟 |
-| 12 | [Scaling Law 与实验设计 —— 先用小模型算清楚，再花大钱](chapters/12-scaling-laws/) | `/ch12-scaling-laws` | 7.1 分钟 |
-| 13 | [数据 —— 从一堆网页到一份能训练的数据集](chapters/13-data/) | `/ch13-data` | 8.6 分钟 |
-| 14 | [预训练工程 —— 混合精度、FlashAttention、数据并行与断点续训](chapters/14-pretraining-engineering/) | `/ch14-pretraining` | 9.6 分钟 |
-| 15 | [中期训练与长上下文 —— 最后一段怎么训，读不长怎么办](chapters/15-midtraining-long-context/) | `/ch15-midtraining` | 8.8 分钟 |
+| 11 | [Evaluation: set the exam first — What to test, how to score, and what counts as a win](chapters/11-evaluation/README.md) | `/ch11-evaluation` | 8.0 min |
+| 12 | [Scaling laws and experiment design — Calculate with small models before you spend money](chapters/12-scaling-laws/README.md) | `/ch12-scaling-laws` | 7.1 min |
+| 13 | [Data — From web pages to a training data set](chapters/13-data/README.md) | `/ch13-data` | 8.6 min |
+| 14 | [Pretraining engineering — Mixed precision, FlashAttention, data parallelism, and resume from checkpoints](chapters/14-pretraining-engineering/README.md) | `/ch14-pretraining` | 9.6 min |
+| 15 | [Mid-training and long context — How to train the last stage, and how to read longer text](chapters/15-midtraining-long-context/README.md) | `/ch15-midtraining` | 8.8 min |
 
-### 第四部分：后训练 —— 把底座变成可用的工具调用模型
+### Part 4: Post-training — Make the base model a useful tool-calling model
 
-| 章 | 标题 | 自检 | 视频 |
+| Chapter | Title | Self-check | Video |
 |---|---|---|---|
-| 16 | [SFT —— 把只会续写的底座，教成会回答、会调工具的助手](chapters/16-sft/) | `/ch16-sft` | 6.3 分钟 |
-| 17 | [蒸馏 —— 让小模型向大模型学](chapters/17-distillation/) | `/ch17-distillation` | 6.4 分钟 |
-| 18 | [偏好对齐 —— 从 RLHF 到 DPO](chapters/18-preference-alignment/) | `/ch18-dpo` | 6.5 分钟 |
-| 19 | [强化学习 —— 让模型从自己的尝试里学](chapters/19-reinforcement-learning/) | `/ch19-rl` | 6.6 分钟 |
-| 20 | [发布 —— 按预注册交卷，把模型装进笔记本](chapters/20-release/) | `/ch20-release` | 7.4 分钟 |
+| 16 | [SFT — Teach a base model to answer questions and to call tools](chapters/16-sft/README.md) | `/ch16-sft` | 6.3 min |
+| 17 | [Distillation — A small model learns from a large model](chapters/17-distillation/README.md) | `/ch17-distillation` | 6.4 min |
+| 18 | [Preference alignment — From RLHF to DPO](chapters/18-preference-alignment/README.md) | `/ch18-dpo` | 6.5 min |
+| 19 | [Reinforcement learning — The model learns from its own attempts](chapters/19-reinforcement-learning/README.md) | `/ch19-rl` | 6.6 min |
+| 20 | [Release — Report against the preregistration, and run the model on a laptop](chapters/20-release/README.md) | `/ch20-release` | 7.4 min |
 
-### 第五部分：架构演进 —— 为了更长的上下文、更小的 KV cache
+### Part 5: Architecture changes — For longer context and a smaller KV cache
 
-| 章 | 标题 | 自检 | 视频 |
+| Chapter | Title | Self-check | Video |
 |---|---|---|---|
-| 21 | [KV cache 的账本 —— 长上下文贵在哪，每个 token 该存多少](chapters/21-kv-cache-ledger/) | `/ch21-kv-cache` | 7.0 分钟 |
-| 22 | [局部与稀疏注意力 —— 只看附近，也不丢掉远处](chapters/22-local-sparse-attention/) | `/ch22-local-attention` | 6.8 分钟 |
-| 23 | [线性注意力与混合架构 —— 把 KV cache 压成一个固定大小的矩阵](chapters/23-linear-attention-hybrid/) | `/ch23-linear-attention` | 7.2 分钟 |
-| 24 | [混合专家（MoE）—— 参数翻几十倍，每个 token 的算力不变](chapters/24-mixture-of-experts/) | `/ch24-moe` | 6.4 分钟 |
-| 25 | [多 token 预测与推测解码 —— 让小模型先猜，大模型一次改完](chapters/25-mtp-speculative-decoding/) | `/ch25-speculative` | 6.4 分钟 |
-| 26 | [当前最先进开源模型全景 —— 把整门课的架构放进一棵树](chapters/26-open-model-panorama/) | `/ch26-panorama` | 6.5 分钟 |
+| 21 | [The KV cache budget — Why long context is expensive, and how much each token must store](chapters/21-kv-cache-ledger/README.md) | `/ch21-kv-cache` | 7.0 min |
+| 22 | [Local and sparse attention — Look nearby, and keep the distant context](chapters/22-local-sparse-attention/README.md) | `/ch22-local-attention` | 6.8 min |
+| 23 | [Linear attention and hybrid architectures — Compress the KV cache into a fixed-size matrix](chapters/23-linear-attention-hybrid/README.md) | `/ch23-linear-attention` | 7.2 min |
+| 24 | [Mixture of experts (MoE) — Many more parameters, the same compute for each token](chapters/24-mixture-of-experts/README.md) | `/ch24-moe` | 6.4 min |
+| 25 | [Multi-token prediction and speculative decoding — A small model guesses, a large model checks](chapters/25-mtp-speculative-decoding/README.md) | `/ch25-speculative` | 6.4 min |
+| 26 | [The state of open models — Put the architectures of the course in one tree](chapters/26-open-model-panorama/README.md) | `/ch26-panorama` | 6.5 min |
 
-## 主线模型进度
+## Progress of the main-line model
 
-| 阶段 | 状态 |
+| Stage | Status |
 |---|---|
-| 第一步：课程 + 生产级代码（CPU 上极小配置跑通、测试通过） | ✅ 完成 |
-| 阶段 6：GPU 环境验证（≤ $50） | 🟡 单卡 / 2 卡 RTX 3090 版已完成（[runs/2026-10-01-gpu0-check](runs/2026-10-01-gpu0-check/README.md)），8×H100 版待做 |
-| 阶段 7：对手重跑与预注册定稿（[草案](eval/PREREGISTRATION.md)） | ⏳ 等 GPU |
-| 阶段 8：阶梯实验与闸门 1 | ⏳ 等 GPU |
-| 阶段 9：预训练、中期训练与闸门 2 | ⏳ 等 GPU |
-| 阶段 10：后训练、闸门 3 与发布 | ⏳ 等 GPU |
-| 阶段 11：把真实结果回填进第三、四部分 | ⏳ 等 GPU |
+| Step 1: course + production code (runs on a CPU with a tiny configuration, tests pass) | ✅ Done |
+| Stage 6: GPU verification (≤ $50) | 🟡 Done on 1 and 2 RTX 3090 GPUs ([runs/2026-10-01-gpu0-check](runs/2026-10-01-gpu0-check/README.md)); the 8×H100 version is not done yet |
+| Stage 7: run the competitor models again and finalize the preregistration ([draft](eval/PREREGISTRATION.md)) | ⏳ Waiting for GPUs |
+| Stage 8: scaling-ladder experiments and Gate 1 (a small 3×RTX 3090 version is in progress: [runs/ladder-3090](runs/ladder-3090/README.md)) | 🔄 Paused |
+| Stage 9: pretraining, mid-training, and Gate 2 | ⏳ Waiting for GPUs |
+| Stage 10: post-training, Gate 3, and release | ⏳ Waiting for GPUs |
+| Stage 11: put the real results into Parts 3 and 4 | ⏳ Waiting for GPUs |
 
-第一步的完成汇报（偏差、GPU 未验证项、第二步花费、待你决定的事）见 [runs/STEP1_REPORT.md](runs/STEP1_REPORT.md)。第二步的操作手册、成本估算和记账表见 [runs/RUNBOOK.md](runs/RUNBOOK.md)、[runs/ledger.md](runs/ledger.md)、[runs/RELEASE_CHECKLIST.md](runs/RELEASE_CHECKLIST.md)。
+The report of Step 1 (differences from the plan, parts not verified on a GPU, cost of Step 2, and open decisions) is in [runs/STEP1_REPORT.md](runs/STEP1_REPORT.md). The runbook, cost estimates, and cost ledger of Step 2 are in [runs/RUNBOOK.md](runs/RUNBOOK.md), [runs/ledger.md](runs/ledger.md), and [runs/RELEASE_CHECKLIST.md](runs/RELEASE_CHECKLIST.md).
 
-## 仓库结构
+## Repository structure
 
 ```
-chapters/NN-slug/     每章：README（正文）、code/（极简代码）、video/（脚本、场景、渲染命令、字幕）
-zero/                 主线模型的生产级代码（设计说明：zero/DESIGN.md）
-configs/              tiny（CPU 冒烟）/ ladder（阶梯实验）/ main（主线训练）三档配置
-tests/                生产级代码的测试（uv run pytest）
-eval/                 预注册草案、对手清单
-runs/                 第二步的运行手册、记账表、发布清单
-video_kit/            全课程共用的视频工具（配色、离线旁白、分镜对齐、字幕与交付检查）
-docs/CHAPTER_GUIDE.md 章节写作规范
-assets/tiny_corpus/   离线极小语料（附许可证说明）
-GOAL.md               课程与主线模型的完整目标说明
-references.md         参考资料
+chapters/NN-slug/     each chapter: README.md (English), README.zh.md (Chinese), code/ (minimal code), video/
+zero/                 production code of the main-line model (design notes: zero/DESIGN.md)
+configs/              tiny (CPU smoke test) / ladder (scaling ladder) / main (main-line training) configurations
+tests/                tests of the production code (uv run pytest)
+eval/                 preregistration draft, list of competitor models
+runs/                 runbook, cost ledger, release checklist, and experiment records of Step 2
+video_kit/            video tools for all chapters (colors, offline narration, shot alignment, subtitles, checks)
+site/                 the course website (MkDocs; English by default, with a button for Chinese)
+docs/STYLE_GUIDE.md   writing rules for English and Chinese (based on ASD-STE100), and the glossary
+docs/CHAPTER_GUIDE.md rules for the structure of a chapter
+assets/tiny_corpus/   a tiny offline corpus (with license notes)
+GOAL.md               the full goal of the course and the main-line model
+references.md         references
 ```
 
-## 说明
+## Notes
 
-- 视频旁白由离线 TTS（sherpa-onnx + MeloTTS 中英混读模型）合成，**发音与语速尚未经人工试听**，发布前需要人工听一遍。
-- 第三、四部分里标注"极小配置演示"的数字来自约 1M 参数的极小模型在 CPU 上的真实运行，只说明代码通路正确，不代表主线模型的效果。
-- 第 11、16–20 章引用的冒烟测试数字来自修复工具调用判分器之前的那次运行；修复后重跑，SFT 及之前的阶段完全一致，蒸馏及之后的数字有变化（各章"主线进度"里有说明）。
-- 生产级代码里凡是 CPU 上测不了的路径（多卡、FlashAttention kernel、BF16 等）原本都标注了"尚未在 GPU 上验证"。2026-10 在单张和 2 张 RTX 3090 上做了一轮验证（BF16、FlashAttention、DDP / FSDP2、断点续训、compile、后训练通路等），结果见 [runs/2026-10-01-gpu0-check](runs/2026-10-01-gpu0-check/README.md)，验证过的标注都改成了具体的验证状态；8×H100 / NVLink 下的吞吐与 MFU、32K 长序列的显存仍待第二步实测。
+- An offline TTS model (sherpa-onnx + the MeloTTS Chinese–English model) speaks the narration of the videos. **Nobody has listened to the pronunciation and speed yet.** A person must listen to each video before release.
+- In Parts 3 and 4, the numbers marked "tiny-configuration demo" come from real CPU runs of a tiny model with about 1M parameters. They show only that the code works. They do not show the quality of the main-line model.
+- The smoke-test numbers in Chapters 11 and 16–20 come from a run before we fixed the tool-calling grader. After the fix, the stages up to SFT gave the same numbers, and the numbers from distillation onward changed (each chapter explains this in "Main-line progress").
+- In the production code, each path that a CPU cannot test (multiple GPUs, FlashAttention kernels, BF16, and others) had the label "not verified on a GPU yet". In 2026-10, we verified these paths on 1 and 2 RTX 3090 GPUs (BF16, FlashAttention, DDP / FSDP2, resume from checkpoints, compile, post-training paths, and others). The results are in [runs/2026-10-01-gpu0-check](runs/2026-10-01-gpu0-check/README.md), and the labels now give the exact status. The throughput and MFU on 8×H100 with NVLink, and the memory for 32K sequences, are still open for Step 2.
