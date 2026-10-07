@@ -113,4 +113,4 @@ uv run python -m zero.tools.plan_budget --config configs/main/pretrain.toml --mf
 | 每个尺寸做学习率扫描，最优在边上就向外扩 | `code/03_lr_sweep.py` |
 | η\*(N) 幂律外推给留出尺寸 | 同上，留出尺寸 s5 用外推学习率 |
 | `zero.tools.fit_scaling`（非负最小二乘 + 分组 bootstrap） | `04_mini_ladder.py` 的 `fit_lnd` / `bootstrap` |
-| l300m 留出检验 | s5（阶梯最大尺寸的 2.3 倍）留出检验 |
+| l300m 留出检验 | s5（阶梯最大尺寸的 2.15 倍：N = 467,936 / 217,792）留出检验 |
