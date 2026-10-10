@@ -539,6 +539,15 @@ def test_from_hermes_unparseable_calls_end_the_conversation() -> None:
         {"from": "gpt", "value": "You are welcome."},
     ]
     assert len(from_hermes(row, 0)) == 2  # the tasks before the broken turn stay, none after it
+    # an unclosed (cut) <tool_call> is not a "no call" turn, and a cut second call does not shorten the gold
+    for cut in (
+        '<tool_call>\n{"name": "create_device_group", "arguments": {"group_name": "x", "devices": []}}',
+        '<tool_call>\n{"name": "create_device_group", "arguments": {"group_name": "x", "devices": []}}\n'
+        '</tool_call>\n<tool_call>\n{"name": "initialize_smart_home_system", "arguments": {',
+    ):
+        row = copy.deepcopy(HERMES_ROW)
+        row["conversations"][2]["value"] = cut
+        assert from_hermes(row, 0) == []
     row["tools"] = "[{'broken'"
     assert from_hermes(row, 0) == []
     # arguments written as a JSON string are parsed
@@ -651,6 +660,8 @@ def test_from_toolace_broken_call_list_is_not_a_no_call_task() -> None:
     row["conversations"][5]["value"] = '[SEC Filings(identifier="AAPL"), Market Trends API(trend_type=CRYPTO)]'
     tasks = from_toolace(row, 0)
     assert len(tasks) == 2  # the unparseable call list (a bare name) gives no task, not a "no call" task
+    row["conversations"][5]["value"] = '[SEC Filings(identifier="AAPL"), Market Trends API(trend_'
+    assert len(from_toolace(row, 0)) == 2  # a call list cut before its "]" is not a "no call" task either
     row = copy.deepcopy(TOOLACE_ROW)
     row["system"] = row["system"].replace('"name": "SEC Filings"', '"name": SEC')
     assert from_toolace(row, 0) == []  # the function list does not parse

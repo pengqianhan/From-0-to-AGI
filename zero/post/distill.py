@@ -85,6 +85,7 @@ import torch.nn.functional as F
 
 from zero.post.chat import assistant_text
 from zero.post.common import (
+    SLOW_WAIT_MIN,
     chat_complete,
     load_policy,
     load_post_config,
@@ -705,8 +706,8 @@ def run_distill(
     )
     if generate_only:
         return {"meta": generate_teacher_data(cfg, sec["teacher"], sec["distill"], log)}
-    # While rank 0 mixes and packs the data, the other ranks wait in a collective: a long timeout.
-    info = init_distributed(cfg.train.device, timeout_min=120)
+    # While rank 0 mixes and packs the data, the other ranks wait (a slow wait, see zero.post.common).
+    info = init_distributed(cfg.train.device, slow_wait_min=SLOW_WAIT_MIN)
     try:
         return _distill(cfg, sec["teacher"], sec["distill"], info, rank0_log(info, log))
     finally:
@@ -732,7 +733,8 @@ def generate_teacher_data(
     """`--generate-only`: write the teacher data (out_jsonl + meta) and stop. One process.
 
     No packing and no training: those run in the next command (torchrun). Existing data is kept
-    unless [distill] overwrite = true.
+    unless [distill] overwrite = true; to generate new data once, add `--set distill.overwrite=true`
+    to this command only (the training command reuses the data with overwrite = false).
     """
     from zero.train.dist import pick_device
 
@@ -789,9 +791,16 @@ def _distill(
     meta_path = Path(str(dc.out_jsonl) + ".meta.json")
     reuse = _have_teacher_data(dc)
     if info.world_size > 1 and not reuse:
+        # the data exists, so only overwrite = true stops the reuse
+        if Path(dc.out_jsonl).exists() and meta_path.exists():
+            raise RuntimeError(
+                "[distill] overwrite = true asks for new teacher data, but under torchrun the program does "
+                f"not generate. To train on {dc.out_jsonl} (for example the output of --generate-only), "
+                "add --set distill.overwrite=false"
+            )
         raise RuntimeError(
-            f"[distill] no teacher data to reuse ({dc.out_jsonl}; overwrite = {dc.overwrite}). With torchrun, "
-            "generate it first in one process: python -m zero.post.distill --config <config> --generate-only"
+            f"[distill] no teacher data ({dc.out_jsonl}). With torchrun, generate it first in one process: "
+            "python -m zero.post.distill --config <config> --generate-only"
         )
     teacher = None
     if use_logits or not reuse:  # not reuse: one process (checked above)

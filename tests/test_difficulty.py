@@ -77,16 +77,14 @@ def test_run_filter_outputs(tmp_path: Path, tiny_ckpt) -> None:  # noqa: ANN001
     assert not list(tmp_path.glob("kept.jsonl.part*"))  # the per-rank parts are merged and removed
 
 
-def test_too_long_prompt_is_not_sampled_or_kept(tmp_path: Path, tiny_ckpt) -> None:  # noqa: ANN001
+def test_too_long_prompt_is_not_sampled_or_kept(tmp_path: Path, chat_tok, tiny_ckpt) -> None:  # noqa: ANN001
     """A prompt that leaves less than max_new_tokens of the context is "too_long" (GRPO drops it too)."""
+    from tests.conftest import fc_task_with_prompt_len
+
     src = tmp_path / "tasks.jsonl"
     _tasks(src, n=2)
-    long = FCTask(
-        "long",
-        [WEATHER],
-        [{"role": "user", "content": "word " * 2000}],
-        [{"name": "get_weather", "arguments": {"city": "X"}}],
-    )
+    # fits in max_seq_len (1024), but not with max_new_tokens = 6 more
+    long = fc_task_with_prompt_len(chat_tok, WEATHER, 1024 - 6 + 1, 1023)
     with open(src, "a") as f:
         f.write(json.dumps(long.to_dict()) + "\n")
     out = tmp_path / "kept.jsonl"

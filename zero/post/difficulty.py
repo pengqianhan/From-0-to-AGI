@@ -102,15 +102,15 @@ def run_filter(
     device: str = "auto",
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
-    from zero.post.common import load_policy, run_on_rank0
+    from zero.post.common import SLOW_WAIT_MIN, load_policy, run_on_rank0, wait_all
     from zero.post.envs.fc_tasks import load_fc_tasks
     from zero.post.grpo import prompt_fits
-    from zero.train.dist import barrier, cleanup, init_distributed
+    from zero.train.dist import cleanup, init_distributed
 
     lo = 1.0 / k if min_pass is None else min_pass  # at least one exact answer
     hi = (k - 1) / k if max_pass is None else max_pass  # at least one wrong answer
-    # The ranks finish their shares at different times (hours of sampling): a long collective timeout.
-    info = init_distributed(device, timeout_min=120)
+    # The ranks finish their shares at different times (hours of sampling): a slow wait.
+    info = init_distributed(device, slow_wait_min=SLOW_WAIT_MIN)
     try:
         model, tok = load_policy(policy, device=info.device)
         model.eval()
@@ -178,7 +178,7 @@ def run_filter(
             )
             return meta
 
-        barrier()  # every part file is complete
+        wait_all(info)  # every part file is complete
         # Rank 0 merges the parts and writes the outputs (an error there stops every rank).
         return run_on_rank0(info, merge) or {}
     finally:

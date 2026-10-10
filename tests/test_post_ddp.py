@@ -238,20 +238,32 @@ def test_distill_refuses_to_generate_under_torchrun(tmp_path: Path, chat_tok, ch
     with pytest.raises(RuntimeError, match="--generate-only"):
         _distill(cfg, sec["teacher"], sec["distill"], DistInfo(world_size=2), lambda _: None)
     assert not (tmp_path / "kd.jsonl").exists()
+    # overwrite = true in the config: --generate-only makes new data; the training step says how to use it
+    # (it used to answer "run --generate-only", which would generate again, for hours)
+    from zero.post.distill import run_distill
+
+    d["distill"]["overwrite"] = True
+    run_distill(d, log=lambda _: None, generate_only=True)
+    cfg, sec = load_post_config(d, {"teacher": TeacherConfig, "distill": DistillConfig})
+    with pytest.raises(RuntimeError, match="--set distill.overwrite=false"):
+        _distill(cfg, sec["teacher"], sec["distill"], DistInfo(world_size=2), lambda _: None)
 
 
 def _rank0_worker(rank: int, world: int, port: int, out: str) -> None:
-    from zero.post.common import run_on_rank0
+    import time
+
+    from zero.post.common import all_gather_objects, run_on_rank0, wait_all
     from zero.train.dist import cleanup, init_distributed
 
     os.environ.update({"RANK": str(rank), "LOCAL_RANK": str(rank), "WORLD_SIZE": str(world),
                        "MASTER_ADDR": "127.0.0.1", "MASTER_PORT": str(port)})
-    info = init_distributed("cpu", timeout_min=1)
+    info = init_distributed("cpu", slow_wait_min=1)  # the slow waits use their own group
 
     def fail() -> None:
         raise ValueError("bad data")
 
     try:
+        assert info.wait_group is not None
         try:
             run_on_rank0(info, fail)
             res = "no error"
@@ -259,6 +271,9 @@ def _rank0_worker(rank: int, world: int, port: int, out: str) -> None:
             res = f"{type(e).__name__}: {e}"
         Path(f"{out}.{rank}").write_text(res)
         Path(f"{out}.ok{rank}").write_text(str(run_on_rank0(info, lambda: 42)))
+        time.sleep(0.5 * rank)  # rank 1 arrives later
+        wait_all(info)
+        Path(f"{out}.gather{rank}").write_text(json.dumps(all_gather_objects({"r": rank}, info)))
     finally:
         cleanup()
 
@@ -270,3 +285,5 @@ def test_run_on_rank0_stops_every_rank(tmp_path: Path) -> None:
     assert Path(f"{out}.0").read_text() == "ValueError: bad data"
     assert Path(f"{out}.1").read_text().startswith("RuntimeError: rank 0 failed")
     assert Path(f"{out}.ok0").read_text() == "42" and Path(f"{out}.ok1").read_text() == "None"
+    for r in (0, 1):
+        assert json.loads(Path(f"{out}.gather{r}").read_text()) == [{"r": 0}, {"r": 1}]

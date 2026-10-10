@@ -725,9 +725,16 @@ _PARSE_ERRORS = (
 
 
 def _hermes_calls(text: str) -> list[dict[str, Any]] | None:
-    """The <tool_call> bodies of one Hermes turn → calls. None if a body does not parse."""
+    """The <tool_call> bodies of one Hermes turn → calls. None if a body does not parse.
+
+    An unclosed (cut) <tool_call> is not parsed either: without this check the turn would become a
+    "no call" task, or lose its last call.
+    """
+    bodies = _HERMES_CALL_RE.findall(text)
+    if text.count("<tool_call>") != len(bodies) or text.count("</tool_call>") != len(bodies):
+        return None
     calls = []
-    for body in _HERMES_CALL_RE.findall(text):
+    for body in bodies:
         try:
             obj = _loads_loose(body)
             args = obj.get("arguments") or {}
@@ -801,6 +808,12 @@ def _looks_like_call_list(text: str) -> bool:
     return t.startswith("[") and t.endswith("]") and "(" in t
 
 
+def _looks_like_call_attempt(text: str) -> bool:
+    """A call list, possibly cut before its "]" (ToolACE replies in words never start with "[name(")."""
+    t = text.strip()
+    return t.startswith("[") and "(" in t
+
+
 def parse_python_calls(text: str) -> list[dict[str, Any]] | None:
     """`[Func Name(a="x", b=1), other(c=[1, 2])]` → calls. None if the text is not such a list.
 
@@ -870,7 +883,7 @@ def from_toolace(row: dict[str, Any], idx: int, license: str = "Apache-2.0") -> 
         text = c.get("value", "")
         if role == "assistant":
             calls = parse_python_calls(text)
-            if calls is None and _looks_like_call_list(text):
+            if calls is None and _looks_like_call_attempt(text):
                 break
             if hist and hist[-1]["role"] in ("user", "tool"):
                 out.append(

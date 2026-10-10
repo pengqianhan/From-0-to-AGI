@@ -134,9 +134,14 @@ def test_run_grpo_end_to_end(tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt)
 
 
 def test_run_grpo_drops_prompts_that_leave_no_room(tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt) -> None:  # noqa: ANN001
-    """Regression: a prompt longer than max_seq_len − max_new_tokens used to reach the model mid-run."""
+    """Regression: a prompt longer than max_seq_len − max_new_tokens used to reach the model mid-run.
+
+    The long prompt here fits in max_seq_len (1024) but not with max_new_tokens = 8 more: a check
+    against max_seq_len alone would keep it.
+    """
     import json
 
+    from tests.conftest import fc_task_with_prompt_len
     from zero.post.envs.fc_tasks import FCTask
 
     weather = {"type": "function", "function": {"name": "get_weather", "parameters": {
@@ -144,8 +149,9 @@ def test_run_grpo_drops_prompts_that_leave_no_room(tmp_path: Path, chat_tok, cha
     rows = [
         FCTask(f"t{i}", [weather], [{"role": "user", "content": q}],
                [{"name": "get_weather", "arguments": {"city": "Paris"}}]).to_dict()
-        for i, q in enumerate(["Weather in Paris?", "Paris weather, please.", "word " * 2000])
+        for i, q in enumerate(["Weather in Paris?", "Paris weather, please."])
     ]
+    rows.append(fc_task_with_prompt_len(chat_tok, weather, 1024 - 8 + 1, 1023).to_dict())
     (tmp_path / "tasks.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
     d = post_config(
         tmp_path, chat_tok_path, tiny_ckpt, chat_tok.vocab_size,

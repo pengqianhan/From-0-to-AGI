@@ -47,6 +47,7 @@ import torch.nn.functional as F
 
 from zero.post.chat import encode_prompt_response, format_tool_call
 from zero.post.common import (
+    SLOW_WAIT_MIN,
     LoopState,
     build_model_from_init,
     chat_complete,
@@ -280,8 +281,8 @@ def run_dpo(
     from zero.train.dist import cleanup, init_distributed
 
     cfg, sec = load_post_config(src, {"dpo": DPOConfig}, overrides)
-    # The ranks generate their shares of the pairs (generate_pairs) at different speeds: a long timeout.
-    info = init_distributed(cfg.train.device, timeout_min=120)
+    # The ranks sample their shares of the pairs (generate_pairs) at different speeds: a slow wait.
+    info = init_distributed(cfg.train.device, slow_wait_min=SLOW_WAIT_MIN)
     try:
         return _dpo_loop(cfg, sec["dpo"], info, rank0_log(info, log))
     finally:

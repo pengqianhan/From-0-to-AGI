@@ -195,3 +195,26 @@ def post_config(tmp_path: Path, tok_path: Path, init_from: Path, vocab: int, **s
         else:
             d[k] = v
     return d
+
+
+def fc_task_with_prompt_len(tok, tool: dict, lo: int, hi: int, task_id: str = "long"):  # noqa: ANN001, ANN201
+    """A function-calling task whose rendered prompt has lo..hi tokens (tests of the context limit)."""
+    from zero.post.chat import render
+    from zero.post.envs.fc_tasks import FCTask
+
+    name = tool["function"]["name"]
+
+    def make(n: int) -> FCTask:
+        msgs = [{"role": "user", "content": "word " * n + "?"}]
+        return FCTask(task_id, [tool], msgs, [{"name": name, "arguments": {"city": "X"}}])
+
+    def length(n: int) -> int:
+        t = make(n)
+        return len(render(t.messages, t.tools, add_generation_prompt=True, tokenizer=tok)[0])
+
+    a, b = 0, 4 * hi  # the smallest n with length(n) >= lo (length grows with n)
+    while a < b:
+        m = (a + b) // 2
+        a, b = (m + 1, b) if length(m) < lo else (a, m)
+    assert lo <= length(a) <= hi, f"no prompt of {lo}..{hi} tokens"
+    return make(a)

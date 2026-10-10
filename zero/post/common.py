@@ -8,9 +8,9 @@
 - `token_logprobs` / `pad_batch`: DPO, GRPO, and distillation all need "the log probability of each token".
 - Read and write JSONL.
 - Data parallelism for the stages that do not use `Trainer` (DPO, GRPO, on-policy distillation):
-  `rank_share`, `all_reduce_sum` / `all_reduce_max` / `all_gather_objects`, and the gradient
-  all-reduce in `LoopState`; `run_on_rank0` for work that only rank 0 does (writing files) while
-  the others wait.
+  `rank_share`, `all_reduce_sum` / `all_reduce_max`, and the gradient all-reduce in `LoopState`.
+  For the slow waits (with a long timeout, see `SLOW_WAIT_MIN`): `run_on_rank0` for work that only
+  rank 0 does (packing, writing files), `all_gather_objects`, `wait_all`.
 
 **Data parallelism of DPO / GRPO / OPD** (`torchrun --nproc_per_node=N -m zero.post.grpo ...`):
 every rank holds a full copy of the policy (0.7B + AdamW fits on one 80GB GPU). The batch sizes in
@@ -285,34 +285,58 @@ def rank0_log(info: Any, log: Callable[[str], None]) -> Callable[[str], None]:
     return log if info.is_main else (lambda _msg: None)
 
 
+# Slow waits: rank 0 packs data while the others wait, or the ranks finish their shares of sampling at
+# different times. The stages with such waits call init_distributed(slow_wait_min=SLOW_WAIT_MIN); the
+# helpers below wait on `info.wait_group` (gloo, this timeout) instead of the default group (10 minutes
+# with NCCL, which stays short for training).
+SLOW_WAIT_MIN = 120.0
+
+
+def wait_all(info: Any) -> None:
+    """A barrier for a slow wait (on `info.wait_group` when there is one)."""
+    if getattr(info, "is_distributed", False):
+        import torch.distributed as dist
+
+        dist.barrier(group=getattr(info, "wait_group", None))
+
+
 def all_gather_objects(obj: Any, info: Any) -> list[Any]:
-    """The obj of every rank, in rank order, on every rank (pickled). With one process, [obj]."""
+    """The obj of every rank, in rank order, on every rank (pickled). With one process, [obj].
+
+    Every rank waits for the slowest one (on `info.wait_group` when there is one).
+    """
     if not getattr(info, "is_distributed", False):
         return [obj]
     import torch.distributed as dist
 
     out: list[Any] = [None] * info.world_size
-    dist.all_gather_object(out, obj)
+    dist.all_gather_object(out, obj, group=getattr(info, "wait_group", None))
     return out
 
 
 def run_on_rank0(info: Any, fn: Callable[[], T]) -> T | None:
-    """Run fn() on rank 0 only; the other ranks wait (and get None).
+    """Run fn() on rank 0 only; the other ranks wait (on `info.wait_group`) and get None.
 
     An error on rank 0 reaches every rank: the others raise too, instead of waiting in a barrier until
-    the collective timeout hides the real error. The wait is a collective, so the timeout of the
-    process group (`init_distributed(timeout_min=...)`) must be longer than fn().
+    the collective timeout hides the real error.
     """
+    if not getattr(info, "is_distributed", False):
+        return fn()
+    import torch.distributed as dist
+
     out, err = None, None
     if info.is_main:
         try:
             out = fn()
         except Exception as e:  # noqa: BLE001 - re-raised below, after the other ranks are told
             err = e
-    (failed,) = all_reduce_sum([1.0 if err is not None else 0.0], info)
+    group = getattr(info, "wait_group", None)
+    device = "cpu" if group is not None else info.device  # the wait group is gloo
+    flag = torch.tensor([0.0 if err is None else 1.0], device=device)
+    dist.all_reduce(flag, group=group)
     if err is not None:
         raise err
-    if failed:
+    if flag.item() > 0:
         raise RuntimeError("rank 0 failed (see its log), so this rank stops too")
     return out
 

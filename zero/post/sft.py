@@ -32,7 +32,7 @@ import argparse
 import json
 import os
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +40,13 @@ import numpy as np
 
 from zero.config import Config, DataSourceConfig
 from zero.post.chat import render
-from zero.post.common import load_post_config, read_jsonl, run_on_rank0, write_jsonl
+from zero.post.common import (
+    SLOW_WAIT_MIN,
+    load_post_config,
+    read_jsonl,
+    run_on_rank0,
+    write_jsonl,
+)
 from zero.tokenizer import Tokenizer
 
 
@@ -199,13 +205,14 @@ def run_sft(
     cfg, sec = load_post_config(src, {"sft": SFTConfig}, overrides)
     if cfg.train.data.format != "sft":
         raise ValueError('The SFT config needs [data] format = "sft"')
-    # Rank 0 packs the data (minutes for a large mixture) while the others wait: a long timeout,
-    # and an error on rank 0 stops every rank.
-    info = init_distributed(cfg.train.device, timeout_min=120)
+    # Rank 0 packs the data (minutes for a large mixture) while the others wait (a slow wait), and
+    # an error on rank 0 stops every rank.
+    info = init_distributed(cfg.train.device, slow_wait_min=SLOW_WAIT_MIN)
     try:
         run_on_rank0(info, lambda: prepare_sft_data(cfg, sec["sft"], log or print))
         if not info.is_main:
-            prepare_sft_data(cfg, sec["sft"], lambda _: None)  # only fills in the paths (the files exist already)
+            # only fills in the paths: the files exist already (overwrite = false, or every rank would pack again)
+            prepare_sft_data(cfg, replace(sec["sft"], overwrite=False), lambda _: None)
         os.makedirs(cfg.train.out_dir, exist_ok=True)
         return Trainer(cfg, info, log).train()
     finally:
