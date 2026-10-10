@@ -71,8 +71,9 @@ import json
 import os
 import time
 import urllib.request
+from collections import Counter
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -92,7 +93,9 @@ from zero.tokenizer import Tokenizer
 
 @dataclass
 class TeacherConfig:
-    backend: str = "local"  # "local" (zero checkpoint / HF folder) | "openai" (OpenAI-compatible HTTP)
+    backend: str = (
+        "local"  # "local" (zero checkpoint / HF folder) | "openai" (OpenAI-compatible HTTP)
+    )
     path: str = ""  # local: checkpoint folder or HF folder
     base_url: str = ""  # openai: for example http://localhost:8000/v1
     model: str = ""  # openai: the model name on the server
@@ -100,7 +103,9 @@ class TeacherConfig:
     name: str = ""  # for the record: teacher name, for example "Qwen3-8B"
     version: str = ""  # for the record: version / commit / release date
     license: str = ""  # for the record: license, for example "Apache-2.0"
-    license_allows_distillation: bool = False  # the license allows the use of the outputs to train other models
+    license_allows_distillation: bool = (
+        False  # the license allows the use of the outputs to train other models
+    )
     temperature: float = 0.7
     top_p: float = 0.95
     max_new_tokens: int = 96
@@ -115,12 +120,31 @@ class DistillConfig:
     samples_per_task: int = 4  # number of teacher samples for each task
     keep_per_task: int = 1  # maximum number of verified trajectories to keep for each task
     env_seed: int = 0
-    mix_sft_jsonl: str = ""  # optional: mix in the original SFT data (prevents forgetting with little teacher data)
+    mix_sft_jsonl: str = (
+        ""  # optional: mix in the original SFT data (prevents forgetting with little teacher data)
+    )
     mix_sft_max: int = 0  # maximum number of rows to mix in
-    logits_kd: bool = True  # add the logits distillation term (needs the local backend + the same tokenizer)
+    logits_kd: bool = (
+        True  # add the logits distillation term (needs the local backend + the same tokenizer)
+    )
     kd_alpha: float = 0.5
     kd_temperature: float = 1.0
     kd_topk: int = 0
+    # Real data (2026-10-10). Each source is optional; n_tasks = 0 turns the toy environment off.
+    task_files: list[str] = field(
+        default_factory=list
+    )  # function-calling tasks: keep teacher answers that score exact
+    prompt_files: list[str] = field(
+        default_factory=list
+    )  # prompts without answers (e.g. Chinese chat): filtered teacher answers
+    prompt_license: str = ""  # license of the prompts in prompt_files (written to each row); empty: the teacher license
+    max_prompts: int = 0  # per prompt file; 0 = all
+    match_lang: bool = (
+        True  # prompt_files: the answer must be in the language of the prompt (zh / en)
+    )
+    concurrency: int = (
+        1  # parallel requests to an OpenAI-compatible teacher server (the local backend uses 1)
+    )
     on_policy_steps: int = 0  # >0: this many on-policy distillation steps after offline distillation (to be verified; off by default)
     on_policy_lr: float = 1e-4
     on_policy_batch: int = 4
@@ -269,7 +293,7 @@ class OpenAITeacher:
         payload = {
             "model": c.model,
             "messages": to_openai_messages(messages),
-            "tools": tools,
+            **({"tools": tools} if tools else {}),
             "n": n,
             "temperature": c.temperature,
             "top_p": c.top_p,
@@ -364,19 +388,114 @@ def teacher_trajectories(
     return kept, len(firsts)
 
 
+def fc_task_answers(
+    teacher: Any, task: Any, n: int, keep: int, seed: int
+) -> tuple[list[list[dict[str, Any]]], int]:
+    """Rejection sampling on a real function-calling task: keep the first turns that score exact.
+
+    For a "no call" task, exact means: no call and a non-empty reply (the teacher's own wording).
+    """
+    from zero.post.chat import parse_assistant
+    from zero.post.envs.fc_tasks import score_fc
+
+    outs = teacher.complete(task.messages, task.tools, n, seed)
+    kept = []
+    for text in outs:
+        if len(kept) >= keep:
+            break
+        if score_fc(task, text).exact:
+            kept.append([dict(m) for m in task.messages] + [parse_assistant(text).to_message()])
+    return kept, len(outs)
+
+
+def prompt_answers(
+    teacher: Any, messages: list[dict[str, Any]], n: int, keep: int, seed: int, match_lang: bool
+) -> tuple[list[list[dict[str, Any]]], int, Counter]:
+    """Teacher answers to a prompt without a reference answer, with simple filters.
+
+    Dropped: empty answers, special tokens (forged turns), unclosed <think>, tool calls (no tools were
+    offered), and, with match_lang, answers in another language than the prompt (zh / en).
+    """
+    from zero.post.chat import parse_assistant
+    from zero.post.envs.fc_tasks import guess_lang
+    from zero.post.sft_data import FORBIDDEN
+
+    outs = teacher.complete(messages, [], n, seed)
+    users = [m.get("content") or "" for m in messages if m.get("role") == "user"]
+    want = guess_lang(users[-1]) if users else ""
+    kept, why = [], Counter()
+    for text in outs:
+        if len(kept) >= keep:
+            break
+        parsed = parse_assistant(text)
+        if not parsed.content.strip():
+            why["empty"] += 1
+        elif any(t in text for t in FORBIDDEN):
+            why["special_tokens"] += 1
+        elif parsed.errors:
+            why["format"] += 1
+        elif parsed.tool_calls:
+            why["tool_call"] += 1
+        elif match_lang and want and guess_lang(parsed.content) != want:
+            why["language"] += 1
+        else:
+            kept.append(
+                [dict(m) for m in messages] + [{"role": "assistant", "content": parsed.content}]
+            )
+    return kept, len(outs), why
+
+
+def _distill_jobs(dc: DistillConfig) -> list[tuple[str, Any]]:
+    """All teacher jobs, in a fixed order: (kind, item). kind: env | fc | prompt."""
+    from types import SimpleNamespace
+
+    from zero.post.common import read_jsonl
+    from zero.post.envs.fc_tasks import load_fc_tasks
+    from zero.post.envs.tool_env import generate_tasks
+    from zero.post.opd import conversation_prompt
+
+    jobs: list[tuple[str, Any]] = []
+    if dc.n_tasks > 0:
+        jobs += [("env", t) for t in generate_tasks(dc.n_tasks, seed=dc.env_seed, split="train")]
+    for f in dc.task_files:
+        jobs += [("fc", t) for t in load_fc_tasks(f)]
+    for f in dc.prompt_files:
+        rows = read_jsonl(f)
+        if dc.max_prompts > 0:
+            rows = rows[: dc.max_prompts]
+        for i, r in enumerate(rows):
+            if "prompt" in r and "messages" not in r:
+                r = {"messages": [{"role": "user", "content": r["prompt"]}]}
+            p = conversation_prompt(r)
+            if p is not None:
+                jobs.append(
+                    (
+                        "prompt",
+                        SimpleNamespace(messages=p.messages, id=f"{Path(f).stem}-{r.get('id', i)}"),
+                    )
+                )
+    return jobs
+
+
 def generate_kd_data(
     teacher: LocalTeacher | OpenAITeacher,
     tcfg: TeacherConfig,
     dc: DistillConfig,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
-    """Generate the sequence-level distillation data, write out_jsonl and out_jsonl.meta.json, and return the metadata."""
-    from zero.post.envs.tool_env import generate_tasks
+    """Generate the sequence-level distillation data, write out_jsonl and out_jsonl.meta.json, and return the metadata.
 
-    tasks = generate_tasks(dc.n_tasks, seed=dc.env_seed, split="train")
+    Sources (each optional): the toy tool environment (`n_tasks`, executed and checked end to end),
+    real function-calling tasks (`task_files`, first turn must score exact), and prompts without
+    answers (`prompt_files`, filtered). Requests to an OpenAI-compatible server run `concurrency` at a
+    time; the order of the output does not depend on it (each job has a fixed seed).
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    jobs = _distill_jobs(dc)
+    if not jobs:
+        raise ValueError("[distill] no teacher jobs: set n_tasks > 0, task_files, or prompt_files")
     t0 = time.time()
-    rows = []
-    n_cand = 0
     teacher_meta = {
         "name": tcfg.name,
         "version": tcfg.version,
@@ -385,16 +504,55 @@ def generate_kd_data(
         "backend": tcfg.backend,
         "path_or_model": tcfg.path or tcfg.model,
     }
-    for i, task in enumerate(tasks):
-        kept, n = teacher_trajectories(
-            teacher, task, dc.samples_per_task, dc.keep_per_task, dc.env_seed * 1_000_003 + i
-        )
-        n_cand += n
-        for msgs in kept:
-            rows.append(
-                {"messages": msgs, "tools": task.tools, "task_id": task.id, "teacher": teacher_meta}
+
+    def run(i: int) -> tuple[list[list[dict[str, Any]]], int, Counter]:
+        kind, item = jobs[i]
+        seed = dc.env_seed * 1_000_003 + i
+        if kind == "env":
+            kept, n = teacher_trajectories(
+                teacher, item, dc.samples_per_task, dc.keep_per_task, seed
             )
+            return kept, n, Counter()
+        if kind == "fc":
+            kept, n = fc_task_answers(teacher, item, dc.samples_per_task, dc.keep_per_task, seed)
+            return kept, n, Counter()
+        return prompt_answers(
+            teacher, item.messages, dc.samples_per_task, dc.keep_per_task, seed, dc.match_lang
+        )
+
+    workers = dc.concurrency if isinstance(teacher, OpenAITeacher) else 1
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            results = list(ex.map(run, range(len(jobs))))
+    else:
+        results = []
+        for i in range(len(jobs)):
+            results.append(run(i))
+            if (i + 1) % 1000 == 0:
+                log(f"[distill] {i + 1}/{len(jobs)} teacher jobs")
+    rows = []
+    by_kind: dict[str, Counter] = {}
+    for (kind, item), (kept, n, why) in zip(jobs, results):
+        c = by_kind.setdefault(kind, Counter())
+        c.update(candidates=n, verified=len(kept), jobs=1, jobs_with_verified=int(bool(kept)))
+        c.update({f"drop_{k}": v for k, v in why.items()})
+        if kind == "prompt":
+            lic, tools = dc.prompt_license or tcfg.license, None
+        else:
+            lic, tools = getattr(item, "license", "") or "own", item.tools
+        for msgs in kept:
+            row = {
+                "messages": msgs,
+                "task_id": item.id,
+                "source": f"distill-{kind}",
+                "license": lic,
+                "teacher": teacher_meta,
+            }
+            if tools:
+                row["tools"] = tools
+            rows.append(row)
     write_jsonl(dc.out_jsonl, rows)
+    n_cand = sum(c["candidates"] for c in by_kind.values())
     meta = {
         "teacher": teacher_meta,
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -404,19 +562,27 @@ def generate_kd_data(
             "max_new_tokens": tcfg.max_new_tokens,
         },
         "env": {"n_tasks": dc.n_tasks, "env_seed": dc.env_seed, "split": "train"},
+        "task_files": list(dc.task_files),
+        "prompt_files": list(dc.prompt_files),
+        "by_source": {k: dict(v) for k, v in by_kind.items()},
         "n_candidates": n_cand,
         "n_verified": len(rows),
         "tasks_with_verified": len({r["task_id"] for r in rows}),
         "pass_rate": len(rows) / max(n_cand, 1),
-        "filter": "score_tool_calls == 1 and score_final_answer.answer_ok (zero/post/envs/tool_env.py)",
+        "filter": {
+            "env": "score_tool_calls == 1 and score_final_answer.answer_ok (zero/post/envs/tool_env.py)",
+            "fc": "score_fc exact on the first turn (zero/post/envs/fc_tasks.py)",
+            "prompt": "non-empty, no special tokens, no tool calls, same language as the prompt"
+            + ("" if dc.match_lang else " (language check off)"),
+        },
         "seconds": round(time.time() - t0, 1),
     }
     Path(str(dc.out_jsonl) + ".meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2)
     )
     log(
-        f"[distill] teacher {tcfg.name or tcfg.path}: {n_cand} candidates → {len(rows)} verified"
-        f" (pass rate {meta['pass_rate']:.1%}, {meta['seconds']}s)"
+        f"[distill] teacher {tcfg.name or tcfg.path}: {n_cand} candidates → {len(rows)} kept"
+        f" (pass rate {meta['pass_rate']:.1%}, {meta['seconds']}s) {meta['by_source']}"
     )
     return meta
 
@@ -515,73 +681,101 @@ def run_distill(
 ) -> dict[str, Any]:
     """Teacher data generation → (mix in SFT data) → packing → train the student.
 
-    Return {"meta", "history", ...}.
+    CPU, 1 GPU, or N GPUs with torchrun: rank 0 generates and packs the data, then every rank trains
+    with the same `Trainer` as SFT (DDP). Return {"meta", "history", ...}.
     """
-    from zero.post.common import read_jsonl
-    from zero.post.sft import build_sft_shards
-    from zero.train.dist import DistInfo, pick_device
-    from zero.train.trainer import Trainer
+    from zero.train.dist import cleanup, init_distributed
 
     cfg, sec = load_post_config(
         src, {"teacher": TeacherConfig, "distill": DistillConfig}, overrides
     )
-    tcfg: TeacherConfig = sec["teacher"]
-    dc: DistillConfig = sec["distill"]
+    info = init_distributed(cfg.train.device)
+    try:
+        return _distill(cfg, sec["teacher"], sec["distill"], info, log)
+    finally:
+        cleanup()
+
+
+def _distill(
+    cfg: Any, tcfg: TeacherConfig, dc: DistillConfig, info: Any, log: Callable[[str], None]
+) -> dict[str, Any]:
+    from zero.config import DataSourceConfig
+    from zero.post.common import read_jsonl
+    from zero.post.sft import build_sft_shards
+    from zero.train.dist import barrier
+    from zero.train.trainer import Trainer
+
     tc = cfg.train
     if tc.cpu_threads > 0:
         torch.set_num_threads(tc.cpu_threads)
     if cfg.train.data.format != "sft":
-        raise ValueError('The distillation config needs [data] format = "sft" (the teacher trajectories are packed as SFT data)')
+        raise ValueError(
+            'The distillation config needs [data] format = "sft" (the teacher trajectories are packed as SFT data)'
+        )
+    if dc.on_policy_steps > 0 and info.world_size > 1:
+        raise ValueError(
+            "[distill] on_policy_steps runs in one process; for N GPUs use zero.post.opd"
+        )
     tok = Tokenizer.load(tc.data.tokenizer)
 
     # Is the teacher "a model of this project" (the stand-in of the smoke test)?
     # Yes for the local backend + a zero checkpoint folder.
     is_self = tcfg.backend == "local" and not (Path(tcfg.path) / "config.json").exists()
     check_license(tcfg, is_self)
-    # With CUDA, put the local teacher on the GPU. Verified on one RTX 3090
-    # (2026-10, see runs/2026-10-01-gpu0-check/).
-    t_device = "cuda" if tc.device in ("auto", "cuda") and torch.cuda.is_available() else "cpu"
-    teacher = build_teacher(tcfg, t_device)
+    # Logits distillation needs a local teacher on every rank; data generation needs it only on rank 0.
+    use_logits = dc.logits_kd and tcfg.backend == "local"
+    if dc.logits_kd and not use_logits:
+        log(
+            "[distill] the teacher is not a local model, so no logits: sequence-level distillation only"
+        )
+    meta_path = Path(str(dc.out_jsonl) + ".meta.json")
+    reuse = Path(dc.out_jsonl).exists() and meta_path.exists() and not dc.overwrite
+    teacher = None
+    if use_logits or (info.is_main and not reuse):
+        # With CUDA, the local teacher is on this rank's GPU. Verified on one RTX 3090
+        # (2026-10, see runs/2026-10-01-gpu0-check/).
+        teacher = build_teacher(tcfg, info.device)
     # First check if logits distillation is possible. For different tokenizers, raise the error
     # early, before the generation of the teacher data.
-    use_logits = dc.logits_kd and isinstance(teacher, LocalTeacher)
-    if dc.logits_kd and not use_logits:
-        log("[distill] the teacher is not a local model, so no logits: sequence-level distillation only")
     if use_logits and teacher.tok.hash() != tok.hash():  # type: ignore[union-attr]
         raise ValueError(
             "Logits distillation needs the same tokenizer for the teacher and the student (the hashes are different). For a teacher with a different tokenizer, set [distill] logits_kd = false"
         )
 
-    meta_path = Path(str(dc.out_jsonl) + ".meta.json")
-    if Path(dc.out_jsonl).exists() and meta_path.exists() and not dc.overwrite:
-        meta = json.loads(meta_path.read_text())
-        log(f"[distill] reusing the existing teacher data {dc.out_jsonl} ({meta['n_verified']} rows)")
-    else:
-        meta = generate_kd_data(teacher, tcfg, dc, log)
-
-    rows = read_jsonl(dc.out_jsonl)
-    if dc.mix_sft_jsonl and dc.mix_sft_max > 0:
-        extra = read_jsonl(dc.mix_sft_jsonl)[: dc.mix_sft_max]
-        rows = rows + extra
-        log(f"[distill] mixed in {len(extra)} rows of the original SFT data ({len(rows)} rows in total)")
-    if not rows:
-        raise ValueError("[distill] no training data: no teacher trajectory passed the check, and no SFT data was mixed in")
     shard_dir = Path(dc.shard_dir or Path(tc.out_dir) / "data")
-    mixed = shard_dir / "train_mix.jsonl"
-    write_jsonl(mixed, rows)
-    stats = build_sft_shards(mixed, tok, tc.data.seq_len, shard_dir / "train.bin")
-    log(f"[distill] packing: {stats}")
-    from zero.config import DataSourceConfig
+    meta: dict[str, Any] = {}
+    stats: dict[str, Any] = {}
+    if info.is_main:
+        if reuse:
+            meta = json.loads(meta_path.read_text())
+            log(
+                f"[distill] reusing the existing teacher data {dc.out_jsonl} ({meta['n_verified']} rows)"
+            )
+        else:
+            meta = generate_kd_data(teacher, tcfg, dc, log)  # type: ignore[arg-type]
+        rows = read_jsonl(dc.out_jsonl)
+        if dc.mix_sft_jsonl and dc.mix_sft_max > 0:
+            extra = read_jsonl(dc.mix_sft_jsonl)[: dc.mix_sft_max]
+            rows = rows + extra
+            log(
+                f"[distill] mixed in {len(extra)} rows of the original SFT data ({len(rows)} rows in total)"
+            )
+        if not rows:
+            raise ValueError(
+                "[distill] no training data: no teacher trajectory passed the check, and no SFT data was mixed in"
+            )
+        mixed = shard_dir / "train_mix.jsonl"
+        write_jsonl(mixed, rows)
+        stats = build_sft_shards(mixed, tok, tc.data.seq_len, shard_dir / "train.bin")
+        log(f"[distill] packing: {stats}")
+    barrier()  # the other ranks wait for the packed windows
 
     tc.data.sources = [DataSourceConfig(name="distill", path=str(shard_dir / "train.bin"))]
     tc.data.val = ""
     tc.eval_every = 0
-
     os.makedirs(tc.out_dir, exist_ok=True)
-    # Single process. [train] device selects the device. Before, the code always used DistInfo(),
-    # that is the CPU: with a GPU, the student still trained on the CPU, and the teacher also moved
-    # back to the CPU. We found this on an RTX 3090 in 2026-10, see runs/2026-10-01-gpu0-check/.
-    info = DistInfo(device=pick_device(tc.device))
+    # [train] device selects the device (before 2026-10 the code always used the CPU; found on an RTX 3090,
+    # see runs/2026-10-01-gpu0-check/).
     if use_logits:
         trainer = _make_distill_trainer_cls()(cfg, teacher.model, dc, info=info, log=log)  # type: ignore[union-attr]
     else:
@@ -621,9 +815,10 @@ def run_distill(
         "on_policy": on_policy_hist,
         "config": {"teacher": asdict(tcfg), "distill": asdict(dc)},
     }
-    Path(tc.out_dir, "distill_summary.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2, default=str)
-    )
+    if info.is_main:
+        Path(tc.out_dir, "distill_summary.json").write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2, default=str)
+        )
     return summary
 
 

@@ -2,7 +2,11 @@
 # The teacher runs as an OpenAI-compatible server in vLLM (on a different group of GPUs, or on the same machine:
 # generate the data first, then train):
 #   vllm serve <teacher HF folder or name> --tensor-parallel-size 2 --enable-auto-tool-choice --tool-call-parser hermes
-#   uv run python -m zero.post.distill --config configs/main/distill.toml
+#   uv run torchrun --standalone --nproc_per_node=8 -m zero.post.distill --config configs/main/distill.toml
+# (rank 0 generates and packs the teacher data; then all GPUs train, as in SFT)
+# Teacher candidates (license from the model metadata, 2026-10-10; the choice is the project lead's, see
+# runs/POSTTRAIN_PLAN.md 6.4): Qwen3.5-35B-A3B / Qwen3.5-122B-A10B / Qwen3-235B-A22B-Instruct-2507 (Apache-2.0),
+# gpt-oss-120b (Apache-2.0 + OpenAI usage policy), DeepSeek-V4.1-Flash (MIT), GLM-5.2 (MIT, zh/en).
 # Our own tokenizer is different from the tokenizer of all open teachers → only sequence-level distillation is possible (logits_kd = false).
 # Fill in and verify the name / version / license of the teacher before the run (GOAL.md 3.3).
 # license_allows_distillation is false by default: without verification, the program does not run.
@@ -51,7 +55,12 @@ max_new_tokens = 1024
 [distill]
 out_jsonl = "data/distill/teacher.jsonl"
 shard_dir = "data/distill/packed"
-n_tasks = 200000         # tool_env is only a toy environment. Step 2 must also connect real tool-calling task sets (Chapters 17 and 19)
+n_tasks = 200000         # tool_env: the toy environment, executed and checked end to end (multi-turn with tool results)
+task_files = []          # real function-calling tasks: keep teacher first turns that score exact (e.g. "no call" tasks, for the teacher's wording)
+prompt_files = []        # prompts without answers, e.g. Chinese instructions → Chinese SFT data (the Chinese gap, plan 6.2)
+prompt_license = ""      # license of the prompts in prompt_files (empty: the teacher license)
+match_lang = true        # prompt_files: drop answers in another language than the prompt
+concurrency = 64         # parallel requests to the vLLM server
 samples_per_task = 4
 keep_per_task = 1
 env_seed = 17

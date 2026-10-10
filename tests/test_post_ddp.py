@@ -184,3 +184,32 @@ def test_two_processes_match_one(
     # the weights really changed (the test would pass trivially otherwise)
     s0 = torch.load(find_latest(tiny_ckpt) / "model.pt", weights_only=True)
     assert any(not torch.allclose(s0[k], s1[k]) for k in s0)
+
+
+def _distill_worker(rank: int, world: int, port: int, cfg: dict) -> None:
+    os.environ.update({"RANK": str(rank), "LOCAL_RANK": str(rank), "WORLD_SIZE": str(world),
+                       "MASTER_ADDR": "127.0.0.1", "MASTER_PORT": str(port)})
+    torch.set_num_threads(1)
+    from zero.post.distill import run_distill
+
+    run_distill(cfg, log=lambda _: None)
+
+
+@pytest.mark.skipif(not dist.is_available() or not dist.is_gloo_available(), reason="no gloo backend")
+def test_distill_two_processes(tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt) -> None:  # noqa: ANN001
+    """Rank 0 generates and packs the teacher data, rank 1 waits; then both train with DDP (with logits KD)."""
+    from zero.post.common import write_jsonl
+    from zero.post.sft import env_conversations
+
+    write_jsonl(tmp_path / "sft.jsonl", env_conversations(8, 0, "train"))
+    d = post_config(
+        tmp_path, chat_tok_path, tiny_ckpt, chat_tok.vocab_size,
+        data={"format": "sft", "seq_len": 512},
+        teacher={"backend": "local", "path": str(tiny_ckpt), "name": "self", "max_new_tokens": 12},
+        distill={"out_jsonl": str(tmp_path / "kd.jsonl"), "n_tasks": 3, "samples_per_task": 2,
+                 "mix_sft_jsonl": str(tmp_path / "sft.jsonl"), "mix_sft_max": 8, "kd_alpha": 0.5},
+    )
+    d["model"]["max_seq_len"] = 512
+    mp.spawn(_distill_worker, args=(2, _free_port(), d), nprocs=2, join=True)
+    assert find_latest(tmp_path / "run" / "ckpt").name == "step_00000002"
+    assert (tmp_path / "kd.jsonl.meta.json").exists() and (tmp_path / "run" / "distill_summary.json").exists()

@@ -284,3 +284,78 @@ def test_run_distill_trains_student_on_cuda(
     s = run_distill(d, log=logs.append)
     assert s["history"][-1]["step"] == 2
     assert any("device cuda" in m for m in logs), logs
+
+
+class _ScriptedOpenAI(BaseHTTPRequestHandler):
+    """A fake teacher that returns scripted answers per user question (the last user message)."""
+
+    answers: dict = {}
+    requests: list = []
+
+    def do_POST(self) -> None:  # noqa: N802
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        _ScriptedOpenAI.requests.append(body)
+        q = [m["content"] for m in body["messages"] if m["role"] == "user"][-1]
+        msgs = _ScriptedOpenAI.answers[q][: body["n"]]
+        out = json.dumps({"choices": [{"message": m} for m in msgs]}, ensure_ascii=False).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    def log_message(self, *a) -> None:  # noqa: ANN002
+        pass
+
+
+def _call(name: str, **args) -> dict:  # noqa: ANN003
+    return {"role": "assistant", "content": None, "tool_calls": [
+        {"id": "c0", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]}
+
+
+def test_teacher_on_real_tasks_and_prompts(tmp_path: Path) -> None:
+    from zero.post.envs.fc_tasks import FCTask
+
+    weather = {"type": "function", "function": {"name": "get_weather", "parameters": {
+        "type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}
+    tasks = [
+        FCTask("w", [weather], [{"role": "user", "content": "Weather in Paris?"}],
+               [{"name": "get_weather", "arguments": {"city": "Paris"}}], license="Apache-2.0"),
+        FCTask("j", [weather], [{"role": "user", "content": "Tell me a joke"}], [], license="Apache-2.0"),
+    ]
+    (tmp_path / "fc.jsonl").write_text("".join(json.dumps(t.to_dict()) + "\n" for t in tasks))
+    prompts = [{"messages": [{"role": "user", "content": "请介绍一下长城。"}]},
+               {"prompt": "Say hi"}]
+    (tmp_path / "prompts.jsonl").write_text("".join(json.dumps(p, ensure_ascii=False) + "\n" for p in prompts))
+    _ScriptedOpenAI.answers = {
+        "Weather in Paris?": [_call("get_weather", city="London"), _call("get_weather", city="Paris")],
+        "Tell me a joke": [{"role": "assistant", "content": "Why did the chicken cross the road?"}, _call("get_weather", city="X")],
+        "请介绍一下长城。": [{"role": "assistant", "content": "The Great Wall is old."},
+                        {"role": "assistant", "content": "长城是中国古代的军事防御工程。"}],
+        "Say hi": [{"role": "assistant", "content": "hi <|im_start|>user"}, {"role": "assistant", "content": ""}],
+    }
+    _ScriptedOpenAI.requests = []
+    srv = HTTPServer(("127.0.0.1", 0), _ScriptedOpenAI)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    tc = TeacherConfig(backend="openai", base_url=f"http://127.0.0.1:{srv.server_port}/v1", model="t",
+                       name="T", license="Apache-2.0", license_allows_distillation=True)
+    try:
+        metas = []
+        for conc in (1, 4):
+            dc = DistillConfig(out_jsonl=str(tmp_path / f"kd{conc}.jsonl"), n_tasks=0, samples_per_task=2,
+                               task_files=[str(tmp_path / "fc.jsonl")], prompt_files=[str(tmp_path / "prompts.jsonl")],
+                               prompt_license="CC-BY-4.0", concurrency=conc)
+            metas.append(generate_kd_data(OpenAITeacher(tc), tc, dc, log=lambda _: None))
+    finally:
+        srv.shutdown()
+    rows = [json.loads(x) for x in (tmp_path / "kd1.jsonl").read_text().splitlines()]
+    assert (tmp_path / "kd1.jsonl").read_text() == (tmp_path / "kd4.jsonl").read_text()  # order fixed by job
+    assert [r["task_id"] for r in rows] == ["w", "j", "prompts-0"]
+    assert rows[0]["messages"][-1]["tool_calls"] == [{"name": "get_weather", "arguments": {"city": "Paris"}}]
+    assert rows[1]["messages"][-1]["content"].startswith("Why did")  # "no call" task: the teacher's words
+    assert rows[2]["messages"][-1]["content"].startswith("长城") and rows[2]["license"] == "CC-BY-4.0"
+    assert rows[0]["license"] == "Apache-2.0" and "tools" in rows[0] and "tools" not in rows[2]
+    bp = metas[0]["by_source"]["prompt"]
+    assert bp["drop_language"] == 1 and bp["drop_special_tokens"] == 1 and bp["drop_empty"] == 1
+    assert metas[0]["by_source"]["fc"]["verified"] == 2
+    assert all("tools" not in r for r in _ScriptedOpenAI.requests if r["messages"][-1]["content"] in ("请介绍一下长城。", "Say hi"))

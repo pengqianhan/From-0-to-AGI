@@ -41,7 +41,13 @@ from zero.post.common import rank_share
 
 
 def score_task(
-    model: torch.nn.Module, tok: Any, task: Any, k: int, max_new_tokens: int, temperature: float, seed: int
+    model: torch.nn.Module,
+    tok: Any,
+    task: Any,
+    k: int,
+    max_new_tokens: int,
+    temperature: float,
+    seed: int,
 ) -> dict[str, Any]:
     from zero.post.envs.fc_tasks import score_any
     from zero.post.grpo import sample_group
@@ -134,12 +140,23 @@ def run_filter(
                 **dict(why),
                 "pass_histogram": {f"{i}/{k}": hist.get(i, 0) for i in range(k + 1)},
                 "mean_pass": sum(s["pass"] for s in stats) / max(len(stats), 1),
-                "settings": {"policy": policy, "tasks": tasks_path, "k": k, "min_pass": lo, "max_pass": hi,
-                             "keep_hard": keep_hard, "temperature": temperature, "max_new_tokens": max_new_tokens,
-                             "seed": seed, "world_size": info.world_size},
+                "settings": {
+                    "policy": policy,
+                    "tasks": tasks_path,
+                    "k": k,
+                    "min_pass": lo,
+                    "max_pass": hi,
+                    "keep_hard": keep_hard,
+                    "temperature": temperature,
+                    "max_new_tokens": max_new_tokens,
+                    "seed": seed,
+                    "world_size": info.world_size,
+                },
             }
             Path(f"{out}.meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
-            log(f"[difficulty] {json.dumps({k_: v for k_, v in meta.items() if k_ != 'settings'}, ensure_ascii=False)}")
+            log(
+                f"[difficulty] {json.dumps({k_: v for k_, v in meta.items() if k_ != 'settings'}, ensure_ascii=False)}"
+            )
         barrier()
         return meta
     finally:
@@ -148,20 +165,39 @@ def run_filter(
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="Offline difficulty filter for RL tasks (Chapter 19)")
-    ap.add_argument("--policy", required=True, help="zero checkpoint or HF folder (the model that starts RL)")
+    ap.add_argument(
+        "--policy", required=True, help="zero checkpoint or HF folder (the model that starts RL)"
+    )
     ap.add_argument("--tasks", required=True, help="task file (zero/post/envs/fc_tasks.py format)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--k", type=int, default=8)
-    ap.add_argument("--min-pass", type=float, default=None, help="default 1/k: at least one exact answer")
-    ap.add_argument("--max-pass", type=float, default=None, help="default (k-1)/k: at least one wrong answer")
-    ap.add_argument("--keep-hard", type=float, default=0.0, help="fraction of all-wrong tasks to keep")
+    ap.add_argument(
+        "--min-pass", type=float, default=None, help="default 1/k: at least one exact answer"
+    )
+    ap.add_argument(
+        "--max-pass", type=float, default=None, help="default (k-1)/k: at least one wrong answer"
+    )
+    ap.add_argument(
+        "--keep-hard", type=float, default=0.0, help="fraction of all-wrong tasks to keep"
+    )
     ap.add_argument("--max-new-tokens", type=int, default=512)
     ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="auto")
     a = ap.parse_args(argv)
-    run_filter(a.policy, a.tasks, a.out, a.k, a.min_pass, a.max_pass, a.keep_hard, a.max_new_tokens,
-               a.temperature, a.seed, a.device)
+    run_filter(
+        a.policy,
+        a.tasks,
+        a.out,
+        a.k,
+        a.min_pass,
+        a.max_pass,
+        a.keep_hard,
+        a.max_new_tokens,
+        a.temperature,
+        a.seed,
+        a.device,
+    )
 
 
 if __name__ == "__main__":
