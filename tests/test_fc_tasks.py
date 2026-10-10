@@ -523,6 +523,34 @@ def test_from_hermes_one_task_per_assistant_turn() -> None:
     assert "<tool_response>" in render_text(t2.messages, t2.tools, add_generation_prompt=True)
 
 
+def test_from_hermes_unparseable_calls_end_the_conversation() -> None:
+    import copy
+
+    from zero.post.envs.fc_tasks import from_hermes
+
+    row = copy.deepcopy(HERMES_ROW)
+    row["conversations"][2]["value"] = '<tool_call>\n{"name": "initialize_smart_home_system", \n</tool_call>'
+    assert from_hermes(row, 0) == []  # the first turn does not parse: no task, and no crash of build
+    row = copy.deepcopy(HERMES_ROW)
+    row["conversations"] += [
+        {"from": "human", "value": "And the lights?"},
+        {"from": "gpt", "value": "<tool_call>\n{'name': 'create_device_group', 'arguments': {'a': }\n</tool_call>"},
+        {"from": "human", "value": "Thanks"},
+        {"from": "gpt", "value": "You are welcome."},
+    ]
+    assert len(from_hermes(row, 0)) == 2  # the tasks before the broken turn stay, none after it
+    row["tools"] = "[{'broken'"
+    assert from_hermes(row, 0) == []
+    # arguments written as a JSON string are parsed
+    row = copy.deepcopy(HERMES_ROW)
+    row["conversations"][2]["value"] = (
+        '<tool_call>\n{"name": "initialize_smart_home_system", "arguments": "{\\"device_list\\": [\\"x\\"]}"}\n</tool_call>'
+    )
+    assert from_hermes(row, 0)[0].gold_calls == [
+        {"name": "initialize_smart_home_system", "arguments": {"device_list": ["x"]}}
+    ]
+
+
 TOOLACE_ROW = {
     "system": "You are an expert in composing functions. ...\nHere is a list of functions in JSON format that you can invoke:\n"
     + json.dumps(
@@ -614,6 +642,20 @@ def test_from_toolace() -> None:
     ).exact  # country="us" is the default
 
 
+def test_from_toolace_broken_call_list_is_not_a_no_call_task() -> None:
+    import copy
+
+    from zero.post.envs.fc_tasks import from_toolace
+
+    row = copy.deepcopy(TOOLACE_ROW)
+    row["conversations"][5]["value"] = '[SEC Filings(identifier="AAPL"), Market Trends API(trend_type=CRYPTO)]'
+    tasks = from_toolace(row, 0)
+    assert len(tasks) == 2  # the unparseable call list (a bare name) gives no task, not a "no call" task
+    row = copy.deepcopy(TOOLACE_ROW)
+    row["system"] = row["system"].replace('"name": "SEC Filings"', '"name": SEC')
+    assert from_toolace(row, 0) == []  # the function list does not parse
+
+
 def test_build_hermes_and_toolace(tmp_path: Path) -> None:
     (tmp_path / "h.json").write_text(json.dumps([HERMES_ROW]))
     (tmp_path / "t.json").write_text(json.dumps([TOOLACE_ROW]))
@@ -659,6 +701,11 @@ def test_to_sft_renders_and_split_does_not_overlap(tmp_path: Path, chat_tok) -> 
         ]
     )
     assert len(load_fc_tasks(tmp_path / "r.jsonl")) == 5
+    # regression: "no call" tasks have no SFT reply, so they go to RL instead of being lost
+    for t in tasks[:4]:
+        t.gold_calls = []
+    sft, rl = split_sft_rl(tasks, 1.0, seed=1)
+    assert len(sft) == 6 and {t.id for t in rl} == {"t0", "t1", "t2", "t3"}
 
 
 # --------------------------------------------------------------------- real BFCL v4 items (bfcl-eval 2026.3.23)

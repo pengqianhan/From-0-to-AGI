@@ -51,10 +51,11 @@ def pick_device(pref: str = "auto", local_rank: int = 0) -> torch.device:
     return torch.device("cuda", local_rank)
 
 
-def init_distributed(device_pref: str = "auto") -> DistInfo:
+def init_distributed(device_pref: str = "auto", timeout_min: float | None = None) -> DistInfo:
     """Initialize the process group from the torchrun environment variables.
 
-    With one process, do nothing.
+    With one process, do nothing. timeout_min: the timeout of the collectives (default of PyTorch:
+    10 minutes for NCCL). Stages where rank 0 prepares data while the others wait set it longer.
     """
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     rank = int(os.environ.get("RANK", "0"))
@@ -67,7 +68,12 @@ def init_distributed(device_pref: str = "auto") -> DistInfo:
             # Runs only with many GPUs. Verified on 2×RTX 3090 (PCIe) (2026-10, see runs/2026-10-01-gpu0-check/).
             torch.cuda.set_device(device)
         if not dist.is_initialized():
-            dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
+            kwargs = {}
+            if timeout_min is not None:
+                from datetime import timedelta
+
+                kwargs["timeout"] = timedelta(minutes=timeout_min)
+            dist.init_process_group(backend=backend, rank=rank, world_size=world_size, **kwargs)
     return DistInfo(
         rank=rank, local_rank=local_rank, world_size=world_size, device=device, backend=backend
     )

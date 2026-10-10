@@ -16,7 +16,9 @@ cost? For each stage of the track (`configs/<track>/<stage>.toml`) this tool:
    sample of teacher data (`--teacher-jobs`) into the launch directory, which also measures the teacher.
 2. checks that the inputs exist (tokenizer, base checkpoint, SFT / preference / task files) and stops
    before any run if one is missing (`--force` runs anyway);
-3. runs the stage (`torchrun --nproc_per_node=N -m zero.post.<stage>`; one process: `python -m`);
+3. runs the stage (`torchrun --nproc_per_node=N -m zero.post.<stage>`; one process: `python -m`).
+   Distillation runs in two commands: the teacher sample in one process (`--generate-only`), then the
+   training;
 4. reads the log: median seconds per step (after the first steps, which include compilation and
    warm-up), tokens per second, peak GPU memory;
 5. projects the full run: seconds/step × max_steps of the real config × N GPUs × $/GPU-hour. A stage
@@ -31,7 +33,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import statistics
 import subprocess
@@ -164,16 +165,25 @@ def plan_stages(
             dd["max_prompts"] = teacher_jobs
             dd["overwrite"] = True
         moves[orig_out] = out
-        plans.append(StagePlan(st, str(cfg_path), d, full_steps, out, stage_inputs(st, d)))
+        plans.append(
+            StagePlan(st, str(cfg_path), d, full_steps, out, stage_inputs(st, d, launch_dir))
+        )
     return plans
 
 
-def stage_inputs(stage: str, d: dict[str, Any]) -> list[tuple[str, str]]:
-    """The files that must exist before the stage starts (outputs of earlier launch stages are not checked)."""
+def stage_inputs(stage: str, d: dict[str, Any], launch_dir: Path) -> list[tuple[str, str]]:
+    """The files that must exist before the stage starts.
+
+    Checkpoints under launch_dir are made by earlier stages of this check, so they are not checked.
+    """
+
+    def made_here(path: str) -> bool:
+        return Path(path).resolve().is_relative_to(launch_dir.resolve())
+
     t, data = d["train"], d.get("data", {})
     out = [("tokenizer", data.get("tokenizer", ""))]
     init = t.get("init_from", "")
-    if init and "/launch/" not in init.replace(os.sep, "/"):
+    if init and not made_here(init):
         out.append(("init checkpoint", init))
     sec = d.get(stage, {})
     if stage == "sft":
@@ -192,8 +202,11 @@ def stage_inputs(stage: str, d: dict[str, Any]) -> list[tuple[str, str]]:
         out += [("task file", p) for p in sec.get("task_files", [])]
     elif stage == "opd":
         for tch in sec.get("teachers", []):
+            name = tch.get("name", "")
+            if not made_here(tch.get("path", "")):
+                out.append((f"checkpoint of teacher {name}", tch.get("path", "")))
             if tch.get("prompts", "tool_env") != "tool_env":
-                out.append((f"prompts of teacher {tch.get('name', '')}", tch["prompts"]))
+                out.append((f"prompts of teacher {name}", tch["prompts"]))
     return out
 
 
@@ -206,19 +219,22 @@ def missing_inputs(plans: list[StagePlan]) -> list[str]:
     ]
 
 
-def command(plan: StagePlan, cfg_file: Path, nproc: int) -> list[str]:
+def commands(plan: StagePlan, cfg_file: Path, nproc: int) -> list[list[str]]:
+    """The commands of one stage, run in order.
+
+    Distillation has two: the teacher sample in one process (`--generate-only`; zero.post.distill does
+    not generate under torchrun), then the training, which reuses that sample.
+    """
     mod = f"zero.post.{plan.stage}"
     if nproc > 1:
-        return [
-            "torchrun",
-            "--standalone",
-            f"--nproc_per_node={nproc}",
-            "-m",
-            mod,
-            "--config",
-            str(cfg_file),
-        ]
-    return [sys.executable, "-m", mod, "--config", str(cfg_file)]
+        run = ["torchrun", "--standalone", f"--nproc_per_node={nproc}", "-m", mod]
+    else:
+        run = [sys.executable, "-m", mod]
+    run += ["--config", str(cfg_file)]
+    if plan.stage == "distill":
+        gen = [sys.executable, "-m", mod, "--config", str(cfg_file), "--generate-only"]
+        return [gen, [*run, "--set", "distill.overwrite=false"]]
+    return [run]
 
 
 # ---------------------------------------------------------------------------
@@ -385,14 +401,14 @@ def run_launch_check(
         cfg_file.write_text(
             f"# Resolved by zero.tools.launch_check from {p.config}\n" + to_toml(p.resolved)
         )
-        cmds.append(command(p, cfg_file, nproc))
+        cmds.append(commands(p, cfg_file, nproc))
     missing = missing_inputs(plans)
     result: dict[str, Any] = {
         "track": track,
         "nproc": nproc,
         "price": price,
         "missing": missing,
-        "commands": [" ".join(c) for c in cmds],
+        "commands": [" ".join(c) for cs in cmds for c in cs],
         "stages": [],
     }
     for m in missing:
@@ -403,15 +419,21 @@ def run_launch_check(
         return result
     if missing and not force:
         raise SystemExit("[launch] inputs are missing (see above); fix them or use --force")
-    for p, cmd in zip(plans, cmds):
+    for p, cs in zip(plans, cmds):
         out = Path(p.out_dir)
         if out.exists():
             shutil.rmtree(out)  # a stale checkpoint would be resumed
         out.mkdir(parents=True, exist_ok=True)
-        log(f"[launch] {p.stage}: {' '.join(cmd)}")
         t0 = time.time()
+        rc = 0
         with open(out / "stdout.log", "w") as fo:
-            rc = subprocess.run(cmd, cwd=REPO, stdout=fo, stderr=subprocess.STDOUT).returncode
+            for cmd in cs:
+                log(f"[launch] {p.stage}: {' '.join(cmd)}")
+                fo.write(f"$ {' '.join(cmd)}\n")
+                fo.flush()
+                rc = subprocess.run(cmd, cwd=REPO, stdout=fo, stderr=subprocess.STDOUT).returncode
+                if rc != 0:
+                    break
         lg = read_log(out / "log.jsonl")
         meas = measure(p.stage, lg)
         row = {

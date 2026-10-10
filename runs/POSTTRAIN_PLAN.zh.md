@@ -228,9 +228,9 @@ uv run python -m zero.post.sft_data --config configs/main/sft_data.toml
 
 用推理服务商托管的教师时，还要读服务商的服务条款。
 
-**多卡**（`zero/post/common.py`）：DPO、GRPO、OPD 都能用 torchrun 多卡数据并行；配置里的批大小是全局的，配方不随卡数改变。2 个 CPU 进程与 1 个进程的逐步损失和最终权重一致（`tests/test_post_ddp.py`）。蒸馏在 rank 0 生成数据后，用 SFT 的 `Trainer`（DDP）训练。**顺手修了一个 DPO 的 bug**：同一步的每个微步都用同样的 `micro_batch_size` 对数据，每步的大部分偏好对从来没有被训练到。
+**多卡**（`zero/post/common.py`）：DPO、GRPO、OPD 都能用 torchrun 多卡数据并行；配置里的批大小是全局的，配方不随卡数改变。2 个 CPU 进程与 1 个进程的逐步损失和最终权重一致（`tests/test_post_ddp.py`）。蒸馏分两条命令：先单进程生成教师数据（`--generate-only`；放在 torchrun 里，其他 rank 会在集合通信里干等几个小时），再用 SFT 的 `Trainer`（DDP）训练学生。DPO 现采偏好对（`generate_pairs`）和难度筛选都把采样分给各个 rank。**顺手修了一个 DPO 的 bug**：同一步的每个微步都用同样的 `micro_batch_size` 对数据，每步的大部分偏好对从来没有被训练到。
 
-**难度筛选**（`zero/post/difficulty.py`）：用开始 RL 的 checkpoint 对每个任务采样 k 次，保留 1/k ≤ pass ≤ (k−1)/k 的任务（弱底座可以另外保留一部分全错的题）。难度取决于策略，所以每条路线各一份：`data/rl/<路线>/fc_train_filtered.jsonl`。
+**难度筛选**（`zero/post/difficulty.py`）：用开始 RL 的 checkpoint 对每个任务采样 k 次，保留 1/k ≤ pass ≤ (k−1)/k 的任务（弱底座可以另外保留一部分全错的题）。提示词占掉上下文、剩下不到 `max_new_tokens` 的任务，这里和 GRPO 都会丢掉（`too_long`；对上下文只有 4096 的弱底座路线有影响）。难度取决于策略，所以每条路线各一份：`data/rl/<路线>/fc_train_filtered.jsonl`。
 
 **开机检查**（`zero/tools/launch_check.py`）：租到 GPU 后的第一个小时。把一条路线的每个阶段各跑几步（在一个启动目录里串起来），给出每步秒数的中位数、显存峰值，以及每个阶段全量运行的预计时长、卡时和花费；教师吞吐用一小份样本实测。开跑前先检查输入是否齐全。它取代了后训练里的"阶段 6 第 9 项"。
 
@@ -268,6 +268,7 @@ uv run python -m zero.tools.import_hf data/hf/Qwen3-0.6B-Base out/proxy/base --c
 uv run python -m zero.tools.launch_check --track proxy --nproc 8 --price 2.5
 # 3. 全量运行（都是多卡数据并行；配置里的批大小是全局的）
 uv run torchrun --standalone --nproc_per_node=8 -m zero.post.sft     --config configs/proxy/sft.toml
+uv run python -m zero.post.distill --config configs/proxy/distill.toml --generate-only   # 教师数据，单进程
 uv run torchrun --standalone --nproc_per_node=8 -m zero.post.distill --config configs/proxy/distill.toml
 uv run torchrun --standalone --nproc_per_node=8 -m zero.post.dpo     --config configs/proxy/dpo.toml
 uv run torchrun --standalone --nproc_per_node=8 -m zero.post.difficulty --policy out/proxy/dpo/ckpt \

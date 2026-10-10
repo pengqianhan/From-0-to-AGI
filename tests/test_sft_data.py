@@ -79,6 +79,10 @@ def test_clean_messages() -> None:
     )
     assert clean_messages([{"role": "user", "content": "q"}], True) == (None, "no_assistant")
     assert clean_messages(conv("q", ""), True) == (None, "no_assistant")
+    # regression: a row without user text crashed the near-deduplication (it keys on the first user text)
+    assert clean_messages(conv(" ", "a"), True) == (None, "no_user")
+    sys_only = [{"role": "system", "content": "s"}, {"role": "assistant", "content": "a"}]
+    assert clean_messages(sys_only, True) == (None, "no_user")
     # Text tool calls become structured tool_calls; a broken one drops the row
     m, _ = clean_messages(
         conv("q", '<tool_call>\n{"name": "f", "arguments": {"x": 1}}\n</tool_call>'), True
@@ -277,6 +281,19 @@ def test_build_max_tokens_and_near_dedup(tmp_path: Path, chat_tok_path) -> None:
     meta = build_sft_data(cfg, log=lambda _: None)
     assert meta["sources"]["s"]["dropped"]["near_duplicate"] == 2  # same first user message
     assert meta["n_train"] == 1 and meta["train_stats"]["by_source"]["s"]["too_long"] == 1
+
+
+def test_source_names_must_be_unique(tmp_path: Path) -> None:
+    p = tmp_path / "a.jsonl"
+    p.write_text(json.dumps({"messages": conv("q", "a")}) + "\n")
+    for names in (["s", "s"], ["s", ""]):
+        cfg = SFTDataConfig(
+            out_dir=str(tmp_path / "o"),
+            val_size=0,
+            sources=[SFTSource(n, str(p), "messages", "MIT") for n in names],
+        )
+        with pytest.raises(ValueError, match="unique, non-empty name"):
+            build_sft_data(cfg, log=lambda _: None)
 
 
 def test_unverified_source_warns(tmp_path: Path) -> None:

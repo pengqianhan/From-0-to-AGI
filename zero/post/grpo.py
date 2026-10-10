@@ -59,6 +59,7 @@ from zero.post.common import (
     build_model_from_init,
     load_post_config,
     pad_batch,
+    rank0_log,
     sequence_token_logprobs,
     set_threads,
 )
@@ -176,6 +177,16 @@ class Rollout:
     n_calls: int = 0
 
 
+def prompt_fits(task: Any, tok: Tokenizer, max_prompt_len: int) -> bool:
+    """The rendered prompt of the task has at most max_prompt_len tokens.
+
+    GRPO and the difficulty filter use max_seq_len − max_new_tokens: every response has its full
+    budget (a response cut by the context would be scored as a wrong answer).
+    """
+    ids, _ = render(task.messages, task.tools, add_generation_prompt=True, tokenizer=tok)
+    return len(ids) <= max_prompt_len
+
+
 @torch.no_grad()
 def sample_group(
     model: torch.nn.Module,
@@ -241,7 +252,7 @@ def run_grpo(
     cfg, sec = load_post_config(src, {"grpo": GRPOConfig}, overrides)
     info = init_distributed(cfg.train.device)
     try:
-        return _grpo_loop(cfg, sec["grpo"], info, log)
+        return _grpo_loop(cfg, sec["grpo"], info, rank0_log(info, log))
     finally:
         cleanup()
 
@@ -276,6 +287,16 @@ def _grpo_loop(
         for p in ref_model.parameters():
             p.requires_grad_(False)
     tasks = load_task_pool(gc.task_files, gc.n_train_tasks, gc.env_seed)
+    room = model.config.max_seq_len - gc.max_new_tokens
+    n_all = len(tasks)
+    tasks = [t for t in tasks if prompt_fits(t, tok, room)]
+    if len(tasks) < n_all:
+        log(
+            f"[grpo] dropped {n_all - len(tasks)} of {n_all} tasks: the prompt leaves less than "
+            f"max_new_tokens = {gc.max_new_tokens} tokens of max_seq_len = {model.config.max_seq_len}"
+        )
+    if len(tasks) < P:
+        raise ValueError(f"[grpo] {len(tasks)} usable tasks < prompts_per_step = {P}")
     loop = LoopState(cfg, model, log, info=info)
     log(
         f"[grpo] {len(tasks)} training tasks, {P} prompts × G={G} per step on {info.world_size} process(es), "

@@ -28,6 +28,7 @@ that this project made.
 
 **Cleaning**, each with a drop counter in `meta.json`:
 - `no_assistant`: no assistant turn, or the last assistant turn is empty.
+- `no_user`: no user turn with text (deduplication and decontamination work on the user text).
 - `special_tokens`: `<|im_start|>`, `<|im_end|>`, or `<|endoftext|>` in any text (they would forge turns).
 - `bad_tool_call`: tool-call text that does not parse.
 - `thinking`: with `drop_thinking`, `<think>…</think>` is removed from the assistant turns (the main-line
@@ -256,8 +257,8 @@ def clean_messages(
         out.append(msg)
     if not any(m["role"] == "assistant" for m in out) or out[-1]["role"] != "assistant":
         return None, "no_assistant"
-    if not any(m["role"] == "user" for m in out):
-        return None, "no_assistant"
+    if not any(m["role"] == "user" and m["content"].strip() for m in out):
+        return None, "no_user"
     return out, ""
 
 
@@ -367,6 +368,10 @@ def _key(r: dict[str, Any]) -> str:
 
 
 def build_sft_data(cfg: SFTDataConfig, log: Any = print) -> dict[str, Any]:
+    names = [s.name for s in cfg.sources]
+    if not names or not all(names) or len(set(names)) != len(names):
+        # the pools, the per-source report, and `repeat` are keyed by the name
+        raise ValueError(f"[sft_data] every [[sources]] needs a unique, non-empty name: {names}")
     rng = random.Random(cfg.seed)
     tok = None
     if cfg.tokenizer:
@@ -424,7 +429,7 @@ def build_sft_data(cfg: SFTDataConfig, log: Any = print) -> dict[str, Any]:
         if cfg.near_dedup and len(kept) > 1:
             from zero.data.dedup import near_dedup
 
-            firsts = [user_texts(r["messages"])[0] for r in kept]
+            firsts = [next(iter(user_texts(r["messages"])), "") for r in kept]
             keep, _ = near_dedup(firsts, threshold=cfg.near_threshold)
             keep_idx = set(keep)
             drops["near_duplicate"] += len(kept) - len(keep_idx)

@@ -16,7 +16,8 @@ the GRPO loop is not implemented.)
 with the verifier of the task (`fc_tasks.score_any`). pass = number of exact answers / k. A task is
 kept if `min_pass <= pass <= max_pass` (default: at least one exact and at least one wrong answer).
 `--keep-hard` keeps that fraction of the all-wrong tasks anyway (useful for a weak base: they become
-learnable after some RL; chosen by a fixed seed).
+learnable after some RL; chosen by a fixed seed). A task whose prompt leaves less than max_new_tokens
+of the context of the policy is not sampled and not kept ("too_long"; GRPO would drop it too).
 
 **Outputs.** `--out`: the kept tasks (same format as the input). `<out>.stats.jsonl`: per task id,
 pass, mean reward. `<out>.meta.json`: counts, the histogram of pass over all tasks, the settings.
@@ -70,6 +71,9 @@ def keep_decision(
     rng = random.Random(seed)
     keep, why = set(), Counter()
     for s in sorted(stats, key=lambda x: x["id"]):
+        if s.get("too_long"):
+            why["too_long"] += 1
+            continue
         p = s["pass"]
         if min_pass <= p <= max_pass:
             keep.add(s["id"])
@@ -98,28 +102,41 @@ def run_filter(
     device: str = "auto",
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
-    from zero.post.common import load_policy
+    from zero.post.common import load_policy, run_on_rank0
     from zero.post.envs.fc_tasks import load_fc_tasks
+    from zero.post.grpo import prompt_fits
     from zero.train.dist import barrier, cleanup, init_distributed
 
     lo = 1.0 / k if min_pass is None else min_pass  # at least one exact answer
     hi = (k - 1) / k if max_pass is None else max_pass  # at least one wrong answer
-    info = init_distributed(device)
+    # The ranks finish their shares at different times (hours of sampling): a long collective timeout.
+    info = init_distributed(device, timeout_min=120)
     try:
         model, tok = load_policy(policy, device=info.device)
         model.eval()
         tasks = load_fc_tasks(tasks_path)
+        room = model.config.max_seq_len - max_new_tokens
         part = Path(f"{out}.part{info.rank}")
         part.parent.mkdir(parents=True, exist_ok=True)
         with open(part, "w", encoding="utf-8") as f:
             for n, (j, t) in enumerate(rank_share(tasks, info)):
-                s = score_task(model, tok, t, k, max_new_tokens, temperature, seed * 1_000_003 + j)
+                if prompt_fits(t, tok, room):
+                    s = score_task(
+                        model, tok, t, k, max_new_tokens, temperature, seed * 1_000_003 + j
+                    )
+                else:
+                    s = {
+                        "id": t.id,
+                        "pass": None,
+                        "n_exact": None,
+                        "mean_reward": None,
+                        "too_long": True,
+                    }
                 f.write(json.dumps(s, ensure_ascii=False) + "\n")
                 if info.is_main and (n + 1) % 100 == 0:
                     log(f"[difficulty] rank 0: {n + 1} tasks scored")
-        barrier()
-        meta: dict[str, Any] = {}
-        if info.is_main:
+
+        def merge() -> dict[str, Any]:
             stats = []
             for r in range(info.world_size):
                 p = Path(f"{out}.part{r}")
@@ -134,12 +151,13 @@ def run_filter(
             with open(f"{out}.stats.jsonl", "w", encoding="utf-8") as f:
                 for t in tasks:
                     f.write(json.dumps(by_id[t.id], ensure_ascii=False) + "\n")
-            hist = Counter(s["n_exact"] for s in stats)
+            scored = [s for s in stats if not s.get("too_long")]
+            hist = Counter(s["n_exact"] for s in scored)
             meta = {
                 "n_tasks": len(tasks),
                 **dict(why),
                 "pass_histogram": {f"{i}/{k}": hist.get(i, 0) for i in range(k + 1)},
-                "mean_pass": sum(s["pass"] for s in stats) / max(len(stats), 1),
+                "mean_pass": sum(s["pass"] for s in scored) / max(len(scored), 1),
                 "settings": {
                     "policy": policy,
                     "tasks": tasks_path,
@@ -149,6 +167,7 @@ def run_filter(
                     "keep_hard": keep_hard,
                     "temperature": temperature,
                     "max_new_tokens": max_new_tokens,
+                    "max_prompt_tokens": room,
                     "seed": seed,
                     "world_size": info.world_size,
                 },
@@ -157,8 +176,11 @@ def run_filter(
             log(
                 f"[difficulty] {json.dumps({k_: v for k_, v in meta.items() if k_ != 'settings'}, ensure_ascii=False)}"
             )
-        barrier()
-        return meta
+            return meta
+
+        barrier()  # every part file is complete
+        # Rank 0 merges the parts and writes the outputs (an error there stops every rank).
+        return run_on_rank0(info, merge) or {}
     finally:
         cleanup()
 

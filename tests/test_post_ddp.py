@@ -38,7 +38,7 @@ def _run(stage: str, cfg: dict) -> list[dict]:
         from zero.post.opd import run_opd
 
         return run_opd(cfg, log=lambda _: None)
-    from zero.post.dpo import run_dpo
+    from zero.post.dpo import run_dpo  # "dpo" and "dpo_gen"
 
     return run_dpo(cfg, log=lambda _: None)
 
@@ -137,13 +137,11 @@ def _configs(stage: str, tmp_path: Path, tok, tok_path, ckpt, teacher) -> dict: 
             }
         )
     write_jsonl(tmp_path / "prefs.jsonl", rows)
-    d = post_config(
-        tmp_path,
-        tok_path,
-        ckpt,
-        tok.vocab_size,
-        dpo={"train_jsonl": str(tmp_path / "prefs.jsonl"), "beta": 0.5},
-    )
+    dpo = {"train_jsonl": str(tmp_path / "prefs.jsonl"), "beta": 0.5}
+    if stage == "dpo_gen":  # the pairs are sampled by the policy first, split over the ranks
+        dpo = {"train_jsonl": str(tmp_path / "gen.jsonl"), "beta": 0.5, "generate_pairs": 7,
+               "samples_per_prompt": 2, "max_new_tokens": 8}
+    d = post_config(tmp_path, tok_path, ckpt, tok.vocab_size, dpo=dpo)
     d["train"].update({"micro_batch_size": 3, "grad_accum_steps": 2, "max_steps": 3})
     return d
 
@@ -151,7 +149,7 @@ def _configs(stage: str, tmp_path: Path, tok, tok_path, ckpt, teacher) -> dict: 
 @pytest.mark.skipif(
     not dist.is_available() or not dist.is_gloo_available(), reason="no gloo backend"
 )
-@pytest.mark.parametrize("stage", ["grpo", "opd", "dpo"])
+@pytest.mark.parametrize("stage", ["grpo", "opd", "dpo", "dpo_gen"])
 def test_two_processes_match_one(
     stage: str, tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt, teacher_ckpt
 ) -> None:  # noqa: ANN001
@@ -171,6 +169,9 @@ def test_two_processes_match_one(
         raise
     h2 = json.loads(out.read_text())
 
+    if stage == "dpo_gen":  # 2 ranks sampled the same pairs as 1 process
+        g1, g2 = (tmp_path / d / "gen.jsonl" for d in ("one", "two"))
+        assert g1.read_text() == g2.read_text() and len(g1.read_text().splitlines()) == 7
     assert len(h1) == len(h2) == one["train"]["max_steps"]
     for a, b in zip(h1, h2):
         assert a["loss"] == pytest.approx(b["loss"], rel=1e-4, abs=1e-6), (stage, a, b)
@@ -195,21 +196,77 @@ def _distill_worker(rank: int, world: int, port: int, cfg: dict) -> None:
     run_distill(cfg, log=lambda _: None)
 
 
-@pytest.mark.skipif(not dist.is_available() or not dist.is_gloo_available(), reason="no gloo backend")
-def test_distill_two_processes(tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt) -> None:  # noqa: ANN001
-    """Rank 0 generates and packs the teacher data, rank 1 waits; then both train with DDP (with logits KD)."""
+def _distill_config(tmp_path: Path, tok, tok_path, ckpt) -> dict:  # noqa: ANN001
     from zero.post.common import write_jsonl
     from zero.post.sft import env_conversations
 
     write_jsonl(tmp_path / "sft.jsonl", env_conversations(8, 0, "train"))
     d = post_config(
-        tmp_path, chat_tok_path, tiny_ckpt, chat_tok.vocab_size,
+        tmp_path, tok_path, ckpt, tok.vocab_size,
         data={"format": "sft", "seq_len": 512},
-        teacher={"backend": "local", "path": str(tiny_ckpt), "name": "self", "max_new_tokens": 12},
+        teacher={"backend": "local", "path": str(ckpt), "name": "self", "max_new_tokens": 12},
         distill={"out_jsonl": str(tmp_path / "kd.jsonl"), "n_tasks": 3, "samples_per_task": 2,
                  "mix_sft_jsonl": str(tmp_path / "sft.jsonl"), "mix_sft_max": 8, "kd_alpha": 0.5},
     )
     d["model"]["max_seq_len"] = 512
+    return d
+
+
+@pytest.mark.skipif(not dist.is_available() or not dist.is_gloo_available(), reason="no gloo backend")
+def test_distill_two_processes(tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt) -> None:  # noqa: ANN001
+    """--generate-only writes the teacher data in one process; then 2 ranks train with DDP (with logits KD):
+    rank 0 mixes and packs, rank 1 waits."""
+    from zero.post.distill import run_distill
+
+    d = _distill_config(tmp_path, chat_tok, chat_tok_path, tiny_ckpt)
+    meta = run_distill(d, log=lambda _: None, generate_only=True)["meta"]
+    assert (tmp_path / "kd.jsonl").exists() and not (tmp_path / "run").exists()  # no training yet
     mp.spawn(_distill_worker, args=(2, _free_port(), d), nprocs=2, join=True)
     assert find_latest(tmp_path / "run" / "ckpt").name == "step_00000002"
-    assert (tmp_path / "kd.jsonl.meta.json").exists() and (tmp_path / "run" / "distill_summary.json").exists()
+    summary = json.loads((tmp_path / "run" / "distill_summary.json").read_text())
+    assert summary["meta"]["n_verified"] == meta["n_verified"]  # the training run reused the data
+
+
+def test_distill_refuses_to_generate_under_torchrun(tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt) -> None:  # noqa: ANN001
+    """Regression: rank 0 used to generate for hours while the other ranks waited in a barrier."""
+    from zero.post.common import load_post_config
+    from zero.post.distill import DistillConfig, TeacherConfig, _distill
+    from zero.train.dist import DistInfo
+
+    d = _distill_config(tmp_path, chat_tok, chat_tok_path, tiny_ckpt)
+    cfg, sec = load_post_config(d, {"teacher": TeacherConfig, "distill": DistillConfig})
+    with pytest.raises(RuntimeError, match="--generate-only"):
+        _distill(cfg, sec["teacher"], sec["distill"], DistInfo(world_size=2), lambda _: None)
+    assert not (tmp_path / "kd.jsonl").exists()
+
+
+def _rank0_worker(rank: int, world: int, port: int, out: str) -> None:
+    from zero.post.common import run_on_rank0
+    from zero.train.dist import cleanup, init_distributed
+
+    os.environ.update({"RANK": str(rank), "LOCAL_RANK": str(rank), "WORLD_SIZE": str(world),
+                       "MASTER_ADDR": "127.0.0.1", "MASTER_PORT": str(port)})
+    info = init_distributed("cpu", timeout_min=1)
+
+    def fail() -> None:
+        raise ValueError("bad data")
+
+    try:
+        try:
+            run_on_rank0(info, fail)
+            res = "no error"
+        except Exception as e:  # noqa: BLE001
+            res = f"{type(e).__name__}: {e}"
+        Path(f"{out}.{rank}").write_text(res)
+        Path(f"{out}.ok{rank}").write_text(str(run_on_rank0(info, lambda: 42)))
+    finally:
+        cleanup()
+
+
+@pytest.mark.skipif(not dist.is_available() or not dist.is_gloo_available(), reason="no gloo backend")
+def test_run_on_rank0_stops_every_rank(tmp_path: Path) -> None:
+    out = str(tmp_path / "res")
+    mp.spawn(_rank0_worker, args=(2, _free_port(), out), nprocs=2, join=True)
+    assert Path(f"{out}.0").read_text() == "ValueError: bad data"
+    assert Path(f"{out}.1").read_text().startswith("RuntimeError: rank 0 failed")
+    assert Path(f"{out}.ok0").read_text() == "42" and Path(f"{out}.ok1").read_text() == "None"

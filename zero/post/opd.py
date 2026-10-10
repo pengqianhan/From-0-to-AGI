@@ -63,6 +63,7 @@ from zero.post.common import (
     load_policy,
     load_post_config,
     pad_batch,
+    rank0_log,
     read_jsonl,
     set_threads,
     token_logprobs,
@@ -117,15 +118,15 @@ def sampled_opd_loss(
 
 
 def conversation_prompt(row: dict[str, Any]) -> SimpleNamespace | None:
-    """A conversation → its prompt: the messages before the last assistant message.
+    """A conversation → its prompt: the conversation without its final assistant message.
 
-    A conversation without an assistant message is used as it is. Returns None if nothing is left.
+    A conversation that ends with a user (or tool) message is used as it is: its last turn is the one
+    to answer. Earlier assistant turns stay as history. Returns None if no user message is left.
     """
     msgs = list(row.get("messages") or [])
-    last = max((i for i, m in enumerate(msgs) if m.get("role") == "assistant"), default=None)
-    if last is not None:
-        msgs = msgs[:last]
-    if not msgs:
+    while msgs and msgs[-1].get("role") == "assistant":
+        msgs.pop()
+    if not any(m.get("role") == "user" for m in msgs):
         return None
     return SimpleNamespace(messages=msgs, tools=row.get("tools"))
 
@@ -169,7 +170,7 @@ def run_opd(
     cfg, sec = load_post_config(src, {"opd": OPDConfig}, overrides)
     info = init_distributed(cfg.train.device)
     try:
-        return _opd_loop(cfg, sec["opd"], info, log)
+        return _opd_loop(cfg, sec["opd"], info, rank0_log(info, log))
     finally:
         cleanup()
 

@@ -712,22 +712,56 @@ _HERMES_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.S)
 _HERMES_TOOLS_RE = re.compile(r"<tools>\s*(.*?)\s*</tools>", re.S)
 
 
+# What a broken JSON / Python literal in a data set can raise
+_PARSE_ERRORS = (
+    ValueError,
+    TypeError,
+    KeyError,
+    AttributeError,
+    SyntaxError,
+    MemoryError,
+    RecursionError,
+)
+
+
+def _hermes_calls(text: str) -> list[dict[str, Any]] | None:
+    """The <tool_call> bodies of one Hermes turn → calls. None if a body does not parse."""
+    calls = []
+    for body in _HERMES_CALL_RE.findall(text):
+        try:
+            obj = _loads_loose(body)
+            args = obj.get("arguments") or {}
+            if isinstance(args, str):
+                args = _loads_loose(args)
+        except _PARSE_ERRORS:
+            return None
+        if not isinstance(obj.get("name"), str) or not isinstance(args, dict):
+            return None
+        calls.append({"name": obj["name"], "arguments": args})
+    return calls
+
+
 def from_hermes(row: dict[str, Any], idx: int, license: str = "Apache-2.0") -> list[FCTask]:
     """NousResearch hermes-function-calling-v1 (ShareGPT; calls are <tool_call> JSON or Python dicts).
 
     One task per assistant turn: the prompt is the history before it (without the data set's own system
     prompt: our template writes the tools section itself), the gold calls are the calls of that turn
     (none: a "no call" task). Earlier calls and tool results stay in the history.
+    A row whose tool list does not parse gives no task. A turn whose calls do not parse ends the
+    conversation: the tasks before it stay, the later turns would have a broken history.
     """
     conv = row.get("conversations") or []
-    tools_raw = row.get("tools")
-    if isinstance(tools_raw, str) and tools_raw.strip():
-        tools_raw = _loads_loose(tools_raw)
-    if not tools_raw:
-        sys_text = next((c["value"] for c in conv if c.get("from") == "system"), "")
-        m = _HERMES_TOOLS_RE.search(sys_text)
-        tools_raw = _loads_loose(m.group(1)) if m else []
-    tools = [_tool_entry(t) for t in tools_raw]
+    try:
+        tools_raw = row.get("tools")
+        if isinstance(tools_raw, str) and tools_raw.strip():
+            tools_raw = _loads_loose(tools_raw)
+        if not tools_raw:
+            sys_text = next((c["value"] for c in conv if c.get("from") == "system"), "")
+            m = _HERMES_TOOLS_RE.search(sys_text)
+            tools_raw = _loads_loose(m.group(1)) if m else []
+        tools = [_tool_entry(t) for t in tools_raw]
+    except _PARSE_ERRORS:
+        return []
     out, hist = [], []
     for c in conv:
         role = _SHAREGPT_ROLE.get(c.get("from", ""), "")
@@ -735,10 +769,9 @@ def from_hermes(row: dict[str, Any], idx: int, license: str = "Apache-2.0") -> l
         if role == "system" or not role:
             continue
         if role == "assistant":
-            calls = []
-            for body in _HERMES_CALL_RE.findall(text):
-                obj = _loads_loose(body)
-                calls.append({"name": obj["name"], "arguments": obj.get("arguments") or {}})
+            calls = _hermes_calls(text)
+            if calls is None:
+                break
             if hist and hist[-1]["role"] in ("user", "tool"):
                 out.append(
                     FCTask(
@@ -763,6 +796,11 @@ def from_hermes(row: dict[str, Any], idx: int, license: str = "Apache-2.0") -> l
     return out
 
 
+def _looks_like_call_list(text: str) -> bool:
+    t = text.strip()
+    return t.startswith("[") and t.endswith("]") and "(" in t
+
+
 def parse_python_calls(text: str) -> list[dict[str, Any]] | None:
     """`[Func Name(a="x", b=1), other(c=[1, 2])]` → calls. None if the text is not such a list.
 
@@ -771,9 +809,9 @@ def parse_python_calls(text: str) -> list[dict[str, Any]] | None:
     """
     import ast
 
-    t = text.strip()
-    if not (t.startswith("[") and t.endswith("]") and "(" in t):
+    if not _looks_like_call_list(text):
         return None
+    t = text.strip()
     t = t[1:-1].strip()
     calls, depth, quote, start = [], 0, "", 0
     parts = []
@@ -802,7 +840,7 @@ def parse_python_calls(text: str) -> list[dict[str, Any]] | None:
             if not isinstance(node, ast.Call) or node.args:
                 return None
             args = {kw.arg: ast.literal_eval(kw.value) for kw in node.keywords if kw.arg}
-        except (SyntaxError, ValueError):
+        except _PARSE_ERRORS:
             return None
         calls.append({"name": name, "arguments": args})
     return calls
@@ -813,21 +851,27 @@ def from_toolace(row: dict[str, Any], idx: int, license: str = "Apache-2.0") -> 
 
     One task per assistant turn, as in `from_hermes`. An assistant turn that is not a call list is a
     "no call" task (ToolACE has turns that must point out missing parameters instead of calling).
+    A turn that looks like a call list but does not parse is not a "no call" task: it ends the
+    conversation (the tasks before it stay). A row whose function list does not parse gives no task.
     """
     system = row.get("system", "")
     k = system.find("[", system.find("invoke:") + 1) if "invoke:" in system else -1
     if k < 0:
         return []
-    funcs, _ = json.JSONDecoder().raw_decode(
-        system[k:]
-    )  # the JSON list ends before ". Should you ..."
-    tools = [_tool_entry(f) for f in funcs]
+    try:
+        # the JSON list ends before ". Should you ..."
+        funcs, _ = json.JSONDecoder().raw_decode(system[k:])
+        tools = [_tool_entry(f) for f in funcs]
+    except _PARSE_ERRORS:
+        return []
     out, hist = [], []
     for c in row.get("conversations") or []:
         role = _SHAREGPT_ROLE.get(c.get("from", ""), "")
         text = c.get("value", "")
         if role == "assistant":
             calls = parse_python_calls(text)
+            if calls is None and _looks_like_call_list(text):
+                break
             if hist and hist[-1]["role"] in ("user", "tool"):
                 out.append(
                     FCTask(
@@ -1097,12 +1141,20 @@ def split_sft_rl(
     """Split the tasks into SFT conversations and RL tasks that do not overlap.
 
     RL on tasks that SFT already showed with the answer gives little signal (the group is all correct).
+    A "no call" task drawn for SFT has no reference reply (`to_sft` skips it): it goes to RL, where the
+    verifier scores it, instead of being lost.
     """
     idx = list(range(len(tasks)))
     random.Random(seed).shuffle(idx)
     k = int(len(idx) * sft_frac)
-    sft = [r for r in (to_sft(tasks[i]) for i in idx[:k]) if r is not None]
-    return sft, [tasks[i] for i in sorted(idx[k:])]
+    sft, rl = [], []
+    for n, i in enumerate(idx):
+        r = to_sft(tasks[i]) if n < k else None
+        if r is not None:
+            sft.append(r)
+        else:
+            rl.append(i)
+    return sft, [tasks[i] for i in sorted(rl)]
 
 
 def main(argv: list[str] | None = None) -> None:

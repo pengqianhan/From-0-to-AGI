@@ -152,6 +152,7 @@ uv run python -m zero.tools.launch_check --track main --nproc 8 --price 2.5 --te
 uv run torchrun --standalone --nproc_per_node=8 -m zero.post.sft --config configs/main/sft.toml
 # 蒸馏：先起教师服务（核实许可证后，在配置里填 name / version / license / license_allows_distillation）
 vllm serve <教师> --served-model-name teacher --enable-auto-tool-choice --tool-call-parser hermes &
+uv run python -m zero.post.distill --config configs/main/distill.toml --generate-only   # 单进程（要几个小时）
 uv run torchrun --standalone --nproc_per_node=8 -m zero.post.distill --config configs/main/distill.toml
 # DPO（可选，见 POSTTRAIN_PLAN 第 4 节的消融；多卡数据并行，批大小是全局的）
 uv run torchrun --standalone --nproc_per_node=8 -m zero.post.dpo --config configs/main/dpo.toml

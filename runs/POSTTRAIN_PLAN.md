@@ -228,9 +228,9 @@ Everything that can run on a CPU is done and checked on real data; only the gene
 
 When a hosted provider serves the teacher, also read the provider's terms of service.
 
-**Multi-GPU** (`zero/post/common.py`): DPO, GRPO, and OPD are data parallel with torchrun; the batch sizes in the configs are global, so the recipe does not change with the number of GPUs. 2 CPU processes give the same per-step losses and final weights as 1 process (`tests/test_post_ddp.py`). Distillation trains with the SFT `Trainer` (DDP) after rank 0 generates the data. **A DPO bug was fixed on the way**: every micro-step of a step used the same `micro_batch_size` pairs, so most of each step's pairs were never trained on.
+**Multi-GPU** (`zero/post/common.py`): DPO, GRPO, and OPD are data parallel with torchrun; the batch sizes in the configs are global, so the recipe does not change with the number of GPUs. 2 CPU processes give the same per-step losses and final weights as 1 process (`tests/test_post_ddp.py`). Distillation runs in two commands: the teacher data in one process (`--generate-only`; under torchrun the other ranks would wait for hours in a collective), then the student trains with the SFT `Trainer` (DDP). DPO pairs (`generate_pairs`) and the difficulty filter split their sampling over the ranks. **A DPO bug was fixed on the way**: every micro-step of a step used the same `micro_batch_size` pairs, so most of each step's pairs were never trained on.
 
-**Difficulty filter** (`zero/post/difficulty.py`): with the checkpoint that starts RL, k samples per task; keep the tasks with 1/k ≤ pass ≤ (k−1)/k (optionally a fraction of the all-wrong ones for a weak base). Per track, because difficulty depends on the policy: `data/rl/<track>/fc_train_filtered.jsonl`.
+**Difficulty filter** (`zero/post/difficulty.py`): with the checkpoint that starts RL, k samples per task; keep the tasks with 1/k ≤ pass ≤ (k−1)/k (optionally a fraction of the all-wrong ones for a weak base). A task whose prompt leaves less than `max_new_tokens` of the context is dropped here and in GRPO (`too_long`; it matters for the 4096-token weak track). Per track, because difficulty depends on the policy: `data/rl/<track>/fc_train_filtered.jsonl`.
 
 **Launch check** (`zero/tools/launch_check.py`): the first hour on rented GPUs. A few steps of every stage of a track (chained in a launch directory), then the median seconds per step, the peak memory, and the projected hours, GPU-hours, and dollars of each full stage; the teacher throughput from a small sample. It checks the inputs before it starts. It replaces "stage 6, item 9" for post-training.
 
@@ -268,6 +268,7 @@ uv run python -m zero.tools.import_hf data/hf/Qwen3-0.6B-Base out/proxy/base --c
 uv run python -m zero.tools.launch_check --track proxy --nproc 8 --price 2.5
 # 3. The full runs (all data parallel; batch sizes in the configs are global)
 uv run torchrun --standalone --nproc_per_node=8 -m zero.post.sft     --config configs/proxy/sft.toml
+uv run python -m zero.post.distill --config configs/proxy/distill.toml --generate-only   # teacher data, one process
 uv run torchrun --standalone --nproc_per_node=8 -m zero.post.distill --config configs/proxy/distill.toml
 uv run torchrun --standalone --nproc_per_node=8 -m zero.post.dpo     --config configs/proxy/dpo.toml
 uv run torchrun --standalone --nproc_per_node=8 -m zero.post.difficulty --policy out/proxy/dpo/ckpt \

@@ -327,7 +327,7 @@ Two common traps:
 | Funnel of `04` | `teacher_trajectories` (sample n → `score_tool_calls == 1` → `execute_safely` really runs the tool → the teacher writes the final answer → `score_final_answer`). `generate_kd_data` writes `teacher.jsonl` and `.meta.json` | Each sample and the metadata record **the name, version, and license of the teacher**, the sampling parameters, the number of candidates, the pass rate, and the filter rules. `check_license`: when the teacher is not a model of this project, the config must have `license_allows_distillation = true`, or the run stops |
 | Vocabulary check of `05` | `run_distill` compares the hashes of the teacher tokenizer and the student tokenizer **before** it generates data. If they are different, it raises an error and suggests `logits_kd = false` | Do not wait until all teacher data is generated to find out that logits distillation is not possible |
 | None | `mix_sft_jsonl` / `mix_sft_max`: mix the original SFT data into the distillation data | When the teacher data is small, this prevents the loss of what the model learned in Chapter 16 |
-| None | `run_distill` with torchrun: rank 0 generates and packs the teacher data, then every rank trains with the SFT `Trainer` (DDP) | Multi-GPU training of the student; tested with 2 CPU processes (`tests/test_post_ddp.py`), not yet on GPUs |
+| None | `run_distill` on N GPUs: first `--generate-only` writes the teacher data in one process; then, with torchrun, rank 0 packs it and every rank trains with the SFT `Trainer` (DDP) | Multi-GPU training of the student; tested with 2 CPU processes (`tests/test_post_ddp.py`), not yet on GPUs |
 
 **Parity checks**:
 

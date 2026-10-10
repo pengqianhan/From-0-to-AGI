@@ -27,7 +27,8 @@ If the config sets `[dpo] generate_pairs = N` and the file does not exist, `make
 preference pairs with the tool environment. For each task, it samples some responses from the current
 policy and scores them with the verifiable reward. The response with the highest score is chosen (if it
 is not good enough, the gold solution is chosen). The response with the lowest score is rejected. This
-is "on-policy preference data".
+is "on-policy preference data". With torchrun, the ranks split the tasks (the pairs are the same as
+with one process), and rank 0 writes the file.
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ from zero.post.common import (
     chat_complete,
     load_post_config,
     pad_batch,
+    rank0_log,
     read_jsonl,
     sequence_token_logprobs,
     set_threads,
@@ -159,22 +161,28 @@ def make_env_preferences(
     seed: int = 0,
     log: Callable[[str], None] = print,
     task_files: Sequence[str] = (),
+    info: Any = None,
 ) -> list[dict[str, Any]]:
     """Make preference pairs with the current policy on tool-call tasks (first turn: "which tool to call").
 
     The tasks come from `task_files` (real function-calling tasks, `zero/post/envs/fc_tasks.py`) or, if
     there are none, from the toy tool environment. A real "no call" task has no reference reply; if no
     sample of the policy is correct on it, the task gives no pair.
+    With torchrun (`info`), the ranks split the tasks. Each task is seeded by its index, so the pairs do
+    not depend on the number of processes; every rank returns all pairs, in task order.
     """
     from zero.post.chat import parse_assistant
+    from zero.post.common import all_gather_objects, all_reduce_sum, rank_share
     from zero.post.envs.fc_tasks import load_task_pool, score_any
+    from zero.train.dist import DistInfo
 
-    rng = random.Random(seed)
+    info = info or DistInfo()
     pool = load_task_pool(task_files, n_pairs, seed + 101)
-    tasks = rng.sample(pool, min(n_pairs, len(pool))) if task_files else pool
-    rows = []
+    tasks = random.Random(seed).sample(pool, min(n_pairs, len(pool))) if task_files else pool
+    mine: list[tuple[int, dict[str, Any]]] = []
     n_policy_chosen = n_skipped = 0
-    for i, task in enumerate(tasks):
+    for i, task in rank_share(tasks, info):
+        rng = random.Random(seed * 1_000_003 + i)
         outs = chat_complete(
             model,
             tok,
@@ -218,19 +226,25 @@ def make_env_preferences(
             else:
                 n_skipped += 1
                 continue
-        rows.append(
-            {
-                "messages": task.messages,
-                "tools": task.tools,
-                "chosen": _as_message(chosen_text, parse_assistant),
-                "rejected": _as_message(worst, parse_assistant),
-                "chosen_source": src,
-                "task_id": task.id,
-            }
+        mine.append(
+            (
+                i,
+                {
+                    "messages": task.messages,
+                    "tools": task.tools,
+                    "chosen": _as_message(chosen_text, parse_assistant),
+                    "rejected": _as_message(worst, parse_assistant),
+                    "chosen_source": src,
+                    "task_id": task.id,
+                },
+            )
         )
+    parts = all_gather_objects(mine, info)
+    rows = [r for _, r in sorted((x for part in parts for x in part), key=lambda x: x[0])]
+    n_policy_chosen, n_skipped = all_reduce_sum([n_policy_chosen, n_skipped], info)
     log(
-        f"[dpo] made {len(rows)} preference pairs: chosen is a policy sample in {n_policy_chosen} pairs, "
-        f"the gold solution in the others; {n_skipped} tasks gave no pair"
+        f"[dpo] made {len(rows)} preference pairs: chosen is a policy sample in {int(n_policy_chosen)} pairs, "
+        f"the gold solution in the others; {int(n_skipped)} tasks gave no pair"
     )
     return rows
 
@@ -266,9 +280,10 @@ def run_dpo(
     from zero.train.dist import cleanup, init_distributed
 
     cfg, sec = load_post_config(src, {"dpo": DPOConfig}, overrides)
-    info = init_distributed(cfg.train.device)
+    # The ranks generate their shares of the pairs (generate_pairs) at different speeds: a long timeout.
+    info = init_distributed(cfg.train.device, timeout_min=120)
     try:
-        return _dpo_loop(cfg, sec["dpo"], info, log)
+        return _dpo_loop(cfg, sec["dpo"], info, rank0_log(info, log))
     finally:
         cleanup()
 
@@ -296,8 +311,7 @@ def _dpo_loop(
 ) -> list[dict[str, Any]]:
     import torch.distributed as dist
 
-    from zero.post.common import all_reduce_sum, rank_share
-    from zero.train.dist import barrier
+    from zero.post.common import all_reduce_sum, rank_share, run_on_rank0
     from zero.train.trainer import autocast_context
 
     tc = cfg.train
@@ -318,20 +332,20 @@ def _dpo_loop(
             raise FileNotFoundError(
                 f"[dpo] {dc.train_jsonl} not found, and generate_pairs is not set"
             )
-        if info.is_main:  # one process writes the file; the others wait and read it
-            rows = make_env_preferences(
-                model,
-                tok,
-                dc.generate_pairs,
-                dc.samples_per_prompt,
-                dc.gen_temperature,
-                dc.max_new_tokens,
-                dc.env_seed,
-                log,
-                task_files=dc.task_files,
-            )
-            write_jsonl(dc.train_jsonl, rows)
-    barrier()
+        # every rank samples its share of the tasks; rank 0 writes the file, then all read it
+        rows = make_env_preferences(
+            model,
+            tok,
+            dc.generate_pairs,
+            dc.samples_per_prompt,
+            dc.gen_temperature,
+            dc.max_new_tokens,
+            dc.env_seed,
+            log,
+            task_files=dc.task_files,
+            info=info,
+        )
+        run_on_rank0(info, lambda: write_jsonl(dc.train_jsonl, rows))
     rows = read_jsonl(dc.train_jsonl)
     pairs = [p for p in (encode_pair(r, tok, tc.data.seq_len) for r in rows) if p is not None]
     if not pairs:

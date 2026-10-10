@@ -8,7 +8,9 @@
 - `token_logprobs` / `pad_batch`: DPO, GRPO, and distillation all need "the log probability of each token".
 - Read and write JSONL.
 - Data parallelism for the stages that do not use `Trainer` (DPO, GRPO, on-policy distillation):
-  `rank_share`, `all_reduce_sum` / `all_reduce_max`, and the gradient all-reduce in `LoopState`.
+  `rank_share`, `all_reduce_sum` / `all_reduce_max` / `all_gather_objects`, and the gradient
+  all-reduce in `LoopState`; `run_on_rank0` for work that only rank 0 does (writing files) while
+  the others wait.
 
 **Data parallelism of DPO / GRPO / OPD** (`torchrun --nproc_per_node=N -m zero.post.grpo ...`):
 every rank holds a full copy of the policy (0.7B + AdamW fits on one 80GB GPU). The batch sizes in
@@ -24,7 +26,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -276,6 +278,43 @@ def all_reduce_max(values: Sequence[float], info: Any) -> list[float]:
     t = torch.tensor([float(v) for v in values], dtype=torch.float64, device=info.device)
     dist.all_reduce(t, op=dist.ReduceOp.MAX)
     return t.tolist()
+
+
+def rank0_log(info: Any, log: Callable[[str], None]) -> Callable[[str], None]:
+    """log on rank 0; nothing on the other ranks (with 8 GPUs, every line would print 8 times)."""
+    return log if info.is_main else (lambda _msg: None)
+
+
+def all_gather_objects(obj: Any, info: Any) -> list[Any]:
+    """The obj of every rank, in rank order, on every rank (pickled). With one process, [obj]."""
+    if not getattr(info, "is_distributed", False):
+        return [obj]
+    import torch.distributed as dist
+
+    out: list[Any] = [None] * info.world_size
+    dist.all_gather_object(out, obj)
+    return out
+
+
+def run_on_rank0(info: Any, fn: Callable[[], T]) -> T | None:
+    """Run fn() on rank 0 only; the other ranks wait (and get None).
+
+    An error on rank 0 reaches every rank: the others raise too, instead of waiting in a barrier until
+    the collective timeout hides the real error. The wait is a collective, so the timeout of the
+    process group (`init_distributed(timeout_min=...)`) must be longer than fn().
+    """
+    out, err = None, None
+    if info.is_main:
+        try:
+            out = fn()
+        except Exception as e:  # noqa: BLE001 - re-raised below, after the other ranks are told
+            err = e
+    (failed,) = all_reduce_sum([1.0 if err is not None else 0.0], info)
+    if err is not None:
+        raise err
+    if failed:
+        raise RuntimeError("rank 0 failed (see its log), so this rank stops too")
+    return out
 
 
 def all_reduce_grads(model: torch.nn.Module, info: Any, bucket_numel: int = 1 << 25) -> None:

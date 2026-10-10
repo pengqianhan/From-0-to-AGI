@@ -131,3 +131,31 @@ def test_run_grpo_end_to_end(tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt)
     ):
         assert k in h and math.isfinite(h[k])
     assert 0 < h["resp_len"] <= 13
+
+
+def test_run_grpo_drops_prompts_that_leave_no_room(tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt) -> None:  # noqa: ANN001
+    """Regression: a prompt longer than max_seq_len − max_new_tokens used to reach the model mid-run."""
+    import json
+
+    from zero.post.envs.fc_tasks import FCTask
+
+    weather = {"type": "function", "function": {"name": "get_weather", "parameters": {
+        "type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}
+    rows = [
+        FCTask(f"t{i}", [weather], [{"role": "user", "content": q}],
+               [{"name": "get_weather", "arguments": {"city": "Paris"}}]).to_dict()
+        for i, q in enumerate(["Weather in Paris?", "Paris weather, please.", "word " * 2000])
+    ]
+    (tmp_path / "tasks.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    d = post_config(
+        tmp_path, chat_tok_path, tiny_ckpt, chat_tok.vocab_size,
+        grpo={"group_size": 2, "prompts_per_step": 2, "max_new_tokens": 8,
+              "task_files": [str(tmp_path / "tasks.jsonl")]},
+    )
+    d["train"]["max_steps"] = 1
+    logs: list[str] = []
+    assert len(run_grpo(d, log=logs.append)) == 1
+    assert any("dropped 1 of 3 tasks" in m for m in logs)
+    d["grpo"]["prompts_per_step"] = 3
+    with pytest.raises(ValueError, match="usable tasks"):
+        run_grpo(d, log=lambda _: None)

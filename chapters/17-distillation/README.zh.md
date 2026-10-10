@@ -327,7 +327,7 @@ GOAL.md 3.3 的规则：**只用许可证允许"用输出训练其他模型"的�
 | `04` 的漏斗 | `teacher_trajectories`（采样 n 个 → `score_tool_calls == 1` → `execute_safely` 真的执行 → 教师写最终回答 → `score_final_answer`）。`generate_kd_data` 写 `teacher.jsonl` 和 `.meta.json` | 每条数据和元数据都记录**教师的名称、版本、许可证**，以及采样参数、候选数、通过率、筛选规则。`check_license`：非本项目的模型当教师时，配置里必须写 `license_allows_distillation = true`，否则拒绝运行 |
 | `05` 的词表检查 | `run_distill` 在生成数据**之前**比较教师与学生分词器的哈希。不同就报错，并提示设 `logits_kd = false` | 不要等教师数据生成完，才发现不能做 logits 蒸馏 |
 | 无 | `mix_sft_jsonl` / `mix_sft_max`：把原 SFT 数据混进蒸馏数据 | 教师数据少时，防止遗忘第 16 章学到的东西 |
-| 无 | 用 torchrun 运行 `run_distill`：rank 0 生成并打包教师数据，然后所有 rank 用 SFT 的 `Trainer` 训练（DDP） | 学生的多卡训练；用 2 个 CPU 进程测过（`tests/test_post_ddp.py`），尚未在 GPU 上运行 |
+| 无 | 多卡运行 `run_distill`：先用 `--generate-only` 单进程生成教师数据；再用 torchrun，rank 0 打包，所有 rank 用 SFT 的 `Trainer` 训练（DDP） | 学生的多卡训练；用 2 个 CPU 进程测过（`tests/test_post_ddp.py`），尚未在 GPU 上运行 |
 
 **对拍**：
 

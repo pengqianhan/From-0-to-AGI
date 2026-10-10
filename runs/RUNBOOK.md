@@ -152,6 +152,7 @@ uv run python -m zero.tools.launch_check --track main --nproc 8 --price 2.5 --te
 uv run torchrun --standalone --nproc_per_node=8 -m zero.post.sft --config configs/main/sft.toml
 # Distillation: first start the teacher server (after you verify the license, fill in name / version / license / license_allows_distillation in the configuration)
 vllm serve <teacher> --served-model-name teacher --enable-auto-tool-choice --tool-call-parser hermes &
+uv run python -m zero.post.distill --config configs/main/distill.toml --generate-only   # one process (hours)
 uv run torchrun --standalone --nproc_per_node=8 -m zero.post.distill --config configs/main/distill.toml
 # DPO (optional, see the ablation in POSTTRAIN_PLAN.md section 4; data parallel, batch sizes are global)
 uv run torchrun --standalone --nproc_per_node=8 -m zero.post.dpo --config configs/main/dpo.toml

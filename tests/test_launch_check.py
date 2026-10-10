@@ -63,6 +63,25 @@ def test_plan_chains_stages_into_the_launch_dir(tmp_path: Path) -> None:
     )  # not moved: no DPO run here
     miss = missing_inputs(plans)
     assert any("tokenizer" in m for m in miss) and any("SFT data" in m for m in miss)
+    # regression: checkpoints made by earlier stages of this check are not "missing", whatever the
+    # name of the launch directory (it used to look for "/launch/" in the path)
+    assert not [m for m in miss if "init checkpoint" in m and not m.startswith("sft:")]
+    assert not [m for m in miss if "checkpoint of teacher" in m]
+    # OPD alone: its teachers come from the real out dirs, which must exist
+    opd_only = plan_stages("proxy", ["opd"], tmp_path / "p3", {})
+    assert [m for m in missing_inputs(opd_only) if "checkpoint of teacher" in m]
+
+
+def test_distill_generates_in_one_process_then_trains(tmp_path: Path) -> None:
+    from zero.tools.launch_check import commands
+
+    plan = plan_stages("proxy", ["distill"], tmp_path / "p", {})[0]
+    gen, train = commands(plan, tmp_path / "distill.toml", 8)
+    assert gen[1:3] == ["-m", "zero.post.distill"] and gen[-1] == "--generate-only"
+    assert train[0] == "torchrun" and train[-2:] == ["--set", "distill.overwrite=false"]
+    assert (
+        len(commands(plan_stages("proxy", ["sft"], tmp_path / "p", {})[0], tmp_path / "s", 8)) == 1
+    )
 
 
 def test_measure_and_project() -> None:
@@ -161,3 +180,53 @@ def test_run_on_tiny_track(tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt) -
     assert (
         json.loads((reports[0].parent / "launch.json").read_text())["stages"][0]["stage"] == "grpo"
     )
+
+
+def test_distill_through_the_launch_check(
+    tmp_path: Path, chat_tok, chat_tok_path, tiny_ckpt
+) -> None:  # noqa: ANN001
+    """The two distillation commands (teacher sample in one process, then training) run end to end."""
+    from tests.conftest import post_config
+    from zero.post.common import write_jsonl
+    from zero.post.sft import env_conversations
+
+    cfgs = tmp_path / "configs" / "t"
+    cfgs.mkdir(parents=True)
+    write_jsonl(tmp_path / "sft.jsonl", env_conversations(8, 0, "train"))
+    d = post_config(
+        tmp_path,
+        chat_tok_path,
+        tiny_ckpt,
+        chat_tok.vocab_size,
+        data={"format": "sft", "seq_len": 512},
+        teacher={"backend": "local", "path": str(tiny_ckpt), "name": "self", "max_new_tokens": 12},
+        distill={
+            "out_jsonl": str(tmp_path / "kd.jsonl"),
+            "n_tasks": 3,
+            "samples_per_task": 2,
+            "mix_sft_jsonl": str(tmp_path / "sft.jsonl"),
+            "mix_sft_max": 8,
+            "logits_kd": False,
+        },
+    )
+    d["model"]["max_seq_len"] = 512
+    d["train"]["max_steps"] = 100
+    (cfgs / "distill.toml").write_text(to_toml(d))
+    res = run_launch_check(
+        "t",
+        ["distill"],
+        1,
+        2.5,
+        {"distill": 2},
+        tmp_path / "launch",
+        tmp_path / "runs",
+        teacher_jobs=2,
+        configs_dir=tmp_path / "configs",
+        log=lambda _: None,
+    )
+    out = (tmp_path / "launch" / "t" / "distill" / "stdout.log").read_text()
+    assert res["stages"][0]["status"] == "ok", out[-2000:]
+    assert out.count("$ ") == 2 and "--generate-only" in out
+    assert res["stages"][0]["measure"]["steps_logged"] == 2
+    assert res["teacher"]["sample_jobs"] == 2
+    assert not (tmp_path / "kd.jsonl").exists()  # the real teacher data is not touched

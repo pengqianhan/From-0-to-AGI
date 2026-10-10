@@ -77,6 +77,37 @@ def test_run_filter_outputs(tmp_path: Path, tiny_ckpt) -> None:  # noqa: ANN001
     assert not list(tmp_path.glob("kept.jsonl.part*"))  # the per-rank parts are merged and removed
 
 
+def test_too_long_prompt_is_not_sampled_or_kept(tmp_path: Path, tiny_ckpt) -> None:  # noqa: ANN001
+    """A prompt that leaves less than max_new_tokens of the context is "too_long" (GRPO drops it too)."""
+    src = tmp_path / "tasks.jsonl"
+    _tasks(src, n=2)
+    long = FCTask(
+        "long",
+        [WEATHER],
+        [{"role": "user", "content": "word " * 2000}],
+        [{"name": "get_weather", "arguments": {"city": "X"}}],
+    )
+    with open(src, "a") as f:
+        f.write(json.dumps(long.to_dict()) + "\n")
+    out = tmp_path / "kept.jsonl"
+    meta = run_filter(
+        str(tiny_ckpt),
+        str(src),
+        str(out),
+        k=2,
+        keep_hard=1.0,
+        max_new_tokens=6,
+        device="cpu",
+        log=lambda _: None,
+    )
+    stats = {
+        s["id"]: s for s in map(json.loads, Path(f"{out}.stats.jsonl").read_text().splitlines())
+    }
+    assert stats["long"]["too_long"] and stats["long"]["pass"] is None
+    assert meta["too_long"] == 1 and sum(meta["pass_histogram"].values()) == 2
+    assert "long" not in {t.id for t in load_fc_tasks(out)}  # not kept, even with keep_hard = 1
+
+
 def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))

@@ -321,7 +321,7 @@ def test_teacher_on_real_tasks_and_prompts(tmp_path: Path) -> None:
     tasks = [
         FCTask("w", [weather], [{"role": "user", "content": "Weather in Paris?"}],
                [{"name": "get_weather", "arguments": {"city": "Paris"}}], license="Apache-2.0"),
-        FCTask("j", [weather], [{"role": "user", "content": "Tell me a joke"}], [], license="Apache-2.0"),
+        FCTask("j", [weather], [{"role": "user", "content": "Tell me a joke"}], []),  # no license
     ]
     (tmp_path / "fc.jsonl").write_text("".join(json.dumps(t.to_dict()) + "\n" for t in tasks))
     prompts = [{"messages": [{"role": "user", "content": "请介绍一下长城。"}]},
@@ -355,6 +355,7 @@ def test_teacher_on_real_tasks_and_prompts(tmp_path: Path) -> None:
     assert rows[1]["messages"][-1]["content"].startswith("Why did")  # "no call" task: the teacher's words
     assert rows[2]["messages"][-1]["content"].startswith("长城") and rows[2]["license"] == "CC-BY-4.0"
     assert rows[0]["license"] == "Apache-2.0" and "tools" in rows[0] and "tools" not in rows[2]
+    assert rows[1]["license"] == "待核实"  # a task without a license is not "own": to be verified
     bp = metas[0]["by_source"]["prompt"]
     assert bp["drop_language"] == 1 and bp["drop_special_tokens"] == 1 and bp["drop_empty"] == 1
     assert metas[0]["by_source"]["fc"]["verified"] == 2

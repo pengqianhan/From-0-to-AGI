@@ -60,6 +60,22 @@ def test_conversation_prompt_drops_last_assistant() -> None:
     assert [m["content"] for m in p.messages] == ["a", "b", "c"] and p.tools == row["tools"]
     assert conversation_prompt({"messages": [{"role": "assistant", "content": "x"}]}) is None
     assert len(conversation_prompt({"messages": [{"role": "user", "content": "q"}]}).messages) == 1
+    # regression: a conversation that ends with a user turn keeps that turn (it is the one to answer)
+    open_turn = {"messages": row["messages"][:3]}
+    assert [m["content"] for m in conversation_prompt(open_turn).messages] == ["a", "b", "c"]
+    # a tool trajectory: the prompt ends with the tool result, the final answer is dropped
+    traj = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "", "tool_calls": [{"name": "f", "arguments": {}}]},
+        {"role": "tool", "content": "{}"},
+        {"role": "assistant", "content": "done"},
+    ]
+    assert [m["role"] for m in conversation_prompt({"messages": traj}).messages] == [
+        "user",
+        "assistant",
+        "tool",
+    ]
+    assert conversation_prompt({"messages": [{"role": "system", "content": "s"}]}) is None
 
 
 def test_pick_prompts_follows_weights() -> None:

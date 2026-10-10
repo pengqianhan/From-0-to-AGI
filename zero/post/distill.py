@@ -3,6 +3,9 @@
 Chapter 17 uses this module.
 
     uv run python -m zero.post.distill --config configs/tiny/distill.toml
+    # N GPUs: generate the teacher data in one process first, then train
+    uv run python -m zero.post.distill --config configs/main/distill.toml --generate-only
+    uv run torchrun --standalone --nproc_per_node=8 -m zero.post.distill --config configs/main/distill.toml
 
 **Two kinds of distillation** (both are "consensus" in GOAL.md 2.1):
 
@@ -86,6 +89,7 @@ from zero.post.common import (
     load_policy,
     load_post_config,
     pad_batch,
+    rank0_log,
     write_jsonl,
 )
 from zero.tokenizer import Tokenizer
@@ -494,6 +498,8 @@ def generate_kd_data(
     """
     from concurrent.futures import ThreadPoolExecutor
 
+    from zero.post.sft_data import UNVERIFIED
+
     jobs = _distill_jobs(dc)
     if not jobs:
         raise ValueError("[distill] no teacher jobs: set n_tasks > 0, task_files, or prompt_files")
@@ -540,8 +546,10 @@ def generate_kd_data(
         c.update({f"drop_{k}": v for k, v in why.items()})
         if kind == "prompt":
             lic, tools = dc.prompt_license or tcfg.license, None
-        else:
-            lic, tools = getattr(item, "license", "") or "own", item.tools
+        elif kind == "fc":  # a task of a data set: its license, or "to be verified" if it has none
+            lic, tools = item.license or UNVERIFIED, item.tools
+        else:  # env: the toy environment of this project
+            lic, tools = "own", item.tools
         for msgs in kept:
             row = {
                 "messages": msgs,
@@ -680,31 +688,82 @@ def run_distill(
     src: str | os.PathLike | dict[str, Any],
     overrides: Sequence[str] | None = None,
     log: Callable[[str], None] = print,
+    generate_only: bool = False,
 ) -> dict[str, Any]:
     """Teacher data generation → (mix in SFT data) → packing → train the student.
 
-    CPU, 1 GPU, or N GPUs with torchrun: rank 0 generates and packs the data, then every rank trains
-    with the same `Trainer` as SFT (DDP). Return {"meta", "history", ...}.
+    CPU or 1 GPU: all in one run. N GPUs: two steps. First generate the teacher data in one process
+    (`--generate-only`, here `generate_only=True`; it can take hours), then train with torchrun: rank 0
+    mixes and packs the data, then every rank trains with the same `Trainer` as SFT (DDP). Under
+    torchrun the program does not generate: the other ranks would wait in a collective for hours.
+    Return {"meta", "history", ...} (with generate_only: {"meta"}).
     """
     from zero.train.dist import cleanup, init_distributed
 
     cfg, sec = load_post_config(
         src, {"teacher": TeacherConfig, "distill": DistillConfig}, overrides
     )
-    info = init_distributed(cfg.train.device)
+    if generate_only:
+        return {"meta": generate_teacher_data(cfg, sec["teacher"], sec["distill"], log)}
+    # While rank 0 mixes and packs the data, the other ranks wait in a collective: a long timeout.
+    info = init_distributed(cfg.train.device, timeout_min=120)
     try:
-        return _distill(cfg, sec["teacher"], sec["distill"], info, log)
+        return _distill(cfg, sec["teacher"], sec["distill"], info, rank0_log(info, log))
     finally:
         cleanup()
+
+
+def _teacher_is_self(tcfg: TeacherConfig) -> bool:
+    """Is the teacher "a model of this project" (the stand-in of the smoke test)?
+
+    Yes for the local backend + a zero checkpoint folder (an HF folder has config.json)."""
+    return tcfg.backend == "local" and not (Path(tcfg.path) / "config.json").exists()
+
+
+def _have_teacher_data(dc: DistillConfig) -> bool:
+    """The teacher data exists and is reused (overwrite = false)."""
+    meta_path = Path(str(dc.out_jsonl) + ".meta.json")
+    return Path(dc.out_jsonl).exists() and meta_path.exists() and not dc.overwrite
+
+
+def generate_teacher_data(
+    cfg: Any, tcfg: TeacherConfig, dc: DistillConfig, log: Callable[[str], None] = print
+) -> dict[str, Any]:
+    """`--generate-only`: write the teacher data (out_jsonl + meta) and stop. One process.
+
+    No packing and no training: those run in the next command (torchrun). Existing data is kept
+    unless [distill] overwrite = true.
+    """
+    from zero.train.dist import pick_device
+
+    if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+        raise RuntimeError("[distill] --generate-only runs in one process, not under torchrun")
+    check_license(tcfg, _teacher_is_self(tcfg))
+    if _have_teacher_data(dc):
+        meta = json.loads(Path(str(dc.out_jsonl) + ".meta.json").read_text())
+        log(
+            f"[distill] the teacher data exists: {dc.out_jsonl} ({meta['n_verified']} rows); overwrite = false"
+        )
+        return meta
+    teacher = build_teacher(tcfg, pick_device(cfg.train.device))
+    if dc.logits_kd and isinstance(teacher, LocalTeacher):
+        _check_same_tokenizer(teacher, Tokenizer.load(cfg.train.data.tokenizer))
+    return generate_kd_data(teacher, tcfg, dc, log)
+
+
+def _check_same_tokenizer(teacher: LocalTeacher, tok: Tokenizer) -> None:
+    if teacher.tok.hash() != tok.hash():
+        raise ValueError(
+            "Logits distillation needs the same tokenizer for the teacher and the student (the hashes are different). For a teacher with a different tokenizer, set [distill] logits_kd = false"
+        )
 
 
 def _distill(
     cfg: Any, tcfg: TeacherConfig, dc: DistillConfig, info: Any, log: Callable[[str], None]
 ) -> dict[str, Any]:
     from zero.config import DataSourceConfig
-    from zero.post.common import read_jsonl
+    from zero.post.common import read_jsonl, run_on_rank0
     from zero.post.sft import build_sft_shards
-    from zero.train.dist import barrier
     from zero.train.trainer import Trainer
 
     tc = cfg.train
@@ -720,10 +779,7 @@ def _distill(
         )
     tok = Tokenizer.load(tc.data.tokenizer)
 
-    # Is the teacher "a model of this project" (the stand-in of the smoke test)?
-    # Yes for the local backend + a zero checkpoint folder.
-    is_self = tcfg.backend == "local" and not (Path(tcfg.path) / "config.json").exists()
-    check_license(tcfg, is_self)
+    check_license(tcfg, _teacher_is_self(tcfg))
     # Logits distillation needs a local teacher on every rank; data generation needs it only on rank 0.
     use_logits = dc.logits_kd and tcfg.backend == "local"
     if dc.logits_kd and not use_logits:
@@ -731,23 +787,25 @@ def _distill(
             "[distill] the teacher is not a local model, so no logits: sequence-level distillation only"
         )
     meta_path = Path(str(dc.out_jsonl) + ".meta.json")
-    reuse = Path(dc.out_jsonl).exists() and meta_path.exists() and not dc.overwrite
+    reuse = _have_teacher_data(dc)
+    if info.world_size > 1 and not reuse:
+        raise RuntimeError(
+            f"[distill] no teacher data to reuse ({dc.out_jsonl}; overwrite = {dc.overwrite}). With torchrun, "
+            "generate it first in one process: python -m zero.post.distill --config <config> --generate-only"
+        )
     teacher = None
-    if use_logits or (info.is_main and not reuse):
+    if use_logits or not reuse:  # not reuse: one process (checked above)
         # With CUDA, the local teacher is on this rank's GPU. Verified on one RTX 3090
         # (2026-10, see runs/2026-10-01-gpu0-check/).
         teacher = build_teacher(tcfg, info.device)
     # First check if logits distillation is possible. For different tokenizers, raise the error
     # early, before the generation of the teacher data.
-    if use_logits and teacher.tok.hash() != tok.hash():  # type: ignore[union-attr]
-        raise ValueError(
-            "Logits distillation needs the same tokenizer for the teacher and the student (the hashes are different). For a teacher with a different tokenizer, set [distill] logits_kd = false"
-        )
+    if use_logits:
+        _check_same_tokenizer(teacher, tok)  # type: ignore[arg-type]
 
     shard_dir = Path(dc.shard_dir or Path(tc.out_dir) / "data")
-    meta: dict[str, Any] = {}
-    stats: dict[str, Any] = {}
-    if info.is_main:
+
+    def prepare() -> tuple[dict[str, Any], dict[str, Any]]:
         if reuse:
             meta = json.loads(meta_path.read_text())
             log(
@@ -770,7 +828,10 @@ def _distill(
         write_jsonl(mixed, rows)
         stats = build_sft_shards(mixed, tok, tc.data.seq_len, shard_dir / "train.bin")
         log(f"[distill] packing: {stats}")
-    barrier()  # the other ranks wait for the packed windows
+        return meta, stats
+
+    # Rank 0 mixes and packs; the other ranks wait for the packed windows (an error stops all ranks).
+    meta, stats = run_on_rank0(info, prepare) or ({}, {})
 
     tc.data.sources = [DataSourceConfig(name="distill", path=str(shard_dir / "train.bin"))]
     tc.data.val = ""
@@ -828,8 +889,13 @@ def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="Distillation (Chapter 17)")
     ap.add_argument("--config", required=True)
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
+    ap.add_argument(
+        "--generate-only",
+        action="store_true",
+        help="only generate the teacher data (one process; run it before torchrun)",
+    )
     args = ap.parse_args(argv)
-    run_distill(args.config, args.set)
+    run_distill(args.config, args.set, generate_only=args.generate_only)
 
 
 if __name__ == "__main__":
