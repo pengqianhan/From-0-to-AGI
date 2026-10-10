@@ -393,6 +393,8 @@ class LoopState:
     def record(self, rec: dict[str, Any], fmt: str = "") -> None:
         tc = self.cfg.train
         rec = {"step": self.step, **rec}
+        if self.info.device.type == "cuda":  # for the launch check (zero/tools/launch_check.py)
+            rec["max_mem_gb"] = torch.cuda.max_memory_allocated(self.info.device) / 2**30
         is_last = self.step >= tc.max_steps
         if self.step % tc.logging.every == 0 or is_last or self.step == 1:
             self.history.append(rec)

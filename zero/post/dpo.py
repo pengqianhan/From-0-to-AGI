@@ -36,6 +36,7 @@ import argparse
 import copy
 import os
 import random
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -372,6 +373,7 @@ def _dpo_loop(
     model.train()
     keys = ("loss", "acc", "margin", "chosen_reward", "rejected_reward")
     while loop.step < tc.max_steps:
+        t0 = time.perf_counter()
         lr = loop.begin_step()
         step_idx = step_pair_indices(loop.step, per_step, len(pairs), tc.seed)
         mine = [i for _, i in rank_share(step_idx, info)]
@@ -394,7 +396,12 @@ def _dpo_loop(
         gnorm = loop.end_step()
         tot = all_reduce_sum([sums[k] for k in keys], info)
         loop.record(
-            {**{k: v / per_step for k, v in zip(keys, tot)}, "lr": lr, "grad_norm": gnorm},
+            {
+                **{k: v / per_step for k, v in zip(keys, tot)},
+                "lr": lr,
+                "grad_norm": gnorm,
+                "step_s": time.perf_counter() - t0,
+            },
             "step {step:>5} | dpo loss {loss:.4f} | acc {acc:.2f} | margin {margin:+.3f} | lr {lr:.2e}",
         )
     return loop.history

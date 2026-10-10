@@ -362,6 +362,8 @@ class Trainer:
                     "mfu": mfu,
                     "elapsed_s": time.perf_counter() - t_start,
                 }
+                if self.device.type == "cuda":  # for the launch check (zero/tools/launch_check.py)
+                    record["max_mem_gb"] = torch.cuda.max_memory_allocated(self.device) / 2**30
                 if isinstance(self.loader, MixtureLoader):
                     record["mixture_counts"] = dict(self.loader.counts)
                 extra = self.extra_metrics()

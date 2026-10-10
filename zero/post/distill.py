@@ -139,6 +139,7 @@ class DistillConfig:
     )  # prompts without answers (e.g. Chinese chat): filtered teacher answers
     prompt_license: str = ""  # license of the prompts in prompt_files (written to each row); empty: the teacher license
     max_prompts: int = 0  # per prompt file; 0 = all
+    max_tasks: int = 0  # per task file; 0 = all
     match_lang: bool = (
         True  # prompt_files: the answer must be in the language of the prompt (zh / en)
     )
@@ -458,7 +459,8 @@ def _distill_jobs(dc: DistillConfig) -> list[tuple[str, Any]]:
     if dc.n_tasks > 0:
         jobs += [("env", t) for t in generate_tasks(dc.n_tasks, seed=dc.env_seed, split="train")]
     for f in dc.task_files:
-        jobs += [("fc", t) for t in load_fc_tasks(f)]
+        fc = load_fc_tasks(f)
+        jobs += [("fc", t) for t in (fc[: dc.max_tasks] if dc.max_tasks > 0 else fc)]
     for f in dc.prompt_files:
         rows = read_jsonl(f)
         if dc.max_prompts > 0:
