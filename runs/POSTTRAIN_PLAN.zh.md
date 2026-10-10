@@ -111,10 +111,10 @@ OPD 的损失默认是 `full_kl`：在学生自己采样的每个回答位置上
 **开跑前必须完成（P0）：**
 
 1. **SFT 数据**：流水线代码已完成（2026-10-10，`zero/post/sft_data.py`，见第 6.2 节）。还要做的是逐个核实来源的许可证、下载数据、导出评测题目用于去污染，然后按 token 占比调配比。
-2. **教师**：确定序列级蒸馏的教师（Apache-2.0 / MIT），在 `configs/main/distill.toml` 填好名称、版本、许可证。
+2. **教师**：代码已经能用真实数据（第 6.4 节）；**由你**从第 6.4 节核实过的候选里选定教师，在 `configs/main/distill.toml` 填好名称、版本、许可证。
 3. **真实的 RL 任务集**：代码已完成（2026-10-10，`zero/post/envs/fc_tasks.py`，见第 6.1 节）。还要做的是下载数据、构建任务文件，并在本地抽查判分结果。
 4. **路线 A 的预注册判据**：已作为候选条款写进 `eval/PREREGISTRATION.md` 第 6 节（草案，冻结时由你确认）。评测流水线见第 6.3 节。
-5. **阶段 6 第 9 项**：在 GPU 上实测 GRPO 和 OPD 每步的耗时，用来定第 7 节的预算。
+5. **开机检查**：租到 GPU 的第一个小时运行（`zero.tools.launch_check`，第 6.4 节），实测每个阶段每步的耗时，用来定第 7 节的预算。
 
 ### 6.1 真实工具调用任务（`zero/post/envs/fc_tasks.py`）
 
@@ -211,19 +211,42 @@ uv run python -m zero.post.sft_data --config configs/main/sft_data.toml
 
 **还要在 GPU 上做的**：用 vLLM 跑通 BFCL 的 generate / evaluate；确认导出 tokenizer 的 `apply_chat_template` 在 BFCL 里给出的文本和训练时一致；ACEBench 官方评测脚本对新版 vLLM 的适配。
 
+### 6.4 教师数据、多卡、难度筛选、开机检查（2026-10-10）
+
+**真实数据上的教师数据**（`zero/post/distill.py`）：除了玩具环境，还支持 `task_files`（真实工具调用任务：只留教师判分完全正确的第一轮）和 `prompt_files`（没有答案的提示词，例如中文指令：丢掉空回答、伪造轮次、工具调用和语言不符的回答；每行写入 `prompt_license`）。`concurrency` 向教师服务并发请求。**这是补第 6.2 节中文缺口最干净的路子**：用许可证允许的教师回答中文提示词。提示词本身也要有许可证。
+
+**教师候选**（许可证于 2026-10-10 读自模型元数据；**由你来选**）：
+
+| 模型 | 许可证 | 备注 |
+|---|---|---|
+| Qwen3.5-35B-A3B | Apache-2.0 | 激活 3B，单卡（FP8）就能便宜地起服务 |
+| Qwen3.5-122B-A10B | Apache-2.0 | 更强；推理服务商有托管 |
+| Qwen3-235B-A22B-Instruct-2507 | Apache-2.0 | 非思考的指令模型 |
+| gpt-oss-120b | Apache-2.0 | OpenAI 另有使用政策，用之前要读 |
+| DeepSeek-V4.1-Flash | MIT | 总参数 763B，实际上只能用托管服务 |
+| GLM-5.2 | MIT | 中英文；工具调用强（MCP-Atlas、Tool-Decathlon） |
+
+用推理服务商托管的教师时，还要读服务商的服务条款。
+
+**多卡**（`zero/post/common.py`）：DPO、GRPO、OPD 都能用 torchrun 多卡数据并行；配置里的批大小是全局的，配方不随卡数改变。2 个 CPU 进程与 1 个进程的逐步损失和最终权重一致（`tests/test_post_ddp.py`）。蒸馏在 rank 0 生成数据后，用 SFT 的 `Trainer`（DDP）训练。**顺手修了一个 DPO 的 bug**：同一步的每个微步都用同样的 `micro_batch_size` 对数据，每步的大部分偏好对从来没有被训练到。
+
+**难度筛选**（`zero/post/difficulty.py`）：用开始 RL 的 checkpoint 对每个任务采样 k 次，保留 1/k ≤ pass ≤ (k−1)/k 的任务（弱底座可以另外保留一部分全错的题）。难度取决于策略，所以每条路线各一份：`data/rl/<路线>/fc_train_filtered.jsonl`。
+
+**开机检查**（`zero/tools/launch_check.py`）：租到 GPU 后的第一个小时。把一条路线的每个阶段各跑几步（在一个启动目录里串起来），给出每步秒数的中位数、显存峰值，以及每个阶段全量运行的预计时长、卡时和花费；教师吞吐用一小份样本实测。开跑前先检查输入是否齐全。它取代了后训练里的"阶段 6 第 9 项"。
+
 **已知风险：**
 
 | 风险 | 表现 | 应对 |
 |---|---|---|
-| 弱底座上 RL 没有奖励信号 | `zero_std_groups` 接近 1，`reward_mean` 不动 | 按 SFT 模型的 pass@k 筛掉全对和全错的题（Kimi K2、OLMo 3 的做法；在线筛选还没实现，先离线筛）；加强蒸馏数据 |
+| 弱底座上 RL 没有奖励信号 | `zero_std_groups` 接近 1，`reward_mean` 不动 | `zero/post/difficulty.py`：按开始 RL 的 checkpoint 的 pass@k 筛掉全对和全错的题（Kimi K2、OLMo 3 的做法；在线筛选未实现）；加强蒸馏数据 |
 | GRPO 奖励作弊 | `call_rate` 下降但 `reward_mean` 上升 | `tool_env.py` 列出的 8 条防作弊规则；真实任务集的判分器也要有同样的测试 |
 | OPD 把 GRPO 学到的东西冲掉 | E1 下降，`kl/grpo` 上升 | 调高 `grpo` 教师的权重；减少步数 |
-| 单进程实现的吞吐不够 | GRPO / OPD 每步太慢 | 先按 `grpo.py` 模块说明和 verl 对拍，再用 verl |
+| 采样太慢 | 用上所有卡后 GRPO / OPD 每步仍然太慢（已多卡数据并行，但没有连续批处理） | 先按 `grpo.py` 模块说明和 verl 对拍，再用 verl |
 | 学生输出变啰嗦 | `eos_rate` 下降、`resp_len` 上升 | 降学习率；检查 `max_new_tokens` 截断比例 |
 
 ## 7. 预算（总额 $1,500，GOAL.md 3.4）
 
-GRPO 和 OPD 的数字是**上限**。阶段 6 第 9 项实测后重算。单次运行超过 $100 先报批，花费记入 `runs/ledger.zh.md`。
+GRPO 和 OPD 的数字是**上限**。用开机检查实测后重算。单次运行超过 $100 先报批，花费记入 `runs/ledger.zh.md`。
 
 | 项目 | 上限 | 说明 |
 |---|---:|---|
@@ -241,13 +264,17 @@ huggingface-cli download Qwen/Qwen3-0.6B-Base --local-dir data/hf/Qwen3-0.6B-Bas
 huggingface-cli download Qwen/Qwen3-0.6B --local-dir data/hf/Qwen3-0.6B
 # 1. 导入成 zero checkpoint，并检查配置里的模型形状
 uv run python -m zero.tools.import_hf data/hf/Qwen3-0.6B-Base out/proxy/base --check-config configs/proxy/sft.toml
-# 2. 每个阶段先用 --set train.max_steps=20 跑通，再跑全量（RUNBOOK 的"先小后大"）
-uv run torchrun --standalone --nproc_per_node=8 -m zero.post.sft --config configs/proxy/sft.toml
-uv run python -m zero.post.distill --config configs/proxy/distill.toml
-uv run python -m zero.post.dpo     --config configs/proxy/dpo.toml
-uv run python -m zero.post.grpo    --config configs/proxy/grpo.toml
-uv run python -m zero.post.opd     --config configs/proxy/opd.toml
-# 3. 内部评测（含官方 Qwen3-0.6B）；正式判定用 BFCL / ACEBench（第 3 节）
+# 2. 开机检查：每个阶段跑几步 → 每步秒数、显存、预计花费（runs/<日期>-proxy-launch/）
+uv run python -m zero.tools.launch_check --track proxy --nproc 8 --price 2.5
+# 3. 全量运行（都是多卡数据并行；配置里的批大小是全局的）
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.sft     --config configs/proxy/sft.toml
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.distill --config configs/proxy/distill.toml
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.dpo     --config configs/proxy/dpo.toml
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.difficulty --policy out/proxy/dpo/ckpt \
+    --tasks data/rl/fc_train.jsonl --k 8 --out data/rl/proxy/fc_train_filtered.jsonl
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.grpo    --config configs/proxy/grpo.toml
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.opd     --config configs/proxy/opd.toml
+# 4. 内部评测（含官方 Qwen3-0.6B）；正式判定用 BFCL / ACEBench（第 3 节）
 uv run python -m zero.eval.harness --config configs/proxy/eval.toml
 ```
 
@@ -266,6 +293,8 @@ uv run python -m zero.eval.harness --config configs/proxy/eval.toml
 | `configs/weak/*.toml` | 路线 B：自有中间 checkpoint 上的全套后训练配置 |
 | `tests/test_opd.py`、`tests/test_post_configs.py` | 损失的手算 / 穷举校验、端到端、分词器不一致时报错、HF 导入往返一致、三条路线的配置检查 |
 | `zero/smoke.py` | 冒烟流程加入 OPD 阶段，导出改为从 OPD checkpoint |
+| `zero/post/common.py`（数据并行）、`grpo.py` / `opd.py` / `dpo.py` / `distill.py`（第 6.4 节） | DPO、GRPO、OPD 和蒸馏的多卡运行；DPO 批次修复；真实任务和提示词上的教师数据 |
+| `zero/post/difficulty.py`、`zero/tools/launch_check.py`（第 6.4 节） | RL 任务的离线难度筛选；带花费推算的开机检查 |
 | `zero/eval/bfcl.py`、`zero/eval/export_prompts.py`、`fc_tasks` 的 ACEBench 转换与 `export`（第 6.3 节） | 评测流水线：BFCL 适配器按源码修正、逐题结果与配对 bootstrap、判分器在 BFCL 和 ACEBench 全量数据上核对、评测题导出（去污染） |
 | `zero/post/sft_data.py`、`configs/main/sft_data.toml`（第 6.2 节） | SFT 数据流水线：5 种来源格式、按行判定许可证、清洗、去重、去污染、按 token 统计的配比 |
 | `zero/post/envs/fc_tasks.py`（第 6.1 节） | 真实工具调用任务：格式、通用 schema 检查与判分、Hermes / ToolACE / xLAM / OpenAI / BFCL 转换器、去污染、构建与 SFT/RL 切分；GRPO（`task_files`）和评测（`fc_tasks`）已接入 |

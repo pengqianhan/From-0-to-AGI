@@ -58,7 +58,7 @@
 | 混合线性注意力 | 进正文（Qwen、Kimi、NVIDIA）。Gated DeltaNet 这个具体算子只有 Qwen 在用 | 23 |
 | 无辅助损失的 MoE 负载均衡 | 满足规则 A（DeepSeek-V3、GLM-4.5、Nemotron 3），进正文 | 24 |
 | MTP | 满足规则 A，进正文。Medusa / EAGLE 类草稿头放进前沿观察 | 25 |
-| 在线策略蒸馏 | 满足规则 A（Qwen3、Gemma 2、GLM-5、MiMo、DeepSeek-V4），进正文。主线模型的词表不同，所以用不上 | 17 |
+| 在线策略蒸馏 | 满足规则 A（Qwen3、Gemma 2、GLM-5、MiMo、DeepSeek-V4），进正文。主线的词表与外部教师不同，不能用外部教师；主线采用 GLM-5 的跨阶段形式，教师是自己前几个阶段的 checkpoint（`zero/post/opd.py`，2026-10-10 确定） | 17 |
 | GRPO 改进 | GRPO 本身是共识。clip-higher 待核实。Dr. GRPO、GSPO 放进前沿观察 | 19 |
 
 ### 2.2 一个问题引出下一个方法

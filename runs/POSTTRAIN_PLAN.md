@@ -111,10 +111,10 @@ When the budget is tight, ablations use half the number of steps.
 **Must be done before the runs (P0):**
 
 1. **SFT data**: the pipeline code is done (2026-10-10, `zero/post/sft_data.py`, see section 6.2). What is left: verify the license of each source, download the data, export the evaluation questions for decontamination, and tune the mixture by token share.
-2. **Teacher**: choose the teacher of sequence-level distillation (Apache-2.0 / MIT); fill in name, version, and license in `configs/main/distill.toml`.
+2. **Teacher**: the code works on real data now (section 6.4); **you choose the teacher** from the verified candidates of section 6.4 and fill in name, version, and license in `configs/main/distill.toml`.
 3. **Real RL task sets**: the code is done (2026-10-10, `zero/post/envs/fc_tasks.py`, see section 6.1). What is left: download the data, build the task files, and spot-check the scores locally.
 4. **The preregistered rule of track A**: written as a candidate clause in section 6 of `eval/PREREGISTRATION.md` (draft; you confirm it at the freeze). The evaluation pipeline is in section 6.3.
-5. **Stage 6, item 9**: measure the time per step of GRPO and OPD on a GPU, to fix the budget of section 7.
+5. **Launch check** on the first GPU hour (`zero.tools.launch_check`, section 6.4): the seconds per step of every stage, to fix the budget of section 7.
 
 ### 6.1 Real function-calling tasks (`zero/post/envs/fc_tasks.py`)
 
@@ -211,19 +211,42 @@ Everything that can run on a CPU is done and checked on real data; only the gene
 
 **Still to do on a GPU**: run BFCL generate / evaluate with vLLM; check that `apply_chat_template` of the exported tokenizer gives the training text inside BFCL; adapt ACEBench's official scripts to a current vLLM.
 
+### 6.4 Teacher data, multi-GPU, difficulty filter, launch check (2026-10-10)
+
+**Teacher data on real data** (`zero/post/distill.py`): besides the toy environment, `task_files` (real function-calling tasks: the teacher's first turns that score exact are kept) and `prompt_files` (prompts without answers, for example Chinese instructions: empty answers, forged turns, tool calls, and answers in another language are dropped; `prompt_license` is written to each row). `concurrency` sends parallel requests to the teacher server. **This is the clean way to fill the Chinese gap of section 6.2**: a teacher whose license allows it answers Chinese prompts. The prompts need a license too.
+
+**Teacher candidates** (license read from the model metadata on 2026-10-10; **the choice is yours**):
+
+| Model | License | Notes |
+|---|---|---|
+| Qwen3.5-35B-A3B | Apache-2.0 | 3B active: cheap to serve on one GPU (FP8) |
+| Qwen3.5-122B-A10B | Apache-2.0 | stronger; hosted by inference providers |
+| Qwen3-235B-A22B-Instruct-2507 | Apache-2.0 | non-thinking instruct model |
+| gpt-oss-120b | Apache-2.0 | OpenAI also has a usage policy: read it before use |
+| DeepSeek-V4.1-Flash | MIT | 763B total; hosted only, in practice |
+| GLM-5.2 | MIT | Chinese and English; strong tool calls (MCP-Atlas, Tool-Decathlon) |
+
+When a hosted provider serves the teacher, also read the provider's terms of service.
+
+**Multi-GPU** (`zero/post/common.py`): DPO, GRPO, and OPD are data parallel with torchrun; the batch sizes in the configs are global, so the recipe does not change with the number of GPUs. 2 CPU processes give the same per-step losses and final weights as 1 process (`tests/test_post_ddp.py`). Distillation trains with the SFT `Trainer` (DDP) after rank 0 generates the data. **A DPO bug was fixed on the way**: every micro-step of a step used the same `micro_batch_size` pairs, so most of each step's pairs were never trained on.
+
+**Difficulty filter** (`zero/post/difficulty.py`): with the checkpoint that starts RL, k samples per task; keep the tasks with 1/k ≤ pass ≤ (k−1)/k (optionally a fraction of the all-wrong ones for a weak base). Per track, because difficulty depends on the policy: `data/rl/<track>/fc_train_filtered.jsonl`.
+
+**Launch check** (`zero/tools/launch_check.py`): the first hour on rented GPUs. A few steps of every stage of a track (chained in a launch directory), then the median seconds per step, the peak memory, and the projected hours, GPU-hours, and dollars of each full stage; the teacher throughput from a small sample. It checks the inputs before it starts. It replaces "stage 6, item 9" for post-training.
+
 **Known risks:**
 
 | Risk | Symptom | Response |
 |---|---|---|
-| No reward signal on the weak base | `zero_std_groups` near 1, `reward_mean` flat | Remove the tasks that the SFT model always or never solves, by pass@k (the Kimi K2 and OLMo 3 practice; online filtering is not implemented yet, so filter offline first); stronger distillation data |
+| No reward signal on the weak base | `zero_std_groups` near 1, `reward_mean` flat | `zero/post/difficulty.py`: remove the tasks that the starting checkpoint always or never solves, by pass@k (the Kimi K2 and OLMo 3 practice; online filtering is not implemented); stronger distillation data |
 | Reward hacking in GRPO | `call_rate` goes down while `reward_mean` goes up | The 8 anti-hacking rules of `tool_env.py`; the scorer of the real task sets needs the same tests |
 | OPD washes out what GRPO learned | E1 goes down, `kl/grpo` goes up | Larger weight for the `grpo` teacher; fewer steps |
-| The single-process code is too slow | GRPO / OPD steps take too long | Parity check against verl as the module docstring of `grpo.py` says, then use verl |
+| Sampling is too slow | GRPO / OPD steps take too long even with all GPUs (data parallel, but no continuous batching) | Parity check against verl as the module docstring of `grpo.py` says, then use verl |
 | The student starts to ramble | `eos_rate` down, `resp_len` up | Lower learning rate; check the fraction cut by `max_new_tokens` |
 
 ## 7. Budget ($1,500 in total, GOAL.md 3.4)
 
-The GRPO and OPD numbers are **caps**. Recompute them after stage 6, item 9. A single run above $100 needs approval first; record the cost in `runs/ledger.md`.
+The GRPO and OPD numbers are **caps**. Recompute them with the launch check. A single run above $100 needs approval first; record the cost in `runs/ledger.md`.
 
 | Item | Cap | Notes |
 |---|---:|---|
@@ -241,13 +264,17 @@ huggingface-cli download Qwen/Qwen3-0.6B-Base --local-dir data/hf/Qwen3-0.6B-Bas
 huggingface-cli download Qwen/Qwen3-0.6B --local-dir data/hf/Qwen3-0.6B
 # 1. Import as a zero checkpoint, and check the model shape of the config
 uv run python -m zero.tools.import_hf data/hf/Qwen3-0.6B-Base out/proxy/base --check-config configs/proxy/sft.toml
-# 2. Each stage: first a run with --set train.max_steps=20, then the full run ("small first" in the RUNBOOK)
-uv run torchrun --standalone --nproc_per_node=8 -m zero.post.sft --config configs/proxy/sft.toml
-uv run python -m zero.post.distill --config configs/proxy/distill.toml
-uv run python -m zero.post.dpo     --config configs/proxy/dpo.toml
-uv run python -m zero.post.grpo    --config configs/proxy/grpo.toml
-uv run python -m zero.post.opd     --config configs/proxy/opd.toml
-# 3. Internal evaluation (with the official Qwen3-0.6B); the decision uses BFCL / ACEBench (section 3)
+# 2. Launch check: a few steps of every stage → s/step, memory, projected cost (runs/<date>-proxy-launch/)
+uv run python -m zero.tools.launch_check --track proxy --nproc 8 --price 2.5
+# 3. The full runs (all data parallel; batch sizes in the configs are global)
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.sft     --config configs/proxy/sft.toml
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.distill --config configs/proxy/distill.toml
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.dpo     --config configs/proxy/dpo.toml
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.difficulty --policy out/proxy/dpo/ckpt \
+    --tasks data/rl/fc_train.jsonl --k 8 --out data/rl/proxy/fc_train_filtered.jsonl
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.grpo    --config configs/proxy/grpo.toml
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.opd     --config configs/proxy/opd.toml
+# 4. Internal evaluation (with the official Qwen3-0.6B); the decision uses BFCL / ACEBench (section 3)
 uv run python -m zero.eval.harness --config configs/proxy/eval.toml
 ```
 
@@ -266,6 +293,8 @@ Each run gets a directory `runs/<date>-<track>-<stage>/` with a copy of the conf
 | `configs/weak/*.toml` | Track B: the full post-training configs on an intermediate checkpoint of our own |
 | `tests/test_opd.py`, `tests/test_post_configs.py` | Hand-computed / enumerated checks of the losses, end to end, refusal of a teacher with another tokenizer, HF import round trip, config checks of the three tracks |
 | `zero/smoke.py` | The smoke pipeline has an OPD stage; the export now uses the OPD checkpoint |
+| `zero/post/common.py` (data parallel), `grpo.py` / `opd.py` / `dpo.py` / `distill.py` (section 6.4) | DPO, GRPO, OPD, and distillation on N GPUs; DPO batch fix; teacher data on real tasks and prompts |
+| `zero/post/difficulty.py`, `zero/tools/launch_check.py` (section 6.4) | Offline difficulty filter of RL tasks; launch check with cost projection |
 | `zero/eval/bfcl.py`, `zero/eval/export_prompts.py`, ACEBench converter and `export` in `fc_tasks` (section 6.3) | Evaluation pipeline: BFCL adapter fixed against the source, per-item results and paired bootstrap, scorer checked on all of BFCL and ACEBench, export of evaluation questions (decontamination) |
 | `zero/post/sft_data.py`, `configs/main/sft_data.toml` (section 6.2) | SFT data pipeline: 5 source formats, license per row, cleaning, deduplication, decontamination, mixture by tokens |
 | `zero/post/envs/fc_tasks.py` (section 6.1) | Real function-calling tasks: format, generic schema check and reward, converters for Hermes / ToolACE / xLAM / OpenAI / BFCL, decontamination, build and SFT/RL split; connected to GRPO (`task_files`) and evaluation (`fc_tasks`) |

@@ -223,7 +223,9 @@ Thinking Machines 的博客（Lu 等，2025）把三种方法放在一张表里�
 
 这满足规则 A，所以在线策略蒸馏**进正文**。
 
-**但主线模型用不上它。** 在线策略蒸馏要教师在学生的 token 上打分。和 logits 蒸馏一样，它要求同一个分词器。`zero/post/distill.py` 里已经写好了 `on_policy_distill` 和 `reverse_kl_loss`（有单元测试覆盖）。配置项 `on_policy_steps` 默认为 0。只有教师和学生共用分词器时（例如"用我们自己更大的模型当教师"），才能打开它。跨分词器的在线策略蒸馏还在研究阶段（见"前沿观察"）。
+**主线不能用外部教师做它。** 在线策略蒸馏要教师在学生的 token 上打分。和 logits 蒸馏一样，它要求同一个分词器，而我们自训的分词器和所有开源教师都不同。跨分词器的在线策略蒸馏还在研究阶段（见"前沿观察"）。
+
+**主线用的是 GLM-5 的形式：跨阶段自蒸馏**（2026-10-10 确定）。教师是主线**自己**前几个阶段的 checkpoint，分词器天然相同。GRPO 之后，学生在两个提示词池上采样：工具调用任务由 GRPO 的 checkpoint 打分，对话提示词由蒸馏后的 checkpoint 打分。这样学回被 RL 削弱的能力，又不丢掉工具调用（`zero/post/opd.py`，后训练的最后一步；`configs/main/opd.toml`）。`zero/post/distill.py` 里原来的 `on_policy_distill`（单个教师，接在离线蒸馏之后，`on_policy_steps`）留给极小配置演示。
 
 ## 5. 拒绝采样：多采几个，只留验证过的
 
@@ -307,7 +309,7 @@ GOAL.md 3.3 的规则：**只用许可证允许"用输出训练其他模型"的�
 - **软标签比 one-hot 标签多带信息**：错误答案之间的相对大小（暗知识）。温度 τ 把它放大。损失乘 τ²，保持梯度的大小。
 - **logits 蒸馏**：`τ²·KL(p_T^τ ‖ p_S^τ)`，梯度是 `τ·(p_S^τ − p_T^τ)`。它带的信息最多，但**要求同一个词表**。
 - **序列级蒸馏**：教师写，学生做 SFT，等价于序列级的前向 KL。它对教师只要求能生成文本。主线模型有自己的分词器，所以只能走这条路。
-- **前向 KL 覆盖所有模式，反向 KL 挑一个模式。** **在线策略蒸馏**让学生自己采样，教师逐 token 打分。Qwen3、Gemma 2、GLM-5、MiMo、DeepSeek-V4 都采用了它。它同样要求同一个词表。
+- **前向 KL 覆盖所有模式，反向 KL 挑一个模式。** **在线策略蒸馏**让学生自己采样，教师逐 token 打分。Qwen3、Gemma 2、GLM-5、MiMo、DeepSeek-V4 都采用了它。它同样要求同一个词表，所以主线用自己前几个阶段的 checkpoint 当教师（跨阶段，GLM-5 的形式）。
 - **拒绝采样 + 执行验证**：多次采样，逐关筛选。数据质量比数量更重要。验证器只能保证它检查的东西。
 - **教师许可证**：Apache-2.0 / MIT 可用。Gemma 1–3、Llama 系列的条款会传到学生身上，我们不用。
 
@@ -320,15 +322,17 @@ GOAL.md 3.3 的规则：**只用许可证允许"用输出训练其他模型"的�
 | `01` 的 `kd_loss`（单个位置、NumPy） | `zero/post/distill.py`：`kd_loss(student_logits, teacher_logits, mask, temperature, topk)` | 批量形状 (B, T, V)，只在 mask（助手回答）位置上平均。`topk > 0` 时只用教师的前 k 个 token（离线存教师 logits 时省存储）。形状不同时直接报错，并提示"要同一个分词器" |
 | `02` 的 C、D 组（`(1−α)·CE + α·KD`） | `DistillTrainer._forward_loss`（`_make_distill_trainer_cls`）：复用通用的 `Trainer`，只改损失。教师冻结，在 `no_grad` 下运行。`extra_metrics` 记录 `ce`、`kd` | 与预训练 / SFT 共用断点续训、日志、BF16、多卡（**多卡尚未在 GPU 上验证**）。`kd_alpha`、`kd_temperature`、`kd_topk` 由配置决定 |
 | `02` 的 B 组（教师写、学生抄） | `LocalTeacher`（本地 zero checkpoint 或 Qwen3 结构的 HF 目录，带 KV cache 采样）、`OpenAITeacher`（任何 OpenAI 兼容接口；第二步用 vLLM 启动教师服务；只用标准库 `urllib`）。`build_teacher` 按 `[teacher] backend` 选择 | 教师可以是任何分词器、任何架构，也可以是远程服务。`OpenAITeacher` 负责在我们的工具调用格式和 OpenAI 的 `tool_calls` 之间互相转换（`to_openai_messages`、`openai_message_to_text`） |
-| `03` 的反向 KL | `reverse_kl_loss`、`on_policy_distill`（学生用 `grpo.sample_group` 采样，在学生的 token 上最小化反向 KL） | 默认关闭（`on_policy_steps = 0`）：需要同一个分词器，主线用不上 |
+| `03` 的反向 KL | `zero/post/opd.py`：`run_opd`，跨阶段在线策略蒸馏。多个教师（自己前几个阶段的 checkpoint），各有提示词池和权重；`loss = "full_kl"`（在整个词表上的精确反向 KL，只算回答位置）或 `"sampled"`（GLM-5 的写法，每个 token 的优势为 `log p_T − log p_S`） | 检查每个教师的分词器哈希。两种损失的梯度期望相同（`tests/test_opd.py` 用穷举验证）。可用 torchrun 多卡数据并行。`distill.py` 里的 `reverse_kl_loss` / `on_policy_distill` 是单教师版本（默认关闭，`on_policy_steps = 0`） |
+| 无 | `generate_kd_data` 的 `task_files`（`zero/post/envs/fc_tasks.py` 的真实工具调用任务：只留教师判分完全正确的第一轮）和 `prompt_files`（没有答案的提示词，例如中文指令：丢掉空回答、伪造轮次、工具调用、语言不符的回答） | 用真实数据，不再只有玩具环境；`prompt_files` 是用许可证允许的教师生成中文 SFT 数据的路子。`concurrency` 向教师服务并发请求，输出顺序不受影响 |
 | `04` 的漏斗 | `teacher_trajectories`（采样 n 个 → `score_tool_calls == 1` → `execute_safely` 真的执行 → 教师写最终回答 → `score_final_answer`）。`generate_kd_data` 写 `teacher.jsonl` 和 `.meta.json` | 每条数据和元数据都记录**教师的名称、版本、许可证**，以及采样参数、候选数、通过率、筛选规则。`check_license`：非本项目的模型当教师时，配置里必须写 `license_allows_distillation = true`，否则拒绝运行 |
 | `05` 的词表检查 | `run_distill` 在生成数据**之前**比较教师与学生分词器的哈希。不同就报错，并提示设 `logits_kd = false` | 不要等教师数据生成完，才发现不能做 logits 蒸馏 |
 | 无 | `mix_sft_jsonl` / `mix_sft_max`：把原 SFT 数据混进蒸馏数据 | 教师数据少时，防止遗忘第 16 章学到的东西 |
+| 无 | 用 torchrun 运行 `run_distill`：rank 0 生成并打包教师数据，然后所有 rank 用 SFT 的 `Trainer` 训练（DDP） | 学生的多卡训练；用 2 个 CPU 进程测过（`tests/test_post_ddp.py`），尚未在 GPU 上运行 |
 
 **对拍**：
 
 - `01` 的第 4 部分：极简版 KD 损失与 `zero.post.distill.kd_loss` 在 τ = 1、2 和 top-3 下相差 ≤ 3×10⁻⁷（float32 舍入）。
-- [`tests/test_distill.py`](../../tests/test_distill.py)（7 项）：
+- [`tests/test_distill.py`](../../tests/test_distill.py)（8 项；另有 1 项需要 CUDA）：
   - KD 损失、温度、top-1、反向 KL 与手算一致。
   - mask 外的位置不影响损失。
   - 形状不同时报错。
@@ -337,9 +341,11 @@ GOAL.md 3.3 的规则：**只用许可证允许"用输出训练其他模型"的�
   - **本地假 OpenAI 服务器**当教师。每个任务给一对一错两个回答。执行验证筛掉错的，所以通过率正好 50%，元数据字段完整。
   - 本地自蒸馏能跑通。学生与教师初始相同，所以第一步 KL 为 0。在线策略蒸馏跑 1 步。
   - 分词器不同时报错。
+  - 按脚本作答的假教师回答真实工具调用任务和提示词：只留完全正确的第一轮；空回答、伪造轮次、语言不符的回答被丢掉；并发 1 和 4 写出的文件完全相同。
+- [`tests/test_opd.py`](../../tests/test_opd.py)（9 项）：sampled 损失的梯度期望等于反向 KL 的梯度（穷举验证）；学生自己当教师时 KL 为 0；两个教师、两种损失端到端跑通；分词器不同的教师被拒绝。
 
 ```bash
-uv run pytest tests/test_distill.py -q     # 7 passed (9.5 s on the build machine)
+uv run pytest tests/test_distill.py tests/test_opd.py -q     # 17 passed, 1 skipped (3.9 s on the build machine)
 ```
 
 **主线配置**（`configs/main/distill.toml`；第二步的默认值，待调；**尚未在 GPU 上验证**）：
@@ -350,10 +356,11 @@ uv run pytest tests/test_distill.py -q     # 7 passed (9.5 s on the build machin
 | `[teacher] name / version / license` | 待定 / 待定 / 待核实；`license_allows_distillation = false` | 没核实许可证就拒绝运行（GOAL.md 3.3） |
 | `[distill] logits_kd` | `false` | 自训的分词器与任何开源教师都不同，只能做序列级蒸馏 |
 | `samples_per_task`、`keep_per_task` | 4、1 | 拒绝采样：每个任务采 4 次，最多留 1 条 |
-| `n_tasks` | 200,000 | `tool_env` 只是玩具环境。第二步还要接入真实的工具调用任务集 |
+| `n_tasks` | 200,000 | `tool_env`：玩具环境，端到端执行并验证（含工具结果的多轮） |
+| `task_files`、`prompt_files`、`concurrency` | 空、空、64 | 真实工具调用任务、没有答案的提示词（例如中文指令）；向 vLLM 服务并发 64 个请求。用哪些文件见 `runs/POSTTRAIN_PLAN.zh.md` 第 6.2、6.4 节 |
 | `mix_sft_jsonl`、`mix_sft_max` | `data/sft/train.jsonl`、200,000 | 蒸馏数据和 SFT 数据混合，防止遗忘 |
 | `init_from`、`lr`、`max_steps` | SFT 的 checkpoint、3e-5、1500 | 从 SFT 模型出发的一小段续训 |
-| `on_policy_steps` | 0 | 同一个词表才能做，主线关闭 |
+| `on_policy_steps` | 0 | 主线把在线策略蒸馏作为单独的最后一步，教师是自己的 checkpoint（`configs/main/opd.toml`） |
 
 ## 主线进度
 
@@ -392,9 +399,9 @@ uv run pytest tests/test_distill.py -q     # 7 passed (9.5 s on the build machin
 
 **第二步的教师方案（待定）**：
 
-1. 从许可证为 Apache-2.0 或 MIT 的开放权重模型里选教师。候选包括 Qwen3.5 系列、gpt-oss、DeepSeek-V4-Flash、GLM-5。按工具调用能力和推理成本挑，**具体型号第二步定**。可以由多个教师分别生成数据，每条数据记录来自哪个教师。
+1. 从许可证为 Apache-2.0 或 MIT 的开放权重模型里选教师。候选（许可证于 2026-10-10 读自模型元数据）：Qwen3.5-35B-A3B、Qwen3.5-122B-A10B（Apache-2.0），Qwen3-235B-A22B-Instruct-2507（Apache-2.0），gpt-oss-120b（Apache-2.0；OpenAI 另有使用政策），DeepSeek-V4.1-Flash（MIT），GLM-5.2（MIT，中英文）。按工具调用能力、中文能力和推理成本挑，**具体型号由项目负责人定**。可以由多个教师分别生成数据，每条数据记录来自哪个教师。
 2. 用 vLLM 在单独的 GPU 上启动 OpenAI 兼容服务。在 `configs/main/distill.toml` 的 `[teacher]` 里填上名称、版本、许可证，并设 `license_allows_distillation = true`。
-3. 在真实的工具调用任务集上生成多步轨迹，逐步执行验证。给不需要工具的任务补上内容判分。
+3. 在真实任务（`task_files`：第一轮判分完全正确）和中文提示词（`prompt_files`）上生成数据。真实工具上的多步轨迹需要可执行的工具，目前只有玩具环境有。给不需要工具的任务补上内容判分。
 4. 做序列级蒸馏（`logits_kd = false`），并混入 SFT 数据。
 5. 教师数据生成与蒸馏训练的花费计入第 16–19 章的后训练预算（GOAL.md 3.4：约 $1,500，含教师数据生成）。单次预计超过 $100 的运行，先报批。
 
@@ -406,7 +413,7 @@ uv run pytest tests/test_distill.py -q     # 7 passed (9.5 s on the build machin
 >
 > **跨分词器蒸馏**：教师和学生用不同的分词器，也能做 logits / 在线策略蒸馏。（例如按字节前缀把两边的概率对齐。）如果这个方法成熟，主线就能从千问教师做在线策略蒸馏，而不必换词表。目前只有研究论文（如 arXiv 2607.22334），没有头部家族在主力版本中采用。
 >
-> **多教师在线策略蒸馏合并领域专家**：MiMo-V2-Flash、DeepSeek-V4 先训练一批领域专家（数学、代码、智能体……）。然后用在线策略蒸馏把它们合进一个学生。GLM-5 用它在多段 RL 之后找回被遗忘的能力。这是在线策略蒸馏（正文）的一种用法。主线预算下只有一个学生，没有多个专家，所以不采用。
+> **多教师在线策略蒸馏合并领域专家**：MiMo-V2-Flash、DeepSeek-V4 先训练一批领域专家（数学、代码、智能体……）。然后用在线策略蒸馏把它们合进一个学生。GLM-5 用它在多段 RL 之后找回被遗忘的能力。这是在线策略蒸馏（正文）的一种用法。主线采用 GLM-5 的跨阶段形式（教师是自己前几个阶段的 checkpoint，`zero/post/opd.py`）；预算不够训练一批领域专家，所以不做专家合并。
 
 ---
 

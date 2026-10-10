@@ -137,17 +137,31 @@ Failure handling: if the loss becomes NaN or diverges, the training loop stops a
 The plan, the proxy track that runs before our base is ready, and the decision rules are in [`runs/POSTTRAIN_PLAN.md`](POSTTRAIN_PLAN.md). The commands below are the main line (track C).
 
 ```bash
+# 1. Data (CPU; before renting GPUs): the SFT mixture and the function-calling task files (runs/POSTTRAIN_PLAN.md 6.1–6.3)
+uv run python -m zero.post.envs.fc_tasks export bfcl <site-packages>/bfcl_eval/data --out data/eval/bfcl_v4.jsonl
+uv run python -m zero.post.envs.fc_tasks export acebench <ACEBench>/data_all/data_zh --out data/eval/acebench_zh.jsonl
+uv run python -m zero.post.envs.fc_tasks export acebench <ACEBench>/data_all/data_en --out data/eval/acebench_en.jsonl
+uv run --extra data python -m zero.eval.export_prompts --out data/eval/prompts
+uv run python -m zero.post.envs.fc_tasks build --src hermes:<...> --src toolace:<...> --exclude-tasks data/eval/bfcl_v4.jsonl \
+    --exclude-tasks data/eval/acebench_zh.jsonl --out data/rl/fc_all.jsonl --dev-out data/rl/fc_dev.jsonl --dev-size 500
+uv run python -m zero.post.envs.fc_tasks split data/rl/fc_all.jsonl --sft-out data/sft/fc_sft.jsonl --rl-out data/rl/fc_train.jsonl
+uv run python -m zero.post.sft_data --config configs/main/sft_data.toml
+# 2. First hour on the machine: short runs of every stage → seconds/step, memory, projected cost (runs/<date>-main-launch/)
+uv run python -m zero.tools.launch_check --track main --nproc 8 --price 2.5 --teacher-gpus 2
 # SFT (≈ 1B window tokens, estimate 6.9 GPU·h ≈ $17)
 uv run torchrun --standalone --nproc_per_node=8 -m zero.post.sft --config configs/main/sft.toml
 # Distillation: first start the teacher server (after you verify the license, fill in name / version / license / license_allows_distillation in the configuration)
 vllm serve <teacher> --served-model-name teacher --enable-auto-tool-choice --tool-call-parser hermes &
-uv run python -m zero.post.distill --config configs/main/distill.toml
-# DPO (single-process implementation)
-uv run python -m zero.post.dpo --config configs/main/dpo.toml
-# GRPO (single-process implementation; if the throughput is too low, first do a parity check against verl, then use verl; see the module docstring of zero/post/grpo.py)
-uv run python -m zero.post.grpo --config configs/main/grpo.toml
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.distill --config configs/main/distill.toml
+# DPO (optional, see the ablation in POSTTRAIN_PLAN.md section 4; data parallel, batch sizes are global)
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.dpo --config configs/main/dpo.toml
+# Difficulty filter of the RL tasks with the checkpoint that starts RL (dpo, or distill without DPO)
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.difficulty --policy out/main/dpo/ckpt \
+    --tasks data/rl/fc_train.jsonl --k 8 --out data/rl/main/fc_train_filtered.jsonl
+# GRPO (data parallel; if the throughput is too low, first do a parity check against verl, then use verl; see the module docstring of zero/post/grpo.py)
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.grpo --config configs/main/grpo.toml
 # Cross-stage on-policy distillation (last stage; teachers = our own distill + GRPO checkpoints, same tokenizer)
-uv run python -m zero.post.opd --config configs/main/opd.toml
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.opd --config configs/main/opd.toml
 # Internal evaluation (tool_env dev + toy sets, paired bootstrap)
 uv run python -m zero.eval.harness --config configs/main/eval.toml
 # Export (the test prompt 你好 in --run means "hello"; it is data, so keep it)
@@ -155,7 +169,7 @@ uv run python -c "from zero.post.common import load_policy; from zero.hf import 
 uv run python -m zero.export.gguf --hf-dir out/main/hf_final --out out/main/zero-f16.gguf --quantize Q4_K_M --run "<|im_start|>user\n你好<|im_end|>\n<|im_start|>assistant\n"
 ```
 
-Budget notes: the cost of teacher data generation depends on the size of the teacher and the number of samples (estimate it after you measure the vLLM throughput). The cost of GRPO is mostly sampling. Stage 6, item 9 measures the time of each step. Then estimate the cost as "seconds per step × steps × $20/hour". If it is more than $100, ask for approval.
+Budget notes: the cost of teacher data generation depends on the size of the teacher and the number of samples; the launch check measures a sample of it. The cost of GRPO is mostly sampling. The launch check (step 2 above) measures the seconds per step of every stage and projects "seconds per step × steps × GPUs × $/GPU-hour". If a stage is more than $100, ask for approval.
 
 Metrics to watch:
 
