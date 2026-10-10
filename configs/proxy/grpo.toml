@@ -20,3 +20,6 @@ init_from = "out/proxy/dpo/ckpt"
 
 [data]
 tokenizer = "out/proxy/base/tokenizer.json"
+
+[grpo]
+task_files = ["data/rl/proxy/fc_train_filtered.jsonl"]   # zero.post.difficulty with out/proxy/distill/ckpt (or dpo)

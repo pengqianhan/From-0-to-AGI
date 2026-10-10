@@ -43,7 +43,9 @@ loss_agg = "token_mean"
 scale_rewards = true
 n_train_tasks = 100000   # Only used without task_files (toy tool_env)
 env_seed = 19
-task_files = ["data/rl/fc_train.jsonl"]   # Real function-calling tasks: zero.post.envs.fc_tasks build (runs/POSTTRAIN_PLAN.md, section 6)
+# Real function-calling tasks (zero.post.envs.fc_tasks build + split), filtered by difficulty with the checkpoint
+# that starts RL (zero.post.difficulty; per track, because difficulty depends on the policy). runs/POSTTRAIN_PLAN.md 6.1
+task_files = ["data/rl/main/fc_train_filtered.jsonl"]
 forward_batch = 16
 
 [optim]

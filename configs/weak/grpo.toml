@@ -11,3 +11,6 @@ init_from = "out/weak/dpo/ckpt"
 
 [data]
 seq_len = 4096
+
+[grpo]
+task_files = ["data/rl/weak/fc_train_filtered.jsonl"]   # zero.post.difficulty with out/weak/distill/ckpt (or dpo)
