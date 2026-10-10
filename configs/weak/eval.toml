@@ -1,6 +1,6 @@
-# Internal evaluation of the main-line model (Chapters 11 and 20): compare the post-training stages
+# Weak-base track (runs/POSTTRAIN_PLAN.md, track B), internal evaluation (Chapters 11 and 20): compare the post-training stages
 # on the tool_env dev set and the toy sets, with a paired bootstrap.
-#   uv run python -m zero.eval.harness --config configs/main/eval.toml
+#   uv run python -m zero.eval.harness --config configs/weak/eval.toml
 # The official benchmarks (BFCL, MMLU-Redux, C-Eval, GSM8K, ...) are not here. Run them with the official frameworks,
 # as eval/PREREGISTRATION.md specifies. For BFCL, see zero/eval/bfcl.py (not verified yet).
 
@@ -12,27 +12,27 @@ fewshot = 3
 max_items = 0
 max_new_tokens = 512
 max_turns = 4
-out_dir = "out/main/eval"
+out_dir = "out/weak/eval"
 baseline = "sft"
 n_boot = 10000
 seed = 0
 
 [[eval.models]]
 name = "sft"
-path = "out/main/sft/ckpt"
+path = "out/weak/sft/ckpt"
 
 [[eval.models]]
 name = "distill"
-path = "out/main/distill/ckpt"
+path = "out/weak/distill/ckpt"
 
 [[eval.models]]
 name = "dpo"
-path = "out/main/dpo/ckpt"
+path = "out/weak/dpo/ckpt"
 
 [[eval.models]]
 name = "grpo"
-path = "out/main/grpo/ckpt"
+path = "out/weak/grpo/ckpt"
 
 [[eval.models]]
 name = "opd"
-path = "out/main/opd/ckpt"
+path = "out/weak/opd/ckpt"

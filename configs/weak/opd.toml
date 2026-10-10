@@ -1,0 +1,26 @@
+# Weak-base track, cross-stage on-policy distillation (track B).
+base = "../main/opd.toml"
+
+[model]                  # Same shape as configs/main/pretrain.toml: an intermediate pretraining checkpoint has no long-context stage yet
+rope_theta = 10000.0
+max_seq_len = 4096
+
+[train]
+out_dir = "out/weak/opd"
+init_from = "out/weak/grpo/ckpt"
+
+[data]
+seq_len = 4096
+
+[[opd.teachers]]
+name = "distill"
+path = "out/weak/distill/ckpt"
+prompts = "data/sft/train.jsonl"
+weight = 0.5
+max_prompts = 200000
+
+[[opd.teachers]]
+name = "grpo"
+path = "out/weak/grpo/ckpt"
+prompts = "tool_env"
+weight = 0.5

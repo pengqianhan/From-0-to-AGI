@@ -18,6 +18,7 @@ def _sections(stage: str):  # noqa: ANN202
     from zero.post.distill import DistillConfig, TeacherConfig
     from zero.post.dpo import DPOConfig
     from zero.post.grpo import GRPOConfig
+    from zero.post.opd import OPDConfig
     from zero.post.sft import SFTConfig
 
     return {
@@ -25,10 +26,11 @@ def _sections(stage: str):  # noqa: ANN202
         "distill": {"teacher": TeacherConfig, "distill": DistillConfig},
         "dpo": {"dpo": DPOConfig},
         "grpo": {"grpo": GRPOConfig},
+        "opd": {"opd": OPDConfig},
     }[stage]
 
 
-POST_SECTIONS = {s: (lambda s=s: _sections(s)) for s in ("sft", "distill", "dpo", "grpo")}
+POST_SECTIONS = {s: (lambda s=s: _sections(s)) for s in ("sft", "distill", "dpo", "grpo", "opd")}
 
 
 @pytest.mark.parametrize("path", ALL_CONFIGS, ids=lambda p: str(p.relative_to(REPO)))

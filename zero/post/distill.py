@@ -58,8 +58,10 @@ open teachers, so in practice we do only sequence-level distillation.
 **On-policy distillation** (GOAL.md 2.1 lists it as "to be verified"; off by default): the student
 samples. On the sequences of the student, the reverse KL(p_S ‖ p_T) is minimized at each position
 (the GKD of Agarwal et al. 2023, the special case λ = 1). With `on_policy_steps > 0`, this many steps
-run after offline distillation. It is not known yet if this method is "consensus"; check it when
-Chapter 17 is written. The main text does not teach it. It is only in "frontier observations".
+run after offline distillation, with this one teacher.
+Chapter 17 found that on-policy distillation is a consensus method. The main line uses it in a
+separate last stage, with several of our own checkpoints as teachers: `zero/post/opd.py`
+(cross-stage on-policy distillation, the GLM-5 recipe).
 """
 
 from __future__ import annotations

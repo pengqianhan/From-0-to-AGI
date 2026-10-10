@@ -134,6 +134,8 @@ Failure handling: if the loss becomes NaN or diverges, the training loop stops a
 
 ## 6. Stage 10: post-training, Gate 3, and release (about $1,500 + $200)
 
+The plan, the proxy track that runs before our base is ready, and the decision rules are in [`runs/POSTTRAIN_PLAN.md`](POSTTRAIN_PLAN.md). The commands below are the main line (track C).
+
 ```bash
 # SFT (≈ 1B window tokens, estimate 6.9 GPU·h ≈ $17)
 uv run torchrun --standalone --nproc_per_node=8 -m zero.post.sft --config configs/main/sft.toml
@@ -144,10 +146,12 @@ uv run python -m zero.post.distill --config configs/main/distill.toml
 uv run python -m zero.post.dpo --config configs/main/dpo.toml
 # GRPO (single-process implementation; if the throughput is too low, first do a parity check against verl, then use verl; see the module docstring of zero/post/grpo.py)
 uv run python -m zero.post.grpo --config configs/main/grpo.toml
+# Cross-stage on-policy distillation (last stage; teachers = our own distill + GRPO checkpoints, same tokenizer)
+uv run python -m zero.post.opd --config configs/main/opd.toml
 # Internal evaluation (tool_env dev + toy sets, paired bootstrap)
 uv run python -m zero.eval.harness --config configs/main/eval.toml
 # Export (the test prompt 你好 in --run means "hello"; it is data, so keep it)
-uv run python -c "from zero.post.common import load_policy; from zero.hf import export_to_hf_qwen3; m,t=load_policy('out/main/grpo/ckpt'); export_to_hf_qwen3(m,None,'out/main/hf_final',tokenizer=t,chat=True)"
+uv run python -c "from zero.post.common import load_policy; from zero.hf import export_to_hf_qwen3; m,t=load_policy('out/main/opd/ckpt'); export_to_hf_qwen3(m,None,'out/main/hf_final',tokenizer=t,chat=True)"
 uv run python -m zero.export.gguf --hf-dir out/main/hf_final --out out/main/zero-f16.gguf --quantize Q4_K_M --run "<|im_start|>user\n你好<|im_end|>\n<|im_start|>assistant\n"
 ```
 
@@ -158,6 +162,7 @@ Metrics to watch:
 - SFT / distillation: `loss` and `val_loss` on the assistant tokens only; the pass rate of the execution check on the distillation data (`teacher.jsonl.meta.json`).
 - DPO: `loss` decreases from 0.693; `acc` (the fraction of pairs where the implicit reward of chosen > rejected); `margin`. If `chosen_reward` also decreases, the training "pushes both down together": be careful.
 - GRPO: `reward_mean`, `format_rate`, **`call_rate`** (in the smoke test, a hack occurred where the model "stops calling tools"; see item 8 in `tool_env.py`), `resp_len`, `kl`, `clip_frac`, `zero_std_groups` (a high value means that the tasks are too difficult or too easy).
+- OPD: `kl` and `kl/<teacher>` go down; `eos_rate` stays near 1 (if it drops, the student rambles); the tool-call score of the GRPO stage must not drop.
 - At the end of each stage, run `zero.eval.harness` and a BFCL subset. If any item clearly degrades, go back to the checkpoint of the previous stage.
 
 **Gate 3 checklist** (before the release):

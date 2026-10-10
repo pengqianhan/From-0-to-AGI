@@ -1,0 +1,70 @@
+# Tiny cross-stage on-policy distillation config (Chapter 17): the last post-training stage.
+#   uv run python -m zero.post.opd --config configs/tiny/opd.toml
+# Student = the tiny GRPO model. Teachers = the checkpoints of the earlier tiny stages (same tokenizer).
+# The tiny model only shows that the code path works, not the effect of the method.
+
+[model]                  # Same shape as the SFT checkpoint
+vocab_size = 2048
+dim = 128
+n_layers = 4
+n_heads = 4
+n_kv_heads = 2
+head_dim = 32
+ffn_dim = 384
+rope_theta = 10000.0
+max_seq_len = 1024
+tie_embeddings = false
+rope_scaling = { type = "yarn", factor = 8.0, original_max_position_embeddings = 128, beta_fast = 32.0, beta_slow = 1.0 }
+
+[train]
+seed = 1337
+max_steps = 10
+device = "cpu"
+dtype = "fp32"
+cpu_threads = 1
+out_dir = "out/tiny/opd"
+init_from = "out/tiny/grpo/ckpt"   # The student starts from the last RL stage
+
+[data]
+format = "none"
+tokenizer = "out/tiny/tokenizer.json"
+seq_len = 1024
+
+[opd]
+prompts_per_step = 8
+samples_per_prompt = 1   # GLM-5 uses 1: the advantage comes from the teacher, not from a group
+max_new_tokens = 64
+temperature = 1.0
+loss = "full_kl"
+n_tool_tasks = 500
+env_seed = 2
+forward_batch = 8
+
+[[opd.teachers]]
+name = "distill"         # General / SFT abilities: the prompts of the SFT conversations
+path = "out/tiny/distill/ckpt"
+prompts = "out/tiny/sft/train.jsonl"
+weight = 0.5
+max_prompts = 200
+
+[[opd.teachers]]
+name = "grpo"            # Tool calls: the prompts of the RL stage
+path = "out/tiny/grpo/ckpt"
+prompts = "tool_env"
+weight = 0.5
+
+[optim]
+lr = 5e-5
+weight_decay = 0.0
+grad_clip = 1.0
+
+[schedule]
+kind = "constant"
+warmup_steps = 2
+
+[checkpoint]
+every = 0
+keep_last = 1
+
+[logging]
+every = 1

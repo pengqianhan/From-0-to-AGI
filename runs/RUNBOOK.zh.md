@@ -134,6 +134,8 @@ uv run torchrun --standalone --nproc_per_node=8 -m zero.train.midtrain --config 
 
 ## 6. 阶段 10：后训练、闸门 3 与发布（约 $1,500 + $200）
 
+整体计划、底座出来前先跑的代理路线和判定规则，见 [`runs/POSTTRAIN_PLAN.zh.md`](POSTTRAIN_PLAN.zh.md)。下面的命令是主线（路线 C）。
+
 ```bash
 # SFT（≈ 1B 窗口 token，估算 6.9 GPU·h ≈ $17）
 uv run torchrun --standalone --nproc_per_node=8 -m zero.post.sft --config configs/main/sft.toml
@@ -144,10 +146,12 @@ uv run python -m zero.post.distill --config configs/main/distill.toml
 uv run python -m zero.post.dpo --config configs/main/dpo.toml
 # GRPO（单进程实现；吞吐不够时，先与 verl 对拍，再用 verl，见 zero/post/grpo.py 的模块说明）
 uv run python -m zero.post.grpo --config configs/main/grpo.toml
+# 跨阶段在线策略蒸馏（最后一步；教师 = 自己的 distill 与 GRPO checkpoint，词表相同）
+uv run python -m zero.post.opd --config configs/main/opd.toml
 # 内部评测（tool_env dev + 玩具集，配对 bootstrap）
 uv run python -m zero.eval.harness --config configs/main/eval.toml
 # 导出
-uv run python -c "from zero.post.common import load_policy; from zero.hf import export_to_hf_qwen3; m,t=load_policy('out/main/grpo/ckpt'); export_to_hf_qwen3(m,None,'out/main/hf_final',tokenizer=t,chat=True)"
+uv run python -c "from zero.post.common import load_policy; from zero.hf import export_to_hf_qwen3; m,t=load_policy('out/main/opd/ckpt'); export_to_hf_qwen3(m,None,'out/main/hf_final',tokenizer=t,chat=True)"
 uv run python -m zero.export.gguf --hf-dir out/main/hf_final --out out/main/zero-f16.gguf --quantize Q4_K_M --run "<|im_start|>user\n你好<|im_end|>\n<|im_start|>assistant\n"
 ```
 
@@ -158,6 +162,7 @@ uv run python -m zero.export.gguf --hf-dir out/main/hf_final --out out/main/zero
 - SFT / 蒸馏：只在助手 token 上算的 `loss`、`val_loss`；蒸馏数据的执行验证通过率（`teacher.jsonl.meta.json`）。
 - DPO：`loss` 从 0.693 下降；`acc`（隐式奖励 chosen > rejected 的比例）；`margin`。`chosen_reward` 也在下降，说明训练在"一起压低"两者，要警惕。
 - GRPO：`reward_mean`、`format_rate`、**`call_rate`**（冒烟测试里出现过"不再调用工具"的作弊，见 `tool_env.py` 第 8 条）、`resp_len`、`kl`、`clip_frac`、`zero_std_groups`（太高说明任务太难或太简单）。
+- OPD：`kl` 和 `kl/<教师名>` 下降；`eos_rate` 保持在 1 附近（下降说明学生开始啰嗦）；GRPO 阶段的工具调用分数不能掉。
 - 每个阶段结束，都跑一次 `zero.eval.harness` 和 BFCL 子集。任何一项明显退化，就回退到上一阶段的 checkpoint。
 
 **闸门 3 检查清单**（发布前）：

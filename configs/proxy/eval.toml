@@ -1,0 +1,42 @@
+# Proxy track, internal evaluation (track A): our post-training stages on Qwen3-0.6B-Base, and the official
+# post-trained Qwen3-0.6B from the same base.
+#   uv run python -m zero.eval.harness --config configs/proxy/eval.toml
+# This harness uses our chat template for all models. The pass/fail decision of track A uses BFCL with the
+# official framework and the official template of each model (runs/POSTTRAIN_PLAN.md, section 3).
+
+[eval]
+mc_tasks = ["toy_mc.jsonl"]
+gen_tasks = ["toy_gen.jsonl"]
+tool_tasks = "tool_dev.jsonl"
+fewshot = 3
+max_items = 0
+max_new_tokens = 512
+max_turns = 4
+out_dir = "out/proxy/eval"
+baseline = "qwen3-0.6b"
+n_boot = 10000
+seed = 0
+
+[[eval.models]]
+name = "qwen3-0.6b"      # Official post-training (non-thinking mode in our template); HF folder
+path = "data/hf/Qwen3-0.6B"
+
+[[eval.models]]
+name = "sft"
+path = "out/proxy/sft/ckpt"
+
+[[eval.models]]
+name = "distill"
+path = "out/proxy/distill/ckpt"
+
+[[eval.models]]
+name = "dpo"
+path = "out/proxy/dpo/ckpt"
+
+[[eval.models]]
+name = "grpo"
+path = "out/proxy/grpo/ckpt"
+
+[[eval.models]]
+name = "opd"
+path = "out/proxy/opd/ckpt"

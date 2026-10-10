@@ -1,0 +1,28 @@
+# Proxy track, SFT (runs/POSTTRAIN_PLAN.md, track A): the main-line SFT recipe on Qwen3-0.6B-Base.
+# First import the base:  uv run python -m zero.tools.import_hf <Qwen3-0.6B-Base folder> out/proxy/base --check-config configs/proxy/sft.toml
+#   uv run torchrun --standalone --nproc_per_node=8 -m zero.post.sft --config configs/proxy/sft.toml
+# Only the model shape, the tokenizer, and the paths differ from configs/main/sft.toml.
+# The conversations (data/sft/*.jsonl) are tokenizer-independent and shared; the packed windows are not.
+base = "../main/sft.toml"
+
+[model]                  # Qwen3-0.6B-Base (config.json, verified 2026-10); zero.tools.import_hf --check-config checks it
+vocab_size = 151936
+dim = 1024
+n_layers = 28
+n_heads = 16
+n_kv_heads = 8
+head_dim = 128
+ffn_dim = 3072
+rope_theta = 1000000.0
+max_seq_len = 32768
+tie_embeddings = true
+
+[train]
+out_dir = "out/proxy/sft"
+init_from = "out/proxy/base"
+
+[data]
+tokenizer = "out/proxy/base/tokenizer.json"
+
+[sft]
+shard_dir = "data/proxy/sft/packed"

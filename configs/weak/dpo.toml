@@ -1,0 +1,16 @@
+# Weak-base track, DPO (track B; only if the DPO ablation of track A keeps DPO).
+base = "../main/dpo.toml"
+
+[model]                  # Same shape as configs/main/pretrain.toml: an intermediate pretraining checkpoint has no long-context stage yet
+rope_theta = 10000.0
+max_seq_len = 4096
+
+[train]
+out_dir = "out/weak/dpo"
+init_from = "out/weak/distill/ckpt"
+
+[data]
+seq_len = 4096
+
+[dpo]
+train_jsonl = "data/weak/dpo/prefs.jsonl"

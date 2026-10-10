@@ -1,0 +1,35 @@
+# Proxy track, cross-stage on-policy distillation (track A).
+#   uv run python -m zero.post.opd --config configs/proxy/opd.toml
+base = "../main/opd.toml"
+
+[model]                  # Qwen3-0.6B-Base (config.json, verified 2026-10); zero.tools.import_hf --check-config checks it
+vocab_size = 151936
+dim = 1024
+n_layers = 28
+n_heads = 16
+n_kv_heads = 8
+head_dim = 128
+ffn_dim = 3072
+rope_theta = 1000000.0
+max_seq_len = 32768
+tie_embeddings = true
+
+[train]
+out_dir = "out/proxy/opd"
+init_from = "out/proxy/grpo/ckpt"
+
+[data]
+tokenizer = "out/proxy/base/tokenizer.json"
+
+[[opd.teachers]]
+name = "distill"
+path = "out/proxy/distill/ckpt"
+prompts = "data/sft/train.jsonl"
+weight = 0.5
+max_prompts = 200000
+
+[[opd.teachers]]
+name = "grpo"
+path = "out/proxy/grpo/ckpt"
+prompts = "tool_env"
+weight = 0.5
