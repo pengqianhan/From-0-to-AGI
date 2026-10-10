@@ -112,9 +112,51 @@ When the budget is tight, ablations use half the number of steps.
 
 1. **SFT data**: `data/sft/train.jsonl` and `val.jsonl`, built from the sources and licenses of Chapter 16; decontaminated against the function names and schemas of BFCL / ACEBench.
 2. **Teacher**: choose the teacher of sequence-level distillation (Apache-2.0 / MIT); fill in name, version, and license in `configs/main/distill.toml`.
-3. **Real RL task sets**: **this is the largest gap now.** The tool-call tasks of `grpo.py` and `opd.py` come only from `tool_env`, a toy environment with 6 mock tools. Real training needs real tool-call tasks with a verifier (AST matching for any schema). The code for "read tasks from JSONL + generic scoring" must come before the GRPO run of track A.
+3. **Real RL task sets**: the code is done (2026-10-10, `zero/post/envs/fc_tasks.py`, see section 6.1). What is left: download the data, build the task files, and spot-check the scores locally.
 4. **The preregistered rule of track A** in `eval/PREREGISTRATION.md` (section 3).
 5. **Stage 6, item 9**: measure the time per step of GRPO and OPD on a GPU, to fix the budget of section 7.
+
+### 6.1 Real function-calling tasks (`zero/post/envs/fc_tasks.py`)
+
+**Task format**: one JSON object per line. `tools` (OpenAI function format), `messages` (the prompt, history allowed), `gold_calls` (the calls of the next assistant turn, in any order; an empty list means "no call is correct"). Each argument can have `alternatives` (all accepted values; `""` means it may be left out), the same as the BFCL "possible answer" format. Only the first assistant turn is scored, as in the GRPO of `tool_env`.
+
+**Reward**: the same scale and the same anti-hacking rules as `tool_env.score_tool_calls` (format error −1; a forged tool result, call JSON outside the tags, too long, too many calls are format errors; no call when one is needed 0; a call when none is correct −0.5; correctly no call 0.5; else 0.1 + 0.9 × fraction matched − 0.25 × extra calls − 0.5 × calls that break the schema). New: a **generic schema check** (tool not offered, missing required argument, argument not in the schema, wrong type, value outside the enum) and a **generic argument comparison** (strings stripped and case-insensitive; numbers by value; a left-out argument whose gold value is its default counts as the same call).
+
+**Candidate sources** (licenses checked on the data cards on 2026-10-10; check again before use):
+
+| Source | License | Languages | Converter | Notes |
+|---|---|---|---|---|
+| NousResearch/hermes-function-calling-v1 | Apache-2.0 | en | `hermes` | ShareGPT + `<tool_call>`; single-turn and multi-turn |
+| Team-ACE/ToolACE | Apache-2.0 | en, zh | `toolace` | Python call syntax `[Func(a=1)]`; has turns where a missing parameter means "do not call"; **the main source of Chinese tool-call data** |
+| glaiveai/glaive-function-calling-v2 | Apache-2.0 | en | convert to `openai` first | Hermes already has a cleaned 5k subset |
+| Salesforce/xlam-function-calling-60k | to be verified (gated) | en | `xlam` | Gated; the data card cannot be read here |
+
+**Build steps**:
+
+```bash
+# 1. Convert + validate + deduplicate + decontaminate against BFCL (drop on a shared tool name or 13-gram); keep 500 for dev
+uv run python -m zero.post.envs.fc_tasks build \
+    --src hermes:data/raw/hermes-function-calling-v1/func-calling-singleturn.json \
+    --src hermes:data/raw/hermes-function-calling-v1/func-calling.json \
+    --src toolace:data/raw/ToolACE/data.json \
+    --exclude-bfcl data/eval/bfcl --exclude-tasks data/eval/acebench_zh.jsonl \
+    --out data/rl/fc_all.jsonl --dev-out data/rl/fc_dev.jsonl --dev-size 500
+# 2. Split into SFT conversations and RL tasks that do not overlap (a task that SFT showed with its answer is all-correct in an RL group: no signal)
+uv run python -m zero.post.envs.fc_tasks split data/rl/fc_all.jsonl \
+    --sft-out data/sft/fc_sft.jsonl --rl-out data/rl/fc_train.jsonl --sft-frac 0.5
+# 3. Spot-check: pick some tasks, write correct and wrong outputs by hand, and check that the scores make sense
+uv run python -m zero.post.envs.fc_tasks score data/rl/fc_dev.jsonl 0 '<tool_call>{...}</tool_call>'
+```
+
+`<out>.meta.json` records the count and license of each source, the count of each drop reason, and the counts of "no call" and parallel-call tasks.
+
+**Connected**: `task_files` in `configs/main/grpo.toml`, the prompt pool of the `grpo` OPD teacher in all three tracks, and `fc_tasks` (the dev set, paired bootstrap) in the eval configs of all three tracks. The tiny configs still use `tool_env` (smoke test).
+
+**Not done yet**:
+- A converter from ACEBench to this format (now `--exclude-tasks` only reads a file that is already converted).
+- Multi-step tasks (they need executable tools).
+- The online DPO pairs and the teacher tasks of distillation still come from `tool_env`.
+- Decontamination checks only 13-grams of the user text and tool names; near-duplicate function schemas are not checked yet.
 
 **Known risks:**
 
@@ -171,3 +213,4 @@ Each run gets a directory `runs/<date>-<track>-<stage>/` with a copy of the conf
 | `configs/weak/*.toml` | Track B: the full post-training configs on an intermediate checkpoint of our own |
 | `tests/test_opd.py`, `tests/test_post_configs.py` | Hand-computed / enumerated checks of the losses, end to end, refusal of a teacher with another tokenizer, HF import round trip, config checks of the three tracks |
 | `zero/smoke.py` | The smoke pipeline has an OPD stage; the export now uses the OPD checkpoint |
+| `zero/post/envs/fc_tasks.py` (section 6.1) | Real function-calling tasks: format, generic schema check and reward, converters for Hermes / ToolACE / xLAM / OpenAI / BFCL, decontamination, build and SFT/RL split; connected to GRPO (`task_files`) and evaluation (`fc_tasks`) |

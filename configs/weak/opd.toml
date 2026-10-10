@@ -22,5 +22,5 @@ max_prompts = 200000
 [[opd.teachers]]
 name = "grpo"
 path = "out/weak/grpo/ckpt"
-prompts = "tool_env"
+prompts = "data/rl/fc_train.jsonl"
 weight = 0.5

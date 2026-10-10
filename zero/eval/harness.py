@@ -57,6 +57,7 @@ class EvalConfig:
     mc_tasks: list[str] = field(default_factory=list)  # multiple-choice JSONL files
     gen_tasks: list[str] = field(default_factory=list)  # generative JSONL files
     tool_tasks: str = ""  # tool-call dev set JSONL (dicts of tool_env.Task)
+    fc_tasks: list[str] = field(default_factory=list)  # function-calling dev sets (zero/post/envs/fc_tasks.py format); first turn only
     fewshot: int = 3
     max_items: int = 0  # maximum number of items for each task; 0 = all
     max_new_tokens: int = 96
@@ -234,6 +235,31 @@ def eval_tool_calls(
     return {**{k: sum(p[k] for p in per) / n for k in keys}, "n": len(per), "items": per}
 
 
+def eval_fc_tasks(
+    policy: Callable[[list[dict[str, Any]], list[dict[str, Any]]], str],
+    tasks: Sequence[Any],
+) -> dict[str, Any]:
+    """Real function-calling tasks: score the first assistant turn with `fc_tasks.score_fc`."""
+    from zero.post.envs.fc_tasks import score_fc
+
+    per = []
+    for t in tasks:
+        r = score_fc(t, policy(t.messages, t.tools))
+        per.append(
+            {
+                "id": t.id,
+                "relevance": "irrelevance" if not t.gold_calls else "call",
+                "call_reward": r.total,
+                "format_ok": float(r.format_ok),
+                "call_exact": float(r.exact),
+                "ast_match": r.ast_match,
+            }
+        )
+    n = max(len(per), 1)
+    keys = ["call_reward", "format_ok", "call_exact", "ast_match"]
+    return {**{k: sum(p[k] for p in per) / n for k in keys}, "n": len(per), "items": per}
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -289,10 +315,25 @@ def evaluate_model(
             f"  tool_dev: call_reward {r['call_reward']:+.3f} call_exact {r['call_exact']:.3f} "
             f"format {r['format_ok']:.3f} answer {r['answer_ok']:.3f} ({time.time() - t0:.1f}s)"
         )
+    for p in ec.fc_tasks:
+        from zero.post.envs.fc_tasks import load_fc_tasks
+
+        name = Path(p).stem
+        t0 = time.time()
+        tasks = load_fc_tasks(_resolve(p))
+        if ec.max_items > 0:
+            tasks = tasks[: ec.max_items]
+        policy = make_policy(model, tok, ec.max_new_tokens, temperature=0.0)
+        r = eval_fc_tasks(policy, tasks)
+        res[name] = {"type": "fc", **r}
+        log(
+            f"  {name}: call_exact {r['call_exact']:.3f} call_reward {r['call_reward']:+.3f} "
+            f"format {r['format_ok']:.3f} (n={r['n']}, {time.time() - t0:.1f}s)"
+        )
     return res
 
 
-PRIMARY_METRIC = {"mc": "acc", "gen": "em", "tool": "call_exact"}
+PRIMARY_METRIC = {"mc": "acc", "gen": "em", "tool": "call_exact", "fc": "call_exact"}
 ITEM_KEY = {"acc": "correct", "acc_norm": "correct_norm", "em": "correct"}
 
 

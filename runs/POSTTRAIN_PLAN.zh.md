@@ -112,9 +112,51 @@ OPD 的损失默认是 `full_kl`：在学生自己采样的每个回答位置上
 
 1. **SFT 数据**：`data/sft/train.jsonl`、`val.jsonl`，按第 16 章的来源和许可证构建；对 BFCL / ACEBench 的函数名和 schema 去污染。
 2. **教师**：确定序列级蒸馏的教师（Apache-2.0 / MIT），在 `configs/main/distill.toml` 填好名称、版本、许可证。
-3. **真实的 RL 任务集**：**这是现在最大的缺口。**`grpo.py` 和 `opd.py` 的工具调用任务目前只来自 `tool_env`，它只有 6 个模拟工具，是玩具环境。正式训练需要带验证器的真实工具调用任务（任意 schema 的 AST 匹配判分）。要先补"从 JSONL 读任务 + 通用判分"的代码，再跑路线 A 的 GRPO。
+3. **真实的 RL 任务集**：代码已完成（2026-10-10，`zero/post/envs/fc_tasks.py`，见第 6.1 节）。还要做的是下载数据、构建任务文件，并在本地抽查判分结果。
 4. **路线 A 的预注册判据**写进 `eval/PREREGISTRATION.md`（第 3 节）。
 5. **阶段 6 第 9 项**：在 GPU 上实测 GRPO 和 OPD 每步的耗时，用来定第 7 节的预算。
+
+### 6.1 真实工具调用任务（`zero/post/envs/fc_tasks.py`）
+
+**任务格式**：一行一个 JSON。`tools`（OpenAI 函数格式）、`messages`（提示词，可以含历史）、`gold_calls`（下一轮助手应该发出的调用，顺序无关；空列表表示"不应调用"）。每个参数可以有 `alternatives`（所有可接受的值，`""` 表示可以省略），和 BFCL 的 possible answer 格式一致。只判第一轮助手输出，和 `tool_env` 的 GRPO 一样。
+
+**判分**：和 `tool_env.score_tool_calls` 同一套分值和同样的防作弊规则（格式错 −1；伪造工具结果、标签外的调用 JSON、过长、调用过多都算格式错；该调不调 0；不该调却调 −0.5；正确不调 0.5；否则 0.1 + 0.9 × 命中比例 − 0.25 × 多余调用 − 0.5 × 违反 schema 的调用）。新增的是**通用 schema 检查**（未提供的工具、缺必填参数、schema 外的参数、类型错、不在 enum 里）和**通用参数比较**（字符串去空白、忽略大小写；数字按值；省略的参数如果金标值等于默认值，算同一个调用）。
+
+**候选数据源**（许可证在 2026-10-10 从数据卡核实；用之前再核一次）：
+
+| 来源 | 许可证 | 语言 | 转换器 | 备注 |
+|---|---|---|---|---|
+| NousResearch/hermes-function-calling-v1 | Apache-2.0 | 英 | `hermes` | ShareGPT + `<tool_call>`，单轮和多轮都有 |
+| Team-ACE/ToolACE | Apache-2.0 | 英、中 | `toolace` | Python 调用语法 `[Func(a=1)]`；有"缺参数时不该调用"的轮次；**中文工具调用数据的主要来源** |
+| glaiveai/glaive-function-calling-v2 | Apache-2.0 | 英 | 先转成 `openai` 格式 | Hermes 里已含清洗过的 5k 子集 |
+| Salesforce/xlam-function-calling-60k | 待核实（需申请访问） | 英 | `xlam` | 访问受限，这里读不到数据卡 |
+
+**构建步骤**：
+
+```bash
+# 1. 转换 + 校验 + 去重 + 对 BFCL 去污染（工具名重合或 13-gram 重合就丢弃），留 500 条做 dev
+uv run python -m zero.post.envs.fc_tasks build \
+    --src hermes:data/raw/hermes-function-calling-v1/func-calling-singleturn.json \
+    --src hermes:data/raw/hermes-function-calling-v1/func-calling.json \
+    --src toolace:data/raw/ToolACE/data.json \
+    --exclude-bfcl data/eval/bfcl --exclude-tasks data/eval/acebench_zh.jsonl \
+    --out data/rl/fc_all.jsonl --dev-out data/rl/fc_dev.jsonl --dev-size 500
+# 2. 分成 SFT 对话和 RL 任务，两部分不重叠（SFT 见过答案的题，RL 时组内全对，没有信号）
+uv run python -m zero.post.envs.fc_tasks split data/rl/fc_all.jsonl \
+    --sft-out data/sft/fc_sft.jsonl --rl-out data/rl/fc_train.jsonl --sft-frac 0.5
+# 3. 抽查：挑几条任务，手写正确 / 错误的输出，看分数是否合理
+uv run python -m zero.post.envs.fc_tasks score data/rl/fc_dev.jsonl 0 '<tool_call>{...}</tool_call>'
+```
+
+`<out>.meta.json` 记录每个来源的条数、许可证、各种丢弃原因的计数、"不应调用"和并行调用的条数。
+
+**已接入的地方**：`configs/main/grpo.toml` 的 `task_files`，三条路线 OPD 的 `grpo` 教师提示词池，三条路线评测配置里的 `fc_tasks`（dev 集，配对 bootstrap）。tiny 配置仍用 `tool_env`（冒烟测试）。
+
+**还没做的**：
+- ACEBench 到本格式的转换器（目前只能用 `--exclude-tasks` 读已经转好的文件）。
+- 多步任务（需要可执行的工具）。
+- DPO 的在线偏好对和蒸馏的教师任务目前仍来自 `tool_env`。
+- 去污染只查了用户文本的 13-gram 和工具名；函数 schema 的近似重复还没查。
 
 **已知风险：**
 
@@ -171,3 +213,4 @@ uv run python -m zero.eval.harness --config configs/proxy/eval.toml
 | `configs/weak/*.toml` | 路线 B：自有中间 checkpoint 上的全套后训练配置 |
 | `tests/test_opd.py`、`tests/test_post_configs.py` | 损失的手算 / 穷举校验、端到端、分词器不一致时报错、HF 导入往返一致、三条路线的配置检查 |
 | `zero/smoke.py` | 冒烟流程加入 OPD 阶段，导出改为从 OPD checkpoint |
+| `zero/post/envs/fc_tasks.py`（第 6.1 节） | 真实工具调用任务：格式、通用 schema 检查与判分、Hermes / ToolACE / xLAM / OpenAI / BFCL 转换器、去污染、构建与 SFT/RL 切分；GRPO（`task_files`）和评测（`fc_tasks`）已接入 |

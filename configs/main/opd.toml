@@ -51,7 +51,7 @@ max_prompts = 200000
 [[opd.teachers]]
 name = "grpo"            # Tool calls (the RL stage)
 path = "out/main/grpo/ckpt"
-prompts = "tool_env"     # Step 2: also the real tool-calling task sets of the GRPO stage
+prompts = "data/rl/fc_train.jsonl"     # The task file of the GRPO stage
 weight = 0.5
 
 [optim]

@@ -48,7 +48,7 @@ import os
 import random
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -78,8 +78,10 @@ class GRPOConfig:
     ppo_epochs: int = 1  # number of updates on the same batch of samples
     loss_agg: str = "token_mean"  # "token_mean" | "seq_mean_token_mean"
     scale_rewards: bool = True  # divide the advantage by the standard deviation of the group
-    n_train_tasks: int = 2000
+    n_train_tasks: int = 2000  # size of the tool_env pool (used only when task_files is empty)
     env_seed: int = 0
+    # Real function-calling tasks (zero/post/envs/fc_tasks.py format). Empty: the toy tool_env.
+    task_files: list[str] = field(default_factory=list)
     forward_batch: int = 16  # sequences in each forward pass for the log probabilities (saves memory)
 
 
@@ -229,7 +231,7 @@ def run_grpo(
 
     1 GPU was verified on an RTX 3090 (2026-10). Multi-GPU and vLLM sampling are not verified on GPUs yet.
     """
-    from zero.post.envs.tool_env import generate_tasks, score_tool_calls
+    from zero.post.envs.fc_tasks import load_task_pool, score_any
 
     cfg, sec = load_post_config(src, {"grpo": GRPOConfig}, overrides)
     gc: GRPOConfig = sec["grpo"]
@@ -253,7 +255,7 @@ def run_grpo(
         ref_model = copy.deepcopy(model).eval()
         for p in ref_model.parameters():
             p.requires_grad_(False)
-    tasks = generate_tasks(gc.n_train_tasks, seed=gc.env_seed, split="train")
+    tasks = load_task_pool(gc.task_files, gc.n_train_tasks, gc.env_seed)
     loop = LoopState(cfg, model, log)
     G, P = gc.group_size, gc.prompts_per_step
     log(
@@ -284,7 +286,7 @@ def run_grpo(
             )
             for r in resps:
                 text = tok.decode([t for t in r if t != tok.im_end_id])
-                rw = score_tool_calls(task, text)
+                rw = score_any(task, text)
                 rollouts.append(Rollout(ti, p_ids, r, text, rw.total, rw.format_ok, rw.n_calls))
         t_gen = time.perf_counter() - t0
 

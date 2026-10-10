@@ -41,8 +41,9 @@ kl_coef = 0.0
 ppo_epochs = 1
 loss_agg = "token_mean"
 scale_rewards = true
-n_train_tasks = 100000
+n_train_tasks = 100000   # Only used without task_files (toy tool_env)
 env_seed = 19
+task_files = ["data/rl/fc_train.jsonl"]   # Real function-calling tasks: zero.post.envs.fc_tasks build (runs/POSTTRAIN_PLAN.md, section 6)
 forward_batch = 16
 
 [optim]
