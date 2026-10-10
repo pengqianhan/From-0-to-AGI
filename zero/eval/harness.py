@@ -320,7 +320,7 @@ def evaluate_model(
 
         name = Path(p).stem
         t0 = time.time()
-        tasks = load_fc_tasks(_resolve(p))
+        tasks = load_fc_tasks(_resolve(p), check_schema=False)
         if ec.max_items > 0:
             tasks = tasks[: ec.max_items]
         policy = make_policy(model, tok, ec.max_new_tokens, temperature=0.0)

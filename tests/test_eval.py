@@ -169,18 +169,55 @@ def test_eval_config_file_parses() -> None:
     assert ec.models[0].name == "sft" and ec.baseline == "sft" and ec.tool_tasks == "tool_dev.jsonl"
 
 
-def test_bfcl_adapter_without_package(tmp_path: Path) -> None:
+def _bfcl_project(root: Path, model: str, cat: str, group: str, ids: list[str], failed: list[str]) -> None:
+    """Write the files that bfcl-eval 2026.3.23 writes: every item in result, header + failures in score."""
+    res = root / "result" / model.replace("/", "_") / group
+    sc = root / "score" / model.replace("/", "_") / group
+    res.mkdir(parents=True, exist_ok=True)
+    sc.mkdir(parents=True, exist_ok=True)
+    (res / f"BFCL_v4_{cat}_result.json").write_text("".join(json.dumps({"id": i, "result": "x"}) + "\n" for i in ids))
+    header = {"accuracy": 1 - len(failed) / len(ids), "correct_count": len(ids) - len(failed), "total_count": len(ids)}
+    rows = [header] + [{"id": i, "model_name": model, "valid": False, "error": ["wrong"]} for i in failed]
+    (sc / f"BFCL_v4_{cat}_score.json").write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+def test_bfcl_adapter_per_item_and_compare(tmp_path: Path) -> None:
     from zero.eval import bfcl
 
     if not bfcl.bfcl_available():
         with pytest.raises(SystemExit):
             bfcl.run_cli("generate", str(tmp_path), "zero-FC", [])
-    (tmp_path / "score").mkdir()
-    (tmp_path / "score" / "data_overall.csv").write_text(
-        "Rank,Model,Overall Acc\n1,zero-FC,12.5\n2,other,50\n"
-    )
-    got = bfcl.collect_scores(tmp_path / "score", "zero-FC")
-    assert got == {"data_overall": {"Rank": "1", "Model": "zero-FC", "Overall Acc": "12.5"}}
+    ids = [f"simple_python_{i}" for i in range(20)]
+    _bfcl_project(tmp_path, "zero-FC", "simple_python", "non_live", ids, ids[:5])
+    _bfcl_project(tmp_path, "Qwen/Qwen3-0.6B-FC", "simple_python", "non_live", ids, ids[:10])
+    lids = [f"live_simple_{i}-0-0" for i in range(10)]
+    _bfcl_project(tmp_path, "zero-FC", "live_simple", "live", lids, [])
+    _bfcl_project(tmp_path, "Qwen/Qwen3-0.6B-FC", "live_simple", "live", lids, lids[:1])
+
+    items = bfcl.per_item_results(tmp_path, "zero-FC")
+    assert items["simple_python"][ids[0]] == 0.0 and items["simple_python"][ids[9]] == 1.0
+    assert bfcl.collect_scores(tmp_path, "zero-FC") == {
+        "live_simple": {"accuracy": 1.0, "n": 10},
+        "simple_python": {"accuracy": 0.75, "n": 20},
+    }
+    r = bfcl.compare_models(tmp_path, "zero-FC", "Qwen/Qwen3-0.6B-FC", n_boot=500)
+    assert r["categories"] == ["live_simple", "simple_python"]
+    assert r["diff"] == pytest.approx((0.1 + 0.25) / 2)  # equal weights: mean of the category differences
+    # A score header that disagrees with the result file is an error, not a silent mismatch
+    (tmp_path / "result" / "zero-FC" / "live" / "BFCL_v4_live_simple_result.json").write_text('{"id": "x"}\n')
+    with pytest.raises(ValueError, match="total_count"):
+        bfcl.per_item_results(tmp_path, "zero-FC")
+
+
+def test_bfcl_prompt_types_become_json_schema() -> None:
+    from zero.post.envs.fc_tasks import to_json_schema
+
+    f = {"name": "calc", "parameters": {"type": "dict", "properties": {"x": {"type": "float"}, "pts": {"type": "tuple", "items": {"type": "integer"}}}}}
+    out = to_json_schema(f)
+    assert out["parameters"]["type"] == "object"
+    assert out["parameters"]["properties"]["x"]["type"] == "number"
+    assert out["parameters"]["properties"]["pts"]["type"] == "array"
+    assert f["parameters"]["type"] == "dict"  # the input is not changed
 
 
 def test_stratified_single_stratum_matches_paired():
@@ -212,3 +249,28 @@ def test_overall_verdict_requires_every_comparison():
     assert overall_verdict({("q", "e1"): "ahead", ("q", "e2"): "ahead"}) == "ahead"
     assert overall_verdict({("q", "e1"): "ahead", ("q", "e2"): "tie"}) == "tie"
     assert overall_verdict({("q", "e1"): "ahead", ("m", "e1"): "behind"}) == "behind"
+
+
+def test_export_prompts_with_fake_loader(tmp_path: Path) -> None:
+    from zero.eval.export_prompts import SPECS, PromptSpec, export_spec
+
+    data = {
+        ("x/cmmlu", "anatomy", "test"): [{"Question": "人体最大的器官是什么？"}, {"Question": "人体最大的器官是什么？"}],
+        ("x/cmmlu", "law", "test"): [{"Question": "法律问题"}, {"Question": ""}],
+    }
+
+    def loader(hf_id, config, split):  # noqa: ANN001, ANN202
+        if (hf_id, config, split) not in data:
+            raise ValueError("no such split")
+        return data[(hf_id, config, split)]
+
+    spec = PromptSpec("cmmlu", "x/cmmlu", ("test", "dev"), ("Question", "question"))
+    r = export_spec(spec, tmp_path, loader, lambda _: ["anatomy", "law"])
+    assert r["n"] == 2 and r["missing"] == ["anatomy/dev", "law/dev"]  # duplicates and empty questions skipped
+    rows = [json.loads(x) for x in (tmp_path / "cmmlu.jsonl").read_text().splitlines()]
+    assert rows[0] == {"question": "人体最大的器官是什么？", "config": "anatomy", "split": "test"}
+    # The output feeds the SFT decontamination (zero.post.sft_data reads "question")
+    from zero.post.sft_data import _eval_texts
+
+    assert _eval_texts([str(tmp_path / "*.jsonl")]) == ["人体最大的器官是什么？", "法律问题"]
+    assert len({s.name for s in SPECS}) == len(SPECS)

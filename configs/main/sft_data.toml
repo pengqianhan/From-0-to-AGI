@@ -23,9 +23,10 @@ allow_unverified = false
 near_dedup = true
 near_threshold = 0.85
 # Evaluation prompts for the 13-gram check: export the questions of each preregistered benchmark
-# (eval/PREREGISTRATION.md, section 2) to JSONL ({"question": ...}) first. BFCL: the data folder.
+# (eval/PREREGISTRATION.md, section 2) with zero.eval.export_prompts first. BFCL / ACEBench: fc_tasks export.
 decontam_texts = ["data/eval/prompts/*.jsonl"]
-decontam_bfcl = ["data/eval/bfcl"]
+decontam_bfcl = []
+decontam_tasks = ["data/eval/bfcl_v4.jsonl", "data/eval/acebench_zh.jsonl", "data/eval/acebench_en.jsonl"]   # zero.post.envs.fc_tasks export
 decontam_n = 13
 
 # --- Tool calls -------------------------------------------------------------------------------

@@ -113,7 +113,7 @@ OPD 的损失默认是 `full_kl`：在学生自己采样的每个回答位置上
 1. **SFT 数据**：流水线代码已完成（2026-10-10，`zero/post/sft_data.py`，见第 6.2 节）。还要做的是逐个核实来源的许可证、下载数据、导出评测题目用于去污染，然后按 token 占比调配比。
 2. **教师**：确定序列级蒸馏的教师（Apache-2.0 / MIT），在 `configs/main/distill.toml` 填好名称、版本、许可证。
 3. **真实的 RL 任务集**：代码已完成（2026-10-10，`zero/post/envs/fc_tasks.py`，见第 6.1 节）。还要做的是下载数据、构建任务文件，并在本地抽查判分结果。
-4. **路线 A 的预注册判据**写进 `eval/PREREGISTRATION.md`（第 3 节）。
+4. **路线 A 的预注册判据**：已作为候选条款写进 `eval/PREREGISTRATION.md` 第 6 节（草案，冻结时由你确认）。评测流水线见第 6.3 节。
 5. **阶段 6 第 9 项**：在 GPU 上实测 GRPO 和 OPD 每步的耗时，用来定第 7 节的预算。
 
 ### 6.1 真实工具调用任务（`zero/post/envs/fc_tasks.py`）
@@ -191,6 +191,26 @@ uv run python -m zero.post.sft_data --config configs/main/sft_data.toml
 2. 核实 SmolTalk2 多语言子集的上游条款（Qwen 生成的部分）。
 3. 自己生成：用许可证允许的开源教师（Apache-2.0 / MIT）回答中文提示词，走第 17 章的序列级蒸馏流程。这条路最干净，但要花教师推理的钱。
 
+### 6.3 评测流水线（2026-10-10）
+
+在 CPU 上能做的部分都已做完并用真实数据核对过；剩下的只有需要 GPU 和 vLLM 的生成步骤。
+
+**BFCL（E1）**：对照 `bfcl-eval` 2026.3.23 的源码核对了 `zero/eval/bfcl.py` 原来的三个"待核实"项。
+- 模型注册表的名字和 `ModelConfig` 字段：与源码一致；运行时注册能被命令行看到。
+- `function` 的结构：BFCL 给的是原始函数描述，类型名是 Python 写法（`dict`、`float`）。我们的 handler 把它们换成 JSON schema 写法，与训练数据一致（已写进预注册第 4 节）。
+- 逐题结果：BFCL 的 score 文件**只记失败的题**。逐题对错 = result 文件里的全部 id − score 文件里的失败 id。新增 `per_item_results`、`collect`、`compare`（分层配对 bootstrap）。原来按 CSV 松散解析的写法删掉了。
+
+**用真实评测数据核对判分器**：把每道题的标准答案当成模型输出去打分，应该全部判对。
+- BFCL v4 单轮 3,641 题：第一版判分器有 264 题不一致，发现四类问题并全部修正——BFCL 的函数描述和它自己的答案矛盾（例如 `year` 标成整数，答案却是 `"dontcare"`）、可选参数的 `null`、嵌套参数的候选答案、超过 5 个的并行调用。修正后 0 不一致。
+- ACEBench 中文 967 题、英文 973 题（Normal + Special，不含 Agent）：修正输出长度上限后 0 不一致。ACEBench 自身有 1 题工具名重复（`normal_atom_number_48`）。
+- 这些例子都加成了回归测试。
+
+**导出**：
+- `fc_tasks export bfcl|acebench`：把评测集导出成任务文件，**只用于去污染**和核对判分器，不用来挑 checkpoint（预注册第 8 节）。工具调用的开发集是从训练来源留出的 `data/rl/fc_dev.jsonl`。
+- `zero.eval.export_prompts`：导出通用组基准（MMLU-Redux、MMLU-Pro、C-Eval、CMMLU、GSM8K、MATH-500、HumanEval+、MBPP+、IFEval）的题目，供 SFT 的 13-gram 去污染。需要 `datasets` 和 Hugging Face 访问，这里只用假数据测过；数据集 id 和 split 冻结预注册时再核对。
+
+**还要在 GPU 上做的**：用 vLLM 跑通 BFCL 的 generate / evaluate；确认导出 tokenizer 的 `apply_chat_template` 在 BFCL 里给出的文本和训练时一致；ACEBench 官方评测脚本对新版 vLLM 的适配。
+
 **已知风险：**
 
 | 风险 | 表现 | 应对 |
@@ -246,5 +266,6 @@ uv run python -m zero.eval.harness --config configs/proxy/eval.toml
 | `configs/weak/*.toml` | 路线 B：自有中间 checkpoint 上的全套后训练配置 |
 | `tests/test_opd.py`、`tests/test_post_configs.py` | 损失的手算 / 穷举校验、端到端、分词器不一致时报错、HF 导入往返一致、三条路线的配置检查 |
 | `zero/smoke.py` | 冒烟流程加入 OPD 阶段，导出改为从 OPD checkpoint |
+| `zero/eval/bfcl.py`、`zero/eval/export_prompts.py`、`fc_tasks` 的 ACEBench 转换与 `export`（第 6.3 节） | 评测流水线：BFCL 适配器按源码修正、逐题结果与配对 bootstrap、判分器在 BFCL 和 ACEBench 全量数据上核对、评测题导出（去污染） |
 | `zero/post/sft_data.py`、`configs/main/sft_data.toml`（第 6.2 节） | SFT 数据流水线：5 种来源格式、按行判定许可证、清洗、去重、去污染、按 token 统计的配比 |
 | `zero/post/envs/fc_tasks.py`（第 6.1 节） | 真实工具调用任务：格式、通用 schema 检查与判分、Hermes / ToolACE / xLAM / OpenAI / BFCL 转换器、去污染、构建与 SFT/RL 切分；GRPO（`task_files`）和评测（`fc_tasks`）已接入 |

@@ -659,3 +659,86 @@ def test_to_sft_renders_and_split_does_not_overlap(tmp_path: Path, chat_tok) -> 
         ]
     )
     assert len(load_fc_tasks(tmp_path / "r.jsonl")) == 5
+
+
+# --------------------------------------------------------------------- real BFCL v4 items (bfcl-eval 2026.3.23)
+# Each case below failed with the first version of the scorer; all 3,641 single-turn BFCL items now
+# score exact when the output is their own gold answer (runs/POSTTRAIN_PLAN.md, section 6.3).
+
+
+def test_bfcl_doc_contradicts_answer_and_null_optional() -> None:
+    # live_multiple_338-133-2: "year" is typed integer, but the accepted answer is "dontcare"
+    q = {
+        "id": "live_multiple_338-133-2",
+        "question": [[{"role": "user", "content": "Find me some Rock songs"}]],
+        "function": [{"name": "Music_3_LookupMusic", "description": "Find songs.", "parameters": {"type": "dict", "properties": {
+            "genre": {"type": "string", "enum": ["Rock", "Pop"]},
+            "year": {"type": "integer", "default": "dontcare"},
+            "artist": {"type": "string", "default": "dontcare"}}, "required": []}}],
+    }
+    a = {"id": q["id"], "ground_truth": [{"Music_3_LookupMusic": {"genre": ["Rock"], "year": ["", "dontcare"], "artist": ["", "dontcare"]}}]}
+    t = from_bfcl(q, a)
+    assert task_errors(t)  # the doc contradicts the answer ...
+    assert task_errors(t, check_schema=False) == []  # ... but the task is usable for evaluation
+    assert score_fc(t, call("Music_3_LookupMusic", genre="Rock", year="dontcare")).exact
+    assert score_fc(t, call("Music_3_LookupMusic", genre="Rock")).exact
+    assert not score_fc(t, call("Music_3_LookupMusic", genre="Rock", year=1999)).exact
+    # null for an optional argument (live_multiple_916-191-4)
+    p = {"type": "object", "properties": {"avg_rating": {"type": "number", "default": None}}, "required": []}
+    assert schema_errors({"avg_rating": None}, p) == []
+    assert schema_errors({"avg_rating": None}, {**p, "required": ["avg_rating"]})
+
+
+def test_bfcl_nested_possible_answer() -> None:
+    # live_simple_40-17-0: a dict argument with accepted values per inner key
+    q = {
+        "id": "live_simple_40-17-0",
+        "question": [[{"role": "user", "content": "Set the air conditioner to air clean mode with high wind"}]],
+        "function": [{"name": "ThinQ_Connect", "description": "Control.", "parameters": {"type": "dict", "properties": {"body": {"type": "dict", "properties": {
+            "airConJobMode": {"type": "string"}, "windStrength": {"type": "string"}, "targetTemperature": {"type": "integer"}}}}, "required": ["body"]}}],
+    }
+    a = {"id": q["id"], "ground_truth": [{"ThinQ_Connect": {"body": [{"airConJobMode": ["AIR_CLEAN"], "windStrength": ["HIGH"], "targetTemperature": ["", 22]}]}}]}
+    t = from_bfcl(q, a)
+    assert t.gold_calls[0]["arguments"] == {"body": {"airConJobMode": "AIR_CLEAN", "windStrength": "HIGH", "targetTemperature": 22}}
+    assert score_fc(t, call("ThinQ_Connect", body={"airConJobMode": "AIR_CLEAN", "windStrength": "HIGH"})).exact
+    assert score_fc(t, call("ThinQ_Connect", body={"airConJobMode": "air_clean", "windStrength": "HIGH", "targetTemperature": 22})).exact
+    assert not score_fc(t, call("ThinQ_Connect", body={"airConJobMode": "AIR_CLEAN", "windStrength": "LOW"})).exact
+    assert not score_fc(t, call("ThinQ_Connect", body={"airConJobMode": "AIR_CLEAN", "windStrength": "HIGH", "x": 1})).exact
+
+
+def test_call_limit_scales_with_gold() -> None:
+    gold = [{"name": "get_weather", "arguments": {"city": f"C{i}"}} for i in range(7)]  # live_parallel has > 5 calls
+    t = task(gold)
+    assert score_fc(t, "\n".join(call("get_weather", city=f"C{i}") for i in range(7))).exact
+    assert score_fc(t, "\n".join(call("get_weather", city=f"C{i}") for i in range(15))).total == -1.0
+
+
+# --------------------------------------------------------------------- ACEBench (rows copied from data_all/data_zh, commit 56dd66c)
+
+
+def test_from_acebench() -> None:
+    from zero.post.envs.fc_tasks import from_acebench
+
+    fn = {"name": "route_optimization_tool", "description": "路线优化。", "parameters": {"type": "object", "properties": {
+        "starting_point": {"type": "string"}, "destination": {"type": "string"}}, "required": ["starting_point", "destination"]}}
+    q = {"id": "normal_single_turn_parallel_function_3", "time": "今天是2023-09-15 星期五。",
+         "question": "user: 帮我规划两条路线：从A到B，以及从C到D。\n", "function": [fn]}
+    a = {"id": q["id"], "ground_truth": {"route_optimization_tool_1": {"starting_point": "A", "destination": "B"},
+                                       "route_optimization_tool_2": {"starting_point": "C", "destination": "D"}}}
+    t = from_acebench(q, a)
+    assert [g["name"] for g in t.gold_calls] == ["route_optimization_tool"] * 2  # _1 / _2 suffixes removed
+    assert t.messages[0] == {"role": "system", "content": "今天是2023-09-15 星期五。"} and t.lang == "zh"
+    out = call("route_optimization_tool", starting_point="C", destination="D") + "\n" + call(
+        "route_optimization_tool", starting_point="A", destination="B")
+    assert score_fc(t, out).exact
+    # Multi-turn text: "system" is the assistant
+    q2 = {"id": "normal_atom_object_deep_0", "question": "user: 我想转换这张画。\nsystem: 请提供图像路径。\nuser: 路径是 /a.jpg。\n", "function": [fn]}
+    t2 = from_acebench(q2, {"id": q2["id"], "ground_truth": [{"route_optimization_tool": {"starting_point": "x", "destination": "y"}}]})
+    assert [m["role"] for m in t2.messages] == ["user", "assistant", "user"] and len(t2.gold_calls) == 1
+    # Special categories: the correct behavior is no call
+    q3 = {"id": "special_incomplete_0", "question": "user: 我需要计划一个拍卖活动。", "function": [fn]}
+    t3 = from_acebench(q3, {"id": q3["id"], "ground_truth": {"auctionEventPlanner": ["schedule"]}})
+    assert t3.gold_calls == [] and score_fc(t3, "请提供拍卖的时间安排。").exact
+    # A user profile goes into the system message
+    q4 = {"id": "normal_preference_0", "question": "user: 更新我的资料", "function": [fn], "profile": {"username": "张小凡"}}
+    assert "张小凡" in from_acebench(q4, None).messages[0]["content"]

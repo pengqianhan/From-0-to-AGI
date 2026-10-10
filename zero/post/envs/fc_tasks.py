@@ -14,6 +14,11 @@ GRPO and on-policy distillation train on tasks with **any** tool schema, from op
     # Split into SFT conversations and RL tasks that do not overlap
     uv run python -m zero.post.envs.fc_tasks split data/rl/fc_all.jsonl \\
         --sft-out data/sft/fc_sft.jsonl --rl-out data/rl/fc_train.jsonl --sft-frac 0.5
+    # Evaluation data as task files, for decontamination (--exclude-tasks, sft_data decontam_tasks) and for
+    # the one-off check that this scorer agrees with the benchmark's answers. Never train on them, and do
+    # not use them to select checkpoints: test sets run only at the gates (eval/PREREGISTRATION.md, 8).
+    uv run python -m zero.post.envs.fc_tasks export bfcl <site-packages>/bfcl_eval/data --out data/eval/bfcl_v4.jsonl
+    uv run python -m zero.post.envs.fc_tasks export acebench ACEBench/data_all/data_zh --out data/eval/acebench_zh.jsonl
     # Score a model output against one task (for debugging)
     uv run python -m zero.post.envs.fc_tasks score data/rl/fc_dev.jsonl 0 '<tool_call>...</tool_call>'
 
@@ -47,6 +52,12 @@ so the GRPO logs and thresholds stay comparable:
         only the name → 0.2
     Then clip to [-1, 1]
 
+**Order**: the calls are first matched one to one against the gold calls; only the calls that match
+no gold call are schema-checked. A call that matches an accepted answer is correct even if the tool
+description disagrees with it (BFCL's function docs sometimes contradict their own answers, for
+example `year` typed integer with the answer "dontcare"; checked on all 3,641 BFCL v4 single-turn
+items, where every gold answer scores exact). The call limit is max(MAX_CALLS, 2 × gold calls).
+
 **Schema check** (`schema_errors`): a call to a tool that was not offered, a missing required
 argument, an argument that is not in the schema, a wrong type, or a value outside `enum` breaks the
 schema. Such a call gets no score and a penalty. The types follow JSON schema; the Python-style names
@@ -77,12 +88,15 @@ from typing import Any
 from zero.post.chat import parse_assistant
 from zero.post.envs.tool_env import (
     MAX_CALLS,
-    MAX_OUTPUT_CHARS,
     NO_TOOL_REWARD,
     Reward,
     _bare_call,
     _forged,
 )
+
+# Real tasks have long arguments (an ACEBench parallel-call answer is > 2,000 characters), so the output
+# limit is larger than the 2,000 characters of the toy environment. It still stops endless outputs.
+MAX_OUTPUT_CHARS = 8000
 
 # ---------------------------------------------------------------------------
 # Task
@@ -119,15 +133,20 @@ class FCTask:
         return None
 
 
-def load_fc_tasks(path: str | Path, strict: bool = False) -> list[FCTask]:
-    """Read a task file. Invalid tasks (`task_errors`) are skipped, or raise with strict=True."""
+def load_fc_tasks(
+    path: str | Path, strict: bool = False, check_schema: bool = True
+) -> list[FCTask]:
+    """Read a task file. Invalid tasks (`task_errors`) are skipped, or raise with strict=True.
+
+    check_schema=False for evaluation files (BFCL / ACEBench docs sometimes contradict their answers).
+    """
     out = []
     with open(path, encoding="utf-8") as f:
         for n, line in enumerate(f, 1):
             if not line.strip():
                 continue
             t = FCTask.from_dict(json.loads(line))
-            errs = task_errors(t)
+            errs = task_errors(t, check_schema)
             if errs:
                 if strict:
                     raise ValueError(f"{path}:{n} ({t.id}): {'; '.join(errs)}")
@@ -136,13 +155,15 @@ def load_fc_tasks(path: str | Path, strict: bool = False) -> list[FCTask]:
     return out
 
 
-def task_errors(t: FCTask) -> list[str]:
-    """Problems that make a task unusable: no user message, a gold call that breaks its own schema, ..."""
+def task_errors(t: FCTask, check_schema: bool = True) -> list[str]:
+    """Problems that make a task unusable: no user message, a gold call that breaks its own schema, ...
+
+    check_schema=False skips the schema check of the gold calls (for evaluation sets such as BFCL,
+    whose function docs sometimes contradict their own answers; the scorer trusts the answers).
+    """
     errs = []
     if not t.messages or t.messages[-1].get("role") not in ("user", "tool"):
         errs.append("the prompt must end with a user (or tool) message")
-    if not t.tools:
-        errs.append("no tools")
     names = [(t.get("function") or t).get("name") for t in t.tools]
     if len(set(names)) != len(names):
         errs.append("duplicate tool names")
@@ -151,7 +172,11 @@ def task_errors(t: FCTask) -> list[str]:
         if f is None:
             errs.append(f"gold call {g.get('name')!r} is not among the tools")
             continue
-        se = schema_errors(g.get("arguments", {}), f.get("parameters") or {}, g.get("alternatives"))
+        se = (
+            schema_errors(g.get("arguments", {}), f.get("parameters") or {}, g.get("alternatives"))
+            if check_schema
+            else []
+        )
         if se:
             errs.append(f"gold call {g['name']} breaks its schema: {'; '.join(se)}")
     return errs
@@ -226,9 +251,12 @@ def _object_errors(
     errs = [
         f"{where}: missing required {r!r}" for r in schema.get("required") or [] if r not in args
     ]
+    required = set(schema.get("required") or [])
     for k, v in args.items():
         if k not in props:
             errs.append(f"{where}: unknown argument {k!r}")
+        elif v is None and k not in required:
+            continue  # null for an optional argument: "not given" (BFCL accepts it)
         else:
             errs += _value_errors(v, props[k], f"{where}.{k}", depth)
     return errs
@@ -268,6 +296,30 @@ def values_match(pred: Any, gold: Any) -> bool:
     return pred == gold
 
 
+NESTED = (
+    "$alt"  # {"$alt": {key: [accepted values]}}: a dict argument with alternatives per key (BFCL)
+)
+
+
+def _accepts(v: Any, a: Any) -> bool:
+    """One accepted value `a` (maybe a nested-alternatives dict) accepts the predicted value `v`."""
+    if isinstance(a, dict) and set(a) == {NESTED}:
+        if not isinstance(v, dict):
+            return False
+        inner = a[NESTED]
+        if set(v) - set(inner):
+            return False
+        for k, acc in inner.items():
+            if k not in v:
+                if "" in acc:
+                    continue
+                return False
+            if not any(x != "" and _accepts(v[k], x) for x in acc):
+                return False
+        return True
+    return values_match(v, a)
+
+
 def call_matches(pred: dict[str, Any], gold: dict[str, Any], tool: dict[str, Any] | None) -> bool:
     """`pred` is an accepted answer for the gold call (name and every argument)."""
     if pred["name"] != gold["name"]:
@@ -275,6 +327,8 @@ def call_matches(pred: dict[str, Any], gold: dict[str, Any], tool: dict[str, Any
     alts = gold.get("alternatives") or {}
     gargs = gold.get("arguments") or {}
     pargs = pred["arguments"]
+    if not isinstance(pargs, dict):
+        return False
     defaults = {
         k: s["default"]
         for k, s in ((tool or {}).get("parameters", {}).get("properties") or {}).items()
@@ -295,7 +349,7 @@ def call_matches(pred: dict[str, Any], gold: dict[str, Any], tool: dict[str, Any
             if k in defaults and values_match(v, defaults[k]):
                 continue
             return False
-        if not any(a != "" and values_match(v, a) for a in accepted):
+        if not any(a != "" and _accepts(v, a) for a in accepted):
             return False
     return True
 
@@ -319,12 +373,33 @@ def score_fc(task: FCTask, text: str) -> Reward:
     if bare:
         return Reward(-1.0, False, n_calls=len(parsed.tool_calls), details=[bare])
     calls = parsed.tool_calls
-    if len(calls) > MAX_CALLS:
-        return Reward(-1.0, False, n_calls=len(calls), details=[f"More than {MAX_CALLS} calls"])
+    limit = max(MAX_CALLS, 2 * len(task.gold_calls))
+    if len(calls) > limit:
+        return Reward(-1.0, False, n_calls=len(calls), details=[f"More than {limit} calls"])
 
-    valid, details = [], []
+    gold = task.gold_calls
+    details: list[str] = []
+    # 1) One-to-one matching against the gold calls. A call that matches an accepted answer is correct
+    #    even if the tool description disagrees with it: the possible answers decide (as in BFCL, whose
+    #    function docs sometimes contradict their own answers).
+    remaining = list(range(len(calls)))
+    score = 0.0
+    n_match = 0
+    still = []
+    for g in gold:
+        f = task.tool(g["name"])
+        hit = next((i for i in remaining if call_matches(calls[i], g, f)), None)
+        if hit is None:
+            still.append(g)
+            continue
+        remaining.remove(hit)
+        n_match += 1
+        score += 1.0
+    # 2) The other calls must at least satisfy the schema of an offered tool
     n_invalid = 0
-    for c in calls:
+    unmatched_valid = []
+    for i in remaining:
+        c = calls[i]
         f = task.tool(c["name"])
         errs = (
             [f"Called a tool that was not offered: {c['name']}"]
@@ -335,9 +410,8 @@ def score_fc(task: FCTask, text: str) -> Reward:
             n_invalid += 1
             details.extend(errs)
         else:
-            valid.append(c)
+            unmatched_valid.append(i)
     format_ok = n_invalid == 0
-    gold = task.gold_calls
     if not gold:
         if not calls:
             if not parsed.content.strip():
@@ -359,28 +433,16 @@ def score_fc(task: FCTask, text: str) -> Reward:
         )
     if not calls:
         return Reward(0.0, True, 0, details=["A tool call was necessary, but there was no call"])
-
-    remaining = list(range(len(valid)))
-    score = 0.0
-    n_match = 0
-    still = []
-    for g in gold:
-        hit = next((i for i in remaining if call_matches(valid[i], g, task.tool(g["name"]))), None)
-        if hit is None:
-            still.append(g)
-            continue
-        remaining.remove(hit)
-        n_match += 1
-        score += 1.0
+    # 3) Partial credit: the right function name with wrong arguments (schema-valid calls only)
     for g in still:
-        hit = next((i for i in remaining if valid[i]["name"] == g["name"]), None)
+        hit = next((i for i in unmatched_valid if calls[i]["name"] == g["name"]), None)
         if hit is not None:
-            remaining.remove(hit)
+            unmatched_valid.remove(hit)
             score += 0.2
             details.append(f"Wrong arguments for {g['name']}")
         else:
             details.append(f"Missing call {g['name']}")
-    n_extra = len(remaining)
+    n_extra = len(unmatched_valid)
     if n_extra:
         details.append(f"Extra calls: {n_extra}")
     total = 0.1 + 0.9 * score / len(gold) - 0.25 * n_extra - 0.5 * n_invalid
@@ -532,6 +594,27 @@ def _bfcl_schema(s: Any) -> Any:
     return s
 
 
+def to_json_schema(f: dict[str, Any]) -> dict[str, Any]:
+    """A BFCL function description with Python type names → the same with JSON-schema type names."""
+    return _bfcl_schema(f)
+
+
+def _bfcl_alt(x: Any) -> Any:
+    """A BFCL accepted value; a dict whose values are all lists is a nested possible answer."""
+    if isinstance(x, dict) and x and all(isinstance(v, list) for v in x.values()):
+        return {NESTED: {k: [_bfcl_alt(y) for y in v] for k, v in x.items()}}
+    return x
+
+
+def _bfcl_first(acc: list[Any]) -> Any:
+    """The first accepted value, as a plain value (nested possible answers resolved recursively)."""
+    x = next((a for a in acc if a != ""), "")
+    if isinstance(x, dict) and x and all(isinstance(v, list) for v in x.values()):
+        out = {k: _bfcl_first(v) for k, v in x.items()}
+        return {k: v for k, v in out.items() if v != ""}
+    return x
+
+
 def from_bfcl(question: dict[str, Any], answer: dict[str, Any] | None) -> FCTask:
     """One BFCL item (question file row + possible-answer row; no answer: irrelevance).
 
@@ -545,12 +628,13 @@ def from_bfcl(question: dict[str, Any], answer: dict[str, Any] | None) -> FCTask
     gold = []
     for gt in (answer or {}).get("ground_truth", []):
         for name, args in gt.items():
-            first = {k: next((x for x in v if x != ""), "") for k, v in args.items()}
             gold.append(
                 {
                     "name": name,
-                    "arguments": {k: v for k, v in first.items() if v != ""},
-                    "alternatives": {k: list(v) for k, v in args.items()},
+                    "arguments": {
+                        k: _bfcl_first(v) for k, v in args.items() if _bfcl_first(v) != ""
+                    },
+                    "alternatives": {k: [_bfcl_alt(x) for x in v] for k, v in args.items()},
                 }
             )
     return FCTask(
@@ -569,8 +653,10 @@ def read_bfcl_dir(root: str | Path) -> list[FCTask]:
     root = Path(root)
     out = []
     for q in sorted(root.rglob("BFCL_*.json")):
-        if "possible_answer" in q.parts:
+        if "possible_answer" in q.parts or "unused_datasets" in q.parts:
             continue
+        if q.read_text("utf-8").lstrip().startswith("{\n"):
+            continue  # not JSON Lines (format_sensitivity.json is a pretty-printed list of test ids)
         ans_path = q.parent / "possible_answer" / q.name
         answers = {}
         if ans_path.exists():
@@ -763,6 +849,102 @@ def from_toolace(row: dict[str, Any], idx: int, license: str = "Apache-2.0") -> 
     return out
 
 
+ACEBENCH_SCORED = (
+    "normal_atom_bool",
+    "normal_atom_enum",
+    "normal_atom_list",
+    "normal_atom_number",
+    "normal_atom_object_deep",
+    "normal_atom_object_short",
+    "normal_multi_turn_user_adjust",
+    "normal_multi_turn_user_switch",
+    "normal_preference",
+    "normal_similar_api",
+    "normal_single_turn_parallel_function",
+    "normal_single_turn_single_function",
+    "special_error_param",
+    "special_incomplete",
+    "special_irrelevant",
+)  # E2 of eval/PREREGISTRATION.md: Normal + Special (the Agent categories need a simulated user)
+
+_ACE_TURN_RE = re.compile(r"^(user|system):\s?", re.M)
+
+
+def _ace_messages(text: str) -> list[dict[str, Any]]:
+    """ACEBench writes the conversation as text: "user: ...\nsystem: ...". "system" is the assistant."""
+    parts = _ACE_TURN_RE.split(text)
+    msgs = []
+    for role, content in zip(parts[1::2], parts[2::2]):
+        msgs.append({"role": "user" if role == "user" else "assistant", "content": content.strip()})
+    return msgs
+
+
+def from_acebench(question: dict[str, Any], answer: dict[str, Any] | None) -> FCTask:
+    """One ACEBench item (Normal or Special) → FCTask. **For decontamination and local dev checks only.**
+
+    - `time` and `profile` go into a system message (the official prompt also gives them to the model).
+    - Normal: `ground_truth` is {func: args} (or a list with one such dict). Repeated calls of one
+      function are written as func_1, func_2: the suffix is removed when only the base name is a tool.
+    - Special (incomplete / error_param / irrelevant): the correct behavior is to make **no** call. The
+      official scorer also checks that the reply names the missing or wrong parameter; this local
+      approximation checks only "no call".
+    """
+    tools = [_tool_entry(f) for f in question["function"]]
+    names = {t["function"]["name"] for t in tools}
+    system = []
+    if question.get("time"):
+        system.append(question["time"])
+    if question.get("profile"):
+        system.append("用户画像：" + json.dumps(question["profile"], ensure_ascii=False))
+    msgs = ([{"role": "system", "content": "\n".join(system)}] if system else []) + _ace_messages(
+        question["question"]
+    )
+    gold = []
+    category = re.sub(r"_\d+(_\d+)?$", "", question["id"])
+    gt = (answer or {}).get("ground_truth")
+    if not category.startswith("special") and gt:
+        if isinstance(gt, list):
+            gt = gt[0]
+        for name, args in gt.items():
+            if name not in names:
+                base = re.sub(r"_\d+$", "", name)
+                name = base if base in names else name
+            gold.append({"name": name, "arguments": args})
+    return FCTask(
+        id=f"acebench-{question['id']}",
+        tools=tools,
+        messages=msgs,
+        gold_calls=gold,
+        source="acebench",
+        license="MIT",
+        lang=guess_lang(question["question"]),
+    )
+
+
+def read_acebench_dir(
+    root: str | Path, categories: Sequence[str] = ACEBENCH_SCORED
+) -> list[FCTask]:
+    """data_all/data_zh (or data_en) of the ACEBench repository → tasks of the given categories."""
+    root = Path(root)
+    out = []
+    for c in categories:
+        q = root / f"data_{c}.json"
+        if not q.exists():
+            continue
+        answers = {}
+        a = root / "possible_answer" / q.name
+        if a.exists():
+            for line in a.read_text("utf-8").splitlines():
+                if line.strip():
+                    r = json.loads(line)
+                    answers[r["id"]] = r
+        for line in q.read_text("utf-8").splitlines():
+            if line.strip():
+                row = json.loads(line)
+                out.append(from_acebench(row, answers.get(row["id"])))
+    return out
+
+
 def _read_rows(path: str | Path) -> Iterable[dict[str, Any]]:
     text = Path(path).read_text("utf-8")
     if text.lstrip().startswith("["):
@@ -929,6 +1111,7 @@ def main(argv: list[str] | None = None) -> None:
     b = sub.add_parser("build", help="convert, validate, deduplicate, decontaminate")
     b.add_argument("--src", action="append", required=True, metavar="KIND:PATH[:LICENSE]")
     b.add_argument("--exclude-bfcl", action="append", default=[], metavar="DIR")
+    b.add_argument("--exclude-acebench", action="append", default=[], metavar="DIR")
     b.add_argument("--exclude-tasks", action="append", default=[], metavar="JSONL")
     b.add_argument("--out", required=True)
     b.add_argument("--dev-out")
@@ -940,6 +1123,13 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("--rl-out", required=True)
     sp.add_argument("--sft-frac", type=float, default=0.5)
     sp.add_argument("--seed", type=int, default=0)
+    ex = sub.add_parser(
+        "export",
+        help="evaluation data (BFCL / ACEBench) → a task file (dev checks, decontamination)",
+    )
+    ex.add_argument("kind", choices=["bfcl", "acebench"])
+    ex.add_argument("root", help="BFCL: <bfcl_eval>/data; ACEBench: data_all/data_zh or data_en")
+    ex.add_argument("--out", required=True)
     s = sub.add_parser("score", help="score one output on one task")
     s.add_argument("tasks")
     s.add_argument("index", type=int)
@@ -957,10 +1147,20 @@ def main(argv: list[str] | None = None) -> None:
         excl: list[FCTask] = []
         for d in args.exclude_bfcl:
             excl += read_bfcl_dir(d)
+        for d in args.exclude_acebench:
+            excl += read_acebench_dir(d)
         for p in args.exclude_tasks:
-            excl += load_fc_tasks(p)
+            excl += load_fc_tasks(p, check_schema=False)
         meta = build(srcs, args.out, excl, args.dev_out, args.dev_size, args.seed)
         print(json.dumps(meta, ensure_ascii=False, indent=2))
+    elif args.cmd == "export":
+        tasks = read_bfcl_dir(args.root) if args.kind == "bfcl" else read_acebench_dir(args.root)
+        p = Path(args.out)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            for t in tasks:
+                f.write(json.dumps(t.to_dict(), ensure_ascii=False) + "\n")
+        print(json.dumps({"tasks": len(tasks), "out": str(p)}))
     elif args.cmd == "split":
         sft, rl = split_sft_rl(load_fc_tasks(args.tasks), args.sft_frac, args.seed)
         for path, rows in ((args.sft_out, sft), (args.rl_out, [t.to_dict() for t in rl])):

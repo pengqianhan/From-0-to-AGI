@@ -113,7 +113,7 @@ When the budget is tight, ablations use half the number of steps.
 1. **SFT data**: the pipeline code is done (2026-10-10, `zero/post/sft_data.py`, see section 6.2). What is left: verify the license of each source, download the data, export the evaluation questions for decontamination, and tune the mixture by token share.
 2. **Teacher**: choose the teacher of sequence-level distillation (Apache-2.0 / MIT); fill in name, version, and license in `configs/main/distill.toml`.
 3. **Real RL task sets**: the code is done (2026-10-10, `zero/post/envs/fc_tasks.py`, see section 6.1). What is left: download the data, build the task files, and spot-check the scores locally.
-4. **The preregistered rule of track A** in `eval/PREREGISTRATION.md` (section 3).
+4. **The preregistered rule of track A**: written as a candidate clause in section 6 of `eval/PREREGISTRATION.md` (draft; you confirm it at the freeze). The evaluation pipeline is in section 6.3.
 5. **Stage 6, item 9**: measure the time per step of GRPO and OPD on a GPU, to fix the budget of section 7.
 
 ### 6.1 Real function-calling tasks (`zero/post/envs/fc_tasks.py`)
@@ -191,6 +191,26 @@ uv run python -m zero.post.sft_data --config configs/main/sft_data.toml
 2. Verify the upstream terms of SmolTalk2's multilingual subset (the Qwen-generated part).
 3. Generate it ourselves: an open teacher with a permissive license (Apache-2.0 / MIT) answers Chinese prompts, through the sequence-level distillation of Chapter 17. This is the cleanest way, but it costs teacher inference.
 
+### 6.3 Evaluation pipeline (2026-10-10)
+
+Everything that can run on a CPU is done and checked on real data; only the generation steps that need a GPU and vLLM remain.
+
+**BFCL (E1)**: the three "to be verified" items of `zero/eval/bfcl.py` were checked against the source of `bfcl-eval` 2026.3.23.
+- The registry names and the `ModelConfig` fields: they match the source; a model registered at run time is seen by the CLI.
+- The structure of `function`: BFCL passes the raw function descriptions with Python type names (`dict`, `float`). Our handler converts them to JSON-schema names, as in our training data (now in section 4 of the preregistration).
+- Per-item results: BFCL's score file lists **only the failed items**. Per-item correctness = all ids of the result file − the failed ids of the score file. New: `per_item_results`, `collect`, `compare` (stratified paired bootstrap). The old loose CSV parsing is gone.
+
+**The scorer checked on the real evaluation data**: with each item's gold answer as the output, every item must score exact.
+- BFCL v4, 3,641 single-turn items: the first scorer disagreed on 264. Four causes, all fixed: BFCL's function docs contradict their own answers (for example `year` typed integer with the answer `"dontcare"`), `null` for optional arguments, nested possible answers, and more than 5 parallel calls. Now 0 disagree.
+- ACEBench, 967 Chinese and 973 English items (Normal + Special, without Agent): 0 disagree after the output-length limit was raised. ACEBench itself has one item with a duplicated tool (`normal_atom_number_48`).
+- Each of these cases is a regression test.
+
+**Exports**:
+- `fc_tasks export bfcl|acebench`: the evaluation sets as task files, **only for decontamination** and the scorer check; never to pick checkpoints (section 8 of the preregistration). The tool-call dev set is `data/rl/fc_dev.jsonl`, held out from the training sources.
+- `zero.eval.export_prompts`: the questions of the general benchmarks (MMLU-Redux, MMLU-Pro, C-Eval, CMMLU, GSM8K, MATH-500, HumanEval+, MBPP+, IFEval) for the 13-gram decontamination of the SFT data. It needs `datasets` and access to Hugging Face; tested here only with fake data. Check the data set ids and splits when the preregistration is frozen.
+
+**Still to do on a GPU**: run BFCL generate / evaluate with vLLM; check that `apply_chat_template` of the exported tokenizer gives the training text inside BFCL; adapt ACEBench's official scripts to a current vLLM.
+
 **Known risks:**
 
 | Risk | Symptom | Response |
@@ -246,5 +266,6 @@ Each run gets a directory `runs/<date>-<track>-<stage>/` with a copy of the conf
 | `configs/weak/*.toml` | Track B: the full post-training configs on an intermediate checkpoint of our own |
 | `tests/test_opd.py`, `tests/test_post_configs.py` | Hand-computed / enumerated checks of the losses, end to end, refusal of a teacher with another tokenizer, HF import round trip, config checks of the three tracks |
 | `zero/smoke.py` | The smoke pipeline has an OPD stage; the export now uses the OPD checkpoint |
+| `zero/eval/bfcl.py`, `zero/eval/export_prompts.py`, ACEBench converter and `export` in `fc_tasks` (section 6.3) | Evaluation pipeline: BFCL adapter fixed against the source, per-item results and paired bootstrap, scorer checked on all of BFCL and ACEBench, export of evaluation questions (decontamination) |
 | `zero/post/sft_data.py`, `configs/main/sft_data.toml` (section 6.2) | SFT data pipeline: 5 source formats, license per row, cleaning, deduplication, decontamination, mixture by tokens |
 | `zero/post/envs/fc_tasks.py` (section 6.1) | Real function-calling tasks: format, generic schema check and reward, converters for Hermes / ToolACE / xLAM / OpenAI / BFCL, decontamination, build and SFT/RL split; connected to GRPO (`task_files`) and evaluation (`fc_tasks`) |

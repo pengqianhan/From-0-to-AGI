@@ -102,6 +102,7 @@ class SFTDataConfig:
     decontam_bfcl: list[str] = field(
         default_factory=list
     )  # BFCL data folders (tool names + questions)
+    decontam_tasks: list[str] = field(default_factory=list)  # task files (fc_tasks export: BFCL, ACEBench)
     decontam_n: int = 13
     sources: list[SFTSource] = field(default_factory=list)
 
@@ -374,7 +375,7 @@ def build_sft_data(cfg: SFTDataConfig, log: Any = print) -> dict[str, Any]:
         tok = Tokenizer.load(cfg.tokenizer)
     index = None
     eval_tool_names: set[str] = set()
-    if cfg.decontam_texts or cfg.decontam_bfcl:
+    if cfg.decontam_texts or cfg.decontam_bfcl or cfg.decontam_tasks:
         from zero.data.decontam import NgramIndex
 
         texts = _eval_texts(cfg.decontam_texts)
@@ -384,6 +385,13 @@ def build_sft_data(cfg: SFTDataConfig, log: Any = print) -> dict[str, Any]:
             for d in cfg.decontam_bfcl:
                 for t in read_bfcl_dir(d):
                     texts.append(t.query)
+                    eval_tool_names |= tool_names(t)
+        if cfg.decontam_tasks:
+            from zero.post.envs.fc_tasks import load_fc_tasks, tool_names
+
+            for f in cfg.decontam_tasks:
+                for t in load_fc_tasks(f, check_schema=False):
+                    texts += [m["content"] for m in t.messages if m["role"] == "user" and m.get("content")]
                     eval_tool_names |= tool_names(t)
         index = NgramIndex(cfg.decontam_n)
         index.add_eval_set("eval", texts)
