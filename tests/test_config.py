@@ -53,6 +53,11 @@ def test_all_configs_load(path: Path) -> None:
         for s in specs:  # each source must be registered in zero/data/sources.py, with a verified license
             check_license(s)
         return
+    if path.stem == "sft_data":  # the SFT data mixture (zero/post/sft_data.py; tests/test_sft_data.py tests it)
+        from zero.post.sft_data import load_sft_data_config
+
+        load_sft_data_config(path)
+        return
     if path.stem == "eval":  # an evaluation config has only [eval] (tests/test_post_configs.py tests it)
         from zero.eval.harness import load_eval_config
 

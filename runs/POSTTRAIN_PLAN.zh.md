@@ -110,7 +110,7 @@ OPD 的损失默认是 `full_kl`：在学生自己采样的每个回答位置上
 
 **开跑前必须完成（P0）：**
 
-1. **SFT 数据**：`data/sft/train.jsonl`、`val.jsonl`，按第 16 章的来源和许可证构建；对 BFCL / ACEBench 的函数名和 schema 去污染。
+1. **SFT 数据**：流水线代码已完成（2026-10-10，`zero/post/sft_data.py`，见第 6.2 节）。还要做的是逐个核实来源的许可证、下载数据、导出评测题目用于去污染，然后按 token 占比调配比。
 2. **教师**：确定序列级蒸馏的教师（Apache-2.0 / MIT），在 `configs/main/distill.toml` 填好名称、版本、许可证。
 3. **真实的 RL 任务集**：代码已完成（2026-10-10，`zero/post/envs/fc_tasks.py`，见第 6.1 节）。还要做的是下载数据、构建任务文件，并在本地抽查判分结果。
 4. **路线 A 的预注册判据**写进 `eval/PREREGISTRATION.md`（第 3 节）。
@@ -157,6 +157,39 @@ uv run python -m zero.post.envs.fc_tasks score data/rl/fc_dev.jsonl 0 '<tool_cal
 - 多步任务（需要可执行的工具）。
 - DPO 的在线偏好对和蒸馏的教师任务目前仍来自 `tool_env`。
 - 去污染只查了用户文本的 13-gram 和工具名；函数 schema 的近似重复还没查。
+
+### 6.2 SFT 数据流水线（`zero/post/sft_data.py`）
+
+一份配置（`configs/main/sft_data.toml`）列出所有来源，一条命令产出 `data/sft/train.jsonl`、`val.jsonl` 和 `meta.json`：
+
+```bash
+uv run python -m zero.post.sft_data --config configs/main/sft_data.toml
+```
+
+**支持的格式**：`messages`（Tülu 3、SmolTalk、SmolTalk2，含 SmolTalk2 的 `xml_tools` 和 `custom_instructions`）、`sharegpt`、`alpaca`、`sft`（本项目格式，例如 `fc_tasks split` 的输出）、`tool_env`（自己合成的轨迹）。助手文本里的 `<tool_call>` 会转成结构化的 `tool_calls`，解析失败的整条丢弃。
+
+**许可证按行判定**：Tülu 3、SmolTalk2 每行都带上游子集名（`source` 字段）。`license_by_source` 给每个子集单独指定许可证，`drop_sources` 直接排除。NC 许可证一律丢弃；"待核实"默认丢弃，整个来源都被丢掉时会打出警告。
+
+**清洗与过滤**（每一项都在 `meta.json` 里按来源计数）：特殊 token 注入、空回答、工具调用解析失败、`<think>` 块（主线默认不思考，去掉思考部分，只剩思考的整条丢弃）、语言过滤（`langs`）、超长（按主线分词器计 token）、精确去重、近似去重（第一条用户消息的 MinHash）、13-gram 去污染（评测题目）和 BFCL 工具名去污染。
+
+**配比**：每个来源先过滤、打乱、截到 `max_rows`；然后从总池里切出验证集（在重复之前切，保证验证集不会出现在训练集里）；最后按 `repeat` 上采样。`meta.json` 按来源和语言报告条数、总 token 和助手 token 的占比。**配比按 token 看，不按条数看。**起步目标：工具调用约 25%，中文约 30%，其余是英文通用数据。
+
+**当前配置里的来源**（许可证 2026-10-10 读自数据卡）：
+
+| 来源 | 许可证 | 状态 |
+|---|---|---|
+| `fc-tool-calls`（Hermes + ToolACE，`fc_tasks split` 的输出） | Apache-2.0（每行自带） | 可用 |
+| `tool-env`（自己合成） | 本项目 | 可用 |
+| SmolTalk2 的 6 个英文 no_think 子集 | 数据卡无许可证元数据，部分由 Qwen 生成 | **待核实** |
+| SmolTalk2 多语言子集的中文部分 | 同上 | **待核实** |
+| smoltalk-chinese（OpenCSG） | 元数据写 Apache-2.0，但正文说商用需要邮件取得许可 | **待核实**：商用要先发邮件申请 |
+| COIG-CQIA | 数据卡没写许可证，内容来自知乎、豆瓣等 | 不用 |
+| Infinity-Instruct（BAAI） | 访问受限，读不到数据卡 | 待你查看 |
+
+**中文通用指令数据是这套配比现在最大的缺口。**许可证干净的中文数据很少。三个办法：
+1. 给 OpenCSG 发邮件，申请 smoltalk-chinese 的商用许可。
+2. 核实 SmolTalk2 多语言子集的上游条款（Qwen 生成的部分）。
+3. 自己生成：用许可证允许的开源教师（Apache-2.0 / MIT）回答中文提示词，走第 17 章的序列级蒸馏流程。这条路最干净，但要花教师推理的钱。
 
 **已知风险：**
 
@@ -213,4 +246,5 @@ uv run python -m zero.eval.harness --config configs/proxy/eval.toml
 | `configs/weak/*.toml` | 路线 B：自有中间 checkpoint 上的全套后训练配置 |
 | `tests/test_opd.py`、`tests/test_post_configs.py` | 损失的手算 / 穷举校验、端到端、分词器不一致时报错、HF 导入往返一致、三条路线的配置检查 |
 | `zero/smoke.py` | 冒烟流程加入 OPD 阶段，导出改为从 OPD checkpoint |
+| `zero/post/sft_data.py`、`configs/main/sft_data.toml`（第 6.2 节） | SFT 数据流水线：5 种来源格式、按行判定许可证、清洗、去重、去污染、按 token 统计的配比 |
 | `zero/post/envs/fc_tasks.py`（第 6.1 节） | 真实工具调用任务：格式、通用 schema 检查与判分、Hermes / ToolACE / xLAM / OpenAI / BFCL 转换器、去污染、构建与 SFT/RL 切分；GRPO（`task_files`）和评测（`fc_tasks`）已接入 |
