@@ -1,5 +1,6 @@
 # Cross-stage on-policy distillation of the main-line model (Chapter 17): the last post-training stage.
-#   uv run python -m zero.post.opd --config configs/main/opd.toml
+#   uv run torchrun --standalone --nproc_per_node=8 -m zero.post.opd --config configs/main/opd.toml
+# Data parallel like GRPO: prompts_per_step is global, split over the GPUs.
 # The GLM-5 recipe (§3.5): the final checkpoints of the earlier stages are the teachers; the student is the
 # last RL checkpoint. It recovers the abilities that the RL stage made worse. Our own tokenizer is different
 # from all open teachers, so only our own checkpoints can be OPD teachers (same vocabulary).

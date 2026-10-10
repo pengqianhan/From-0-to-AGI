@@ -73,7 +73,9 @@ class GRPOConfig:
     temperature: float = 1.0
     top_p: float = 1.0
     clip_eps: float = 0.2  # ε_low
-    clip_eps_high: float = 0.0  # ε_high; 0 means the same as clip_eps (>ε_low is the clip-higher of DAPO)
+    clip_eps_high: float = (
+        0.0  # ε_high; 0 means the same as clip_eps (>ε_low is the clip-higher of DAPO)
+    )
     kl_coef: float = 0.0  # β; 0 means no KL term and no reference model
     ppo_epochs: int = 1  # number of updates on the same batch of samples
     loss_agg: str = "token_mean"  # "token_mean" | "seq_mean_token_mean"
@@ -82,7 +84,9 @@ class GRPOConfig:
     env_seed: int = 0
     # Real function-calling tasks (zero/post/envs/fc_tasks.py format). Empty: the toy tool_env.
     task_files: list[str] = field(default_factory=list)
-    forward_batch: int = 16  # sequences in each forward pass for the log probabilities (saves memory)
+    forward_batch: int = (
+        16  # sequences in each forward pass for the log probabilities (saves memory)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -227,27 +231,43 @@ def run_grpo(
     overrides: Sequence[str] | None = None,
     log: Callable[[str], None] = print,
 ) -> list[dict[str, Any]]:
-    """Single-process implementation (CPU / 1 GPU).
+    """CPU, 1 GPU, or N GPUs with torchrun (data parallel; see the docstring of `zero.post.common`).
 
-    1 GPU was verified on an RTX 3090 (2026-10). Multi-GPU and vLLM sampling are not verified on GPUs yet.
+    1 GPU was verified on an RTX 3090 (2026-10). N processes: parity with 1 process is tested on CPU
+    (`tests/test_post_ddp.py`); not run on GPUs yet. vLLM sampling is not implemented.
     """
-    from zero.post.envs.fc_tasks import load_task_pool, score_any
+    from zero.train.dist import cleanup, init_distributed
 
     cfg, sec = load_post_config(src, {"grpo": GRPOConfig}, overrides)
-    gc: GRPOConfig = sec["grpo"]
+    info = init_distributed(cfg.train.device)
+    try:
+        return _grpo_loop(cfg, sec["grpo"], info, log)
+    finally:
+        cleanup()
+
+
+def _grpo_loop(
+    cfg: Any, gc: GRPOConfig, info: Any, log: Callable[[str], None]
+) -> list[dict[str, Any]]:
+    from zero.post.common import all_reduce_max, all_reduce_sum, rank_share
+    from zero.post.envs.fc_tasks import load_task_pool, score_any
+    from zero.train.trainer import autocast_context
+
     tc = cfg.train
     set_threads(tc.cpu_threads)
     torch.manual_seed(tc.seed)
     # On CUDA, use BF16 autocast (the same rule as Trainer; sample_group is not in autocast, it is FP32).
     # Verified on one RTX 3090 (2026-10, see runs/2026-10-01-gpu0-check/).
-    device = torch.device(
-        "cuda" if tc.device in ("auto", "cuda") and torch.cuda.is_available() else "cpu"
-    )
-    from zero.train.trainer import autocast_context
+    device = info.device
 
     def ac():  # noqa: ANN202
         return autocast_context(device, tc.dtype)
 
+    G, P = gc.group_size, gc.prompts_per_step
+    if P < info.world_size:
+        raise ValueError(
+            f"[grpo] prompts_per_step = {P} < {info.world_size} processes: some ranks would have no prompt"
+        )
     tok = Tokenizer.load(tc.data.tokenizer)
     model = build_model_from_init(cfg, device)
     ref_model = None
@@ -256,10 +276,10 @@ def run_grpo(
         for p in ref_model.parameters():
             p.requires_grad_(False)
     tasks = load_task_pool(gc.task_files, gc.n_train_tasks, gc.env_seed)
-    loop = LoopState(cfg, model, log)
-    G, P = gc.group_size, gc.prompts_per_step
+    loop = LoopState(cfg, model, log, info=info)
     log(
-        f"[grpo] {len(tasks)} training tasks, {P} prompts × G={G} per step, ε={gc.clip_eps}, β={gc.kl_coef}, aggregation {gc.loss_agg}"
+        f"[grpo] {len(tasks)} training tasks, {P} prompts × G={G} per step on {info.world_size} process(es), "
+        f"ε={gc.clip_eps}, β={gc.kl_coef}, aggregation {gc.loss_agg}"
     )
 
     while loop.step < tc.max_steps:
@@ -267,12 +287,14 @@ def run_grpo(
         lr = loop.begin_step()
         rng = random.Random(
             tc.seed * 7919 + loop.step
-        )  # only (seed, step) selects the tasks, so a resumed run is reproducible
+        )  # only (seed, step) selects the tasks, so a resumed run is reproducible (and the same on every rank)
         chosen = rng.sample(range(len(tasks)), P)
 
-        # 1-2. Sample + score
+        # 1-2. Sample + score: this rank's prompts, seeded by their global index j
         rollouts: list[Rollout] = []
-        for j, ti in enumerate(chosen):
+        mine = rank_share(chosen, info)
+        model.eval()
+        for j, ti in mine:
             task = tasks[ti]
             p_ids, resps = sample_group(
                 model,
@@ -290,17 +312,19 @@ def run_grpo(
                 rollouts.append(Rollout(ti, p_ids, r, text, rw.total, rw.format_ok, rw.n_calls))
         t_gen = time.perf_counter() - t0
 
-        # 3. Group advantages
-        rewards = torch.tensor([r.reward for r in rollouts], dtype=torch.float32).view(P, G)
+        # 3. Group advantages (a group = one prompt, always on one rank)
+        rewards = torch.tensor([r.reward for r in rollouts], dtype=torch.float32).view(len(mine), G)
         adv = group_advantages(rewards, gc.scale_rewards).view(-1).to(device)
 
         seqs = [r.prompt_ids + r.response_ids for r in rollouts]
         masks = [[False] * len(r.prompt_ids) + [True] * len(r.response_ids) for r in rollouts]
-        n_tok = float(sum(len(r.response_ids) for r in rollouts))
+        n_tok_local = float(sum(len(r.response_ids) for r in rollouts))
+        (n_tok,) = all_reduce_sum(
+            [n_tok_local], info
+        )  # global: the loss is normalized by all tokens
         keep = [i for i in range(len(rollouts)) if len(rollouts[i].response_ids) > 0]
 
         # Log probabilities of π_old and π_ref (no gradient)
-        model.eval()
         with torch.no_grad(), ac():
             old = _logps_chunked(model, seqs, masks, tok.eot_id, device, gc.forward_batch)
             ref = (
@@ -337,7 +361,7 @@ def run_grpo(
                     gc.kl_coef,
                     gc.loss_agg,
                     num_tokens=max(n_tok, 1.0),
-                    num_seqs=float(len(seqs)),
+                    num_seqs=float(P * G),
                 )
                 if keep:
                     loss.backward()
@@ -347,21 +371,33 @@ def run_grpo(
                     metrics[k] = metrics.get(k, 0.0) + v * w
         gnorm = loop.end_step()
 
-        fmt_rate = sum(r.format_ok for r in rollouts) / len(
-            rollouts
-        )  # plain text (no call) also has a correct format
-        call_rate = sum(r.n_calls > 0 and r.format_ok for r in rollouts) / len(rollouts)
-        zero_std = float((rewards.std(dim=1) == 0).float().mean())
+        # Global metrics: sums over the ranks
+        keys = sorted(metrics)
+        sums = all_reduce_sum(
+            [
+                loss_total,
+                float(rewards.sum()),
+                sum(
+                    r.format_ok for r in rollouts
+                ),  # plain text (no call) also has a correct format
+                sum(r.n_calls > 0 and r.format_ok for r in rollouts),
+                float((rewards.std(dim=1) == 0).float().sum()) if G > 1 else float(len(mine)),
+                *[metrics[k] for k in keys],
+            ],
+            info,
+        )
+        (r_max,) = all_reduce_max([float(rewards.max()) if rollouts else -1e9], info)
+        n_roll = float(P * G)
         loop.record(
             {
-                "loss": loss_total,
-                "reward_mean": float(rewards.mean()),
-                "reward_max": float(rewards.max()),
-                "format_rate": fmt_rate,
-                "call_rate": call_rate,
-                "resp_len": n_tok / len(rollouts),
-                "zero_std_groups": zero_std,
-                **metrics,
+                "loss": sums[0],
+                "reward_mean": sums[1] / n_roll,
+                "reward_max": r_max,
+                "format_rate": sums[2] / n_roll,
+                "call_rate": sums[3] / n_roll,
+                "resp_len": n_tok / n_roll,
+                "zero_std_groups": sums[4] / P,
+                **{k: v for k, v in zip(keys, sums[5:])},
                 "lr": lr,
                 "grad_norm": gnorm,
                 "gen_s": t_gen,

@@ -90,3 +90,15 @@ def test_run_dpo_end_to_end(
     assert hist[0]["loss"] == pytest.approx(math.log(2), abs=1e-5)  # first step: policy == ref
     assert hist[-1]["step"] == 3 and hist[-1]["loss"] < hist[0]["loss"]
     assert (tmp_path / "run" / "ckpt" / "latest").exists()
+
+
+def test_step_uses_all_pairs_of_the_step() -> None:
+    """Regression (fixed 2026-10-10): every micro-step of a step used the same micro_batch_size pairs."""
+    from zero.post.dpo import step_pair_indices
+
+    n, per_step = 20, 6
+    steps = [step_pair_indices(s, per_step, n, seed=1) for s in range(4)]
+    assert all(len(set(s)) == per_step for s in steps[:3])  # 6 different pairs per step
+    first_epoch = [i for s in steps[:3] for i in s] + step_pair_indices(3, per_step, n, seed=1)[:2]
+    assert sorted(first_epoch) == list(range(n))  # one epoch covers every pair exactly once
+    assert step_pair_indices(2, per_step, n, seed=1) == steps[2]  # resumable: only (seed, step) matter

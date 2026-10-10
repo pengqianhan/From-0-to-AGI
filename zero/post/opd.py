@@ -163,12 +163,24 @@ def run_opd(
     overrides: Sequence[str] | None = None,
     log: Callable[[str], None] = print,
 ) -> list[dict[str, Any]]:
-    """Single-process implementation (CPU / 1 GPU), the same structure as `grpo.py`."""
+    """CPU, 1 GPU, or N GPUs with torchrun (data parallel; see the docstring of `zero.post.common`)."""
+    from zero.train.dist import cleanup, init_distributed
+
+    cfg, sec = load_post_config(src, {"opd": OPDConfig}, overrides)
+    info = init_distributed(cfg.train.device)
+    try:
+        return _opd_loop(cfg, sec["opd"], info, log)
+    finally:
+        cleanup()
+
+
+def _opd_loop(
+    cfg: Any, oc: OPDConfig, info: Any, log: Callable[[str], None]
+) -> list[dict[str, Any]]:
+    from zero.post.common import all_reduce_sum, rank_share
     from zero.post.grpo import sample_group
     from zero.train.trainer import autocast_context
 
-    cfg, sec = load_post_config(src, {"opd": OPDConfig}, overrides)
-    oc: OPDConfig = sec["opd"]
     tc = cfg.train
     if not oc.teachers:
         raise ValueError("[opd] needs at least one [[opd.teachers]]")
@@ -178,11 +190,13 @@ def run_opd(
         raise ValueError(
             "[opd] set train.init_from to the student checkpoint (usually the last RL stage)"
         )
+    if oc.prompts_per_step < info.world_size:
+        raise ValueError(
+            f"[opd] prompts_per_step = {oc.prompts_per_step} < {info.world_size} processes"
+        )
     set_threads(tc.cpu_threads)
     torch.manual_seed(tc.seed)
-    device = torch.device(
-        "cuda" if tc.device in ("auto", "cuda") and torch.cuda.is_available() else "cpu"
-    )
+    device = info.device
 
     def ac():  # noqa: ANN202
         return autocast_context(device, tc.dtype)
@@ -209,31 +223,31 @@ def run_opd(
         pools.append(load_prompt_pool(t, oc))
     names = [t.name or f"t{i}" for i, t in enumerate(oc.teachers)]
     weights = [t.weight for t in oc.teachers]
-    loop = LoopState(cfg, model, log)
+    loop = LoopState(cfg, model, log, info=info)
     log(
         f"[opd] teachers {', '.join(f'{n} ({len(p)} prompts, w={w})' for n, p, w in zip(names, pools, weights))}; "
-        f"{oc.prompts_per_step} prompts × {oc.samples_per_prompt} samples per step, loss {oc.loss}"
+        f"{oc.prompts_per_step} prompts × {oc.samples_per_prompt} samples per step on {info.world_size} process(es), loss {oc.loss}"
     )
 
     limit = model.config.max_seq_len - 8
     while loop.step < tc.max_steps:
         t0 = time.perf_counter()
         lr = loop.begin_step()
-        rng = random.Random(tc.seed * 7919 + loop.step)
+        rng = random.Random(tc.seed * 7919 + loop.step)  # the same on every rank
 
-        # 1-2. Prompts → student samples
+        # 1-2. Prompts → student samples (this rank's prompts, seeded by their global index j)
         seqs: list[list[int]] = []
         masks: list[list[bool]] = []
         owner: list[int] = []
         n_eos = 0
         skipped = 0
-        for j, (k, pi) in enumerate(pick_prompts(pools, weights, oc.prompts_per_step, rng)):
+        model.eval()
+        for j, (k, pi) in rank_share(pick_prompts(pools, weights, oc.prompts_per_step, rng), info):
             task = pools[k][pi]
             ids, _ = render(task.messages, task.tools, add_generation_prompt=True, tokenizer=tok)
             if len(ids) >= limit:
                 skipped += 1  # too long for the context
                 continue
-            model.eval()
             p_ids, resps = sample_group(
                 model,
                 tok,
@@ -252,7 +266,7 @@ def run_opd(
                 masks.append([False] * len(p_ids) + [True] * len(r))
                 owner.append(k)
         t_gen = time.perf_counter() - t0
-        n_tok = float(sum(sum(m) for m in masks))
+        (n_tok,) = all_reduce_sum([float(sum(sum(m) for m in masks))], info)  # global normalizer
         model.train()
 
         # 3. Loss per teacher (each sequence is scored by the teacher of its prompt), token-level mean
@@ -290,14 +304,18 @@ def run_opd(
                 tok_cnt[k] += c_tok
         gnorm = loop.end_step()
 
+        nt = len(teachers)
+        sums = all_reduce_sum([loss_total, n_eos, skipped, len(seqs), *kl_sum, *tok_cnt], info)
+        loss_g, eos_g, skip_g, nseq_g = sums[:4]
+        kl_g, cnt_g = sums[4 : 4 + nt], sums[4 + nt :]
         rec: dict[str, Any] = {
-            "loss": loss_total,
-            "kl": sum(kl_sum) / max(sum(tok_cnt), 1.0),
-            **{f"kl/{n}": kl_sum[k] / tok_cnt[k] for k, n in enumerate(names) if tok_cnt[k] > 0},
-            "resp_len": n_tok / max(len(seqs), 1),
-            "eos_rate": n_eos / max(len(seqs), 1),
-            "n_seqs": len(seqs),
-            "skipped": skipped,
+            "loss": loss_g,
+            "kl": sum(kl_g) / max(sum(cnt_g), 1.0),
+            **{f"kl/{n}": kl_g[k] / cnt_g[k] for k, n in enumerate(names) if cnt_g[k] > 0},
+            "resp_len": n_tok / max(nseq_g, 1),
+            "eos_rate": eos_g / max(nseq_g, 1),
+            "n_seqs": int(nseq_g),
+            "skipped": int(skip_g),
             "lr": lr,
             "grad_norm": gnorm,
             "gen_s": t_gen,
@@ -307,15 +325,16 @@ def run_opd(
             rec,
             "step {step:>4} | kl {kl:.4f} | len {resp_len:.1f} | eos {eos_rate:.2f} | loss {loss:+.4f} | {step_s:.1f}s",
         )
-    Path(tc.out_dir).mkdir(parents=True, exist_ok=True)
-    Path(tc.out_dir, "opd_summary.json").write_text(
-        json.dumps(
-            {"config": asdict(oc), "history": loop.history},
-            ensure_ascii=False,
-            indent=2,
-            default=str,
+    if info.is_main:
+        Path(tc.out_dir).mkdir(parents=True, exist_ok=True)
+        Path(tc.out_dir, "opd_summary.json").write_text(
+            json.dumps(
+                {"config": asdict(oc), "history": loop.history},
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
         )
-    )
     return loop.history
 
 

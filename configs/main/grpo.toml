@@ -1,7 +1,7 @@
 # GRPO of the main-line model (Chapter 19). Default values for Step 2; tune them later.
-#   uv run python -m zero.post.grpo --config configs/main/grpo.toml
-# The GRPO in zero is a readable implementation in one process (sampling uses zero.generate + KV cache,
-# without continuous batching). If the throughput in Step 2 is not sufficient, follow the module docstring
+#   uv run torchrun --standalone --nproc_per_node=8 -m zero.post.grpo --config configs/main/grpo.toml
+# Data parallel (zero/post/common.py): prompts_per_step is GLOBAL (64 prompts → 8 per GPU with 8 GPUs); sampling uses
+# zero.generate + KV cache on each GPU, without continuous batching. If the throughput in Step 2 is not sufficient, follow the module docstring
 # of zero/post/grpo.py: first do a parity check against verl on the same small task, then use verl for the real training.
 # Not verified on a GPU yet.
 
