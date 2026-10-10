@@ -1,7 +1,8 @@
 # DPO of the main-line model (Chapter 18). Default values for Step 2; tune them later.
-#   uv run python -m zero.post.dpo --config configs/main/dpo.toml
-# The DPO in zero runs in one process now (one GPU can hold the 0.7B policy + the precomputed reference log-probabilities).
-# There is no multi-GPU version yet, and the code is not verified on a GPU yet.
+#   uv run torchrun --standalone --nproc_per_node=8 -m zero.post.dpo --config configs/main/dpo.toml
+# Data parallel (zero/post/common.py): every GPU holds the 0.7B policy; micro_batch_size × grad_accum_steps is the
+# GLOBAL number of pairs per step (64), split over the GPUs; one forward pass holds at most micro_batch_size pairs.
+# 2 processes == 1 process is tested on CPU (tests/test_post_ddp.py); not run on GPUs yet.
 
 [model]                  # Same shape as the checkpoint of configs/main/longctx.toml (689.5M parameters)
 vocab_size = 65536

@@ -7,13 +7,26 @@
 - `chat_complete`: apply the chat template → generate with the KV cache → decode.
 - `token_logprobs` / `pad_batch`: DPO, GRPO, and distillation all need "the log probability of each token".
 - Read and write JSONL.
+- Data parallelism for the stages that do not use `Trainer` (DPO, GRPO, on-policy distillation):
+  `rank_share`, `all_reduce_sum` / `all_reduce_max`, and the gradient all-reduce in `LoopState`.
+  For the slow waits (with a long timeout, see `SLOW_WAIT_MIN`): `run_on_rank0` for work that only
+  rank 0 does (packing, writing files), `all_gather_objects`, `wait_all`.
+
+**Data parallelism of DPO / GRPO / OPD** (`torchrun --nproc_per_node=N -m zero.post.grpo ...`):
+every rank holds a full copy of the policy (0.7B + AdamW fits on one 80GB GPU). The batch sizes in
+the config are **global** (prompts per step, pairs per step); the ranks split them, so the recipe does
+not change with the number of GPUs. Each rank divides its loss by the *global* normalizer (all
+response tokens, or all pairs, of the step), and `LoopState.optimizer_step` **sums** the gradients
+over the ranks. The sum of the per-rank gradients is then exactly the gradient of one process on the
+whole batch (`tests/test_post_ddp.py` checks this with 2 CPU processes). Samples are seeded by their
+global index, not by the rank, so the rollouts do not depend on the number of GPUs either.
 """
 
 from __future__ import annotations
 
 import json
 import os
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -58,7 +71,9 @@ def load_post_config(
     extra = {k: data.pop(k) for k in list(data) if k not in CORE_SECTIONS}
     unknown = set(extra) - set(sections)
     if unknown:
-        raise ConfigError(f"Unknown config section {sorted(unknown)}. This stage accepts: {sorted(sections)}")
+        raise ConfigError(
+            f"Unknown config section {sorted(unknown)}. This stage accepts: {sorted(sections)}"
+        )
     parsed = {
         name: _from_dict(cls, extra.get(name, {}), f"[{name}]") for name, cls in sections.items()
     }
@@ -235,6 +250,137 @@ def set_threads(n: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Data parallelism helpers (see the module docstring)
+# ---------------------------------------------------------------------------
+
+
+def rank_share(items: Sequence[T], info: Any) -> list[tuple[int, T]]:
+    """This rank's part of a global list, with the global index of each item: items[rank::world]."""
+    return [(i, x) for i, x in enumerate(items) if i % info.world_size == info.rank]
+
+
+def all_reduce_sum(values: Sequence[float], info: Any) -> list[float]:
+    """Sum of each value over the ranks (float64). With one process, the values unchanged."""
+    if not getattr(info, "is_distributed", False):
+        return [float(v) for v in values]
+    import torch.distributed as dist
+
+    t = torch.tensor([float(v) for v in values], dtype=torch.float64, device=info.device)
+    dist.all_reduce(t, op=dist.ReduceOp.SUM)
+    return t.tolist()
+
+
+def all_reduce_max(values: Sequence[float], info: Any) -> list[float]:
+    if not getattr(info, "is_distributed", False):
+        return [float(v) for v in values]
+    import torch.distributed as dist
+
+    t = torch.tensor([float(v) for v in values], dtype=torch.float64, device=info.device)
+    dist.all_reduce(t, op=dist.ReduceOp.MAX)
+    return t.tolist()
+
+
+def rank0_log(info: Any, log: Callable[[str], None]) -> Callable[[str], None]:
+    """log on rank 0; nothing on the other ranks (with 8 GPUs, every line would print 8 times)."""
+    return log if info.is_main else (lambda _msg: None)
+
+
+# Slow waits: rank 0 packs data while the others wait, or the ranks finish their shares of sampling at
+# different times. The stages with such waits call init_distributed(slow_wait_min=SLOW_WAIT_MIN); the
+# helpers below wait on `info.wait_group` (gloo, this timeout) instead of the default group (10 minutes
+# with NCCL, which stays short for training).
+SLOW_WAIT_MIN = 120.0
+
+
+def wait_all(info: Any) -> None:
+    """A barrier for a slow wait (on `info.wait_group` when there is one)."""
+    if getattr(info, "is_distributed", False):
+        import torch.distributed as dist
+
+        dist.barrier(group=getattr(info, "wait_group", None))
+
+
+def all_gather_objects(obj: Any, info: Any) -> list[Any]:
+    """The obj of every rank, in rank order, on every rank (pickled). With one process, [obj].
+
+    Every rank waits for the slowest one (on `info.wait_group` when there is one).
+    """
+    if not getattr(info, "is_distributed", False):
+        return [obj]
+    import torch.distributed as dist
+
+    out: list[Any] = [None] * info.world_size
+    dist.all_gather_object(out, obj, group=getattr(info, "wait_group", None))
+    return out
+
+
+def run_on_rank0(info: Any, fn: Callable[[], T]) -> T | None:
+    """Run fn() on rank 0 only; the other ranks wait (on `info.wait_group`) and get None.
+
+    An error on rank 0 reaches every rank: the others raise too, instead of waiting in a barrier until
+    the collective timeout hides the real error.
+    """
+    if not getattr(info, "is_distributed", False):
+        return fn()
+    import torch.distributed as dist
+
+    out, err = None, None
+    if info.is_main:
+        try:
+            out = fn()
+        except Exception as e:  # noqa: BLE001 - re-raised below, after the other ranks are told
+            err = e
+    group = getattr(info, "wait_group", None)
+    device = "cpu" if group is not None else info.device  # the wait group is gloo
+    flag = torch.tensor([0.0 if err is None else 1.0], device=device)
+    dist.all_reduce(flag, group=group)
+    if err is not None:
+        raise err
+    if flag.item() > 0:
+        raise RuntimeError("rank 0 failed (see its log), so this rank stops too")
+    return out
+
+
+def all_reduce_grads(model: torch.nn.Module, info: Any, bucket_numel: int = 1 << 25) -> None:
+    """Sum the gradients over the ranks, in buckets of at most bucket_numel elements (128MB in FP32).
+
+    A parameter without a gradient on this rank (for example, the rank had no tokens this step) gets
+    zeros, so that every rank sends the same buckets.
+    """
+    if not getattr(info, "is_distributed", False):
+        return
+    import torch.distributed as dist
+    from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
+
+    grads = []
+    for p in model.parameters():
+        if not p.requires_grad:
+            continue
+        if p.grad is None:
+            p.grad = torch.zeros_like(p)
+        grads.append(p.grad)
+    bucket: list[torch.Tensor] = []
+    size = 0
+
+    def flush() -> None:
+        if not bucket:
+            return
+        flat = _flatten_dense_tensors(bucket)
+        dist.all_reduce(flat, op=dist.ReduceOp.SUM)
+        for g, f in zip(bucket, _unflatten_dense_tensors(flat, bucket)):
+            g.copy_(f)
+        bucket.clear()
+
+    for g in grads:
+        if size + g.numel() > bucket_numel and bucket:
+            flush()
+            size = 0
+        bucket.append(g)
+        size += g.numel()
+    flush()
+
+
+# ---------------------------------------------------------------------------
 # The training-loop skeleton that DPO, GRPO, and on-policy distillation share: optimizer, learning
 # rate, gradient clipping, logging, checkpoint, and resume
 # ---------------------------------------------------------------------------
@@ -289,10 +435,11 @@ class LoopState:
         return self.scheduler.apply(self.step)
 
     def optimizer_step(self) -> float:
-        """Gradient clipping + one parameter update.
+        """Gradient all-reduce (sum, with several processes) + clipping + one parameter update.
 
-    This does not increase the step count. With GRPO ppo_epochs > 1, one step has several updates.
-    """
+        This does not increase the step count. With GRPO ppo_epochs > 1, one step has several updates.
+        """
+        all_reduce_grads(self.model, self.info)
         clip = self.cfg.train.optim.grad_clip
         gnorm = torch.nn.utils.clip_grad_norm_(
             self.model.parameters(), clip if clip > 0 else float("inf")
@@ -309,6 +456,8 @@ class LoopState:
     def record(self, rec: dict[str, Any], fmt: str = "") -> None:
         tc = self.cfg.train
         rec = {"step": self.step, **rec}
+        if self.info.device.type == "cuda":  # for the launch check (zero/tools/launch_check.py)
+            rec["max_mem_gb"] = torch.cuda.max_memory_allocated(self.info.device) / 2**30
         is_last = self.step >= tc.max_steps
         if self.step % tc.logging.every == 0 or is_last or self.step == 1:
             self.history.append(rec)

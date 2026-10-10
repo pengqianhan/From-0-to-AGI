@@ -1,0 +1,20 @@
+# Weak-base track, SFT (runs/POSTTRAIN_PLAN.md, track B): the main-line recipe on an intermediate checkpoint of our own
+# pretraining (same tokenizer and architecture, far fewer tokens than Qwen3). It tests whether the recipe of track A
+# still works on a weak base. Put the chosen checkpoint (after a short branched decay, see the plan) at out/weak/base:
+#   ln -s $(pwd)/out/main/pretrain/ckpt/step_XXXXXXXX out/weak/base
+#   uv run torchrun --standalone --nproc_per_node=8 -m zero.post.sft --config configs/weak/sft.toml
+base = "../main/sft.toml"
+
+[model]                  # Same shape as configs/main/pretrain.toml: an intermediate pretraining checkpoint has no long-context stage yet
+rope_theta = 10000.0
+max_seq_len = 4096
+
+[train]
+out_dir = "out/weak/sft"
+init_from = "out/weak/base"
+
+[data]
+seq_len = 4096           # The base model has seen only 4096-token windows; longer conversations are dropped and counted
+
+[sft]
+shard_dir = "data/weak/sft/packed"

@@ -27,7 +27,8 @@ If the config sets `[dpo] generate_pairs = N` and the file does not exist, `make
 preference pairs with the tool environment. For each task, it samples some responses from the current
 policy and scores them with the verifiable reward. The response with the highest score is chosen (if it
 is not good enough, the gold solution is chosen). The response with the lowest score is rejected. This
-is "on-policy preference data".
+is "on-policy preference data". With torchrun, the ranks split the tasks (the pairs are the same as
+with one process), and rank 0 writes the file.
 """
 
 from __future__ import annotations
@@ -36,8 +37,9 @@ import argparse
 import copy
 import os
 import random
+import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -45,11 +47,13 @@ import torch.nn.functional as F
 
 from zero.post.chat import encode_prompt_response, format_tool_call
 from zero.post.common import (
+    SLOW_WAIT_MIN,
     LoopState,
     build_model_from_init,
     chat_complete,
     load_post_config,
     pad_batch,
+    rank0_log,
     read_jsonl,
     sequence_token_logprobs,
     set_threads,
@@ -69,6 +73,8 @@ class DPOConfig:
     gen_temperature: float = 1.0
     max_new_tokens: int = 96
     env_seed: int = 0
+    # Online pairs from real function-calling tasks (zero/post/envs/fc_tasks.py); empty: tool_env
+    task_files: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -155,19 +161,29 @@ def make_env_preferences(
     max_new_tokens: int = 96,
     seed: int = 0,
     log: Callable[[str], None] = print,
+    task_files: Sequence[str] = (),
+    info: Any = None,
 ) -> list[dict[str, Any]]:
-    """Make preference pairs with the tool environment + the current policy.
+    """Make preference pairs with the current policy on tool-call tasks (first turn: "which tool to call").
 
-    The pairs cover only the first turn: "which tool to call".
+    The tasks come from `task_files` (real function-calling tasks, `zero/post/envs/fc_tasks.py`) or, if
+    there are none, from the toy tool environment. A real "no call" task has no reference reply; if no
+    sample of the policy is correct on it, the task gives no pair.
+    With torchrun (`info`), the ranks split the tasks. Each task is seeded by its index, so the pairs do
+    not depend on the number of processes; every rank returns all pairs, in task order.
     """
     from zero.post.chat import parse_assistant
-    from zero.post.envs.tool_env import generate_tasks, score_tool_calls
+    from zero.post.common import all_gather_objects, all_reduce_sum, rank_share
+    from zero.post.envs.fc_tasks import load_task_pool, score_any
+    from zero.train.dist import DistInfo
 
-    rng = random.Random(seed)
-    tasks = generate_tasks(n_pairs, seed=seed + 101, split="train")
-    rows = []
-    n_policy_chosen = 0
-    for i, task in enumerate(tasks):
+    info = info or DistInfo()
+    pool = load_task_pool(task_files, n_pairs, seed + 101)
+    tasks = random.Random(seed).sample(pool, min(n_pairs, len(pool))) if task_files else pool
+    mine: list[tuple[int, dict[str, Any]]] = []
+    n_policy_chosen = n_skipped = 0
+    for i, task in rank_share(tasks, info):
+        rng = random.Random(seed * 1_000_003 + i)
         outs = chat_complete(
             model,
             tok,
@@ -178,37 +194,58 @@ def make_env_preferences(
             n=samples_per_prompt,
             seed=seed * 1000 + i,
         )
-        scored = sorted(((score_tool_calls(task, o).total, o) for o in outs), key=lambda x: -x[0])
+        scored = [(score_any(task, o), o) for o in outs]
+        scored.sort(key=lambda x: -x[0].total)
         gold = (
-            "\n".join(format_tool_call(c) for c in task.gold_calls)
+            "\n".join(
+                format_tool_call({"name": c["name"], "arguments": c["arguments"]})
+                for c in task.gold_calls
+            )
             if task.gold_calls
-            else task.gold_answer
+            else getattr(task, "gold_answer", None)
         )
-        best_r, best = scored[0]
-        worst_r, worst = scored[-1]
-        if best_r >= 0.999:
+        (best_rw, best), (worst_rw, worst) = scored[0], scored[-1]
+        if best_rw.exact:
             chosen_text, src = best, "policy"
             n_policy_chosen += 1
-        else:
+        elif gold:
             chosen_text, src = gold, "gold"
-        if worst_r >= 0.999:  # all are correct: use a broken gold answer as rejected
-            worst = (
-                corrupt_call(task.gold_calls[0], rng)
-                if task.gold_calls
-                else format_tool_call({"name": task.tools[0]["function"]["name"], "arguments": {}})
+        else:
+            n_skipped += 1  # a real "no call" task without a correct sample: no reference reply
+            continue
+        if worst_rw.exact:  # all are correct: use a broken gold answer as rejected
+            if task.gold_calls:
+                g0 = task.gold_calls[0]
+                worst = corrupt_call({"name": g0["name"], "arguments": g0["arguments"]}, rng)
+            elif task.tools:
+                worst = format_tool_call(
+                    {
+                        "name": (task.tools[0].get("function") or task.tools[0])["name"],
+                        "arguments": {},
+                    }
+                )
+            else:
+                n_skipped += 1
+                continue
+        mine.append(
+            (
+                i,
+                {
+                    "messages": task.messages,
+                    "tools": task.tools,
+                    "chosen": _as_message(chosen_text, parse_assistant),
+                    "rejected": _as_message(worst, parse_assistant),
+                    "chosen_source": src,
+                    "task_id": task.id,
+                },
             )
-        rows.append(
-            {
-                "messages": task.messages,
-                "tools": task.tools,
-                "chosen": _as_message(chosen_text, parse_assistant),
-                "rejected": _as_message(worst, parse_assistant),
-                "chosen_source": src,
-                "task_id": task.id,
-            }
         )
+    parts = all_gather_objects(mine, info)
+    rows = [r for _, r in sorted((x for part in parts for x in part), key=lambda x: x[0])]
+    n_policy_chosen, n_skipped = all_reduce_sum([n_policy_chosen, n_skipped], info)
     log(
-        f"[dpo] made {len(rows)} preference pairs: chosen is a policy sample in {n_policy_chosen} pairs, the gold solution in the others"
+        f"[dpo] made {len(rows)} preference pairs: chosen is a policy sample in {int(n_policy_chosen)} pairs, "
+        f"the gold solution in the others; {int(n_skipped)} tasks gave no pair"
     )
     return rows
 
@@ -234,22 +271,56 @@ def run_dpo(
     overrides: Sequence[str] | None = None,
     log: Callable[[str], None] = print,
 ) -> list[dict[str, Any]]:
-    """Single-process implementation (CPU / 1 GPU).
+    """CPU, 1 GPU, or N GPUs with torchrun (data parallel; see the docstring of `zero.post.common`).
 
-    1 GPU was verified on an RTX 3090 (2026-10). Multi-GPU DDP is not verified on GPUs yet. In Step 2,
-    change to torchrun as RUNBOOK describes.
+    **Batch**: one optimizer step uses `micro_batch_size × grad_accum_steps` different pairs (global,
+    independent of the number of GPUs). The ranks split them; one forward pass holds at most
+    `micro_batch_size` pairs. (Before 2026-10-10, every micro-step of a step reused the same
+    `micro_batch_size` pairs, so the rest of the step's pairs were never trained on.)
     """
+    from zero.train.dist import cleanup, init_distributed
+
     cfg, sec = load_post_config(src, {"dpo": DPOConfig}, overrides)
-    dc: DPOConfig = sec["dpo"]
+    # The ranks sample their shares of the pairs (generate_pairs) at different speeds: a slow wait.
+    info = init_distributed(cfg.train.device, slow_wait_min=SLOW_WAIT_MIN)
+    try:
+        return _dpo_loop(cfg, sec["dpo"], info, rank0_log(info, log))
+    finally:
+        cleanup()
+
+
+def step_pair_indices(step: int, per_step: int, n: int, seed: int) -> list[int]:
+    """The pair indices of one optimizer step: a window of a per-epoch shuffle.
+
+    Only (seed, step) decides it, so a resumed run continues at the same place, on every rank.
+    """
+    out = []
+    orders: dict[int, list[int]] = {}  # at most two epochs per step
+    for j in range(per_step):
+        g = step * per_step + j  # global sample number since the start of training
+        epoch, pos = divmod(g, n)
+        if epoch not in orders:
+            order = list(range(n))
+            random.Random(seed + epoch).shuffle(order)
+            orders[epoch] = order
+        out.append(orders[epoch][pos])
+    return out
+
+
+def _dpo_loop(
+    cfg: Any, dc: DPOConfig, info: Any, log: Callable[[str], None]
+) -> list[dict[str, Any]]:
+    import torch.distributed as dist
+
+    from zero.post.common import all_reduce_sum, rank_share, run_on_rank0
+    from zero.train.trainer import autocast_context
+
     tc = cfg.train
     set_threads(tc.cpu_threads)
     torch.manual_seed(tc.seed)
     # On CUDA, use BF16 autocast (the same rule as Trainer). Verified on one RTX 3090
     # (2026-10, see runs/2026-10-01-gpu0-check/).
-    device = torch.device(
-        "cuda" if tc.device in ("auto", "cuda") and torch.cuda.is_available() else "cpu"
-    )
-    from zero.train.trainer import autocast_context
+    device = info.device
 
     def ac():  # noqa: ANN202
         return autocast_context(device, tc.dtype)
@@ -259,7 +330,10 @@ def run_dpo(
 
     if not os.path.exists(dc.train_jsonl):
         if dc.generate_pairs <= 0:
-            raise FileNotFoundError(f"[dpo] {dc.train_jsonl} not found, and generate_pairs is not set")
+            raise FileNotFoundError(
+                f"[dpo] {dc.train_jsonl} not found, and generate_pairs is not set"
+            )
+        # every rank samples its share of the tasks; rank 0 writes the file, then all read it
         rows = make_env_preferences(
             model,
             tok,
@@ -269,30 +343,40 @@ def run_dpo(
             dc.max_new_tokens,
             dc.env_seed,
             log,
+            task_files=dc.task_files,
+            info=info,
         )
-        write_jsonl(dc.train_jsonl, rows)
+        run_on_rank0(info, lambda: write_jsonl(dc.train_jsonl, rows))
     rows = read_jsonl(dc.train_jsonl)
     pairs = [p for p in (encode_pair(r, tok, tc.data.seq_len) for r in rows) if p is not None]
     if not pairs:
         raise ValueError("[dpo] no usable preference pairs (are all of them too long?)")
+    bsz = tc.micro_batch_size
+    per_step = bsz * tc.grad_accum_steps
     log(
-        f"[dpo] {len(pairs)} preference pairs ({len(rows) - len(pairs)} dropped), β = {dc.beta}, reference model: {dc.ref_mode}"
+        f"[dpo] {len(pairs)} preference pairs ({len(rows) - len(pairs)} dropped), {per_step} pairs per step "
+        f"on {info.world_size} process(es), β = {dc.beta}, reference model: {dc.ref_mode}"
     )
 
-    # reference model: the policy at the start of training
+    # Reference model: the policy at the start of training
     ref_model = None
     ref_c = ref_r = None
-    bsz = tc.micro_batch_size
     if dc.ref_mode == "precompute":
+        # Each rank computes its share; zeros elsewhere, so a sum over the ranks fills the full vector
         model.eval()
+        ref_c = torch.zeros(len(pairs), dtype=torch.float32, device=device)
+        ref_r = torch.zeros(len(pairs), dtype=torch.float32, device=device)
+        mine = [i for i, _ in rank_share(range(len(pairs)), info)]
         with torch.no_grad():
-            cs, rs = [], []
-            for i in range(0, len(pairs), bsz):
+            for c in range(0, len(mine), bsz):
+                idx = mine[c : c + bsz]
                 with ac():
-                    c, r = batch_logps(model, pairs[i : i + bsz], tok.eot_id, device)
-                cs.append(c)
-                rs.append(r)
-        ref_c, ref_r = torch.cat(cs), torch.cat(rs)
+                    cc, rr = batch_logps(model, [pairs[i] for i in idx], tok.eot_id, device)
+                ref_c[idx] = cc.float()
+                ref_r[idx] = rr.float()
+        if info.is_distributed:
+            dist.all_reduce(ref_c)
+            dist.all_reduce(ref_r)
     elif dc.ref_mode == "online":
         ref_model = copy.deepcopy(model).eval()
         for p in ref_model.parameters():
@@ -300,37 +384,39 @@ def run_dpo(
     else:
         raise ValueError(f"[dpo] ref_mode must be precompute / online, not {dc.ref_mode!r}")
 
-    loop = LoopState(cfg, model, log)
+    loop = LoopState(cfg, model, log, info=info)
     model.train()
-    per_step = bsz * tc.grad_accum_steps
-    order: list[int] = []
+    keys = ("loss", "acc", "margin", "chosen_reward", "rejected_reward")
     while loop.step < tc.max_steps:
+        t0 = time.perf_counter()
         lr = loop.begin_step()
-        agg: dict[str, float] = {}
-        for _ in range(tc.grad_accum_steps):
-            # (seed, epoch) sets the sample order, so a resumed run continues at the same place
-            start = (loop.step * per_step) % len(pairs)
-            epoch = (loop.step * per_step) // len(pairs)
-            order = list(range(len(pairs)))
-            random.Random(tc.seed + epoch).shuffle(order)
-            idx = [order[(start + j) % len(pairs)] for j in range(bsz)]
+        step_idx = step_pair_indices(loop.step, per_step, len(pairs), tc.seed)
+        mine = [i for _, i in rank_share(step_idx, info)]
+        sums = dict.fromkeys(keys, 0.0)
+        for c in range(0, len(mine), bsz):
+            idx = mine[c : c + bsz]
             batch = [pairs[j] for j in idx]
             with ac():
                 pc, pr = batch_logps(model, batch, tok.eot_id, device)
             if ref_model is not None:
-                with torch.no_grad():
-                    with ac():
-                        rc, rr = batch_logps(ref_model, batch, tok.eot_id, device)
+                with torch.no_grad(), ac():
+                    rc, rr = batch_logps(ref_model, batch, tok.eot_id, device)
             else:
                 assert ref_c is not None and ref_r is not None
                 rc, rr = ref_c[idx], ref_r[idx]
             loss, m = dpo_loss(pc, pr, rc, rr, dc.beta)
-            (loss / tc.grad_accum_steps).backward()
-            for k, v in m.items():
-                agg[k] = agg.get(k, 0.0) + v / tc.grad_accum_steps
+            (loss * (len(idx) / per_step)).backward()  # the mean over all pairs of the step
+            for k in keys:
+                sums[k] += m[k] * len(idx)
         gnorm = loop.end_step()
+        tot = all_reduce_sum([sums[k] for k in keys], info)
         loop.record(
-            {**agg, "lr": lr, "grad_norm": gnorm},
+            {
+                **{k: v / per_step for k, v in zip(keys, tot)},
+                "lr": lr,
+                "grad_norm": gnorm,
+                "step_s": time.perf_counter() - t0,
+            },
             "step {step:>5} | dpo loss {loss:.4f} | acc {acc:.2f} | margin {margin:+.3f} | lr {lr:.2e}",
         )
     return loop.history

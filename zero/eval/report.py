@@ -18,6 +18,7 @@ METRICS_BY_TYPE = {
     "mc": ["acc", "acc_norm"],
     "gen": ["em"],
     "tool": ["call_exact", "call_reward", "format_ok", "answer_ok"],
+    "fc": ["call_exact", "call_reward", "format_ok"],
 }
 
 

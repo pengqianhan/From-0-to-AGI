@@ -223,7 +223,9 @@ With about 1/10 of the GPU hours, all scores are higher than with RL directly.
 
 This meets rule A, so on-policy distillation **goes into the main text**.
 
-**But the main-line model cannot use it.** In on-policy distillation, the teacher scores the tokens of the student. Like logits distillation, it requires the same tokenizer. `zero/post/distill.py` already has `on_policy_distill` and `reverse_kl_loss` (unit tests cover them). The config value `on_policy_steps` is 0 by default. You can turn it on only when the teacher and the student share a tokenizer (for example, "use our own larger model as the teacher"). On-policy distillation across tokenizers is still a research topic (see "Frontier notes").
+**The main line cannot use an external teacher for it.** In on-policy distillation, the teacher scores the tokens of the student. Like logits distillation, it requires the same tokenizer, and our own tokenizer is different from every open teacher's. On-policy distillation across tokenizers is still a research topic (see "Frontier notes").
+
+**The main line uses it in the GLM-5 form: cross-stage self-distillation** (decided 2026-10-10). The teachers are the main line's **own** checkpoints of the earlier stages, so the tokenizer is the same by construction. After GRPO, the student samples on two prompt pools: tool-call tasks scored by the GRPO checkpoint, and chat prompts scored by the checkpoint after distillation. It learns back what RL made worse without losing the tool calls (`zero/post/opd.py`, the last post-training stage; `configs/main/opd.toml`). The older `on_policy_distill` in `zero/post/distill.py` (one teacher, after offline distillation, `on_policy_steps`) stays for the tiny demo.
 
 ## 5. Rejection sampling: sample several times, keep only the verified ones
 
@@ -307,7 +309,7 @@ Two common traps:
 - **Soft labels carry more information than one-hot labels**: the relative sizes of the wrong answers (dark knowledge). The temperature τ makes them larger. Multiply the loss by τ² to keep the size of the gradient.
 - **Logits distillation**: `τ²·KL(p_T^τ ‖ p_S^τ)`, with the gradient `τ·(p_S^τ − p_T^τ)`. It carries the most information, but it **requires the same vocabulary**.
 - **Sequence-level distillation**: the teacher writes, and the student does SFT. It is equivalent to the sequence-level forward KL. It requires only that the teacher can generate text. The main-line model has its own tokenizer, so this method is the only one that it can use.
-- **Forward KL covers all modes; reverse KL picks one mode.** In **on-policy distillation**, the student samples and the teacher scores each token. Qwen3, Gemma 2, GLM-5, MiMo, and DeepSeek-V4 use it. It also requires the same vocabulary.
+- **Forward KL covers all modes; reverse KL picks one mode.** In **on-policy distillation**, the student samples and the teacher scores each token. Qwen3, Gemma 2, GLM-5, MiMo, and DeepSeek-V4 use it. It also requires the same vocabulary, so the main line uses its own earlier checkpoints as teachers (cross-stage, the GLM-5 form).
 - **Rejection sampling + execution check**: sample many times and filter gate by gate. Data quality is more important than quantity. A verifier guarantees only the things that it checks.
 - **Teacher license**: Apache-2.0 / MIT is OK. The terms of Gemma 1–3 and of the Llama series pass to the student, so we do not use them.
 
@@ -320,15 +322,17 @@ Two common traps:
 | `kd_loss` in `01` (one position, NumPy) | `zero/post/distill.py`: `kd_loss(student_logits, teacher_logits, mask, temperature, topk)` | Batches of shape (B, T, V). The mean is only over the mask positions (the assistant answer). With `topk > 0`, it uses only the top k tokens of the teacher (this saves storage when you store teacher logits offline). Different shapes raise an error with the hint "the same tokenizer is required" |
 | Arms C and D of `02` (`(1−α)·CE + α·KD`) | `DistillTrainer._forward_loss` (`_make_distill_trainer_cls`): it reuses the general `Trainer` and changes only the loss. The teacher is frozen and runs under `no_grad`. `extra_metrics` records `ce` and `kd` | It shares resume from checkpoints, logs, BF16, and multi-GPU training with pretraining / SFT (**multi-GPU training is not yet verified on a GPU**). The config sets `kd_alpha`, `kd_temperature`, and `kd_topk` |
 | Arm B of `02` (the teacher writes, the student copies) | `LocalTeacher` (a local zero checkpoint or an HF directory with the Qwen3 structure; it samples with a KV cache) and `OpenAITeacher` (any OpenAI-compatible API; in step 2, vLLM serves the teacher; it uses only the standard library `urllib`). `build_teacher` selects one by `[teacher] backend` | The teacher can have any tokenizer and any architecture, or it can be a remote service. `OpenAITeacher` converts between our tool-call format and the OpenAI `tool_calls` (`to_openai_messages`, `openai_message_to_text`) |
-| Reverse KL of `03` | `reverse_kl_loss`, `on_policy_distill` (the student samples with `grpo.sample_group`; the function minimizes the reverse KL on the student tokens) | Off by default (`on_policy_steps = 0`): it needs the same tokenizer, so the main line cannot use it |
+| Reverse KL of `03` | `zero/post/opd.py`: `run_opd`, cross-stage on-policy distillation. Several teachers (our own earlier checkpoints), each with its own prompt pool and weight; `loss = "full_kl"` (exact reverse KL over the vocabulary, only at the response positions) or `"sampled"` (the GLM-5 form, advantage `log p_T − log p_S` per token) | The tokenizer hash of every teacher is checked. The two losses have the same gradient in expectation (`tests/test_opd.py` checks it by enumeration). Data parallel with torchrun. `reverse_kl_loss` / `on_policy_distill` in `distill.py` are the one-teacher version (off by default, `on_policy_steps = 0`) |
+| None | `generate_kd_data` with `task_files` (real function-calling tasks of `zero/post/envs/fc_tasks.py`: keep the teacher's first turns that score exact) and `prompt_files` (prompts without answers, e.g. Chinese instructions: drop empty answers, forged turns, tool calls, and answers in another language) | Real data instead of only the toy environment; `prompt_files` is the way to make Chinese SFT data with a teacher whose license allows it. `concurrency` sends parallel requests to the teacher server; the output order does not depend on it |
 | Funnel of `04` | `teacher_trajectories` (sample n → `score_tool_calls == 1` → `execute_safely` really runs the tool → the teacher writes the final answer → `score_final_answer`). `generate_kd_data` writes `teacher.jsonl` and `.meta.json` | Each sample and the metadata record **the name, version, and license of the teacher**, the sampling parameters, the number of candidates, the pass rate, and the filter rules. `check_license`: when the teacher is not a model of this project, the config must have `license_allows_distillation = true`, or the run stops |
 | Vocabulary check of `05` | `run_distill` compares the hashes of the teacher tokenizer and the student tokenizer **before** it generates data. If they are different, it raises an error and suggests `logits_kd = false` | Do not wait until all teacher data is generated to find out that logits distillation is not possible |
 | None | `mix_sft_jsonl` / `mix_sft_max`: mix the original SFT data into the distillation data | When the teacher data is small, this prevents the loss of what the model learned in Chapter 16 |
+| None | `run_distill` on N GPUs: first `--generate-only` writes the teacher data in one process; then, with torchrun, rank 0 packs it and every rank trains with the SFT `Trainer` (DDP) | Multi-GPU training of the student; tested with 2 CPU processes (`tests/test_post_ddp.py`), not yet on GPUs |
 
 **Parity checks**:
 
 - Part 4 of `01`: the minimal KD loss and `zero.post.distill.kd_loss` differ by ≤ 3×10⁻⁷ at τ = 1, 2 and top-3 (float32 rounding).
-- [`tests/test_distill.py`](../../tests/test_distill.py) (7 tests):
+- [`tests/test_distill.py`](../../tests/test_distill.py) (8 tests; 1 more needs CUDA):
   - The KD loss, the temperature, top-1, and the reverse KL agree with hand calculations.
   - Positions outside the mask do not change the loss.
   - Different shapes raise an error.
@@ -337,9 +341,11 @@ Two common traps:
   - A **local fake OpenAI server** acts as the teacher. It gives one correct and one wrong answer for each task. The execution check removes the wrong answer, so the pass rate is exactly 50%, and all metadata fields are present.
   - Local self-distillation runs. The student and the teacher start identical, so the KL at the first step is 0. On-policy distillation runs for 1 step.
   - Different tokenizers raise an error.
+  - A scripted fake teacher answers real function-calling tasks and prompts: only exact first turns are kept; empty answers, forged turns, and answers in the wrong language are dropped; 1 and 4 parallel requests give the same file.
+- [`tests/test_opd.py`](../../tests/test_opd.py) (9 tests): the sampled loss has the gradient of the reverse KL in expectation (exact enumeration); a student that is its own teacher has KL 0; two teachers end to end with both losses; a teacher with another tokenizer is refused.
 
 ```bash
-uv run pytest tests/test_distill.py -q     # 7 passed (9.5 s on the build machine)
+uv run pytest tests/test_distill.py tests/test_opd.py -q     # 17 passed, 1 skipped (3.9 s on the build machine)
 ```
 
 **Main-line config** (`configs/main/distill.toml`; default values for step 2; to be tuned; **not yet verified on a GPU**):
@@ -350,10 +356,11 @@ uv run pytest tests/test_distill.py -q     # 7 passed (9.5 s on the build machin
 | `[teacher] name / version / license` | to be decided / to be decided / to be verified; `license_allows_distillation = false` | The run stops when the license is not verified (GOAL.md 3.3) |
 | `[distill] logits_kd` | `false` | Our own tokenizer is different from the tokenizer of every open teacher, so only sequence-level distillation is possible |
 | `samples_per_task`, `keep_per_task` | 4, 1 | Rejection sampling: 4 samples for each task, keep at most 1 |
-| `n_tasks` | 200,000 | `tool_env` is only a toy environment. Step 2 must also connect a real tool-call task set |
+| `n_tasks` | 200,000 | `tool_env`: the toy environment, executed and checked end to end (multi-turn with tool results) |
+| `task_files`, `prompt_files`, `concurrency` | empty, empty, 64 | Real function-calling tasks and prompts without answers (e.g. Chinese instructions); 64 parallel requests to the vLLM server. Which files: `runs/POSTTRAIN_PLAN.md` 6.2 and 6.4 |
 | `mix_sft_jsonl`, `mix_sft_max` | `data/sft/train.jsonl`, 200,000 | Mix the distillation data with SFT data to prevent forgetting |
 | `init_from`, `lr`, `max_steps` | the SFT checkpoint, 3e-5, 1500 | A short continued training from the SFT model |
-| `on_policy_steps` | 0 | Possible only with the same vocabulary, so it is off for the main line |
+| `on_policy_steps` | 0 | The main line does on-policy distillation as a separate last stage with its own checkpoints as teachers (`configs/main/opd.toml`) |
 
 ## Main-line progress
 
@@ -392,9 +399,9 @@ Notes on these results:
 
 **The teacher plan for step 2 (to be decided)**:
 
-1. Choose teachers from open-weight models with an Apache-2.0 or MIT license. The candidates include the Qwen3.5 series, gpt-oss, DeepSeek-V4-Flash, and GLM-5. Choose by tool-call ability and inference cost; **step 2 decides the exact models**. Several teachers can each produce data. Each sample records the teacher that it came from.
+1. Choose teachers from open-weight models with an Apache-2.0 or MIT license. Candidates, with the license read from the model metadata on 2026-10-10: Qwen3.5-35B-A3B and Qwen3.5-122B-A10B (Apache-2.0), Qwen3-235B-A22B-Instruct-2507 (Apache-2.0), gpt-oss-120b (Apache-2.0; OpenAI also has a usage policy), DeepSeek-V4.1-Flash (MIT), GLM-5.2 (MIT, Chinese and English). Choose by tool-call ability, Chinese ability, and inference cost; **the project lead decides the exact models**. Several teachers can each produce data. Each sample records the teacher that it came from.
 2. Use vLLM to run an OpenAI-compatible service on a separate GPU. In `[teacher]` of `configs/main/distill.toml`, fill in the name, version, and license, and set `license_allows_distillation = true`.
-3. Generate multi-step trajectories on a real tool-call task set, and do the execution check at each step. Add a content scorer for the tasks that need no tool.
+3. Generate data on real tasks (`task_files`: first turns that score exact) and on Chinese prompts (`prompt_files`). Multi-step trajectories on real tools need executable tools; they are still only in the toy environment. Add a content scorer for the tasks that need no tool.
 4. Do sequence-level distillation (`logits_kd = false`) + mixed-in SFT data.
 5. Count the cost of teacher data generation and distillation training in the post-training budget of Chapters 16–19 (GOAL.md 3.4: about $1,500, including teacher data generation). Get approval first for a run that is expected to cost more than $100.
 
@@ -406,7 +413,7 @@ Notes on these results:
 >
 > **Cross-tokenizer distillation**: logits / on-policy distillation when the teacher and the student use different tokenizers. (For example, align the probabilities of the two sides by byte prefixes.) If this method becomes mature, the main line can do on-policy distillation from a Qwen teacher without a change of vocabulary. At this time, only research papers exist (for example arXiv 2607.22334). No leading family uses it in a main release.
 >
-> **Multi-teacher on-policy distillation to merge domain experts**: MiMo-V2-Flash and DeepSeek-V4 first train a set of domain experts (math, code, agents, ...). Then on-policy distillation merges them into one student. GLM-5 uses it to recover abilities that the model forgot after several RL stages. This method is one use of on-policy distillation (in the main text). The main-line budget allows only one student and no set of experts, so we do not use it.
+> **Multi-teacher on-policy distillation to merge domain experts**: MiMo-V2-Flash and DeepSeek-V4 first train a set of domain experts (math, code, agents, ...). Then on-policy distillation merges them into one student. GLM-5 uses it to recover abilities that the model forgot after several RL stages. This method is one use of on-policy distillation (in the main text). The main line uses the GLM-5 cross-stage form (its own earlier checkpoints as teachers, `zero/post/opd.py`); the budget allows no set of domain experts, so it does not merge experts.
 
 ---
 

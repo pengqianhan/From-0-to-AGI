@@ -180,7 +180,7 @@ MiMo-7B 的目标函数就是 1/Σ|o_i| 的 token 级平均。OLMo 3 明确采�
 | 组内基线、不要价值模型（GRPO 本身） | DeepSeek-R1、Qwen3（推理 RL）、GLM-4.5、MiMo-7B、OLMo 3；Kimi K2 用组均值基线，但目标函数是 K1.5 的变体 | **共识** | `group_advantages` |
 | token 级聚合 | MiMo-7B、OLMo 3、GLM-4.5（代码 RL）；出处是 DAPO | **共识**（3 家） | `loss_agg = "token_mean"`（默认） |
 | 去掉 KL 项 | GLM-4.5、MiMo-7B、OLMo 3；DeepSeek-R1 仍保留 β = 0.001 | **常见选择**（3 家），不是必须 | `kl_coef = 0.0`（main） |
-| 按难度筛题：去掉全对或全错的题 | MiMo-7B（动态采样 + 简单题重采样）、OLMo 3（零梯度过滤 + active sampling）、GLM-4.5（按难度的课程学习）、Kimi K2（按 SFT 模型的 pass@k 只留中等难度）、Qwen3（query 要"对冷启动模型可学"） | **共识的原则**；在线动态采样的具体做法各家不同 | 只记录 `zero_std_groups`，在线过滤**未实现**（见"主线进度"） |
+| 按难度筛题：去掉全对或全错的题 | MiMo-7B（动态采样 + 简单题重采样）、OLMo 3（零梯度过滤 + active sampling）、GLM-4.5（按难度的课程学习）、Kimi K2（按 SFT 模型的 pass@k 只留中等难度）、Qwen3（query 要"对冷启动模型可学"） | **共识的原则**；在线动态采样的具体做法各家不同 | 记录 `zero_std_groups`。按开始 RL 的 checkpoint 的 pass@k 离线筛题：`zero/post/difficulty.py`（保留 1/k ≤ pass ≤ (k−1)/k）。训练循环内的在线过滤**未实现** |
 | clip-higher（ε_high > ε_low） | MiMo-7B、OLMo 3；出处是 DAPO（字节 Seed） | **待核实**：明确采用的头部家族只找到 2 家 | `clip_eps_high`（main 设 0.28，设 0 即关闭） |
 | 不除以标准差（Dr. GRPO） | OLMo 3 | 前沿观察 | `scale_rewards = false` 可切换 |
 | 序列级重要性比（GSPO） | Qwen3 的后续版本（GSPO 论文自述） | 前沿观察 | 未实现 |
@@ -333,13 +333,14 @@ Qwen3 的推理 RL 只用了 3995 个"题目 + 验证器"对，在 170 步内把
 | `grpo_loss`（02，对称裁剪、token_mean） | `zero/post/grpo.py::grpo_loss` | 支持 `clip_eps_high`（clip-higher）和两种聚合方式；分块前向时传入全批 token 数，保证结果和整批一次算出的相等；返回 KL、裁剪比例、ρ 均值 |
 | 自己写的逐 token 采样（02/03） | `sample_group`：`zero.generate` + KV cache，同一提示词复制 G 份，遇到 `<|im_end|>` 停止 | 真实模型要带对话模板、KV cache 和停止符；没用满预算时，把 `<|im_end|>` 补回来参与训练 |
 | 一个 `verify` 函数 | `zero/post/envs/tool_env.py::score_tool_calls` | 6 个模拟 API、schema 校验、AST 和执行两种匹配、一对一匹配、8 条防作弊守卫；`generate_tasks` 与冻结的 dev 集互不重叠 |
+| （真实任务） | `zero/post/envs/fc_tasks.py::score_fc` + `[grpo] task_files` | **任意** schema 的工具调用任务，来自开源数据集（Hermes、ToolACE 等），分值和防作弊守卫与上一行相同。调用先与可接受答案匹配，只有对不上的调用才检查 schema。把标准答案当作输出时，BFCL v4 单轮 3,641 题和 ACEBench 1,940 题全部判对（这是对判分器的检查，不用它们训练） |
 | 03 的天真奖励 / 修好的奖励 | 守卫 #8（`_bare_call`）+ 空回复 0 分 | 冒烟测试里真实观察到的作弊，对应测试 `tests/test_tool_env.py::test_guard_untagged_call_json` |
-| 固定学习率、手写循环 | `run_grpo` + `LoopState` | 配置驱动、断点续训、日志（`log.jsonl`）、梯度裁剪、BF16 autocast（GPU 上，尚未验证）；任务选择只由 (seed, step) 决定，以便续训可复现 |
+| 固定学习率、手写循环 | `run_grpo` + `LoopState` | 配置驱动、断点续训、日志（`log.jsonl`）、梯度裁剪、BF16 autocast（GPU 上，尚未验证）；任务选择只由 (seed, step) 决定，以便续训可复现。用 torchrun **多卡数据并行**：`prompts_per_step` 是全局的，各 rank 采样自己那一份（按题目的全局序号定种子），损失按全局 token 数归一，梯度在各 rank 间求和；2 个 CPU 进程与 1 个进程的损失和权重一致（`tests/test_post_ddp.py`） |
 | 打印几个指标 | 每步记录奖励、格式正确率、调用率、长度、KL、裁剪比例、零方差组、耗时 | 对应第 8 节的监控表；熵和留出集成功率还没有接进训练循环 |
 
 配置：`configs/tiny/grpo.toml`（CPU 冒烟测试：G = 8，每步 4 道题，β = 0.02，20 步）；`configs/main/grpo.toml`（主线：G = 16，每步 64 道题即 1024 条回复，`max_new_tokens = 512`，ε = 0.2，`clip_eps_high = 0.28`，β = 0，学习率 1e-6，500 步；尚未在 GPU 上验证）。
 
-**吞吐与 verl（GOAL.zh.md 第 3.3 节）**：`zero` 的 GRPO 是一个可读的单进程实现，采样没有连续批处理。第二步如果吞吐不够，就改用 [verl](https://github.com/verl-project/verl)（或小米的 [XiaomiMiMo/verl](https://github.com/XiaomiMiMo/verl)）做实际训练。
+**吞吐与 verl（GOAL.zh.md 第 3.3 节）**：`zero` 的 GRPO 是一个可读的实现：可以多卡数据并行，但采样没有连续批处理。第二步如果吞吐不够，就改用 [verl](https://github.com/verl-project/verl)（或小米的 [XiaomiMiMo/verl](https://github.com/XiaomiMiMo/verl)）做实际训练。
 
 但要先在同一个小任务上和 `zero` 对拍：用同一个导出的 HF 模型、同一批 `tool_env` 任务（用固定种子导出成 JSONL），以及同样的 G / ε / β / 学习率 / 聚合方式。用 verl 的自定义奖励接口把 `score_tool_calls` 包一层。先比较第一步的优势和损失（同一批样本应该逐位一致），再比较前 50 步的平均奖励曲线。（对应的 verl 配置项名称见 `zero/post/grpo.py` 的模块说明，是按 verl 的文档整理的，待核实。）
 
@@ -389,7 +390,7 @@ uv run python -m zero.post.grpo --config configs/tiny/grpo.toml \
 - 训练中新发现的作弊方式和对应的守卫。（第 6 节列出的两处漏洞已在第一步修复；第二步训练中新发现的，继续补在这里。）
 - 花费（记入 `runs/ledger.md`）。
 
-第二步开跑前，建议给 `zero` 补两件事（本章不改 `zero`，只在汇报里提出）。第一，在训练循环里记录策略熵。第二，加上按难度的在线过滤（跳过全对或全错的组并补采样），或者至少离线按 SFT 模型的通过率筛题。
+第二步开跑前，曾建议给 `zero` 补两件事。离线的那件已完成（2026-10-10）：`zero/post/difficulty.py` 按开始 RL 的 checkpoint 的 pass@k 筛题。仍待做：在训练循环里记录策略熵；按难度的在线过滤（跳过全对或全错的组并补采样）。
 
 ## 前沿观察
 
@@ -397,6 +398,7 @@ uv run python -m zero.post.grpo --config configs/tiny/grpo.toml \
 - **不除以标准差（Dr. GRPO）**：组内标准差很小的题（几乎全对或全错）会被放大权重，造成"难度偏差"。Dr. GRPO 建议只减均值，同时去掉按回答长度的归一化。OLMo 3 采用了不除以标准差的做法。目前只找到这一家头部模型明确采用。
 - **GSPO**：把重要性比从逐 token 的比值，改为整条回答的（长度归一化的）似然比，并在序列级裁剪。Qwen 团队称它让 MoE 模型的 RL 训练更稳定，并用于 Qwen3 的后续版本。其他家族是否采用，尚未核实。
 - **异步 / off-policy RL**：把采样和训练解耦，以提高吞吐（OLMo 3 的 in-flight 更新、GLM-4.5 的 slime、MiMo 的 Seamless Rollout）。这需要额外的重要性修正（例如截断重要性采样）。它属于基础设施层面的做法，本课主线不涉及。
+- **长程智能体任务重新用上 critic（GLM-5.2，2026-06）**：据机器之心转述的智谱技术博客，GLM-5.2 的长程 RL 阶段把 GRPO 换成了**带价值网络的 PPO**。长任务经过上下文压缩（compaction）后，子轨迹的数量和长度参差不齐，凑不成一组可比较的样本；改由价值网络给出 token 级的优势。论文 *Learning Without Critics?*（arXiv 2511.03527）在经典 RL 环境里得到同样的结论：在没有提前终止的长任务里，不带 critic 的方法比不过带价值函数的 PPO。目前只有一家头部家族这样做（DeepSeek-V4 训练领域专家时仍用 GRPO），所以放在前沿观察。主线保留 GRPO：工具调用任务短，奖励可验证，组内比较成立。来源见 `references.zh.md` 第 19 章。
 
 ## 采用方与来源
 

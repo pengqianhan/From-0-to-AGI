@@ -134,30 +134,50 @@ uv run torchrun --standalone --nproc_per_node=8 -m zero.train.midtrain --config 
 
 ## 6. 阶段 10：后训练、闸门 3 与发布（约 $1,500 + $200）
 
+整体计划、底座出来前先跑的代理路线和判定规则，见 [`runs/POSTTRAIN_PLAN.zh.md`](POSTTRAIN_PLAN.zh.md)。下面的命令是主线（路线 C）。
+
 ```bash
+# 1. 数据（CPU；租卡之前做）：SFT 配比和工具调用任务文件（runs/POSTTRAIN_PLAN.zh.md 第 6.1–6.3 节）
+uv run python -m zero.post.envs.fc_tasks export bfcl <site-packages>/bfcl_eval/data --out data/eval/bfcl_v4.jsonl
+uv run python -m zero.post.envs.fc_tasks export acebench <ACEBench>/data_all/data_zh --out data/eval/acebench_zh.jsonl
+uv run python -m zero.post.envs.fc_tasks export acebench <ACEBench>/data_all/data_en --out data/eval/acebench_en.jsonl
+uv run --extra data python -m zero.eval.export_prompts --out data/eval/prompts
+uv run python -m zero.post.envs.fc_tasks build --src hermes:<...> --src toolace:<...> --exclude-tasks data/eval/bfcl_v4.jsonl \
+    --exclude-tasks data/eval/acebench_zh.jsonl --out data/rl/fc_all.jsonl --dev-out data/rl/fc_dev.jsonl --dev-size 500
+uv run python -m zero.post.envs.fc_tasks split data/rl/fc_all.jsonl --sft-out data/sft/fc_sft.jsonl --rl-out data/rl/fc_train.jsonl
+uv run python -m zero.post.sft_data --config configs/main/sft_data.toml
+# 2. 开机第一个小时：每个阶段短跑几步 → 每步秒数、显存、预计花费（runs/<日期>-main-launch/）
+uv run python -m zero.tools.launch_check --track main --nproc 8 --price 2.5 --teacher-gpus 2
 # SFT（≈ 1B 窗口 token，估算 6.9 GPU·h ≈ $17）
 uv run torchrun --standalone --nproc_per_node=8 -m zero.post.sft --config configs/main/sft.toml
 # 蒸馏：先起教师服务（核实许可证后，在配置里填 name / version / license / license_allows_distillation）
 vllm serve <教师> --served-model-name teacher --enable-auto-tool-choice --tool-call-parser hermes &
-uv run python -m zero.post.distill --config configs/main/distill.toml
-# DPO（单进程实现）
-uv run python -m zero.post.dpo --config configs/main/dpo.toml
-# GRPO（单进程实现；吞吐不够时，先与 verl 对拍，再用 verl，见 zero/post/grpo.py 的模块说明）
-uv run python -m zero.post.grpo --config configs/main/grpo.toml
+uv run python -m zero.post.distill --config configs/main/distill.toml --generate-only   # 单进程（要几个小时）
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.distill --config configs/main/distill.toml
+# DPO（可选，见 POSTTRAIN_PLAN 第 4 节的消融；多卡数据并行，批大小是全局的）
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.dpo --config configs/main/dpo.toml
+# 用开始 RL 的 checkpoint（dpo；不做 DPO 时用 distill）给 RL 任务做难度筛选
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.difficulty --policy out/main/dpo/ckpt \
+    --tasks data/rl/fc_train.jsonl --k 8 --out data/rl/main/fc_train_filtered.jsonl
+# GRPO（多卡数据并行；吞吐不够时，先与 verl 对拍，再用 verl，见 zero/post/grpo.py 的模块说明）
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.grpo --config configs/main/grpo.toml
+# 跨阶段在线策略蒸馏（最后一步；教师 = 自己的 distill 与 GRPO checkpoint，词表相同）
+uv run torchrun --standalone --nproc_per_node=8 -m zero.post.opd --config configs/main/opd.toml
 # 内部评测（tool_env dev + 玩具集，配对 bootstrap）
 uv run python -m zero.eval.harness --config configs/main/eval.toml
 # 导出
-uv run python -c "from zero.post.common import load_policy; from zero.hf import export_to_hf_qwen3; m,t=load_policy('out/main/grpo/ckpt'); export_to_hf_qwen3(m,None,'out/main/hf_final',tokenizer=t,chat=True)"
+uv run python -c "from zero.post.common import load_policy; from zero.hf import export_to_hf_qwen3; m,t=load_policy('out/main/opd/ckpt'); export_to_hf_qwen3(m,None,'out/main/hf_final',tokenizer=t,chat=True)"
 uv run python -m zero.export.gguf --hf-dir out/main/hf_final --out out/main/zero-f16.gguf --quantize Q4_K_M --run "<|im_start|>user\n你好<|im_end|>\n<|im_start|>assistant\n"
 ```
 
-预算说明：教师数据生成的成本取决于教师的大小和样本数（实测 vLLM 吞吐后再估算）。GRPO 的成本主要是采样。阶段 6 第 9 项实测每步耗时后，按"每步秒数 × 步数 × $20/小时"估算。超过 $100 就报批。
+预算说明：教师数据生成的成本取决于教师的大小和样本数；开机检查会实测一小份样本。GRPO 的成本主要是采样。开机检查（上面第 2 步）实测每个阶段的每步秒数，并按"每步秒数 × 步数 × 卡数 × 每卡时单价"推算。某个阶段超过 $100 就报批。
 
 需要盯的指标：
 
 - SFT / 蒸馏：只在助手 token 上算的 `loss`、`val_loss`；蒸馏数据的执行验证通过率（`teacher.jsonl.meta.json`）。
 - DPO：`loss` 从 0.693 下降；`acc`（隐式奖励 chosen > rejected 的比例）；`margin`。`chosen_reward` 也在下降，说明训练在"一起压低"两者，要警惕。
 - GRPO：`reward_mean`、`format_rate`、**`call_rate`**（冒烟测试里出现过"不再调用工具"的作弊，见 `tool_env.py` 第 8 条）、`resp_len`、`kl`、`clip_frac`、`zero_std_groups`（太高说明任务太难或太简单）。
+- OPD：`kl` 和 `kl/<教师名>` 下降；`eos_rate` 保持在 1 附近（下降说明学生开始啰嗦）；GRPO 阶段的工具调用分数不能掉。
 - 每个阶段结束，都跑一次 `zero.eval.harness` 和 BFCL 子集。任何一项明显退化，就回退到上一阶段的 checkpoint。
 
 **闸门 3 检查清单**（发布前）：

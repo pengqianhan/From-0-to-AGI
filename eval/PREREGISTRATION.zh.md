@@ -65,6 +65,7 @@ GOAL.md 3.2 要求本文件写明五件事。它们分别在第 2 节（基准�
 
 - **模板**：每个模型用各自**官方**的对话 / 工具调用模板（HF `tokenizer_config.json` 里的 `chat_template`，或 BFCL 内置的 handler）。
   我们的模型用导出目录里的 `chat_template`（`zero/post/chat.py` 的 `CHAT_TEMPLATE`）。它与训练时逐字一致，由 `tests/test_chat.py` 保证。
+  BFCL 里我们的模型用 `zero/eval/bfcl.py` 的 `ZeroFCHandler`：把 BFCL 函数描述里的 Python 类型名（`dict`、`float`、`tuple`）换成 JSON schema 的类型名，再套成 `{"type": "function", "function": ...}`，因为我们的训练数据全部是这种写法。这属于我们模型的模板；对手的内置 handler 不做这一步（依据 `bfcl-eval` 2026.3.23 源码，2026-10-10 核对）。
   BFCL 对每个模型用 FC 模式还是 Prompt 模式：TBD（候选：有官方 FC handler 的用 FC，否则用 Prompt；两者都有时取较高分）。
 - **系统提示词**：用各基准的官方默认。没有官方默认的，一律不加。
 - **少样本数与示例**：按各基准在所用框架里的默认设置。冻结时逐项写明。
@@ -90,6 +91,7 @@ GOAL.md 3.2 要求本文件写明五件事。它们分别在第 2 节（基准�
 - **E1 的重抽方式**：E1 是按类别加权的分数。所以重抽在每个类别内部分别进行（分层 bootstrap），再按第 2.1 节的权重合成。实现：`zero/eval/bootstrap.py` 的 `stratified_paired_bootstrap(a_by, b_by, weights, ...)`。（只有一个类别时，结果与 `paired_bootstrap` 相同。）
 - **硬目标成立的条件**（候选）：对 `eval/opponents.md` 冻结清单里的**每一个**对手，E1 与 E2 **都**判为"超过"。
   这是交集-并集检验（intersection-union test）。每个单独的比较都要在 5% 水平上显著。这样，整体结论的第一类错误率不超过 5%，所以不另做多重比较校正。
+- **路线 A（流程验证，不参与硬目标）**（候选，见 `runs/POSTTRAIN_PLAN.md` 第 3 节）：在 Qwen3-0.6B-Base 上跑我们的后训练，与同一底座的官方 Qwen3-0.6B（思考 / 非思考取较高）比较 E1、E2。两项都是"持平"或"超过"，才算后训练流程跑通。这一比较的结果只说明流程，**不写成主线模型的成绩**，也不改变对手清单。它属于一次闸门评测，记入 `runs/ledger.md`。
 - **其余所有分数**（各类别、各子集、通用组、只报告的基准）只作描述。它们不参与"超过"的判定，也不能事后改成主终点。
 - 官方公布的分数并列展示，但不作为比较依据。
 
@@ -100,12 +102,14 @@ GOAL.md 3.2 要求本文件写明五件事。它们分别在第 2 节（基准�
   检查对象（题目 / 题目 + 答案）与中文短题的 n 取值：TBD。（第 11 章的 `code/05_contamination.py` 演示了：短题干"撞车"不等于泄漏。）
 - **canary**：扫描训练语料里已知的 canary 字符串（如 BIG-bench 的 GUID）。命中的文档整篇删除。
 - **工具调用专项**：把训练数据里的函数名、参数 schema 与 BFCL、ACEBench 比对。同名同参的函数整体剔除并计数。同名不同参的人工复核。记录数量。
+  当前实现（候选，比上一句更严）：`zero/post/envs/fc_tasks.py export` 把 BFCL（`bfcl_eval/data`）和 ACEBench（`data_zh`、`data_en`）导出成任务文件；RL 任务（`fc_tasks build --exclude-tasks`）和 SFT 数据（`zero/post/sft_data.py` 的 `decontam_tasks`）里，**只要工具名与评测集重合就剔除**，不区分参数是否相同；用户文本与评测题有 13-gram 重合也剔除。各项计数写进 `meta.json`。
 - **自建环境**：`zero/post/envs/tool_env.py` 的训练任务与它的固定 dev 集，按问题文本去重。（天气、寒暄两类问题的空间太小，无法去重，单列报告。）
 - 结果与方法写进模型卡。
 
 ## 8. 开发集与测试集的分工
 
 - 挑 checkpoint、调超参数、选提示词，只用开发集：`zero/eval/tasks/tool_dev.jsonl`（冻结文件），以及 TBD 的通用开发集（候选：C-Eval dev、各基准的 validation split）。
+- 工具调用的开发集：`data/rl/fc_dev.jsonl`，从训练来源（Hermes、ToolACE 等）里留出，与训练任务不重叠（`fc_tasks build --dev-out`）。BFCL、ACEBench 的导出文件只用于去污染，以及核对我们的判分器与官方答案一致；**不用来挑 checkpoint**。
 - 第 2 节的测试基准只在闸门（GOAL.md 3.4）和最终评测时跑。每次运行都记入 `runs/ledger.md`。
 
 ## 9. 结果报告

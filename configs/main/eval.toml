@@ -8,6 +8,7 @@
 mc_tasks = ["toy_mc.jsonl"]
 gen_tasks = ["toy_gen.jsonl"]
 tool_tasks = "tool_dev.jsonl"
+fc_tasks = ["data/rl/fc_dev.jsonl"]   # tool-call dev set (held out from the training sources). Never BFCL / ACEBench here: test sets run only at the gates (eval/PREREGISTRATION.md, section 8)
 fewshot = 3
 max_items = 0
 max_new_tokens = 512
@@ -32,3 +33,7 @@ path = "out/main/dpo/ckpt"
 [[eval.models]]
 name = "grpo"
 path = "out/main/grpo/ckpt"
+
+[[eval.models]]
+name = "opd"
+path = "out/main/opd/ckpt"

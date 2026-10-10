@@ -18,6 +18,7 @@ def _sections(stage: str):  # noqa: ANN202
     from zero.post.distill import DistillConfig, TeacherConfig
     from zero.post.dpo import DPOConfig
     from zero.post.grpo import GRPOConfig
+    from zero.post.opd import OPDConfig
     from zero.post.sft import SFTConfig
 
     return {
@@ -25,10 +26,11 @@ def _sections(stage: str):  # noqa: ANN202
         "distill": {"teacher": TeacherConfig, "distill": DistillConfig},
         "dpo": {"dpo": DPOConfig},
         "grpo": {"grpo": GRPOConfig},
+        "opd": {"opd": OPDConfig},
     }[stage]
 
 
-POST_SECTIONS = {s: (lambda s=s: _sections(s)) for s in ("sft", "distill", "dpo", "grpo")}
+POST_SECTIONS = {s: (lambda s=s: _sections(s)) for s in ("sft", "distill", "dpo", "grpo", "opd")}
 
 
 @pytest.mark.parametrize("path", ALL_CONFIGS, ids=lambda p: str(p.relative_to(REPO)))
@@ -50,6 +52,11 @@ def test_all_configs_load(path: Path) -> None:
         assert specs
         for s in specs:  # each source must be registered in zero/data/sources.py, with a verified license
             check_license(s)
+        return
+    if path.stem == "sft_data":  # the SFT data mixture (zero/post/sft_data.py; tests/test_sft_data.py tests it)
+        from zero.post.sft_data import load_sft_data_config
+
+        load_sft_data_config(path)
         return
     if path.stem == "eval":  # an evaluation config has only [eval] (tests/test_post_configs.py tests it)
         from zero.eval.harness import load_eval_config

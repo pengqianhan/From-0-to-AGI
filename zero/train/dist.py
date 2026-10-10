@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 import torch.distributed as dist
@@ -33,6 +34,8 @@ class DistInfo:
     world_size: int = 1
     device: torch.device = torch.device("cpu")
     backend: str = ""
+    # A gloo group over all ranks with a long timeout, for slow waits (init_distributed(slow_wait_min=...))
+    wait_group: Any = None
 
     @property
     def is_main(self) -> bool:
@@ -51,10 +54,17 @@ def pick_device(pref: str = "auto", local_rank: int = 0) -> torch.device:
     return torch.device("cuda", local_rank)
 
 
-def init_distributed(device_pref: str = "auto") -> DistInfo:
+def init_distributed(device_pref: str = "auto", slow_wait_min: float | None = None) -> DistInfo:
     """Initialize the process group from the torchrun environment variables.
 
     With one process, do nothing.
+
+    slow_wait_min: also make a gloo group over all ranks whose collectives wait up to this many
+    minutes (`DistInfo.wait_group`). It is for the waits that can be long: rank 0 packs data while the
+    others wait, or the ranks finish their shares of sampling at different times
+    (`zero.post.common.run_on_rank0`). The default group keeps the timeout of PyTorch (10 minutes
+    with NCCL), so a real hang in training is still found within minutes. The group is made here,
+    while all ranks are at the same point.
     """
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     rank = int(os.environ.get("RANK", "0"))
@@ -68,8 +78,18 @@ def init_distributed(device_pref: str = "auto") -> DistInfo:
             torch.cuda.set_device(device)
         if not dist.is_initialized():
             dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
+    wait_group = None
+    if world_size > 1 and slow_wait_min is not None:
+        from datetime import timedelta
+
+        wait_group = dist.new_group(backend="gloo", timeout=timedelta(minutes=slow_wait_min))
     return DistInfo(
-        rank=rank, local_rank=local_rank, world_size=world_size, device=device, backend=backend
+        rank=rank,
+        local_rank=local_rank,
+        world_size=world_size,
+        device=device,
+        backend=backend,
+        wait_group=wait_group,
     )
 
 
