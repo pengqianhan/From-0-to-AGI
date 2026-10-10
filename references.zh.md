@@ -370,6 +370,7 @@
 - Thinking Machines, On-Policy Distillation: https://thinkingmachines.ai/blog/on-policy-distillation
 - Gemma 2: https://arxiv.org/abs/2408.00118
 - Minitron（剪枝 + 蒸馏）: https://arxiv.org/abs/2407.14679
+- GLM-5 Team. *GLM-5* §3.5 On-Policy Cross-Stage Distillation，2026：https://arxiv.org/abs/2602.15763。在线策略蒸馏是后训练的**最后一步**（SFT → 推理 RL → 智能体 RL → 通用 RL → OPD）。教师是模型自己前几个阶段的 checkpoint，词表天然一致。作用是找回多阶段 RL 中遗忘的能力。组大小为 1，batch size 为 1024。主线模型用自训分词器，无法对外部教师做 OPD，这种自蒸馏形式是主线能用的 OPD。
 
 ### 第 18 章
 - Rafailov et al. *Direct Preference Optimization: Your Language Model is Secretly a Reward Model*，2023：https://arxiv.org/abs/2305.18290
@@ -400,6 +401,11 @@
 - Schulman. *Approximating KL Divergence*：http://joschu.net/blog/kl-approx.html
 - Lilian Weng. *Reward Hacking in Reinforcement Learning*, 2024：https://lilianweng.github.io/posts/2024-11-28-reward-hacking/
 - verl（HybridFlow）：https://github.com/verl-project/verl
+- GLM-5 Team. *GLM-5* §3.2（推理 RL：GRPO + IcePop，去掉 KL 项，组大小 32，ε_low 0.2 / ε_high 0.28）与 §4.1（异步智能体 RL：token-in-token-out、直接双侧重要性采样），2026：https://arxiv.org/abs/2602.15763
+- GLM-5.2（2026-06）：[模型卡](https://huggingface.co/zai-org/GLM-5.2)、[官方博客](https://z.ai/blog/glm-5.2)。据转述的官方博客内容，**长程** RL 阶段从 GRPO 换成了**基于 critic 的 PPO**。原因是长程任务经过 compaction 后，子轨迹的数量和长度参差不齐，凑不成一组可比较的样本；改由价值网络给出 token 级优势。另有两阶段的防奖励作弊机制（先规则过滤，再用 LLM 裁判；被拦截的工具调用返回无意义的假信息，轨迹继续）。目前只有一家采用 → 放进第 19 章的"前沿观察"（规则 A 需要 3 家）。主线保留 GRPO：工具调用的轨迹短，奖励可验证。
+- 机器之心《GRPO过时了吗？》，2026-06-21：https://www.163.com/dy/article/KVVC29AK0511AQHO.html（36氪转载：https://www.36kr.com/p/3862288768570377）。二手报道，概括了 GLM-5.2 的改动和社区讨论；文中指出 DeepSeek-V4 训练分领域专家时仍用 GRPO。
+- 《对 GLM-5.2 PPO 优化的思考：Strong Value Model 如何引导真实场景 RL 训练》（知乎）：https://zhuanlan.zhihu.com/p/2052145684040701422
+- *Learning Without Critics? Revisiting GRPO in Classical Reinforcement Learning Environments*，2025：https://arxiv.org/abs/2511.03527。在没有提前终止的长程任务里，不带 critic 的方法持续不如带价值函数的 PPO；只有 CartPole 这类短程任务两者才持平。
 
 ### 第 20 章
 - GGUF 规范: https://github.com/ggml-org/ggml/blob/master/docs/gguf.md
