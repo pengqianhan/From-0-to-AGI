@@ -1,0 +1,25 @@
+# Proxy track, DPO (track A; optional stage, see the DPO ablation in runs/POSTTRAIN_PLAN.md).
+#   uv run python -m zero.post.dpo --config configs/proxy/dpo.toml
+base = "../main/dpo.toml"
+
+[model]                  # Qwen3-0.6B-Base (config.json, verified 2026-10); zero.tools.import_hf --check-config checks it
+vocab_size = 151936
+dim = 1024
+n_layers = 28
+n_heads = 16
+n_kv_heads = 8
+head_dim = 128
+ffn_dim = 3072
+rope_theta = 1000000.0
+max_seq_len = 32768
+tie_embeddings = true
+
+[train]
+out_dir = "out/proxy/dpo"
+init_from = "out/proxy/distill/ckpt"
+
+[data]
+tokenizer = "out/proxy/base/tokenizer.json"
+
+[dpo]
+train_jsonl = "data/proxy/dpo/prefs.jsonl"   # On-policy pairs depend on the policy: not shared with the main line

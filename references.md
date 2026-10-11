@@ -370,6 +370,7 @@ We read and cited these sources when we wrote each chapter. For the full citatio
 - Thinking Machines, On-Policy Distillation: https://thinkingmachines.ai/blog/on-policy-distillation
 - Gemma 2: https://arxiv.org/abs/2408.00118
 - Minitron (pruning + distillation): https://arxiv.org/abs/2407.14679
+- GLM-5 Team. *GLM-5* §3.5 On-Policy Cross-Stage Distillation, 2026: https://arxiv.org/abs/2602.15763. On-policy distillation is the **last** post-training step (SFT → reasoning RL → agentic RL → general RL → OPD). The teachers are the model's own checkpoints from the earlier stages, so they use the same vocabulary. It recovers the abilities that the model forgot in the RL stages. Group size 1, batch size 1024. The main-line model uses its own tokenizer, so it cannot use OPD with an external teacher. This self-distillation form is the OPD that the main line can use.
 
 ### Chapter 18
 - Rafailov et al. *Direct Preference Optimization: Your Language Model is Secretly a Reward Model*, 2023: https://arxiv.org/abs/2305.18290
@@ -400,6 +401,11 @@ We read and cited these sources when we wrote each chapter. For the full citatio
 - Schulman. *Approximating KL Divergence*: http://joschu.net/blog/kl-approx.html
 - Lilian Weng. *Reward Hacking in Reinforcement Learning*, 2024: https://lilianweng.github.io/posts/2024-11-28-reward-hacking/
 - verl (HybridFlow): https://github.com/verl-project/verl
+- GLM-5 Team. *GLM-5* §3.2 (reasoning RL: GRPO + IcePop, no KL term, group size 32, ε_low 0.2 / ε_high 0.28) and §4.1 (asynchronous agentic RL: token-in-token-out, direct double-sided importance sampling), 2026: https://arxiv.org/abs/2602.15763
+- GLM-5.2 (2026-06): [model card](https://huggingface.co/zai-org/GLM-5.2), [official blog](https://z.ai/blog/glm-5.2). As reported from the official blog, the **long-horizon** RL stage replaces GRPO with **critic-based PPO**. After compaction, the sub-trajectories of one task have different numbers and lengths, so a group of comparable samples cannot be formed; a value model gives token-level advantages. It also adds a two-stage guard against reward hacking (rules, then an LLM judge; a blocked tool call gets a meaningless fake response, and the trajectory continues). Only one family uses it now → "frontier observation" box in Chapter 19 (rule A needs 3 families). The main line keeps GRPO: tool-call trajectories are short and the rewards are verifiable.
+- 机器之心. *GRPO过时了吗？* (Is GRPO outdated?, in Chinese), 2026-06-21: https://www.163.com/dy/article/KVVC29AK0511AQHO.html (36Kr repost: https://www.36kr.com/p/3862288768570377). A second-hand summary of the GLM-5.2 change and the community discussion. It notes that DeepSeek-V4 still uses GRPO for its domain experts.
+- *对 GLM-5.2 PPO 优化的思考：Strong Value Model 如何引导真实场景 RL 训练* (in Chinese, Zhihu): https://zhuanlan.zhihu.com/p/2052145684040701422
+- *Learning Without Critics? Revisiting GRPO in Classical Reinforcement Learning Environments*, 2025: https://arxiv.org/abs/2511.03527. In long-horizon tasks without early termination, critic-free methods are worse than PPO with a learned value function; only in short tasks such as CartPole are they equal.
 
 ### Chapter 20
 - GGUF specification: https://github.com/ggml-org/ggml/blob/master/docs/gguf.md

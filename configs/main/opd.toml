@@ -1,0 +1,72 @@
+# Cross-stage on-policy distillation of the main-line model (Chapter 17): the last post-training stage.
+#   uv run torchrun --standalone --nproc_per_node=8 -m zero.post.opd --config configs/main/opd.toml
+# Data parallel like GRPO: prompts_per_step is global, split over the GPUs.
+# The GLM-5 recipe (§3.5): the final checkpoints of the earlier stages are the teachers; the student is the
+# last RL checkpoint. It recovers the abilities that the RL stage made worse. Our own tokenizer is different
+# from all open teachers, so only our own checkpoints can be OPD teachers (same vocabulary).
+# Default values for Step 2; tune them with runs/POSTTRAIN_PLAN.md. Not verified on a GPU yet.
+# Memory: student (policy + AdamW states) + 2 frozen teachers of 0.7B each, on one 80GB GPU.
+
+[model]                  # Same shape as the checkpoint of configs/main/longctx.toml (689.5M parameters)
+vocab_size = 65536
+dim = 1280
+n_layers = 28
+n_heads = 16
+n_kv_heads = 8
+head_dim = 128
+ffn_dim = 3584
+rope_theta = 1000000.0   # The larger base from the long-context stage
+max_seq_len = 32768
+tie_embeddings = true
+
+[train]
+seed = 1337
+max_steps = 200
+device = "auto"
+dtype = "auto"
+out_dir = "out/main/opd"
+init_from = "out/main/grpo/ckpt"
+
+[data]
+format = "none"
+tokenizer = "data/tokenizer/tokenizer.json"
+seq_len = 8192
+
+[opd]
+prompts_per_step = 256
+samples_per_prompt = 1   # GLM-5: group size 1 in this stage
+max_new_tokens = 1024
+temperature = 1.0
+loss = "full_kl"         # Exact reverse KL (the teachers are local); "sampled" is the GLM-5 per-token form
+n_tool_tasks = 100000
+env_seed = 23            # Different from the GRPO env_seed (19): new prompts from the same distribution
+forward_batch = 4
+
+[[opd.teachers]]
+name = "distill"         # General chat + instruction following (before DPO/GRPO)
+path = "out/main/distill/ckpt"
+prompts = "data/sft/train.jsonl"
+weight = 0.5
+max_prompts = 200000
+
+[[opd.teachers]]
+name = "grpo"            # Tool calls (the RL stage)
+path = "out/main/grpo/ckpt"
+prompts = "data/rl/fc_train.jsonl"     # The task file of the GRPO stage
+weight = 0.5
+
+[optim]
+lr = 1e-6                # Same order as GRPO; tune it later
+weight_decay = 0.0
+grad_clip = 1.0
+
+[schedule]
+kind = "constant"
+warmup_steps = 10
+
+[checkpoint]
+every = 50
+keep_last = 3
+
+[logging]
+every = 1

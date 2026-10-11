@@ -32,7 +32,7 @@ import argparse
 import json
 import os
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +40,13 @@ import numpy as np
 
 from zero.config import Config, DataSourceConfig
 from zero.post.chat import render
-from zero.post.common import load_post_config, read_jsonl, write_jsonl
+from zero.post.common import (
+    SLOW_WAIT_MIN,
+    load_post_config,
+    read_jsonl,
+    run_on_rank0,
+    write_jsonl,
+)
 from zero.tokenizer import Tokenizer
 
 
@@ -193,19 +199,20 @@ def run_sft(
     overrides: Sequence[str] | None = None,
     log: Callable[[str], None] | None = None,
 ) -> list[dict[str, Any]]:
-    from zero.train.dist import barrier, cleanup, init_distributed
+    from zero.train.dist import cleanup, init_distributed
     from zero.train.trainer import Trainer
 
     cfg, sec = load_post_config(src, {"sft": SFTConfig}, overrides)
     if cfg.train.data.format != "sft":
         raise ValueError('The SFT config needs [data] format = "sft"')
-    info = init_distributed(cfg.train.device)
+    # Rank 0 packs the data (minutes for a large mixture) while the others wait (a slow wait), and
+    # an error on rank 0 stops every rank.
+    info = init_distributed(cfg.train.device, slow_wait_min=SLOW_WAIT_MIN)
     try:
-        if info.is_main:
-            prepare_sft_data(cfg, sec["sft"], log or print)
-        barrier()
+        run_on_rank0(info, lambda: prepare_sft_data(cfg, sec["sft"], log or print))
         if not info.is_main:
-            prepare_sft_data(cfg, sec["sft"], lambda _: None)  # only fills in the paths (the files exist already)
+            # only fills in the paths: the files exist already (overwrite = false, or every rank would pack again)
+            prepare_sft_data(cfg, replace(sec["sft"], overwrite=False), lambda _: None)
         os.makedirs(cfg.train.out_dir, exist_ok=True)
         return Trainer(cfg, info, log).train()
     finally:

@@ -1,0 +1,25 @@
+# Proxy track, GRPO (track A). Without DPO: --set train.init_from=out/proxy/distill/ckpt
+#   uv run python -m zero.post.grpo --config configs/proxy/grpo.toml
+base = "../main/grpo.toml"
+
+[model]                  # Qwen3-0.6B-Base (config.json, verified 2026-10); zero.tools.import_hf --check-config checks it
+vocab_size = 151936
+dim = 1024
+n_layers = 28
+n_heads = 16
+n_kv_heads = 8
+head_dim = 128
+ffn_dim = 3072
+rope_theta = 1000000.0
+max_seq_len = 32768
+tie_embeddings = true
+
+[train]
+out_dir = "out/proxy/grpo"
+init_from = "out/proxy/dpo/ckpt"
+
+[data]
+tokenizer = "out/proxy/base/tokenizer.json"
+
+[grpo]
+task_files = ["data/rl/proxy/fc_train_filtered.jsonl"]   # zero.post.difficulty with out/proxy/distill/ckpt (or dpo)

@@ -18,13 +18,15 @@ overrides make the run faster, see below):
     notes in zero/post/distill.py)
  7. DPO: configs/tiny/dpo.toml
  8. GRPO: configs/tiny/grpo.toml
- 9. eval: configs/tiny/eval.toml (toy sets + tool-call dev set; the SFT / DPO / GRPO models;
+ 9. OPD: configs/tiny/opd.toml (cross-stage on-policy distillation; teachers = the tiny distill and
+    GRPO checkpoints)
+10. eval: configs/tiny/eval.toml (toy sets + tool-call dev set; the SFT / DPO / GRPO / OPD models;
     paired bootstrap)
-10. export: export an HF directory (transformers loads it for a parity check of the logits;
+11. export: export an HF directory (transformers loads it for a parity check of the logits;
     apply_chat_template is identical to our template, character by character)
     + GGUF (the official llama.cpp conversion script; if llama.cpp is built, also quantize to
     Q8_0 and generate some tokens with llama-simple)
-11. demo: ask the local tool-calling assistant one question
+12. demo: ask the local tool-calling assistant one question
 
 At the end, the script prints the time and the key metrics (loss / reward) of each stage, and
 writes `<out>/SUMMARY.md` and `summary.json`.
@@ -240,6 +242,20 @@ class Smoke:
             "steps": hist[-1]["step"],
         }
 
+    def opd(self) -> dict[str, Any]:
+        from zero.post.opd import run_opd
+
+        d = load_tiny("opd", self.o)
+        _set_seq(d, 512, 4.0)
+        d["train"]["max_steps"] = 5
+        hist = run_opd(d, log=self.log)
+        return {
+            "kl_first": _r(hist[0]["kl"]),
+            "kl_last": _r(hist[-1]["kl"]),
+            "eos_rate_last": _r(hist[-1]["eos_rate"]),
+            "steps": hist[-1]["step"],
+        }
+
     def evaluate(self) -> dict[str, Any]:
         from zero.eval.harness import EvalConfig, EvalModel, run_eval
 
@@ -248,6 +264,7 @@ class Smoke:
                 EvalModel("sft", f"{self.o}/sft/ckpt"),
                 EvalModel("dpo", f"{self.o}/dpo/ckpt"),
                 EvalModel("grpo", f"{self.o}/grpo/ckpt"),
+                EvalModel("opd", f"{self.o}/opd/ckpt"),
             ],
             mc_tasks=["toy_mc.jsonl"],
             gen_tasks=["toy_gen.jsonl"],
@@ -279,7 +296,7 @@ class Smoke:
         from zero.post.common import load_policy
         from zero.post.envs.tool_env import dev_tasks, reference_messages
 
-        model, tok = load_policy(f"{self.o}/grpo/ckpt")
+        model, tok = load_policy(f"{self.o}/opd/ckpt")
         hf_dir = export_to_hf_qwen3(
             model, None, self.out / "hf_chat", tokenizer=tok, dtype=torch.float32, chat=True
         )
@@ -382,6 +399,7 @@ def main(argv: list[str] | None = None) -> int:
         s.stage("distill", s.distill)
         s.stage("dpo", s.dpo)
         s.stage("grpo", s.grpo)
+        s.stage("opd", s.opd)
         s.stage("eval", s.evaluate)
         s.stage("export (HF + GGUF)", s.export)
         s.stage("demo", s.demo)

@@ -1,0 +1,16 @@
+# Weak-base track, sequence-level distillation (track B). The teacher data is shared with the other tracks.
+base = "../main/distill.toml"
+
+[model]                  # Same shape as configs/main/pretrain.toml: an intermediate pretraining checkpoint has no long-context stage yet
+rope_theta = 10000.0
+max_seq_len = 4096
+
+[train]
+out_dir = "out/weak/distill"
+init_from = "out/weak/sft/ckpt"
+
+[data]
+seq_len = 4096
+
+[distill]
+shard_dir = "data/weak/distill/packed"

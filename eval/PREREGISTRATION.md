@@ -65,6 +65,7 @@ Report only, not a hard goal:
 
 - **Templates**: each model uses its own **official** chat / tool-calling template (the `chat_template` in the HF `tokenizer_config.json`, or the built-in handler of BFCL).
   Our model uses the `chat_template` in the export folder (`CHAT_TEMPLATE` in `zero/post/chat.py`). It is the same as in training, character for character. `tests/test_chat.py` makes sure of this.
+  In BFCL, our model uses `ZeroFCHandler` of `zero/eval/bfcl.py`: it changes the Python type names of the BFCL function descriptions (`dict`, `float`, `tuple`) to JSON-schema type names and wraps each function as `{"type": "function", "function": ...}`, because all our training data is written that way. This is part of our model's template; the built-in handlers of the opponents do not do it (checked against the source of `bfcl-eval` 2026.3.23 on 2026-10-10).
   FC mode or Prompt mode in BFCL for each model: TBD (candidate: FC for a model with an official FC handler, else Prompt; if a model has both, take the higher score).
 - **System prompt**: the official default of each benchmark. If a benchmark has no official default, do not add a system prompt.
 - **Number of few-shot examples and the examples**: the default settings of each benchmark in the framework that we use. At the freeze, write down each one.
@@ -90,6 +91,7 @@ Freeze date: **TBD**. At release, check again for new models released after the 
 - **Resampling for E1**: E1 is a score weighted by category. Thus do the resampling inside each category separately (stratified bootstrap). Then combine the categories with the weights of Section 2.1. Implementation: `stratified_paired_bootstrap(a_by, b_by, weights, ...)` in `zero/eval/bootstrap.py`. (With only one category, it gives the same result as `paired_bootstrap`.)
 - **Condition for the hard goal** (candidate): for **every** opponent in the frozen list of `eval/opponents.md`, E1 and E2 **both** give "ahead".
   This is an intersection-union test. Each single comparison must be significant at the 5% level. Then the type I error rate of the overall conclusion is not more than 5%. Thus we do not apply an additional correction for multiple comparisons.
+- **Track A (pipeline check, not part of the hard goal)** (candidate; see section 3 of `runs/POSTTRAIN_PLAN.md`): our post-training on Qwen3-0.6B-Base is compared with the official Qwen3-0.6B from the same base (the higher of thinking / non-thinking) on E1 and E2. The pipeline counts as working only if both are "tie" or "ahead". This result describes the pipeline only: it is **never reported as a result of the main-line model**, and it does not change the opponent list. It is a gate evaluation and is recorded in `runs/ledger.md`.
 - **All other scores** (each category, each subset, the general group, the report-only benchmarks) are only descriptive. They are not part of the decision for "ahead". They cannot become primary endpoints after the fact.
 - We show the officially published scores next to our scores, but they are not the basis for the comparison.
 
@@ -100,12 +102,14 @@ Freeze date: **TBD**. At release, check again for new models released after the 
   What to check (the question / the question + the answer) and the value of n for short Chinese questions: TBD. (`code/05_contamination.py` of Chapter 11 shows that a match on a short question stem is not necessarily a leak.)
 - **canary**: scan the training corpus for known canary strings (for example, the GUID of BIG-bench). If a document contains one, delete the full document.
 - **Tool-calling check**: compare the function names and parameter schemas of the training data with those of BFCL and ACEBench. Remove all functions with the same name and the same parameters, and count them. Check the functions with the same name but different parameters by hand. Record the numbers.
+  Current implementation (candidate, stricter than the sentence above): `zero/post/envs/fc_tasks.py export` writes BFCL (`bfcl_eval/data`) and ACEBench (`data_zh`, `data_en`) as task files; in the RL tasks (`fc_tasks build --exclude-tasks`) and the SFT data (`decontam_tasks` of `zero/post/sft_data.py`), **any shared tool name** removes the item, whatever the parameters; a user text that shares a 13-gram with an evaluation question is removed too. The counts go into `meta.json`.
 - **Our own environment**: deduplicate the training tasks of `zero/post/envs/tool_env.py` against its fixed dev set by question text. (The question space of the two types "weather" and "small talk" is too small for deduplication. Report them separately.)
 - Write the results and the methods in the model card.
 
 ## 8. Roles of the development set and the test set
 
 - Use only the development set to pick checkpoints, tune hyperparameters, and select prompts: `zero/eval/tasks/tool_dev.jsonl` (a frozen file) and a general development set, TBD (candidate: C-Eval dev, the validation split of each benchmark).
+- Tool-calling development set: `data/rl/fc_dev.jsonl`, held out from the training sources (Hermes, ToolACE, ...), with no overlap with the training tasks (`fc_tasks build --dev-out`). The exported BFCL and ACEBench files are used only for decontamination and to check that our scorer agrees with the official answers; **they are not used to pick checkpoints**.
 - Run the test benchmarks of Section 2 only at the gates (GOAL.md 3.4) and in the final evaluation. Record each run in `runs/ledger.md`.
 
 ## 9. Reporting the results

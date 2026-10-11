@@ -1,0 +1,26 @@
+# Proxy track, sequence-level distillation (track A). The teacher data (data/distill/teacher.jsonl) is text,
+# so it is shared with the main line: generate it once.
+#   uv run python -m zero.post.distill --config configs/proxy/distill.toml
+base = "../main/distill.toml"
+
+[model]                  # Qwen3-0.6B-Base (config.json, verified 2026-10); zero.tools.import_hf --check-config checks it
+vocab_size = 151936
+dim = 1024
+n_layers = 28
+n_heads = 16
+n_kv_heads = 8
+head_dim = 128
+ffn_dim = 3072
+rope_theta = 1000000.0
+max_seq_len = 32768
+tie_embeddings = true
+
+[train]
+out_dir = "out/proxy/distill"
+init_from = "out/proxy/sft/ckpt"
+
+[data]
+tokenizer = "out/proxy/base/tokenizer.json"
+
+[distill]
+shard_dir = "data/proxy/distill/packed"

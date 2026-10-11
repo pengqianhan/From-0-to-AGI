@@ -58,7 +58,7 @@ The first classification is below. This table uses what we knew in September 202
 | Hybrid linear attention | In the main text (Qwen, Kimi, NVIDIA). Only Qwen uses the specific operator Gated DeltaNet | 23 |
 | Auxiliary-loss-free MoE load balancing | It satisfies rule A (DeepSeek-V3, GLM-4.5, Nemotron 3), so it goes into the main text | 24 |
 | MTP | It satisfies rule A, so it goes into the main text. Draft heads of the Medusa / EAGLE type go into Frontier notes | 25 |
-| On-policy distillation | It satisfies rule A (Qwen3, Gemma 2, GLM-5, MiMo, DeepSeek-V4), so it goes into the main text. The main-line model cannot use it, because its vocabulary is different | 17 |
+| On-policy distillation | It satisfies rule A (Qwen3, Gemma 2, GLM-5, MiMo, DeepSeek-V4), so it goes into the main text. The main line cannot use an external teacher for it (different vocabulary); it uses the GLM-5 cross-stage form with its own earlier checkpoints as teachers (`zero/post/opd.py`, decided 2026-10-10) | 17 |
 | GRPO improvements | GRPO itself is a consensus. Clip-higher is to be verified. Dr. GRPO and GSPO go into Frontier notes | 19 |
 
 ### 2.2 Each problem leads to the next method
