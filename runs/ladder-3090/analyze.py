@@ -91,23 +91,35 @@ def cmd_frontier(args: argparse.Namespace) -> None:
     cfg = configs(rows)
     final = scores(rows, "decay", 8)
     n_all = sum(1 for line in (HERE / "configs" / f"{args.scale}.jsonl").read_text().splitlines() if line.strip())
-    ys = np.array(sorted(final.values()))
-    best = min(final, key=final.get)
     out = {
         "scale": args.scale, "configs": n_all, "finished": len(all_final),
         "best_all_id": best_all, "best_all_val_bpb": all_final[best_all], "best_all_config": all_cfg[best_all],
         "full_space_finished": len(final),
-        "best_id": best, "best_val_bpb": final[best], "best_config": cfg[best],
-        "quantiles": {q: float(np.quantile(ys, q)) for q in (0.0, 0.1, 0.25, 0.5)},
     }
     print(f"{args.scale}：{n_all} 组里 {len(all_final)} 组训完（其中完整空间 {len(final)} 组）；"
           f"全部配置里最好 {best_all}：{all_final[best_all]:.4f}")
-    print(f"最好 {best}：val_bpb {final[best]:.4f}  " + "  ".join(f"{h}={cfg[best][h]:.3g}" for h in HP))
-    print("分位数：" + "  ".join(f"{q:.0%} {v:.4f}" for q, v in out["quantiles"].items()))
+    if final:
+        ys = np.array(sorted(final.values()))
+        best = min(final, key=final.get)
+        out |= {"best_id": best, "best_val_bpb": final[best], "best_config": cfg[best],
+                "quantiles": {q: float(np.quantile(ys, q)) for q in (0.0, 0.1, 0.25, 0.5)}}
+        print(f"最好 {best}：val_bpb {final[best]:.4f}  " + "  ".join(f"{h}={cfg[best][h]:.3g}" for h in HP))
+        print("分位数：" + "  ".join(f"{q:.0%} {v:.4f}" for q, v in out["quantiles"].items()))
+    else:
+        # 逐轮淘汰把完整空间的配置全淘汰了：退到稳定段 2/8（所有配置都训到）和 4/8 上分空间比较
+        out["stable_best_by_space"] = {}
+        for k in (2, 4):
+            for sp in ("full", "narrow"):
+                s = scores(load(args.scale, sp), "stable", k)
+                if s:
+                    out["stable_best_by_space"][f"{sp}_{k}"] = {"n": len(s), "best": min(s.values())}
+        print("完整空间没有配置进入最后一轮；稳定段各空间最好："
+              + "  ".join(f"{key.replace('_', ' ')}/8 {v['best']:.4f}（{v['n']} 组）"
+                          for key, v in out["stable_best_by_space"].items()))
 
     # 逐轮淘汰的代价：所有配置都训满了，就能模拟"如果按 2/8、4/8 处的稳定段成绩淘汰，会选出谁"
     s2, s4 = scores(rows, "stable", 2), scores(rows, "stable", 4)
-    if s2 and s4:
+    if final and s2 and s4:
         def top(ids: list[str], score: dict[str, float], frac: float) -> list[str]:
             ranked = sorted(ids, key=lambda i: score.get(i, math.inf))
             return ranked[: max(1, round(frac * len(ids)))]
@@ -137,8 +149,11 @@ def cmd_nql(args: argparse.Namespace) -> None:
     from opda.parametric import NoisyQuadraticDistribution
 
     rows = load(args.scale, "full")
-    plt = plt_setup()
     targets = [("decay", 8, "衰减后 8/8（完整训练）")] + [("stable", k, f"稳定段 {k}/8") for k in (4, 8)]
+    if all(len(scores(rows, phase, k)) < 20 for phase, k, _ in targets):
+        print(f"{args.scale}：完整空间每个目标都不到 20 组，跳过 NQL")
+        return
+    plt = plt_setup()
     out = {}
     fig, axes = plt.subplots(len(args.tails), len(targets), figsize=(3.4 * len(targets), 2.8 * len(args.tails)),
                              squeeze=False, sharey="row")
@@ -184,6 +199,9 @@ def cmd_sensitivity(args: argparse.Namespace) -> None:
     rows = load(args.scale, "full")
     cfg = configs(rows)
     final = scores(rows, "decay", 8)
+    if not final:
+        print(f"{args.scale}：完整空间没有训完的配置，跳过敏感性分析")
+        return
     ids = sorted(final, key=final.get)
     good = set(ids[: max(1, len(ids) // 4)])
     plt = plt_setup()

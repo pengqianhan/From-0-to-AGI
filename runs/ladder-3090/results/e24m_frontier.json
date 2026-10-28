@@ -1,0 +1,35 @@
+{
+  "scale": "e24m",
+  "configs": 48,
+  "finished": 12,
+  "best_all_id": "e24m-045",
+  "best_all_val_bpb": 1.3457612670713766,
+  "best_all_config": {
+    "tokens_per_step": 65536.0,
+    "lr": 0.0034834599277802293,
+    "beta1": 0.8917009336268701,
+    "beta2": 0.9984810158531192,
+    "warmup_frac": 0.019923512925730705,
+    "weight_decay": 0.00128919948786208,
+    "rope_theta": 34054.61771991811
+  },
+  "full_space_finished": 0,
+  "stable_best_by_space": {
+    "full_2": {
+      "n": 24,
+      "best": 1.5476959980416372
+    },
+    "narrow_2": {
+      "n": 24,
+      "best": 1.4920519978013087
+    },
+    "full_4": {
+      "n": 1,
+      "best": 1.4683807088933518
+    },
+    "narrow_4": {
+      "n": 23,
+      "best": 1.431196738114123
+    }
+  }
+}
