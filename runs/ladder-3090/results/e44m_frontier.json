@@ -1,0 +1,43 @@
+{
+  "scale": "e44m",
+  "configs": 24,
+  "finished": 6,
+  "best_all_id": "e44m-002",
+  "best_all_val_bpb": 1.2272610957088137,
+  "best_all_config": {
+    "tokens_per_step": 65536.0,
+    "lr": 0.021526894812520694,
+    "beta1": 0.9748204266626914,
+    "beta2": 0.9987626767857999,
+    "warmup_frac": 0.10839676809681228,
+    "weight_decay": 0.0027607625195034792,
+    "rope_theta": 4779.522748707844
+  },
+  "full_space_finished": 1,
+  "best_id": "e44m-002",
+  "best_val_bpb": 1.2272610957088137,
+  "best_config": {
+    "tokens_per_step": 65536.0,
+    "lr": 0.021526894812520694,
+    "beta1": 0.9748204266626914,
+    "beta2": 0.9987626767857999,
+    "warmup_frac": 0.10839676809681228,
+    "weight_decay": 0.0027607625195034792,
+    "rope_theta": 4779.522748707844
+  },
+  "quantiles": {
+    "0.0": 1.2272610957088137,
+    "0.1": 1.2272610957088137,
+    "0.25": 1.2272610957088137,
+    "0.5": 1.2272610957088137
+  },
+  "successive_halving": {
+    "survivors_round1": 6,
+    "survivors_round2": 3,
+    "picked": "e44m-002",
+    "picked_val_bpb": 1.2272610957088137,
+    "regret_bpb": 0.0,
+    "regret_rel": 0.0,
+    "global_top5_survived": 1
+  }
+}
