@@ -4,6 +4,7 @@
     uv run python runs/ladder-3090/analyze.py nql --scale e5m           # noisy quadratic limit：调够了没有
     uv run python runs/ladder-3090/analyze.py sensitivity --scale e5m   # 每个超参数 vs 最终 val_bpb
     uv run python runs/ladder-3090/analyze.py fit --fit e5m e11m e24m e44m --holdout e83m   # L(N, D) 与外推
+    uv run python runs/ladder-3090/analyze.py diagnose --fit e5m e11m e24m e44m --holdout e83m   # 留出没过时找原因
 
 图写到 runs/ladder-3090/figures/，数字写到 runs/ladder-3090/results/*.json。
 """
@@ -302,6 +303,48 @@ def cmd_fit(args: argparse.Namespace) -> None:
     print(f"图：{FIG / 'scaling_law.png'}")
 
 
+def cmd_diagnose(args: argparse.Namespace) -> None:
+    """留出检验没过时找原因：换拟合用的档、α = β、固定下限 E，看留出误差和外推怎么变。事后分析，不替代预注册的闸门。"""
+    import dataclasses
+
+    from zero.config import load_model_config
+    from zero.model import estimate_flops_per_token
+    from zero.tools.fit_scaling import bootstrap_chinchilla, fit_chinchilla
+
+    n_main = estimate_flops_per_token(load_model_config(REPO / "configs" / "main" / "pretrain.toml"), 2048) / 6
+    pts = {s: frontier_points(s) for s in [*args.fit, args.holdout]}
+    hold = pts[args.holdout]
+
+    def summary(fit_scales: list[str], tie: bool = False, e0: float = 0.0) -> dict:
+        fp = [dataclasses.replace(p, loss=p.loss - e0) for s in fit_scales for p in pts[s]]
+        law = fit_chinchilla(fp, param_count="flops", tie_exponents=tie)
+
+        def pred(n: float, d: float) -> float:
+            return e0 + float(law.predict(n, d))
+
+        errs = [pred(p.N, p.D) / p.loss - 1 for p in hold]
+        return {"fit": fit_scales, "tie": tie, "E": e0 + law.E, "alpha": law.alpha, "beta": law.beta,
+                "fit_max_rel_err": max(abs(pred(p.N, p.D) / (p.loss + e0) - 1) for p in fp),
+                "holdout_rel_err": errs, "holdout_max_rel_err": max(map(abs, errs)),
+                "main_T2048_400B": pred(n_main, args.main_tokens)}
+
+    out: dict = {"holdout": args.holdout, "variants": {}, "fixed_E": {}}
+    variants = {"all": args.fit, f"drop_{args.fit[0]}": args.fit[1:]}
+    for name, fs in variants.items():
+        for tie in (False, True):
+            out["variants"][name + ("_tie" if tie else "")] = summary(fs, tie)
+    for e0 in (0.0, 0.3, 0.5, 0.7, 0.9, 1.0):
+        out["fixed_E"][f"{e0:.1f}"] = summary(args.fit[1:], e0=e0)
+    boot = bootstrap_chinchilla([p for s in args.fit[1:] for p in pts[s]], n=args.boot, param_count="flops")
+    out[f"drop_{args.fit[0]}_main_ci95"] = list(boot.interval(lambda f: float(f.predict(n_main, args.main_tokens))))
+    for name, v in [*out["variants"].items(), *(("E=" + k, v) for k, v in out["fixed_E"].items())]:
+        print(f"{name:14s} E={v['E']:.3f} α={v['alpha']:.3f} β={v['beta']:.3f} 拟合最大误差 {v['fit_max_rel_err']:.2%}"
+              f"  留出最大误差 {v['holdout_max_rel_err']:.2%}  外推主线 {v['main_T2048_400B']:.4f}")
+    print(f"去掉 {args.fit[0]} 的 bootstrap 95% 区间：{out[f'drop_{args.fit[0]}_main_ci95']}")
+    (RES / "fit_diagnosis.json").write_text(json.dumps(out, indent=2, ensure_ascii=False, default=float))
+    print(f"写到 {RES / 'fit_diagnosis.json'}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -316,8 +359,14 @@ def main() -> None:
     p.add_argument("--tie", action="store_true", help="α = β（论文里的一种细化）")
     p.add_argument("--boot", type=int, default=200)
     p.add_argument("--main-tokens", type=float, default=400e9)
+    p = sub.add_parser("diagnose")
+    p.add_argument("--fit", nargs="+", required=True, help="第一个档是试着去掉的那个")
+    p.add_argument("--holdout", required=True)
+    p.add_argument("--boot", type=int, default=200)
+    p.add_argument("--main-tokens", type=float, default=400e9)
     args = ap.parse_args()
-    {"frontier": cmd_frontier, "nql": cmd_nql, "sensitivity": cmd_sensitivity, "fit": cmd_fit}[args.cmd](args)
+    {"frontier": cmd_frontier, "nql": cmd_nql, "sensitivity": cmd_sensitivity, "fit": cmd_fit,
+     "diagnose": cmd_diagnose}[args.cmd](args)
 
 
 if __name__ == "__main__":
