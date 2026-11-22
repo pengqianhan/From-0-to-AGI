@@ -1,0 +1,27 @@
+{
+  "scale": "e83m",
+  "configs": 6,
+  "finished": 6,
+  "best_all_id": "e83m-001",
+  "best_all_val_bpb": 1.1241938998823244,
+  "best_all_config": {
+    "tokens_per_step": 131072.0,
+    "lr": 0.0009641166843576982,
+    "beta1": 0.9453320248632818,
+    "beta2": 0.9962345001188687,
+    "warmup_frac": 0.007830203813276511,
+    "weight_decay": 0.04366055863708403,
+    "rope_theta": 255708.96085421217
+  },
+  "full_space_finished": 0,
+  "stable_best_by_space": {
+    "narrow_2": {
+      "n": 6,
+      "best": 1.2575463087675967
+    },
+    "narrow_4": {
+      "n": 6,
+      "best": 1.2019423255198567
+    }
+  }
+}
