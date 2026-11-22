@@ -23,6 +23,7 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 HERE = REPO / "runs" / "ladder-3090"
+sys.path.insert(0, str(HERE))  # import overtrain
 RES, FIG = HERE / "results", HERE / "figures"
 HP = ["tokens_per_step", "lr", "beta1", "beta2", "warmup_frac", "weight_decay", "rope_theta"]
 LOG_HP = {"tokens_per_step", "lr", "warmup_frac", "weight_decay", "rope_theta"}
@@ -303,6 +304,131 @@ def cmd_fit(args: argparse.Namespace) -> None:
     print(f"图：{FIG / 'scaling_law.png'}")
 
 
+# ---------------------------------------------------------------- 过训练点（README 第 6 阶段）
+
+OT_FIT, OT_HOLD, OT_E0 = ["e11m", "e24m", "e44m"], "e83m", (0.0, 0.3, 0.5, 0.7)
+OT_GATE_POINTS, OT_GATE = ("e11m-ot-000/DN256", "e24m-ot-000/DN128"), 0.01  # 预注册的检验：D 方向的外推，见 README
+OT_E_RMS = 0.005  # 只报告、不作为检验：模拟显示 D/N ≤ 256 的点定不下 E（README 第 6 阶段）
+
+
+def ot_points(scale: str) -> list:
+    """过训练点：衰减后的点按 D 分组取最好（同一个 D 可能有几个学习率；k 在这里不对应固定的 D）。
+    group 用档名，bootstrap 时同一个 N 的新老点是一组。"""
+    from zero.tools.fit_scaling import Point
+
+    if not (RES / f"{scale}_ot.csv").exists():
+        return []
+    best: dict[float, dict] = {}
+    for r in load(f"{scale}_ot"):
+        if r["phase"] == "decay" and (r["tokens"] not in best or r["val_bpb"] < best[r["tokens"]]["val_bpb"]):
+            best[r["tokens"]] = r
+    return [Point(N=r["n_eff"], D=r["tokens"], loss=r["val_bpb"], group=scale,
+                  name=f"{scale}_ot/{r['id']}/DN{r['tokens'] / r['n_eff']:.0f}") for _, r in sorted(best.items())]
+
+
+def fixed_e_fit(pts: list, e0: float):  # noqa: ANN201
+    """固定下限 E = e0 再拟合 A、α、B、β；返回 (预测函数, 拟合点的相对误差 RMS, 拟合)。"""
+    import dataclasses
+
+    from zero.tools.fit_scaling import fit_chinchilla
+
+    law = fit_chinchilla([dataclasses.replace(p, loss=p.loss - e0) for p in pts], param_count="flops")
+
+    def pred(n: float, d: float) -> float:
+        return e0 + float(law.predict(n, d))
+
+    rms = float(np.sqrt(np.mean([(pred(p.N, p.D) / p.loss - 1) ** 2 for p in pts])))
+    return pred, rms, law
+
+
+def cmd_preregister(args: argparse.Namespace) -> None:
+    """训练之前：用老点（e11m–e44m，3/8–8/8）按几种 E 拟合，写下对每个新点的预测。"""
+    import overtrain
+
+    old = [p for s in OT_FIT for p in frontier_points(s)]
+    planned = overtrain.planned_points()
+    out = {"fit_scales": OT_FIT, "planned": planned, "predictions": {}}
+    for e0 in (None, *OT_E0):
+        if e0 is None:
+            from zero.tools.fit_scaling import fit_chinchilla
+
+            law = fit_chinchilla(old, param_count="flops")
+            pred, key = (lambda n, d, law=law: float(law.predict(n, d))), f"free (E={law.E:.3f})"
+        else:
+            pred, _, _ = fixed_e_fit(old, e0)
+            key = f"E={e0:.1f}"
+        out["predictions"][key] = {f"{p['id']}/DN{p['D_over_N']:.0f}": pred(p["N"], p["D"]) for p in planned}
+    names = list(next(iter(out["predictions"].values())))
+    # 各种 E 的预测相差多少：差得太少，新点就分不出 E（2026-11-23 的模拟：D/N ≤ 256 时最多差约 0.6%）
+    out["spread_rel"] = {n: max(v[n] for v in out["predictions"].values()) / min(v[n] for v in out["predictions"].values()) - 1
+                         for n in names}
+    print("预测（val_bpb）：" + "  ".join(names))
+    for k, v in out["predictions"].items():
+        print(f"  {k:14s} " + "  ".join(f"{x:.4f}" for x in v.values()))
+    (RES / "ot_predictions.json").write_text(json.dumps(out, indent=2, ensure_ascii=False, default=float))
+    print(f"写到 {RES / 'ot_predictions.json'}")
+
+
+def cmd_ot_fit(args: argparse.Namespace) -> None:
+    """训练之后：老点 + 过训练点拟合，按 README 预注册的三条标准判定。"""
+    from zero.config import load_model_config
+    from zero.model import estimate_flops_per_token
+    from zero.tools.fit_scaling import bootstrap_chinchilla, fit_chinchilla
+
+    n_main = estimate_flops_per_token(load_model_config(REPO / "configs" / "main" / "pretrain.toml"), 2048) / 6
+    old = [p for s in OT_FIT for p in frontier_points(s)]
+    new = [p for s in OT_FIT for p in ot_points(s)]
+    hold = frontier_points(OT_HOLD)
+    pts = old + new
+    law = fit_chinchilla(pts, param_count="flops")
+    errs = {p.name: float(law.predict(p.N, p.D) / p.loss - 1) for p in hold}
+    # E 的剖面：固定 E 在 0–1.2 上扫，拟合 RMS 不超过 OT_E_RMS 的 E 算"数据允许"
+    grid = np.round(np.arange(0.0, 1.21, 0.05), 2)
+    profile = {float(e): fixed_e_fit(pts, float(e))[1] for e in grid if e < min(p.loss for p in pts)}
+    ok_e = [e for e, r in profile.items() if r <= OT_E_RMS]
+    boot = bootstrap_chinchilla(pts, n=args.boot, param_count="flops")
+    main_ci = boot.interval(lambda f: float(f.predict(n_main, args.main_tokens)))
+    pre = json.loads((RES / "ot_predictions.json").read_text())["predictions"]
+    actual = {p.name.split("/", 1)[1]: p.loss for p in new}
+    pre_err = {k: {n: v[n] / actual[n] - 1 for n in v if n in actual} for k, v in pre.items()}
+    free = next(k for k in pre_err if k.startswith("free"))  # 预注册的检验用不固定 E 的拟合
+    crit = {f"{n}_within_1pct": n in pre_err[free] and abs(pre_err[free][n]) < OT_GATE for n in OT_GATE_POINTS}
+    out = {"law": law.to_dict(), "fit_points": len(pts), "new_points": {p.name: p.loss for p in new},
+           "holdout_rel_err": errs, "holdout_max_rel_err": max(map(abs, errs.values())),
+           "E_profile_rms": profile, "E_allowed": [min(ok_e), max(ok_e)] if ok_e else None,
+           "main_T2048_400B": float(law.predict(n_main, args.main_tokens)), "main_ci95": list(main_ci),
+           "preregistered_pred_rel_err": pre_err, "gates": crit, "all_pass": all(crit.values()),
+           "reported_not_gated": "e83m 留出（已经看过）、数据允许的 E、外推主线区间"}
+    print(f"拟合 {len(pts)} 点（新 {len(new)}）：E={law.E:.3f} α={law.alpha:.3f} β={law.beta:.3f}，"
+          f"拟合最大误差 {law.max_rel_err:.2%}")
+    print(f"e83m 留出最大误差 {out['holdout_max_rel_err']:.2%}；数据允许的 E：{out['E_allowed']}；"
+          f"外推主线 {out['main_T2048_400B']:.4f}，95% 区间 [{main_ci[0]:.4f}, {main_ci[1]:.4f}]")
+    for k, v in pre_err.items():
+        print(f"  预注册 {k:14s} 对新点的最大误差 {max(map(abs, v.values())):.2%}")
+    print(f"预注册检验（D 方向外推，误差 < {OT_GATE:.0%}）：{crit} → {'通过' if out['all_pass'] else '没有通过'}")
+    (RES / "scaling_law_ot.json").write_text(json.dumps(out, indent=2, ensure_ascii=False, default=float))
+
+    plt = plt_setup()
+    fig, ax = plt.subplots(figsize=(7.2, 4.6))
+    for i, s in enumerate([*OT_FIT, OT_HOLD]):
+        sp = frontier_points(s, kmin=1) + ot_points(s)
+        color = SIZE_RAMP[min(i + 1, len(SIZE_RAMP) - 1)]
+        held = s == OT_HOLD
+        D = np.array([p.D for p in sp])
+        ax.scatter(D, [p.loss for p in sp], s=28, color=SURFACE if held else color, edgecolors=color,
+                   linewidths=1.4, zorder=3, label=f"{s}（N_eff {sp[0].N / 1e6:.1f}M）{'，留出' if held else ''}")
+        g = np.geomspace(D.min() * 0.8, max(D.max(), 3e9) * 1.3, 100)
+        ax.plot(g, law.predict(sp[0].N, g), color=color, linestyle="--" if held else "-", zorder=2)
+    ax.set_xscale("log")
+    ax.set_xlabel("训练 token 数 D")
+    ax.set_ylabel("验证集 bits-per-byte（每个预算下最好的配置）")
+    ax.set_title("加上过训练点（D/N 64–256）的 L(N, D) 拟合；空心点留出检验", fontsize=10)
+    ax.legend(fontsize=8, loc="upper right")
+    fig.tight_layout()
+    fig.savefig(FIG / "scaling_law_ot.png", dpi=150)
+    print(f"图：{FIG / 'scaling_law_ot.png'}")
+
+
 def cmd_diagnose(args: argparse.Namespace) -> None:
     """留出检验没过时找原因：换拟合用的档、α = β、固定下限 E，看留出误差和外推怎么变。事后分析，不替代预注册的闸门。"""
     import dataclasses
@@ -364,9 +490,13 @@ def main() -> None:
     p.add_argument("--holdout", required=True)
     p.add_argument("--boot", type=int, default=200)
     p.add_argument("--main-tokens", type=float, default=400e9)
+    sub.add_parser("preregister")
+    p = sub.add_parser("ot-fit")
+    p.add_argument("--boot", type=int, default=200)
+    p.add_argument("--main-tokens", type=float, default=400e9)
     args = ap.parse_args()
     {"frontier": cmd_frontier, "nql": cmd_nql, "sensitivity": cmd_sensitivity, "fit": cmd_fit,
-     "diagnose": cmd_diagnose}[args.cmd](args)
+     "diagnose": cmd_diagnose, "preregister": cmd_preregister, "ot-fit": cmd_ot_fit}[args.cmd](args)
 
 
 if __name__ == "__main__":

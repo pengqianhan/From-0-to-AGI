@@ -55,7 +55,7 @@ def n_eff(scale: str) -> float:
     from zero.config import load_config
     from zero.model import estimate_flops_per_token
 
-    cfg = load_config(REPO / "configs" / "ladder3090" / f"{scale}.toml")
+    cfg = load_config(REPO / "configs" / "ladder3090" / f"{scale.split('_')[0]}.toml")  # e11m_ot → e11m
     return estimate_flops_per_token(cfg.model, SEQ) / 6
 
 
@@ -232,7 +232,12 @@ def plan_for(cfg: dict, neff: float) -> Plan:
     seqs = tps // SEQ
     micro = min(micro, seqs)
     S = max(8, round(TOKENS_PER_PARAM * neff / tps / 8) * 8)
-    return Plan(S, micro, seqs // micro, max(1, round(S * cfg["warmup_frac"])))
+    warmup = max(1, round(S * cfg["warmup_frac"]))
+    # 过训练配置（configs/<档>_ot.jsonl）直接写明稳定段步数，warmup 固定为按 32 倍预算算出的步数，
+    # 这样第 k/8 的分支与同样长度的独立主干逐步相同，新点和阶梯里的老点也是同一个配方
+    S = cfg.get("stable_steps", S)
+    warmup = cfg.get("warmup_steps", warmup)
+    return Plan(S, micro, seqs // micro, warmup)
 
 
 def with_decay(c: int) -> tuple[int, float]:
@@ -436,9 +441,13 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 def cmd_branch(args: argparse.Namespace) -> None:
     neff = n_eff(args.scale)
-    cfgs = [c for c in load_configs(args.scale) if finished_trunk(c, plan_for(c, neff))]
-    plans = {c["id"]: plan_for(c, neff) for c in cfgs}
-    best = sorted(cfgs, key=lambda c: val_at(run_dir(c))[with_decay(plans[c["id"]].stable_steps)[0]])
+    if args.ids:  # 指定配置时主干不必训完，只要分叉点的 checkpoint 在（过训练：先分叉、再接着训主干）
+        best = [c for c in load_configs(args.scale) if c["id"] in set(args.ids)]
+        plans = {c["id"]: plan_for(c, neff) for c in best}
+    else:
+        cfgs = [c for c in load_configs(args.scale) if finished_trunk(c, plan_for(c, neff))]
+        plans = {c["id"]: plan_for(c, neff) for c in cfgs}
+        best = sorted(cfgs, key=lambda c: val_at(run_dir(c))[with_decay(plans[c["id"]].stable_steps)[0]])
     jobs = []
     for c in best[: args.top]:
         pl = plans[c["id"]]
@@ -555,6 +564,7 @@ def main() -> None:
         else:
             p.add_argument("--top", type=int, default=8)
             p.add_argument("--ks", type=int, nargs="+", default=[3, 4, 5, 6, 7])
+            p.add_argument("--ids", nargs="*")
     for name in ("collect", "status"):
         p = sub.add_parser(name)
         p.add_argument("--scale", required=True)
