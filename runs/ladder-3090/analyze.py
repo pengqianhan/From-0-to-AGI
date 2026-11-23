@@ -386,7 +386,8 @@ def cmd_ot_fit(args: argparse.Namespace) -> None:
     grid = np.round(np.arange(0.0, 1.21, 0.05), 2)
     profile = {float(e): fixed_e_fit(pts, float(e))[1] for e in grid if e < min(p.loss for p in pts)}
     ok_e = [e for e, r in profile.items() if r <= OT_E_RMS]
-    boot = bootstrap_chinchilla(pts, n=args.boot, param_count="flops")
+    # bootstrap 用和点估计相同的网格（默认 40 会让全样本重抽的预测与点估计差 0.15%，点落到区间外）
+    boot = bootstrap_chinchilla(pts, n=args.boot, param_count="flops", grid=80)
     main_ci = boot.interval(lambda f: float(f.predict(n_main, args.main_tokens)))
     pre = json.loads((RES / "ot_predictions.json").read_text())["predictions"]
     actual = {p.name.split("/", 1)[1]: p.loss for p in new}
@@ -398,11 +399,13 @@ def cmd_ot_fit(args: argparse.Namespace) -> None:
            "E_profile_rms": profile, "E_allowed": [min(ok_e), max(ok_e)] if ok_e else None,
            "main_T2048_400B": float(law.predict(n_main, args.main_tokens)), "main_ci95": list(main_ci),
            "preregistered_pred_rel_err": pre_err, "gates": crit, "all_pass": all(crit.values()),
-           "reported_not_gated": "e83m 留出（已经看过）、数据允许的 E、外推主线区间"}
+           "reported_not_gated": "e83m 留出（已经看过）、数据允许的 E、外推主线区间",
+           "main_ci95_note": "按 N 组重抽，只有 3 组：区间是“去掉某一档”的敏感度范围，不是统计意义上的 95% 区间"}
     print(f"拟合 {len(pts)} 点（新 {len(new)}）：E={law.E:.3f} α={law.alpha:.3f} β={law.beta:.3f}，"
           f"拟合最大误差 {law.max_rel_err:.2%}")
     print(f"e83m 留出最大误差 {out['holdout_max_rel_err']:.2%}；数据允许的 E：{out['E_allowed']}；"
-          f"外推主线 {out['main_T2048_400B']:.4f}，95% 区间 [{main_ci[0]:.4f}, {main_ci[1]:.4f}]")
+          f"外推主线 {out['main_T2048_400B']:.4f}，按 N 组 bootstrap 的范围（只有 3 组，不是 95% 区间）"
+          f"[{main_ci[0]:.4f}, {main_ci[1]:.4f}]")
     for k, v in pre_err.items():
         print(f"  预注册 {k:14s} 对新点的最大误差 {max(map(abs, v.values())):.2%}")
     print(f"预注册检验（D 方向外推，误差 < {OT_GATE:.0%}）：{crit} → {'通过' if out['all_pass'] else '没有通过'}")
