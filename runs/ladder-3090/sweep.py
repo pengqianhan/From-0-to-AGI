@@ -48,14 +48,20 @@ SEQ = 2048
 TOKENS_PER_PARAM = 32
 # 每档的 micro batch（每次前向的序列数）：65,536 词表的 FP32 logits 是 micro × 2048 × 65536 × 4 字节，
 # 小模型的显存几乎全花在这里。试点阶段按实测调整
-MICRO = {"e5m": 4, "e11m": 4, "e24m": 4, "e44m": 4, "e83m": 4, "e166m": 2}
+MICRO = {"e5m": 4, "e11m": 4, "e24m": 4, "e44m": 4, "e83m": 4, "e166m": 2,
+         # 第 7 阶段的循环模型（configs/ladder3090/<档>_lf3/_lm3.toml）：与稠密的同一档相同，试点核对过显存
+         "e24m_lf3": 4, "e24m_lm3": 4, "e44m_lf3": 4, "e44m_lm3": 4}
 
 
 def n_eff(scale: str) -> float:
+    """每 token FLOPs / 6。档有自己的 toml（如循环模型 e24m_lf3）就用它，否则用 _ 前的档（e11m_ot → e11m）。"""
     from zero.config import load_config
     from zero.model import estimate_flops_per_token
 
-    cfg = load_config(REPO / "configs" / "ladder3090" / f"{scale.split('_')[0]}.toml")  # e11m_ot → e11m
+    path = REPO / "configs" / "ladder3090" / f"{scale}.toml"
+    if not path.exists():
+        path = path.with_name(f"{scale.split('_')[0]}.toml")
+    cfg = load_config(path)
     return estimate_flops_per_token(cfg.model, SEQ) / 6
 
 

@@ -13,7 +13,8 @@ The components (all are "consensus techniques", see GOAL.md 3.3):
 - `SwiGLU`: a gated feed-forward network down(silu(gate(x)) * up(x)).
 - `Block`: x + attn(norm(x)), then x + ffn(norm(x)).
 - `Transformer`: embedding → N Blocks → final RMSNorm → lm_head (it can share weights with the
-  embedding).
+  embedding). Optional for experiments: a range of layers can run several times with shared
+  weights (looped Transformer, `n_loops` in ModelConfig; runs/ladder-3090/README.md, stage 7).
 
 No linear layer has a bias. `zero/hf.py` gives the mapping from these parameter names to the
 names of Hugging Face `Qwen3ForCausalLM`. `tests/test_model_hf_parity.py` makes sure that the two
@@ -295,6 +296,13 @@ class Transformer(nn.Module):
         self.lm_head = nn.Linear(config.dim, config.vocab_size, bias=False)
         if config.tie_embeddings:
             self.lm_head.weight = self.tok_emb.weight
+        # Gates of the looped range: one vector of length dim for each pass r >= 2 (init 0).
+        # They are 1-D, so the optimizer puts them in the group without weight decay.
+        self.loop_gates: nn.ParameterList | None = None
+        if config.n_loops > 1 and config.loop_gate:
+            self.loop_gates = nn.ParameterList(
+                [nn.Parameter(torch.zeros(config.dim)) for _ in range(config.n_loops - 1)]
+            )
         self.rope = RotaryEmbedding(
             config.head_dim, config.max_seq_len, config.rope_theta, config.rope_scaling
         )
@@ -312,10 +320,11 @@ class Transformer(nn.Module):
         The two projections that "write back to the residual stream" (wo, w_down) are also
         divided by sqrt(2 * n_layers). Then the variance of the residual stream does not grow
         with the number of layers (a common method, for example in GPT-2 and OLMo).
-        The RMSNorm weights are 1.
+        With a loop, n_layers is the number of layer applications (a looped layer counts each
+        time it runs). The RMSNorm weights are 1. The loop gates are 0.
         """
         std = self.config.init_std
-        out_std = std / math.sqrt(2 * self.config.n_layers)
+        out_std = std / math.sqrt(2 * self.config.layer_applications)
         for name, module in self.named_modules():
             if isinstance(module, nn.Linear):
                 s = out_std if name.endswith(("attn.wo", "ffn.w_down")) else std
@@ -324,6 +333,9 @@ class Transformer(nn.Module):
                 nn.init.normal_(module.weight, mean=0.0, std=std)
             elif isinstance(module, RMSNorm):
                 nn.init.ones_(module.weight)
+        if self.loop_gates is not None:
+            for g in self.loop_gates:
+                nn.init.zeros_(g)
 
     # ---- Forward pass ----
     def forward(
@@ -338,13 +350,32 @@ class Transformer(nn.Module):
         cos, sin = self.rope(start_pos, seqlen)
         h = self.tok_emb(tokens)
         use_ckpt = self.activation_checkpointing and self.training and kv_cache is None
-        for layer in self.layers:
-            if use_ckpt:
-                h = torch.utils.checkpoint.checkpoint(
-                    layer, h, cos, sin, None, start_pos, use_reentrant=False
-                )
-            else:
-                h = layer(h, cos, sin, kv_cache, start_pos)
+
+        def run(layers: Any, h: torch.Tensor) -> torch.Tensor:
+            for layer in layers:
+                if use_ckpt:
+                    h = torch.utils.checkpoint.checkpoint(
+                        layer, h, cos, sin, None, start_pos, use_reentrant=False
+                    )
+                else:
+                    h = layer(h, cos, sin, kv_cache, start_pos)
+            return h
+
+        if self.config.n_loops == 1:
+            h = run(self.layers, h)
+        else:
+            if kv_cache is not None:
+                raise NotImplementedError("KV cache with a looped model (n_loops > 1) is not supported")
+            start, end = self.config.loop_range
+            p = run(self.layers[:start], h)  # prelude
+            core = self.layers[start:end]
+            h = run(core, p)  # pass 1
+            for r in range(1, self.config.n_loops):  # passes 2..n_loops
+                if self.loop_gates is not None:
+                    # x_r = p + g_r * (m_{r-1} - p): g = 0 gives the input p again, g = 1 a plain loop
+                    h = p + self.loop_gates[r - 1] * (h - p)
+                h = run(core, h)
+            h = run(self.layers[end:], h)  # coda
         h = self.norm(h)
         return self.lm_head(h)
 
@@ -398,7 +429,8 @@ def count_params(config: ModelConfig) -> dict[str, int]:
     per_layer = attn + qk_norm + ffn + norms
     emb = config.vocab_size * d
     head = 0 if config.tie_embeddings else config.vocab_size * d
-    total = emb + head + L * per_layer + d
+    gates = (config.n_loops - 1) * d if config.loop_gate else 0  # stored once (not per application)
+    total = emb + head + L * per_layer + d + gates
     return {
         "total": total,
         "embedding": emb + head,
@@ -421,9 +453,11 @@ def estimate_flops_per_token(config: ModelConfig, seq_len: int) -> float:
     - The two matmuls QK^T and AV in attention: 4 * q_dim * T per token in the forward pass.
       Multiply by 3 for forward + backward: 12 * q_dim * T (as in PaLM Appendix B). There is no
       halving for the causal mask; this is the same definition as PaLM / nanochat.
+    - Looped model: L is the number of layer applications (a looped layer counts each time it
+      runs). lm_head counts once. The loop gates are elementwise and do not count.
     """
     assert config.head_dim is not None
-    d, L = config.dim, config.n_layers
+    d, L = config.dim, config.layer_applications
     n_matmul = L * (
         d * config.q_dim + 2 * d * config.kv_dim + config.q_dim * d + 3 * d * config.ffn_dim
     )

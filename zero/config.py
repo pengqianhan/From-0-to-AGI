@@ -80,6 +80,14 @@ class ModelConfig:
     qk_norm: bool = True  # QK-Norm of Qwen3: RMSNorm on q and k of each head, over head_dim
     tie_embeddings: bool = True  # the input embedding and the output lm_head share weights
     init_std: float = 0.02
+    # Looped Transformer (runs/ladder-3090/README.md, stage 7). Layers [loop_start, loop_end) run
+    # n_loops times with shared weights; loop_end = None means n_layers. n_loops = 1 is the normal model.
+    n_loops: int = 1
+    loop_start: int = 0
+    loop_end: int | None = None
+    # Gated re-entry of the looped range: pass r >= 2 gets p + g_r * (m_{r-1} - p), where p is the
+    # input of the looped range and g_r is a learnable vector (init 0). Needs n_loops > 1.
+    loop_gate: bool = False
 
     def __post_init__(self) -> None:
         if self.head_dim is None and self.n_heads > 0:
@@ -109,6 +117,14 @@ class ModelConfig:
             self.head_dim > 0 and self.head_dim % 2 == 0,
             f"head_dim={self.head_dim} must be a positive even number (RoPE rotates pairs)",
         )
+        need(self.n_loops >= 1, f"n_loops must be >= 1, got {self.n_loops}")
+        start, end = self.loop_range
+        need(
+            0 <= start < end <= self.n_layers,
+            f"the looped layer range [loop_start, loop_end) = [{start}, {end}) must satisfy "
+            f"0 <= loop_start < loop_end <= n_layers={self.n_layers}",
+        )
+        need(not self.loop_gate or self.n_loops > 1, "loop_gate = true needs n_loops > 1")
         need(self.rope_theta > 0, "rope_theta must be > 0")
         need(self.norm_eps > 0, "norm_eps must be > 0")
         need(self.init_std > 0, "init_std must be > 0")
@@ -138,6 +154,20 @@ class ModelConfig:
     def kv_dim(self) -> int:
         assert self.head_dim is not None
         return self.n_kv_heads * self.head_dim
+
+    @property
+    def loop_range(self) -> tuple[int, int]:
+        """The looped layer range [start, end)."""
+        return self.loop_start, self.n_layers if self.loop_end is None else self.loop_end
+
+    @property
+    def layer_applications(self) -> int:
+        """How many times a layer runs in one forward pass, summed over the layers.
+
+        = n_layers without a loop; the looped range counts n_loops times.
+        """
+        start, end = self.loop_range
+        return self.n_layers + (self.n_loops - 1) * (end - start)
 
 
 # ---------------------------------------------------------------------------

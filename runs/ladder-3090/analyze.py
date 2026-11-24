@@ -5,6 +5,7 @@
     uv run python runs/ladder-3090/analyze.py sensitivity --scale e5m   # 每个超参数 vs 最终 val_bpb
     uv run python runs/ladder-3090/analyze.py fit --fit e5m e11m e24m e44m --holdout e83m   # L(N, D) 与外推
     uv run python runs/ladder-3090/analyze.py diagnose --fit e5m e11m e24m e44m --holdout e83m   # 留出没过时找原因
+    uv run python runs/ladder-3090/analyze.py loop      # 第 7 阶段：循环 Transformer vs 稠密（results/loop_result.json）
 
 图写到 runs/ladder-3090/figures/，数字写到 runs/ladder-3090/results/*.json。
 """
@@ -474,6 +475,212 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
     print(f"写到 {RES / 'fit_diagnosis.json'}")
 
 
+# ---------------------------------------------------------------- 循环 Transformer（README 第 7 阶段）
+
+LOOP_SCALES = {"e24m_lf3": "e24m", "e24m_lm3": "e24m", "e44m_lf3": "e44m", "e44m_lm3": "e44m"}
+LOOP_FIT = ["e11m", "e24m", "e44m"]  # 去掉 e5m 的稠密拟合
+LOOP_LAW = {"E": 0.0, "A": 12.178, "alpha": 0.1532, "B": 5.424, "beta": 0.1215}  # 预注册里写的拟合
+LOOP_PRED = {"e24m_lf3": 1.2790, "e24m_lm3": 1.3061, "e44m_lf3": 1.1537, "e44m_lm3": 1.1971}  # 预注册的预测
+LOOP_TIE = 0.01  # 相对差 ≤ −1% 循环更好，≥ +1% 循环更差，中间持平
+LOOP_E83M = ("e44m_lf3", 1.1538)  # e44m_lf3 的不靠拟合的对照：e83m 实测点按 log D 内插
+
+
+def verdict(rel: float) -> str:
+    return "循环更好" if rel <= -LOOP_TIE else "循环更差" if rel >= LOOP_TIE else "持平"
+
+
+def loop_main_config(scale: str, decisions: dict) -> tuple[dict | None, str]:
+    """这一档用来比较的那个配置：e24m 是学习率检查选中的倍数；e44m 是最后一个没有失败的配置（发散后减半重训的那个）。"""
+    import sweep as sw
+
+    cfgs = [c for c in sw.load_configs(scale) if not sw.failed(sw.run_dir(c))]
+    if not cfgs:
+        return None, "还没有配置（或全部失败）"
+    if scale.startswith("e24m"):
+        key = f"loop_lr_{scale.split('_')[1]}"
+        if key not in decisions:
+            return None, f"decisions.json 里还没有 {key}"
+        cfgs = [c for c in cfgs if c["lr_mult"] == decisions[key]["value"]]
+        if not cfgs:
+            return None, f"选中的 lr×{decisions[key]['value']} 那个配置失败了"
+    return cfgs[-1], ""
+
+
+def loop_gate_stats(scale: str, cfg: dict) -> dict | None:
+    """g_r 训练后的大小（只报告）：读主干最后一个 checkpoint 的 model.pt。"""
+    import sweep as sw
+    import torch
+
+    from zero.train.checkpoint import find_latest
+
+    ck = find_latest(sw.run_dir(cfg) / "ckpt")
+    if ck is None or not (ck / "model.pt").exists():
+        return None
+    sd = torch.load(ck / "model.pt", map_location="cpu", weights_only=True)
+    gates = sorted(k for k in sd if k.startswith("loop_gates."))
+    out = {"checkpoint": ck.name}
+    for k in gates:
+        g = sd[k].float()
+        out[f"g{int(k.split('.')[1]) + 2}"] = {"mean": float(g.mean()), "mean_abs": float(g.abs().mean()),
+                                              "rms": float(g.pow(2).mean().sqrt()), "min": float(g.min()),
+                                              "max": float(g.max())}
+    return out
+
+
+def loop_tok_per_s(cfg: dict) -> float | None:
+    """主干稳态吞吐（只报告）：日志里 tok/s 的中位数，去掉前 100 步（含编译）。"""
+    import sweep as sw
+
+    xs = [r["tok_per_s"] for r in sw.read_log(sw.run_dir(cfg)) if r.get("step", 0) > 100 and "tok_per_s" in r]
+    return float(np.median(xs)) if xs else None
+
+
+def e83m_interp(D: float) -> float | None:
+    """e83m 的实测前沿点在 D 处按 log D 线性内插（D 不在实测范围内时返回 None）。"""
+    pts = sorted(frontier_points("e83m", kmin=1), key=lambda p: p.D)
+    for a, b in zip(pts, pts[1:]):
+        if a.D <= D <= b.D:
+            t = (math.log(D) - math.log(a.D)) / (math.log(b.D) - math.log(a.D))
+            return a.loss + t * (b.loss - a.loss)
+    return None
+
+
+def cmd_loop(args: argparse.Namespace) -> None:
+    """循环模型 vs 稠密：算力相同（主要检验，只看 8/8）、参数相同（次要）、只报告的数。结果缺了就说缺什么，不崩。"""
+    import sweep as sw
+
+    from zero.tools.fit_scaling import fit_chinchilla
+
+    missing: list[str] = []
+    law = fit_chinchilla([p for s in LOOP_FIT for p in frontier_points(s)], param_count="flops")
+    got = {"E": law.E, "A": law.A, "alpha": law.alpha, "B": law.B, "beta": law.beta}
+    law_ok = abs(got["E"]) < 1e-9 and all(abs(got[k] / v - 1) < 1e-3 for k, v in LOOP_LAW.items() if v)
+    print(f"稠密拟合（{'+'.join(LOOP_FIT)}，param_count=flops）：E={law.E:.4f} A={law.A:.3f} α={law.alpha:.4f} "
+          f"B={law.B:.3f} β={law.beta:.4f} → {'与预注册一致' if law_ok else '!!! 与预注册不一致 !!!'}")
+
+    def dense_n(loss: float, D: float) -> float | None:
+        """在同一个 D 上解稠密拟合：L = E + A/N^α + B/D^β → N。"""
+        rest = loss - law.E - law.B / D**law.beta
+        return float((law.A / rest) ** (1 / law.alpha)) if rest > 0 else None
+
+    dense_front = {d: {int(p.name.rsplit("k", 1)[1]): p for p in frontier_points(d)} for d in set(LOOP_SCALES.values())}
+    decisions = json.loads((RES / "decisions.json").read_text()) if (RES / "decisions.json").exists() else {}
+    out: dict = {"law": law.to_dict(), "law_matches_prereg": law_ok, "prereg_law": LOOP_LAW,
+                 "tie_threshold": LOOP_TIE, "scales": {}}
+    table = []
+    for scale, dense in LOOP_SCALES.items():
+        res: dict = {"dense_scale": dense, "n_eff_loop": sw.n_eff(scale), "n_eff_dense": sw.n_eff(dense)}
+        out["scales"][scale] = res
+        csv_path = RES / f"{scale}.csv"
+        rows = load(scale) if csv_path.exists() else []
+        if not rows:
+            missing.append(f"{scale}：没有 {csv_path.name}（先跑 sweep.py collect --scale {scale}）")
+        # 学习率检查（只报告；e24m 才有）
+        lr_vals = {f"x{r['lr_mult']}": r["val_bpb"] for r in rows
+                   if r["phase"] == "decay" and r["k"] == 4 and "lr_mult" in r} if scale.startswith("e24m") else {}
+        res["lr_check_k4"] = {k: float(v) for k, v in lr_vals.items()}
+        key = f"loop_lr_{scale.split('_')[1]}"
+        res["lr_decision"] = decisions.get(key)
+        retry = decisions.get(f"loop_lr_retry_{scale}")
+        if retry:
+            res["lr_retry"] = retry
+        cfg, why = loop_main_config(scale, decisions)
+        if cfg is None:
+            missing.append(f"{scale}：{why}")
+            continue
+        res["config"] = cfg["id"]
+        res["lr_mult"] = cfg["lr_mult"]
+        mine = {r["k"]: r for r in rows if r["id"] == cfg["id"] and r["phase"] == "decay"}
+        for k in (4, 8):
+            r, dp = mine.get(k), dense_front[dense].get(k)
+            if r is None:
+                missing.append(f"{scale}：{cfg['id']} 没有 k={k}/8 的衰减点")
+                continue
+            L, D, n_loop = r["val_bpb"], r["tokens"], r["n_eff"]
+            pt: dict = {"val_bpb": L, "D": D, "D_over_N_eff": D / n_loop}
+            if dp is not None:
+                pt["same_params"] = {"dense_id": dp.name, "dense_val_bpb": dp.loss, "dense_D": dp.D,
+                                     "D_matches": dp.D == D, "rel_diff": L / dp.loss - 1,
+                                     "verdict": verdict(L / dp.loss - 1)}
+                if dp.D != D:
+                    print(f"!!! {scale} k={k}：D = {D:.0f} 与稠密 {dp.name} 的 D = {dp.D:.0f} 不同")
+            n_eq = dense_n(L, D)
+            pt["dense_equivalent_N"] = n_eq
+            if n_eq is not None:
+                pt["dense_equivalent_N_over_n_eff_loop"] = n_eq / res["n_eff_loop"]
+                pt["dense_equivalent_N_over_n_eff_dense"] = n_eq / res["n_eff_dense"]
+            if k == 8:
+                pred = float(law.predict(n_loop, D))
+                pt["same_compute"] = {"pred": pred, "prereg_pred": LOOP_PRED[scale],
+                                      "pred_matches_prereg": abs(pred - LOOP_PRED[scale]) < 6e-5,
+                                      "rel_diff": L / pred - 1, "verdict": verdict(L / pred - 1)}
+                if not pt["same_compute"]["pred_matches_prereg"]:
+                    print(f"!!! {scale}：拟合在 (N_eff, D) 的预测 {pred:.4f} ≠ 预注册 {LOOP_PRED[scale]:.4f}")
+                if scale == LOOP_E83M[0]:
+                    ref = e83m_interp(D)
+                    pt["e83m_interp"] = {"value": ref, "prereg_value": LOOP_E83M[1],
+                                         "rel_diff": None if ref is None else L / ref - 1,
+                                         "verdict": None if ref is None else verdict(L / ref - 1)}
+            res[f"k{k}"] = pt
+        res["tok_per_s"] = loop_tok_per_s(cfg)
+        if scale.endswith("lm3"):
+            try:
+                res["gates"] = loop_gate_stats(scale, cfg)
+            except Exception as e:  # noqa: BLE001  只报告的数，读不出来不影响主要检验
+                res["gates"] = None
+                print(f"{scale}：读不出 g_r（{e}）")
+        table.append(scale)
+
+    print("\n主要检验（算力相同，8/8）：相对差 = 循环实测 / 稠密预测 − 1，≤ −1% 循环更好，≥ +1% 循环更差")
+    print(f"{'档':10s} {'配置':14s} {'lr×':>5s} {'N_eff':>8s} {'D':>7s} {'实测':>7s} {'稠密预测':>8s} {'相对差':>8s}  判定")
+    for scale in table:
+        res = out["scales"][scale]
+        pt = res.get("k8")
+        if not pt:
+            continue
+        sc = pt["same_compute"]
+        print(f"{scale:10s} {res['config']:14s} {res['lr_mult']:5g} {res['n_eff_loop'] / 1e6:7.2f}M "
+              f"{pt['D'] / 1e9:6.3f}B {pt['val_bpb']:7.4f} {sc['pred']:8.4f} {sc['rel_diff']:+8.2%}  {sc['verdict']}")
+        if "e83m_interp" in pt and pt["e83m_interp"]["value"] is not None:
+            e = pt["e83m_interp"]
+            print(f"{'':10s} 不靠拟合的对照：e83m 实测内插 {e['value']:.4f}（预注册 {e['prereg_value']}），"
+                  f"相对差 {e['rel_diff']:+.2%} → {e['verdict']}")
+    print("\n次要检验（参数相同：同一档稠密的最好成绩，D 相同）")
+    for scale in table:
+        res = out["scales"][scale]
+        for k in (4, 8):
+            pt = res.get(f"k{k}")
+            if not pt or "same_params" not in pt:
+                continue
+            sp = pt["same_params"]
+            print(f"{scale:10s} k={k}/8 循环 {pt['val_bpb']:.4f} vs {sp['dense_id']} {sp['dense_val_bpb']:.4f}："
+                  f"{sp['rel_diff']:+.2%} → {sp['verdict']}{'' if sp['D_matches'] else '（D 不同！）'}")
+    print("\n只报告：相当于多大的稠密模型（同一个 D 上解稠密拟合）、学习率检查、吞吐、g_r")
+    for scale in table:
+        res = out["scales"][scale]
+        for k in (4, 8):
+            pt = res.get(f"k{k}")
+            if pt and pt["dense_equivalent_N"]:
+                print(f"{scale:10s} k={k}/8 等效稠密 N {pt['dense_equivalent_N'] / 1e6:6.2f}M = "
+                      f"{pt['dense_equivalent_N_over_n_eff_loop']:.2f} × 循环 N_eff = "
+                      f"{pt['dense_equivalent_N_over_n_eff_dense']:.2f} × 稠密 N_eff")
+        if res["lr_check_k4"]:
+            print(f"{scale:10s} 学习率检查 4/8：" + "  ".join(f"{k} {v:.4f}" for k, v in sorted(res["lr_check_k4"].items()))
+                  + (f" → 选 lr×{res['lr_decision']['value']}" if res["lr_decision"] else ""))
+        if res.get("tok_per_s"):
+            print(f"{scale:10s} 稳态吞吐 {res['tok_per_s']:,.0f} tok/s")
+        for name, gs in (res.get("gates") or {}).items():
+            if name != "checkpoint":
+                print(f"{scale:10s} {name}（{res['gates']['checkpoint']}）：均值 {gs['mean']:+.3f} 平均|g| {gs['mean_abs']:.3f} "
+                      f"范围 [{gs['min']:+.3f}, {gs['max']:+.3f}]")
+    out["missing"] = missing
+    if missing:
+        print("\n缺的结果（这些检验还不能做）：\n  " + "\n  ".join(missing))
+    RES.mkdir(exist_ok=True)
+    (RES / "loop_result.json").write_text(json.dumps(out, indent=2, ensure_ascii=False, default=float))
+    print(f"\n写到 {RES / 'loop_result.json'}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -497,9 +704,11 @@ def main() -> None:
     p = sub.add_parser("ot-fit")
     p.add_argument("--boot", type=int, default=200)
     p.add_argument("--main-tokens", type=float, default=400e9)
+    sub.add_parser("loop")
     args = ap.parse_args()
     {"frontier": cmd_frontier, "nql": cmd_nql, "sensitivity": cmd_sensitivity, "fit": cmd_fit,
-     "diagnose": cmd_diagnose, "preregister": cmd_preregister, "ot-fit": cmd_ot_fit}[args.cmd](args)
+     "diagnose": cmd_diagnose, "preregister": cmd_preregister, "ot-fit": cmd_ot_fit,
+     "loop": cmd_loop}[args.cmd](args)
 
 
 if __name__ == "__main__":

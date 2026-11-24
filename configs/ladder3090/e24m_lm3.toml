@@ -1,0 +1,10 @@
+# Ladder stage 7 (runs/ladder-3090/README.md): e24m with the middle layers looped 3 times (lm3),
+# 1 + 2×3 + 1 layers with gated re-entry. 8 layer applications, N_eff = 31.06M.
+base = "e24m.toml"
+[model]
+n_loops = 3
+loop_start = 1
+loop_end = 3
+loop_gate = true
+[train]
+out_dir = "out/ladder3090/e24m_lm3/scratch"
