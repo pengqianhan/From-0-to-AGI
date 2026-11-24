@@ -1,0 +1,966 @@
+<title>3090 阶梯实验报告</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;900&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* 版式：左侧固定目录 + 一条约 980px 的正文栏；每一节是一个实验阶段，图在文字下方，表格可横向滚动 */
+:root {
+  --bg: #f6f7f8; --surface: #fcfcfb; --fg: #16181b; --fg2: #4c5158; --muted: #7a8089; --rule: #e2e5e9; --grid: #e8eaec;
+  --accent: #2a78d6; --accent-ink: #1c5cab;
+  --sc0: #86b6ef; --sc1: #5598e7; --sc2: #2a78d6; --sc3: #1c5cab; --sc4: #104281;
+  --c1: #2a78d6; --c2: #eb6834; --c3: #1baf7a; --c-muted: #b4b6b9; --c-faint: #d4d7db;
+  --bad: #c8312f; --bad-bg: #fbe9e8; --good: #127a3e; --good-bg: #e5f4ea; --warn: #9a6400; --warn-bg: #fbf1dc;
+  --pause: #c9cdd2;
+  --f-display: "Noto Serif SC", "Songti SC", "STSong", serif;
+  --f-body: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #121315; --surface: #1a1a19; --fg: #eceef0; --fg2: #b8bdc4; --muted: #8b9199; --rule: #2c2f33; --grid: #2a2c2f;
+  --accent: #3987e5; --accent-ink: #86b6ef;
+  --sc0: #184f95; --sc1: #256abf; --sc2: #3987e5; --sc3: #6da7ec; --sc4: #9ec5f4;
+  --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c-muted: #5d6268; --c-faint: #3a3d42;
+  --bad: #ef6b68; --bad-bg: #3a1d1c; --good: #4cc27a; --good-bg: #16301f; --warn: #e0a640; --warn-bg: #352a14;
+  --pause: #3d4146; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #121315; --surface: #1a1a19; --fg: #eceef0; --fg2: #b8bdc4; --muted: #8b9199; --rule: #2c2f33; --grid: #2a2c2f;
+  --accent: #3987e5; --accent-ink: #86b6ef;
+  --sc0: #184f95; --sc1: #256abf; --sc2: #3987e5; --sc3: #6da7ec; --sc4: #9ec5f4;
+  --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c-muted: #5d6268; --c-faint: #3a3d42;
+  --bad: #ef6b68; --bad-bg: #3a1d1c; --good: #4cc27a; --good-bg: #16301f; --warn: #e0a640; --warn-bg: #352a14;
+  --pause: #3d4146; color-scheme: dark; }
+
+body { background: var(--bg); color: var(--fg); font-family: var(--f-body); font-size: 15px; line-height: 1.7; }
+.wrap { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 40px; max-width: 1280px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 32px 80px; }
+nav.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start; font-size: 13px; }
+nav.toc .eyebrow { margin-bottom: 8px; }
+nav.toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+nav.toc a { display: block; color: var(--fg2); text-decoration: none; padding: 3px 10px; border-left: 2px solid var(--rule); }
+nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent-ink); border-left-color: var(--accent); outline: none; }
+main { min-width: 0; display: grid; gap: 56px; }
+@media (max-width: 900px) { .wrap { grid-template-columns: minmax(0, 1fr); } nav.toc { display: none; } }
+
+.eyebrow { font-family: var(--f-mono); font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--f-display); font-weight: 900; font-size: clamp(30px, 5vw, 46px); line-height: 1.15; margin: 6px 0 14px; text-wrap: balance; }
+h2 { font-family: var(--f-display); font-weight: 600; font-size: 26px; line-height: 1.3; margin: 0; text-wrap: balance; display: flex; gap: 12px; align-items: baseline; }
+h2 .no { font-family: var(--f-mono); font-size: 14px; color: var(--accent-ink); font-weight: 600; }
+h3 { font-size: 16.5px; font-weight: 700; margin: 0; text-wrap: balance; }
+p { margin: 0; max-width: 72ch; }
+section { display: grid; gap: 18px; scroll-margin-top: 20px; }
+.lede { font-size: 16.5px; color: var(--fg2); max-width: 75ch; }
+.mono, .num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+code { font-family: var(--f-mono); font-size: .88em; background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; padding: 0 4px; }
+ul.notes { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; max-width: 75ch; }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.tile { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 14px 16px; display: grid; gap: 2px; align-content: start; }
+.tile .v { font-family: var(--f-mono); font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.tile .k { font-size: 12.5px; color: var(--muted); }
+.tile .s { font-size: 12.5px; color: var(--fg2); }
+
+.verdicts { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+.verdict { border-radius: 8px; padding: 14px 16px; display: grid; gap: 6px; border: 1px solid var(--rule); background: var(--surface); }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; padding: 2px 9px; border-radius: 99px; width: fit-content; }
+.pill.bad { color: var(--bad); background: var(--bad-bg); }
+.pill.good { color: var(--good); background: var(--good-bg); }
+.pill.warn { color: var(--warn); background: var(--warn-bg); }
+.verdict .big { font-family: var(--f-mono); font-size: 20px; font-weight: 600; }
+
+.fig { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 16px 16px 12px; display: grid; gap: 10px; min-width: 0; }
+.fig .cap { font-size: 13px; color: var(--fg2); max-width: 80ch; }
+.fig .cap b { color: var(--fg); }
+.fig-head { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+.smallmult { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px 14px; }
+.smallmult .sm-t { font-size: 12.5px; font-weight: 500; color: var(--fg2); }
+svg.chart { width: 100%; height: auto; display: block; overflow: visible; font-family: var(--f-body); }
+svg.chart text { fill: var(--muted); font-size: 11px; }
+svg.chart .ax path, svg.chart .ax line { stroke: var(--rule); }
+svg.chart .gridl { stroke: var(--grid); stroke-width: 1; }
+svg.chart .lab { fill: var(--fg2); font-size: 11.5px; }
+svg.chart .lab-strong { fill: var(--fg); font-size: 12px; font-weight: 500; }
+svg.chart .ttl { fill: var(--fg2); font-size: 11.5px; }
+
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 7px; overflow: hidden; background: var(--bg); }
+.seg button { font: inherit; font-size: 12.5px; padding: 4px 11px; border: 0; background: transparent; color: var(--fg2); cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--rule); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--fg2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 11px; height: 11px; border-radius: 3px; display: inline-block; flex: none; }
+.sw.line { height: 3px; border-radius: 2px; width: 16px; }
+.sw.ring { background: transparent !important; border: 2px solid; border-radius: 50%; width: 10px; height: 10px; }
+.sw.dia { width: 9px; height: 9px; transform: rotate(45deg); border-radius: 1px; }
+
+.tbl { overflow-x: auto; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { padding: 7px 12px; text-align: left; border-bottom: 1px solid var(--rule); white-space: nowrap; vertical-align: top; }
+td.wr { white-space: normal; min-width: 260px; }
+th { font-size: 12px; color: var(--muted); font-weight: 500; background: var(--bg); }
+tr:last-child td { border-bottom: 0; }
+td.r, th.r { text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+td.bad { color: var(--bad); font-weight: 600; }
+td.good { color: var(--good); font-weight: 600; }
+tr.hl td { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+
+.tip { position: fixed; z-index: 20; pointer-events: none; background: var(--fg); color: var(--bg); font-size: 12px; line-height: 1.5;
+  padding: 7px 10px; border-radius: 6px; max-width: 300px; box-shadow: 0 4px 14px rgb(0 0 0 / .18); }
+.tip b { font-weight: 700; }
+.tip .mono { font-size: 11.5px; }
+.callout { border-left: 3px solid var(--warn); background: var(--warn-bg); padding: 10px 14px; border-radius: 0 6px 6px 0; font-size: 14px; max-width: 80ch; }
+.callout.bad { border-left-color: var(--bad); background: var(--bad-bg); }
+footer { color: var(--muted); font-size: 12.5px; }
+@media (prefers-reduced-motion: no-preference) { .seg button { transition: background .12s; } }
+</style>
+
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <div class="eyebrow">目录</div>
+  <ol>
+    <li><a href="#summary">结论速览</a></li>
+    <li><a href="#timeline">时间线与算力</a></li>
+    <li><a href="#data">数据与试点</a></li>
+    <li><a href="#ladder">阶梯与搜索</a></li>
+    <li><a href="#curves">训练曲线</a></li>
+    <li><a href="#hp">超参数</a></li>
+    <li><a href="#fit">第 4 阶段：拟合与留出</a></li>
+    <li><a href="#ot">第 6 阶段：过训练</a></li>
+    <li><a href="#mainline">外推主线</a></li>
+    <li><a href="#decisions">决定记录</a></li>
+    <li><a href="#files">文件在哪里</a></li>
+  </ol>
+</nav>
+
+<main>
+<header id="summary" style="display:grid;gap:18px">
+  <div>
+    <div class="eyebrow">From-0-to-AGI · runs/ladder-3090 · 2026-10-01 → 2026-11-24</div>
+    <h1>3090 阶梯实验报告</h1>
+    <p class="lede">在 3 张 RTX 3090 上，从 4.8M 到 83M 有效参数训练了 5 档模型。每档做超参数搜索，拟合 L(N, D) = E + A/N<sup>α</sup> + B/D<sup>β</sup>，再用留出的一档和过训练点检验外推。目的是给"主线模型要买多少算力"提供依据。</p>
+  </div>
+  <div class="tiles" id="tiles"></div>
+  <div class="verdicts">
+    <div class="verdict">
+      <span class="pill bad">✗ 没有通过</span>
+      <h3>第 4 阶段：e83m 留出检验</h3>
+      <div class="big">最大误差 5.80% <span style="font-size:13px;color:var(--muted)">（标准 &lt; 1%）</span></div>
+      <p style="font-size:13.5px;color:var(--fg2)">e5m–e44m 的拟合把下限 E 推到 1.101，对 e83m 的预测全部偏高。去掉 e5m 后留出误差只有 0.16%，但这是看过结果之后的选择。</p>
+    </div>
+    <div class="verdict">
+      <span class="pill bad">✗ 没有通过</span>
+      <h3>第 6 阶段：D 方向外推（预注册）</h3>
+      <div class="big">−3.49% / −1.89% <span style="font-size:13px;color:var(--muted)">（标准 &lt; 1%）</span></div>
+      <p style="font-size:13.5px;color:var(--fg2)">把 D/N 从约 40 拉到 128–256，实际 loss 都比预测高。数据增加时 loss 下降得比公式慢，这个函数形式不能沿 D 外推到主线（D/N 约 400）。</p>
+    </div>
+    <div class="verdict">
+      <span class="pill good">✓ 可用</span>
+      <h3>能可靠做到的</h3>
+      <div class="big">预测下一档（约 2 倍 N）</div>
+      <p style="font-size:13.5px;color:var(--fg2)">在相同 D/N 下，去掉 e5m 的纯幂律能准确预测更大一档。超参数也有清楚的迁移规律：最优 batch 随规模变大，过训练时不需要另调学习率。</p>
+    </div>
+  </div>
+</header>
+
+<section id="timeline">
+  <h2><span class="no">01</span>时间线与算力</h2>
+  <p>实验跨 55 天，真正训练的时间约 22 天，其余是暂停。两次暂停是因为用户要用 GPU，一次是 GPU 维护。10 月 27 日起只能用 GPU0，后面三档都是单卡跑的。</p>
+  <div class="fig">
+    <div class="legend" id="tl-legend"></div>
+    <div id="c-timeline" style="overflow-x:auto"></div>
+    <div class="cap">每一行是一档。实心条是在训练，灰色斜纹是暂停，红色是调度器崩溃后的空闲。底部一行是那段时间能用的卡。</div>
+  </div>
+  <div class="fig">
+    <h3>GPU·小时：计划与实际</h3>
+    <div class="legend"><span><i class="sw" style="background:var(--c-muted)"></i>计划（试点后修正）</span><span><i class="sw" style="background:var(--c1)"></i>实际</span></div>
+    <div id="c-gpuh"></div>
+    <div class="cap">合计实际约 <b class="mono" id="gpuh-total"></b> GPU·小时，计划 <b class="mono" id="gpuh-plan"></b>。e5m、e11m 超出最多：小 batch 的配置每步开销大，e11m 还有误重训和补搜多训满的配置。</div>
+  </div>
+</section>
+
+<section id="data">
+  <h2><span class="no">02</span>数据与试点</h2>
+  <p>训练数据按主线配比从 6 个开放数据集下载，经过与主线相同的流水线（启发式过滤、MinHash 去重、去污染），共 3.82B token。按配比，代码数据最先用完（0.516B ÷ 0.15 = 3.44B），所以单个运行最多读 3.44B token 时才不会重复读数据。</p>
+  <div class="grid2">
+    <div class="fig">
+      <h3>各来源的训练 token</h3>
+      <div class="legend"><span><i class="sw" style="background:var(--c1)"></i>英文</span><span><i class="sw" style="background:var(--c2)"></i>中文</span><span><i class="sw" style="background:var(--c3)"></i>代码</span></div>
+      <div id="c-data"></div>
+      <div class="cap">右侧数字是验证集上的字节/token（分词器 65,536 词表）。按配比加权是 <b class="mono">4.18</b>，和第 13 章在样本上测的 4.15 一致。</div>
+    </div>
+    <div class="fig">
+      <h3>试点吞吐（单卡、单进程）</h3>
+      <div id="c-pilot"></div>
+      <div class="cap">小模型的时间主要花在 65,536 词表的 logits 上。同一张卡并发 2–3 个 e5m 反而更慢（198k、194k tok/s），所以每张卡一次只跑一个配置。</div>
+    </div>
+  </div>
+</section>
+
+<section id="ladder">
+  <h2><span class="no">03</span>阶梯与超参数搜索</h2>
+  <p>按 Lourie et al. 2026 的做法，scaling law 只在"充分调参"的前沿上可靠。每档做随机搜索，搜索 7 个超参数。配置数随尺寸递减，从 e11m 起用逐轮淘汰：先训到 2/8，留一半训到 4/8，再留四分之一训满。e24m 起，一半配置从按小档结果收窄的空间抽。</p>
+  <div class="tbl"><table id="t-ladder"></table></div>
+  <div class="fig">
+    <div class="fig-head"><h3>每个配置在 2/8 预算处的成绩</h3>
+      <div class="legend"><span><i class="sw" style="background:var(--c1)"></i>完整空间</span><span><i class="sw" style="background:var(--c2)"></i>收窄空间</span><span><i class="sw" style="background:var(--c3)"></i>边界扩展</span><span><i class="sw line" style="background:var(--fg)"></i>这一档最终最好的成绩</span></div></div>
+    <div id="c-strip"></div>
+    <div class="cap">2/8 是所有配置都训到的预算，所以每个点可以直接比较。同一个模型、同样多的 token，超参数能让 e5m 的成绩相差 1 bits/byte 以上。规模越大，分布越窄（也因为大档的配置更多来自收窄空间）。y 轴的上端截在 3.4，更差的点画在顶端。</div>
+  </div>
+  <div class="fig">
+    <h3>逐轮淘汰：每一档有多少配置训到各个预算</h3>
+    <div class="legend"><span><i class="sw" style="background:var(--sc0)"></i>训到 2/8</span><span><i class="sw" style="background:var(--sc2)"></i>训到 4/8</span><span><i class="sw" style="background:var(--sc4)"></i>训满 8/8</span></div>
+    <div id="c-funnel"></div>
+    <div class="cap">e5m 全部训满，用来模拟逐轮淘汰：按 2/8、4/8 的成绩淘汰，选中的就是真正最好的 e5m-103，全局前 5 名都留下。所以从 e11m 起采用逐轮淘汰。e11m 训满的比计划多，因为边界扩展的配置也进了排名。</div>
+  </div>
+</section>
+
+<section id="curves">
+  <h2><span class="no">04</span>训练曲线</h2>
+  <p>每个配置用 WSD 调度：warmup 后学习率恒定，每 1/8 预算存一次 checkpoint。只有最好的几组会从 3/8–8/8 的 checkpoint 分叉，再多训 25% 的步数，把学习率线性衰减到 0。衰减后的成绩才用来拟合 scaling law。</p>
+  <div class="fig">
+    <div class="fig-head"><h3>稳定段 val_bpb 与衰减分叉</h3><div class="seg" id="seg-curves" role="group" aria-label="选择档"></div></div>
+    <div class="legend"><span><i class="sw line" style="background:var(--c-muted)"></i>其他配置（稳定段）</span><span><i class="sw line" style="background:var(--c1)"></i>最终最好的配置</span><span><i class="sw" style="background:var(--c2);border-radius:50%"></i>衰减分叉后的成绩</span><span><i class="sw ring" style="border-color:var(--fg)"></i>拟合用的前沿点（每个预算的最好成绩）</span></div>
+    <div id="c-curves"></div>
+    <div class="cap" id="cap-curves"></div>
+  </div>
+</section>
+
+<section id="hp">
+  <h2><span class="no">05</span>超参数：敏感性与迁移</h2>
+  <p>小模型对超参数很敏感，模型越大越不敏感。下面先看每个超参数和成绩的关系，再看最优配置怎样随规模变化。</p>
+  <div class="fig">
+    <div class="fig-head"><h3>每个超参数 vs 2/8 处的 val_bpb</h3><div class="seg" id="seg-sens" role="group" aria-label="选择档"></div></div>
+    <div class="legend"><span><i class="sw" style="background:var(--c1)"></i>完整空间</span><span><i class="sw" style="background:var(--c2)"></i>收窄空间</span><span><i class="sw" style="background:var(--c3)"></i>边界扩展</span></div>
+    <div class="smallmult" id="c-sens"></div>
+    <div class="cap">batch 的影响最大：e5m 最好的 25% 全部是每步 ≤ 2<sup>18</sup> token。学习率低于 1e-4 明显变差。β₁、β₂、warmup、weight decay、RoPE θ 看不出明显趋势。β 轴画的是 1 − β 的对数，越往左 β 越接近 1。</div>
+  </div>
+  <div class="grid2">
+    <div class="fig">
+      <h3>每种 batch 下的最好成绩（2/8 处）</h3>
+      <div class="legend" id="lg-batch"></div>
+      <div id="c-batch"></div>
+      <div class="cap">e5m、e11m 一路"越小越好"，最优落在完整空间的下边界 2<sup>15</sup>，所以触发了边界扩展（补搜 2<sup>13</sup>–2<sup>15</sup>）。扩展后的最优是 2<sup>14</sup>，在区间内部。</div>
+    </div>
+    <div class="fig">
+      <h3>最好成绩 vs 有效参数</h3>
+      <div id="c-bestN"></div>
+      <div class="cap">e5m → e11m 进步 18%，之后每档进步 8%–10%。e5m 明显偏离后面四档的趋势，这是第 4 阶段留出检验失败的主要原因。</div>
+    </div>
+  </div>
+  <div class="fig">
+    <h3>最好配置的超参数随规模的变化</h3>
+    <div class="legend"><span><i class="sw" style="background:var(--c1);border-radius:50%"></i>每档最终最好的配置</span><span><i class="sw" style="background:var(--c-faint)"></i>这一档收窄空间的范围（按更小档最好的 10% 外推）</span></div>
+    <div class="smallmult" id="c-transfer"></div>
+    <div class="cap">最优 batch 随规模单调变大：2<sup>14</sup> → 2<sup>14</sup> → 2<sup>16</sup> → 2<sup>16</sup> → 2<sup>17</sup>。其他超参数在相邻档之间跳动较大，说明在前沿附近成绩对它们不敏感，单个最优点本身也有噪声。</div>
+  </div>
+</section>
+
+<section id="fit">
+  <h2><span class="no">06</span>第 4 阶段：拟合 L(N, D) 与 e83m 留出</h2>
+  <p>每档取 3/8–8/8 六个预算下衰减后的最好成绩作为拟合点（丢掉最短的两个预算），用 e5m–e44m 的 24 个点拟合，再预测从没参与拟合的 e83m。</p>
+  <div class="fig">
+    <div class="fig-head"><h3>val_bpb vs 训练 token：数据点与拟合曲线</h3><div class="seg" id="seg-fit" role="group" aria-label="选择拟合"></div></div>
+    <div class="legend" id="lg-fit"></div>
+    <div id="c-fit"></div>
+    <div class="cap" id="cap-fit"></div>
+  </div>
+  <div class="grid2">
+    <div class="fig">
+      <h3>e83m 留出误差（预测 / 实际 − 1）</h3>
+      <div class="legend"><span><i class="sw line" style="background:var(--c1)"></i>e5m–e44m（预注册）</span><span><i class="sw line" style="background:var(--c2)"></i>去掉 e5m</span><span><i class="sw line" style="background:var(--c3)"></i>去掉 e5m + 过训练点</span></div>
+      <div id="c-holdout"></div>
+      <div class="cap">灰带是 ±1% 的闸门。预注册的拟合 6 个点全部偏高，而且随 D 变大。去掉 e5m 后几乎贴着 0，加上过训练点后又变差到 −1.05%。</div>
+    </div>
+    <div class="fig">
+      <h3>拟合残差 vs D/N（去掉 e5m + 过训练点的拟合）</h3>
+      <div class="legend" id="lg-resid"></div>
+      <div id="c-resid"></div>
+      <div class="cap">老点集中在 D/N 15–40，残差在 ±0.5% 内。过训练点（菱形）的残差随 D/N 系统地变化：e11m 在 D/N 128 处 −0.26%，在 256 处 −0.94%。函数形式装不下这些点。</div>
+    </div>
+  </div>
+  <div class="tbl"><table id="t-diag"></table></div>
+  <p style="font-size:13.5px;color:var(--fg2)">上表的后几行都是看过 e83m 结果之后做的诊断，不能代替预注册的闸门。去掉 e5m 后 E 从 0 到 0.5 都能过 1% 的闸门，所以 E 定不下来：所有档的 D/N 都在 15–40，N 和 D 一起变，分不开"N 项""D 项"和 E。</p>
+</section>
+
+<section id="ot">
+  <h2><span class="no">07</span>第 6 阶段：过训练点（预注册）</h2>
+  <p>为了把 D 和 N 分开，在 e11m、e24m 上用各自最好的配置一直训到 D/N = 128–256，并在开训前写下预测。检验标准：两个点的实际值都和预测相差不到 1%。e44m 按用户决定没有训。</p>
+  <div class="grid2">
+    <div class="fig">
+      <h3>e11m：过训练曲线</h3>
+      <div id="c-ot-e11m"></div>
+    </div>
+    <div class="fig">
+      <h3>e24m：过训练曲线</h3>
+      <div id="c-ot-e24m"></div>
+    </div>
+  </div>
+  <div class="legend" style="margin-top:-6px"><span><i class="sw line" style="background:var(--c1)"></i>lr ×1（稳定段）</span><span><i class="sw line" style="background:var(--c3)"></i>lr ×0.5</span><span><i class="sw line" style="background:var(--c2)"></i>lr ×2</span><span><i class="sw" style="background:var(--fg);border-radius:50%"></i>衰减后的成绩</span><span><i class="sw ring" style="border-color:var(--muted)"></i>阶梯里的老前沿点</span><span><b style="color:var(--bad)">×</b> 预注册的预测</span><span><i class="sw line" style="background:repeating-linear-gradient(90deg,var(--muted) 0 5px,transparent 5px 8px)"></i>预注册拟合</span><span><i class="sw line" style="background:repeating-linear-gradient(90deg,var(--muted) 0 2px,transparent 2px 5px)"></i>加入新点后重拟合</span></div>
+  <div class="grid2">
+    <div class="fig">
+      <h3>检验点：预测与实际</h3>
+      <div class="tbl" style="border:0"><table id="t-ot"></table></div>
+      <div class="cap">实际值都比预测高（更差），超过 1% 的门槛。按预注册的规则 2，这个函数形式不能沿 D 外推到主线。</div>
+    </div>
+    <div class="fig">
+      <h3>学习率检查（e11m，D/N = 128）</h3>
+      <div id="c-lr"></div>
+      <div class="cap">×0.5 只比 ×1 好 0.04%，低于 0.5% 的阈值，所以 e24m 沿用 lr ×1。过训练时不需要另调学习率。</div>
+    </div>
+  </div>
+  <div class="grid2">
+    <div class="fig">
+      <h3>固定不同的 E，对检验点的误差</h3>
+      <div class="legend"><span><i class="sw" style="background:var(--c1);border-radius:50%"></i>e11m D/N 256（检验点）</span><span><i class="sw" style="background:var(--c2);border-radius:50%"></i>e24m D/N 128（检验点）</span><span><i class="sw" style="background:var(--c-muted);border-radius:50%"></i>其他新点</span></div>
+      <div id="c-Eerr"></div>
+      <div class="cap">E 取 0 到 0.7，误差都在 −3% 左右，远在 ±1% 的灰带之外。偏差不是 E 选错造成的，开训前的模拟也是这样预计的。</div>
+    </div>
+    <div class="fig">
+      <h3>数据允许的 E（加入新点后的剖面）</h3>
+      <div id="c-Eprof"></div>
+      <div class="cap">固定 E 再拟合其余参数，拟合 RMS ≤ 0.5% 的 E 都算"数据允许"：0–0.65。过训练点没能把 E 定下来，因为 D/N 最多只到 256。</div>
+    </div>
+  </div>
+  <div class="callout bad"><b>局限：</b>老点是每个预算下从很多组配置里挑出的最好成绩，新点每个预算只有一组配置，只做了学习率检查。所以"D 项失效"和"过训练点调得不如老点好"不能完全分开。</div>
+</section>
+
+<section id="mainline">
+  <h2><span class="no">08</span>外推到主线</h2>
+  <p>主线模型：N_eff 0.92B（按序列 2048 计），训练 400B token，D/N 约 433。下图是各种拟合对主线 val_bpb 的外推。参照：本轮最大的 e83m 是 1.124。</p>
+  <div class="fig">
+    <div id="c-forest"></div>
+    <div class="cap">横线是该拟合的区间。按 N 组 bootstrap 时只有 3–4 个组，区间很粗。"去掉 e5m + 过训练点"那一行的范围只是"去掉某一档"的敏感度，下限按构造就等于点估计。两次预注册的检验都没有通过，所以<b>这些数都不能作为主线的预测</b>，只能当很粗的参考。</div>
+  </div>
+  <div class="callout">要可信地外推到主线，需要更大的 N（e166m 起）或更多不重复的数据（让 D/N 超过 256）。这就是第 5 阶段"要买多少算力"要测算的问题。</div>
+</section>
+
+<section id="decisions">
+  <h2><span class="no">09</span>自动决定的记录</h2>
+  <p>调度器在阶段之间按事先写好的规则自动做决定，记进 <code>results/decisions.json</code>。</p>
+  <div class="tbl"><table id="t-dec"></table></div>
+</section>
+
+<section id="files">
+  <h2><span class="no">10</span>文件在哪里</h2>
+  <div class="tbl"><table>
+    <tr><th>内容</th><th>路径</th><th>进 git</th></tr>
+    <tr><td>计划、每阶段的进度与结论</td><td class="mono">runs/ladder-3090/README.md</td><td>是</td></tr>
+    <tr><td>每档每个配置每个 checkpoint 的 val_bpb</td><td class="mono">runs/ladder-3090/results/&lt;档&gt;.csv、&lt;档&gt;_ot.csv</td><td>是</td></tr>
+    <tr><td>每档的前沿、分位数、逐轮淘汰模拟</td><td class="mono">results/&lt;档&gt;_frontier.json</td><td>是</td></tr>
+    <tr><td>拟合：第 4 阶段 / 训 e83m 之前 / 事后诊断</td><td class="mono">results/scaling_law.json、fit_before_e83m.json、fit_diagnosis.json</td><td>是</td></tr>
+    <tr><td>第 6 阶段：预注册的预测 / 拟合与检验</td><td class="mono">results/ot_predictions.json、scaling_law_ot.json</td><td>是</td></tr>
+    <tr><td>noisy quadratic limit、收窄与扩展的范围</td><td class="mono">results/&lt;档&gt;_nql.json、_narrow_ranges.json、_ext_ranges.json</td><td>是</td></tr>
+    <tr><td>自动决定</td><td class="mono">results/decisions.json</td><td>是</td></tr>
+    <tr><td>静态图（matplotlib）</td><td class="mono">runs/ladder-3090/figures/*.png</td><td>是</td></tr>
+    <tr><td>采样出的配置</td><td class="mono">runs/ladder-3090/configs/*.jsonl</td><td>是</td></tr>
+    <tr><td>本报告（由脚本生成）</td><td class="mono">runs/ladder-3090/build_report.py → report.html</td><td>—</td></tr>
+    <tr><td>每个运行的 checkpoint、log.jsonl、调度日志</td><td class="mono">out/ladder3090/</td><td>否</td></tr>
+    <tr><td>分片数据、分词器（本地盘 / 数据盘）</td><td class="mono">data/ladder3090/、/mnt/DataSets/phan635/From-0-to-AGI/ladder/</td><td>否</td></tr>
+  </table></div>
+</section>
+
+<footer>由 <code>runs/ladder-3090/build_report.py</code> 从 results/ 下的文件生成。时间线、GPU·小时、数据量和试点吞吐取自 README 的文字记录。</footer>
+</main>
+</div>
+<div class="tip" id="tip" hidden></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script>
+const D = /*__DATA__*/null;
+const SC = ["e5m", "e11m", "e24m", "e44m", "e83m"];
+const scVar = s => `var(--sc${SC.indexOf(s)})`;
+const HP = ["tokens_per_step", "lr", "beta1", "beta2", "warmup_frac", "weight_decay", "rope_theta"];
+const HPN = { tokens_per_step: "batch（token/步）", lr: "学习率", beta1: "β₁", beta2: "β₂", warmup_frac: "warmup 占比", weight_decay: "weight decay", rope_theta: "RoPE θ" };
+const SPACE_C = { full: "var(--c1)", narrow: "var(--c2)", ext: "var(--c3)" };
+const SPACE_N = { full: "完整空间", narrow: "收窄空间", ext: "边界扩展", ot: "过训练" };
+const f3 = d3.format(".3f"), f4 = d3.format(".4f"), pct = v => (v >= 0 ? "+" : "−") + Math.abs(v * 100).toFixed(2) + "%";
+const fM = n => n >= 1e9 ? (n / 1e9).toFixed(2) + "B" : n >= 1e6 ? (n / 1e6).toFixed(n >= 1e8 ? 0 : 1) + "M" : (n / 1e3).toFixed(0) + "k";
+const pow2 = v => { const e = Math.log2(v); return Number.isInteger(Math.round(e * 100) / 100) ? `2^${Math.round(e)}` : fM(v); };
+const sup = n => String(n).split("").map(c => "⁰¹²³⁴⁵⁶⁷⁸⁹"[c] ?? c).join("");
+const p2 = v => "2" + sup(Math.round(Math.log2(v)));
+function hpFmt(h, v) {
+  if (h === "tokens_per_step") return p2(v);
+  if (h === "beta1" || h === "beta2") return v.toFixed(v > 0.999 ? 5 : 4);
+  if (h === "rope_theta") return d3.format(".2s")(v);
+  return d3.format(".2~e")(v);
+}
+const BETA_T = [0.3, 0.1, 0.01, 0.001, 0.0001];
+const betaFmt = t => String(+(1 - t).toFixed(4));
+const expFmt = v => v >= 1000 ? d3.format(".0s")(v) : v >= 1 ? String(v) : "1e" + Math.round(Math.log10(v));
+const law = (L, N, Dd) => L.E + L.A / Math.pow(N, L.alpha) + L.B / Math.pow(Dd, L.beta);
+
+// ---------- 工具 ----------
+const tip = document.getElementById("tip");
+function showTip(ev, html) {
+  tip.innerHTML = html; tip.hidden = false;
+  const r = tip.getBoundingClientRect(), pad = 14;
+  let x = ev.clientX + pad, y = ev.clientY + pad;
+  if (x + r.width > innerWidth - 8) x = ev.clientX - r.width - pad;
+  if (y + r.height > innerHeight - 8) y = ev.clientY - r.height - pad;
+  tip.style.left = Math.max(8, x) + "px"; tip.style.top = Math.max(8, y) + "px";
+}
+const hideTip = () => { tip.hidden = true; };
+function hover(sel, fn) { sel.on("pointerenter pointermove", (ev, d) => showTip(ev, fn(d))).on("pointerleave", hideTip); }
+
+function chart(el, { w = 760, h = 360, m = {} } = {}) {
+  m = Object.assign({ t: 14, r: 18, b: 42, l: 58 }, m);
+  const root = typeof el === "string" ? d3.select(el) : el;
+  root.selectAll("*").remove();
+  const svg = root.append("svg").attr("class", "chart").attr("viewBox", `0 0 ${w} ${h}`);
+  const g = svg.append("g").attr("transform", `translate(${m.l},${m.t})`);
+  return { svg, g, iw: w - m.l - m.r, ih: h - m.t - m.b, m };
+}
+function axes(c, x, y, o = {}) {
+  const yt = o.yTicks ?? y.ticks(o.yN ?? 6), xt = o.xTicks ?? (x.ticks ? x.ticks(o.xN ?? 7) : null);
+  if (!o.noYGrid) c.g.append("g").selectAll("line").data(yt).join("line").attr("class", "gridl")
+    .attr("x1", 0).attr("x2", c.iw).attr("y1", d => y(d)).attr("y2", d => y(d));
+  if (o.xGrid && xt) c.g.append("g").selectAll("line").data(xt).join("line").attr("class", "gridl")
+    .attr("y1", 0).attr("y2", c.ih).attr("x1", d => x(d)).attr("x2", d => x(d));
+  const xa = d3.axisBottom(x).tickSizeOuter(0); if (xt) xa.tickValues(xt); if (o.xf) xa.tickFormat(o.xf);
+  const ya = d3.axisLeft(y).tickSizeOuter(0).tickValues(yt); if (o.yf) ya.tickFormat(o.yf);
+  c.g.append("g").attr("class", "ax").attr("transform", `translate(0,${c.ih})`).call(xa);
+  c.g.append("g").attr("class", "ax").call(ya);
+  if (o.xl) c.g.append("text").attr("class", "ttl").attr("x", c.iw).attr("y", c.ih + 34).attr("text-anchor", "end").text(o.xl);
+  if (o.yl) c.g.append("text").attr("class", "ttl").attr("x", -c.m.l + 4).attr("y", -4).attr("text-anchor", "start").text(o.yl);
+}
+function seg(el, items, cur, onPick) {
+  const box = d3.select(el); box.selectAll("*").remove();
+  box.selectAll("button").data(items).join("button").attr("type", "button").attr("id", d => el.slice(1) + "-" + d.key)
+    .text(d => d.label).attr("aria-pressed", d => d.key === cur)
+    .on("click", (ev, d) => { box.selectAll("button").attr("aria-pressed", b => b.key === d.key); onPick(d.key); });
+  onPick(cur);
+}
+const logTicks = (lo, hi, per = [1, 2, 5]) => { const t = []; for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++) for (const m of per) { const v = m * 10 ** e; if (v >= lo && v <= hi) t.push(v); } return t; };
+const tokFmt = v => v >= 1e9 ? (v / 1e9) + "B" : (v / 1e6) + "M";
+
+// ---------- 数据整理 ----------
+const ALL = Object.assign({}, D.scales, D.ot);
+for (const [s, e] of Object.entries(ALL)) {
+  e.name = s; e.byCfg = e.configs.map(c => ({ ...c, stable: [], decay: [] }));
+  for (const [ci, k, ph, tok, v] of e.rows) (ph ? e.byCfg[ci].decay : e.byCfg[ci].stable).push({ k, tok, v });
+  for (const c of e.byCfg) { c.stable.sort((a, b) => a.k - b.k); c.decay.sort((a, b) => a.tok - b.tok); c.s2 = c.stable.find(p => p.k === 2)?.v; c.maxK = d3.max(c.stable, p => p.k) || 0; }
+}
+const best = s => D.scales[s].frontier.best_all_val_bpb;
+
+// ---------- 概览数字 ----------
+(() => {
+  const nCfg = SC.reduce((a, s) => a + D.scales[s].configs.length, 0) + Object.values(D.ot).reduce((a, e) => a + e.configs.length, 0);
+  const nEval = Object.values(ALL).reduce((a, e) => a + e.rows.length, 0);
+  const gpu = D.manual.gpu_hours.reduce((a, r) => a + r.actual, 0);
+  const tiles = [
+    { v: "5 + 2", k: "档（阶梯 + 过训练）", s: "N_eff 4.8M → 83M" },
+    { v: nCfg, k: "组超参数配置", s: "随机搜索 + 收窄 + 边界扩展" },
+    { v: nEval.toLocaleString(), k: "次验证集评估", s: "稳定段 checkpoint + 衰减分叉" },
+    { v: "≈" + Math.round(gpu), k: "GPU·小时", s: "RTX 3090，功耗上限 240 W" },
+    { v: f4(best("e83m")), k: "最好 val_bpb（e83m）", s: "e83m-001，batch 2¹⁷" },
+  ];
+  d3.select("#tiles").selectAll("div").data(tiles).join("div").attr("class", "tile")
+    .html(d => `<span class="k">${d.k}</span><span class="v">${d.v}</span><span class="s">${d.s}</span>`);
+})();
+
+// ---------- 时间线 ----------
+(() => {
+  const T = D.manual.timeline, P = d3.timeParse("%Y-%m-%dT%H:%M");
+  const lanes = ["准备", ...SC, "过训练", "可用 GPU"];
+  const c = chart("#c-timeline", { w: 900, h: 300, m: { l: 70, r: 16, t: 8, b: 30 } });
+  c.svg.style("min-width", "640px");
+  const x = d3.scaleTime().domain([P("2026-10-01T00:00"), P("2026-11-25T00:00")]).range([0, c.iw]);
+  const y = d3.scaleBand().domain(lanes).range([0, c.ih]).padding(0.28);
+  c.g.append("g").selectAll("line").data(x.ticks(d3.timeWeek.every(1))).join("line").attr("class", "gridl").attr("y1", 0).attr("y2", c.ih).attr("x1", x).attr("x2", x);
+  c.g.append("g").attr("class", "ax").attr("transform", `translate(0,${c.ih})`).call(d3.axisBottom(x).ticks(d3.timeWeek.every(1)).tickFormat(d3.timeFormat("%m-%d")).tickSizeOuter(0));
+  c.g.append("g").selectAll("text").data(lanes).join("text").attr("class", "lab").attr("x", -10).attr("y", d => y(d) + y.bandwidth() / 2 + 4).attr("text-anchor", "end").text(d => d);
+  const defs = c.svg.append("defs");
+  defs.append("pattern").attr("id", "hatch").attr("width", 6).attr("height", 6).attr("patternUnits", "userSpaceOnUse").attr("patternTransform", "rotate(45)")
+    .append("rect").attr("width", 2.5).attr("height", 6).style("fill", "var(--pause)");
+  const col = d => d.kind === "pause" ? "url(#hatch)" : d.kind === "crash" ? "var(--bad)" : d.kind === "prep" ? "var(--c-muted)" : d.lane === "过训练" ? "var(--c2)" : scVar(d.lane);
+  const dur = d => { const h = (P(d.end) - P(d.start)) / 36e5; return h > 48 ? (h / 24).toFixed(1) + " 天" : h.toFixed(1) + " 小时"; };
+  const bars = c.g.append("g").selectAll("rect").data(T).join("rect")
+    .attr("x", d => x(P(d.start))).attr("width", d => Math.max(2, x(P(d.end)) - x(P(d.start))))
+    .attr("y", d => y(d.lane)).attr("height", y.bandwidth()).attr("rx", 3).style("fill", col)
+    .style("stroke", d => d.kind === "pause" ? "var(--pause)" : "none");
+  hover(bars, d => `<b>${d.lane}</b>：${d.label}<br><span class="mono">${d.start.replace("T", " ")} → ${d.end.replace("T", " ")}</span><br>${dur(d)}`);
+  const G = D.manual.gpus;
+  const gb = c.g.append("g").selectAll("g").data(G).join("g");
+  gb.append("rect").attr("x", d => x(P(d.start))).attr("width", d => Math.max(2, x(P(d.end)) - x(P(d.start))))
+    .attr("y", y("可用 GPU")).attr("height", y.bandwidth()).attr("rx", 3).style("fill", "var(--c-faint)");
+  gb.append("text").attr("class", "lab").attr("x", d => x(P(d.start)) + 4).attr("y", y("可用 GPU") + y.bandwidth() / 2 + 4)
+    .text(d => (x(P(d.end)) - x(P(d.start)) > 40) ? "GPU " + d.cards : "");
+  hover(gb, d => `GPU ${d.cards}<br><span class="mono">${d.start.replace("T", " ")} → ${d.end.replace("T", " ")}</span>`);
+  d3.select("#tl-legend").html(SC.map(s => `<span><i class="sw" style="background:${scVar(s)}"></i>${s}</span>`).join("") +
+    `<span><i class="sw" style="background:var(--c2)"></i>过训练</span><span><i class="sw" style="background:var(--c-muted)"></i>准备</span><span><i class="sw" style="background:repeating-linear-gradient(45deg,var(--pause) 0 2px,transparent 2px 5px);border:1px solid var(--pause)"></i>暂停</span><span><i class="sw" style="background:var(--bad)"></i>崩溃后空闲</span>`);
+})();
+
+// ---------- GPU 小时 ----------
+(() => {
+  const R = D.manual.gpu_hours;
+  d3.select("#gpuh-total").text(Math.round(d3.sum(R, r => r.actual)));
+  d3.select("#gpuh-plan").text(Math.round(d3.sum(R, r => r.plan)));
+  const c = chart("#c-gpuh", { h: 250, m: { l: 64, b: 34 } });
+  const y = d3.scaleBand().domain(R.map(r => r.stage)).range([0, c.ih]).padding(0.25);
+  const x = d3.scaleLinear().domain([0, 140]).range([0, c.iw]);
+  axes(c, x, y, { noYGrid: true, xGrid: true, yTicks: R.map(r => r.stage), xl: "GPU·小时" });
+  const sub = d3.scaleBand().domain(["plan", "actual"]).range([0, y.bandwidth()]).padding(0.12);
+  const g = c.g.append("g").selectAll("g").data(R).join("g").attr("transform", d => `translate(0,${y(d.stage)})`);
+  for (const k of ["plan", "actual"]) {
+    const b = g.append("rect").attr("y", sub(k)).attr("height", sub.bandwidth()).attr("x", 0).attr("width", d => x(d[k])).attr("rx", 2)
+      .style("fill", k === "plan" ? "var(--c-muted)" : "var(--c1)");
+    hover(b, d => `<b>${d.stage}</b><br>计划 ${d.plan} · 实际 ${d.actual} GPU·小时${d.note ? "<br>" + d.note : ""}`);
+  }
+  g.append("text").attr("class", "lab").attr("x", d => x(d.actual) + 6).attr("y", sub("actual") + sub.bandwidth() / 2 + 4).text(d => d.actual);
+})();
+
+// ---------- 数据 ----------
+(() => {
+  const R = D.manual.data_tokens, LC = { 英文: "var(--c1)", 中文: "var(--c2)", 代码: "var(--c3)" };
+  const c = chart("#c-data", { w: 520, h: 270, m: { l: 128, r: 70, b: 34 } });
+  const y = d3.scaleBand().domain(R.map(r => r.src)).range([0, c.ih]).padding(0.3);
+  const x = d3.scaleLinear().domain([0, 1.4]).range([0, c.iw]);
+  axes(c, x, y, { noYGrid: true, xGrid: true, yTicks: R.map(r => r.src), xl: "B token", xN: 5 });
+  const b = c.g.append("g").selectAll("rect").data(R).join("rect").attr("y", d => y(d.src)).attr("height", y.bandwidth()).attr("x", 0)
+    .attr("width", d => x(d.tokens)).attr("rx", 2).style("fill", d => LC[d.lang]);
+  hover(b, d => `<b>${d.src}</b>（${d.lang}）<br>${d.tokens} B token · ${d.bpt} 字节/token`);
+  c.g.append("g").selectAll("text").data(R).join("text").attr("class", "lab").attr("x", d => x(d.tokens) + 6).attr("y", d => y(d.src) + y.bandwidth() / 2 + 4)
+    .text(d => d.tokens.toFixed(2));
+  c.g.append("g").selectAll("text").data(R).join("text").attr("class", "lab").attr("x", c.iw + 66).attr("y", d => y(d.src) + y.bandwidth() / 2 + 4)
+    .attr("text-anchor", "end").text(d => d.bpt.toFixed(2) + " B/t");
+})();
+(() => {
+  const R = SC.map(s => ({ s, v: D.manual.pilot_toks[s], N: D.scales[s].n_eff }));
+  const c = chart("#c-pilot", { w: 520, h: 270, m: { l: 52, r: 16, b: 34 } });
+  const x = d3.scaleBand().domain(SC).range([0, c.iw]).padding(0.35);
+  const y = d3.scaleLinear().domain([0, 240e3]).range([c.ih, 0]);
+  axes(c, x, y, { xTicks: SC, yf: v => v / 1e3 + "k", yl: "token / 秒", yN: 4 });
+  const b = c.g.append("g").selectAll("rect").data(R).join("rect").attr("x", d => x(d.s)).attr("width", x.bandwidth())
+    .attr("y", d => y(d.v)).attr("height", d => c.ih - y(d.v)).attr("rx", 3).style("fill", d => scVar(d.s));
+  hover(b, d => `<b>${d.s}</b><br>${(d.v / 1e3).toFixed(0)}k token/s<br>一个配置的主干（1.25 × 32 N_eff token）约 ${((1.25 * 32 * d.N) / d.v / 3600).toFixed(1)} 小时`);
+  c.g.append("g").selectAll("text").data(R).join("text").attr("class", "lab").attr("x", d => x(d.s) + x.bandwidth() / 2).attr("y", d => y(d.v) - 6)
+    .attr("text-anchor", "middle").text(d => (d.v / 1e3).toFixed(0) + "k");
+})();
+
+// ---------- 阶梯表 ----------
+(() => {
+  const head = ["档", "dim", "层", "头 / KV", "FFN", "N_eff", "非 embedding", "D = 32 N_eff", "配置数", "训满", "最好配置", "最好 val_bpb", "进步", "角色"];
+  let prev = null;
+  const rows = SC.map(s => {
+    const e = D.scales[s], sh = D.manual.shapes[s], f = e.frontier, v = f.best_all_val_bpb;
+    const imp = prev ? ((v / prev - 1) * 100).toFixed(1) + "%" : "—"; prev = v;
+    const full = e.byCfg.filter(c => c.maxK === 8).length;
+    return `<tr class="${s === "e83m" ? "hl" : ""}"><td><b>${s}</b></td><td class="r">${sh.dim}</td><td class="r">${sh.layers}</td><td class="r">${sh.heads}</td><td class="r">${sh.ffn}</td><td class="r">${fM(e.n_eff)}</td><td class="r">${fM(sh.nonemb)}</td><td class="r">${fM(32 * e.n_eff)}</td><td class="r">${e.configs.length}</td><td class="r">${full}</td><td class="mono">${f.best_all_id}</td><td class="r">${f4(v)}</td><td class="r">${imp}</td><td>${sh.role}</td></tr>`;
+  });
+  d3.select("#t-ladder").html(`<tr>${head.map((h, i) => `<th class="${i && i < 10 || i === 11 || i === 12 ? "r" : ""}">${h}</th>`).join("")}</tr>` + rows.join(""));
+})();
+
+// ---------- 分布（strip） ----------
+(() => {
+  const c = chart("#c-strip", { h: 380, m: { l: 52 } });
+  const x = d3.scaleBand().domain(SC).range([0, c.iw]).padding(0.15);
+  const CAP = 3.4;
+  const y = d3.scaleLinear().domain([1.15, CAP]).range([c.ih, 0]);
+  axes(c, x, y, { xTicks: SC, yl: "val_bpb（2/8 处，越低越好）" });
+  const pts = [];
+  for (const s of SC) {
+    const cs = D.scales[s].byCfg.filter(cc => cc.s2 != null);
+    // 同一个 y 附近错开：按 y 分桶后在带宽内均匀排开
+    const bins = d3.group(cs, cc => Math.round(Math.min(cc.s2, CAP) / 0.018));
+    for (const [, arr] of bins) arr.forEach((cc, i) => {
+      const w = x.bandwidth() * 0.86, n = arr.length, off = n === 1 ? 0 : (i / (n - 1) - 0.5) * Math.min(w, n * 7);
+      pts.push({ s, c: cc, x: x(s) + x.bandwidth() / 2 + off, y: y(Math.min(cc.s2, CAP)) });
+    });
+  }
+  const dots = c.g.append("g").selectAll("circle").data(pts).join("circle").attr("cx", d => d.x).attr("cy", d => d.y).attr("r", 3.6)
+    .style("fill", d => SPACE_C[d.c.space]).style("fill-opacity", 0.85).style("stroke", "var(--surface)").style("stroke-width", 0.8);
+  hover(dots, d => `<b>${d.c.id}</b>（${SPACE_N[d.c.space]}）<br>2/8：<span class="mono">${f4(d.c.s2)}</span>，训到 ${d.c.maxK}/8<br><span class="mono">batch ${p2(d.c.tokens_per_step)} · lr ${hpFmt("lr", d.c.lr)}</span>`);
+  const bl = c.g.append("g").selectAll("g").data(SC).join("g");
+  bl.append("line").attr("x1", s => x(s) + 4).attr("x2", s => x(s) + x.bandwidth() - 4).attr("y1", s => y(best(s))).attr("y2", s => y(best(s)))
+    .style("stroke", "var(--fg)").style("stroke-width", 2);
+  bl.append("text").attr("class", "lab-strong").attr("x", s => x(s) + x.bandwidth() - 4).attr("y", s => y(best(s)) - 6).attr("text-anchor", "end").text(s => f4(best(s)));
+})();
+
+// ---------- 逐轮淘汰 ----------
+(() => {
+  const R = SC.map(s => { const cs = D.scales[s].byCfg; return { s, a: cs.filter(c => c.maxK >= 2).length, b: cs.filter(c => c.maxK >= 4).length, c: cs.filter(c => c.maxK >= 8).length }; });
+  const c = chart("#c-funnel", { h: 260, m: { l: 52 } });
+  const x = d3.scaleBand().domain(SC).range([0, c.iw]).padding(0.22);
+  const y = d3.scaleLinear().domain([0, 170]).range([c.ih, 0]);
+  axes(c, x, y, { xTicks: SC, yl: "配置数", yN: 5 });
+  const keys = [["a", "var(--sc0)", "2/8"], ["b", "var(--sc2)", "4/8"], ["c", "var(--sc4)", "8/8"]];
+  const sub = d3.scaleBand().domain(keys.map(k => k[0])).range([0, x.bandwidth()]).padding(0.1);
+  for (const [k, col, lab] of keys) {
+    const b = c.g.append("g").selectAll("rect").data(R).join("rect").attr("x", d => x(d.s) + sub(k)).attr("width", sub.bandwidth())
+      .attr("y", d => y(d[k])).attr("height", d => c.ih - y(d[k])).attr("rx", 2).style("fill", col);
+    hover(b, d => `<b>${d.s}</b><br>训到 2/8：${d.a}<br>训到 4/8：${d.b}<br>训满：${d.c}`);
+    c.g.append("g").selectAll("text").data(R).join("text").attr("class", "lab").attr("x", d => x(d.s) + sub(k) + sub.bandwidth() / 2)
+      .attr("y", d => y(d[k]) - 4).attr("text-anchor", "middle").style("font-size", "10px").text(d => d[k]);
+  }
+})();
+
+// ---------- 训练曲线 ----------
+function drawCurves(s) {
+  const e = D.scales[s], bestId = e.frontier.best_all_id;
+  const c = chart("#c-curves", { h: 400 });
+  const allV = e.byCfg.flatMap(cc => cc.stable.map(p => p.v));
+  const lo = d3.min(e.byCfg.flatMap(cc => cc.decay.map(p => p.v)).concat(allV)) - 0.02;
+  const hi = Math.min(d3.quantile(allV.sort(d3.ascending), 0.9), lo + 1.2);
+  const toks = e.byCfg.flatMap(cc => cc.stable.map(p => p.tok).concat(cc.decay.map(p => p.tok)));
+  const x = d3.scaleLog().domain([d3.min(toks) * 0.9, d3.max(toks) * 1.1]).range([0, c.iw]);
+  const y = d3.scaleLinear().domain([lo, hi]).range([c.ih, 0]).clamp(true);
+  axes(c, x, y, { xTicks: logTicks(x.domain()[0], x.domain()[1]), xf: tokFmt, xl: "训练 token（对数）", yl: "val_bpb" });
+  const line = d3.line().x(p => x(p.tok)).y(p => y(p.v));
+  const others = e.byCfg.filter(cc => cc.id !== bestId && cc.stable.length > 1);
+  const pl = c.g.append("g").selectAll("path").data(others).join("path").attr("d", cc => line(cc.stable))
+    .style("fill", "none").style("stroke", "var(--c-muted)").style("stroke-width", 1).style("stroke-opacity", 0.55);
+  hover(pl, cc => `<b>${cc.id}</b>（${SPACE_N[cc.space]}）<br>最后一个稳定点：<span class="mono">${f4(cc.stable.at(-1).v)}</span>（${cc.maxK}/8）`);
+  pl.on("pointerenter.hl", function () { d3.select(this).raise().style("stroke", "var(--fg)").style("stroke-opacity", 1).style("stroke-width", 1.6); })
+    .on("pointerleave.hl", function () { d3.select(this).style("stroke", "var(--c-muted)").style("stroke-opacity", 0.55).style("stroke-width", 1); });
+  const decays = e.byCfg.flatMap(cc => cc.decay.map(p => ({ ...p, id: cc.id })));
+  const dd = c.g.append("g").selectAll("circle").data(decays).join("circle").attr("cx", p => x(p.tok)).attr("cy", p => y(p.v)).attr("r", 3)
+    .style("fill", "var(--c2)").style("fill-opacity", 0.7);
+  hover(dd, p => `<b>${p.id}</b> 衰减分叉（${p.k}/8）<br><span class="mono">${fM(p.tok)} token · ${f4(p.v)}</span>`);
+  const bc = e.byCfg.find(cc => cc.id === bestId);
+  c.g.append("path").attr("d", line(bc.stable)).style("fill", "none").style("stroke", "var(--c1)").style("stroke-width", 2.4);
+  c.g.append("g").selectAll("circle").data(bc.decay).join("circle").attr("cx", p => x(p.tok)).attr("cy", p => y(p.v)).attr("r", 4)
+    .style("fill", "var(--c2)").style("stroke", "var(--surface)").style("stroke-width", 1.5);
+  const fp = e.points.map(p => ({ ...p, cfg: p.name.split("/")[1], k: p.name.split("/k")[1] }));
+  const fr = c.g.append("g").selectAll("circle").data(fp).join("circle").attr("cx", p => x(p.D)).attr("cy", p => y(p.loss)).attr("r", 7)
+    .style("fill", "none").style("stroke", "var(--fg)").style("stroke-width", 1.6);
+  hover(fr, p => `前沿点 ${p.k}/8：<b>${p.cfg}</b><br><span class="mono">D ${fM(p.D)} · ${f4(p.loss)}</span>`);
+  const last = bc.stable.at(-1);
+  c.g.append("text").attr("class", "lab-strong").attr("x", x(last.tok) - 6).attr("y", y(last.v) - 10).attr("text-anchor", "end").text(`${bestId}`);
+  const nTr = e.byCfg.filter(cc => cc.maxK === 8).length;
+  d3.select("#cap-curves").html(`<b>${s}</b>：${e.configs.length} 组配置，${nTr} 组训满，${decays.length} 个衰减分叉点。最好的 <span class="mono">${bestId}</span> 衰减后 <span class="mono">${f4(best(s))}</span>。衰减分叉通常比同一位置的稳定段低 0.05–0.1 bits/byte，所以拟合只用衰减后的点。y 轴上端截在分布的 90% 分位附近，更差的曲线贴在顶端。悬停一条灰线可以看是哪组配置。`);
+}
+seg("#seg-curves", SC.map(s => ({ key: s, label: s })), "e24m", drawCurves);
+
+// ---------- 敏感性 ----------
+function hpScale(h, vals, w) {
+  if (h === "beta1" || h === "beta2") {
+    const t = vals.map(v => 1 - v);
+    const sc = d3.scaleLog().domain([d3.min(t) * 0.8, d3.max(t) * 1.25]).range([w, 0]);
+    return { s: sc, tr: v => 1 - v, fmt: betaFmt, ticks: BETA_T.filter(b => b >= sc.domain()[0] && b <= sc.domain()[1]) };
+  }
+  if (h === "tokens_per_step") return { s: d3.scaleLog().base(2).domain([d3.min(vals) / 1.5, d3.max(vals) * 1.5]).range([0, w]), tr: v => v, fmt: p2, ticks: d3.range(Math.ceil(Math.log2(d3.min(vals))), Math.floor(Math.log2(d3.max(vals))) + 1, 2).map(e => 2 ** e) };
+  const sc = d3.scaleLog().domain([d3.min(vals) / 1.4, d3.max(vals) * 1.4]).range([0, w]);
+  return { s: sc, tr: v => v, fmt: expFmt, ticks: logTicks(...sc.domain(), [1]) };
+}
+function drawSens(s) {
+  const box = d3.select("#c-sens"); box.selectAll("*").remove();
+  const cs = D.scales[s].byCfg.filter(c => c.s2 != null);
+  const vals = cs.map(c => c.s2), lo = d3.min(vals) - 0.02, hi = Math.min(d3.quantile([...vals].sort(d3.ascending), 0.95), lo + 1.3);
+  for (const h of HP) {
+    const cell = box.append("div"); cell.append("div").attr("class", "sm-t").text(HPN[h]);
+    const c = chart(cell.append("div"), { w: 300, h: 210, m: { l: 46, r: 12, t: 8, b: 30 } });
+    const S = hpScale(h, cs.map(cc => cc[h]), c.iw);
+    const y = d3.scaleLinear().domain([lo, hi]).range([c.ih, 0]).clamp(true);
+    const xt = S.ticks ?? S.s.ticks(4);
+    axes(c, S.s, y, { xTicks: xt.length > 5 ? xt.filter((_, i) => i % 2 === 0) : xt, xf: S.fmt, yN: 4, yf: d3.format(".1f") });
+    const dots = c.g.append("g").selectAll("circle").data(cs).join("circle").attr("cx", cc => S.s(S.tr(cc[h]))).attr("cy", cc => y(cc.s2)).attr("r", 3)
+      .style("fill", cc => SPACE_C[cc.space]).style("fill-opacity", 0.75);
+    hover(dots, cc => `<b>${cc.id}</b><br>${HPN[h]} = <span class="mono">${hpFmt(h, cc[h])}</span><br>2/8：<span class="mono">${f4(cc.s2)}</span>`);
+  }
+}
+seg("#seg-sens", SC.map(s => ({ key: s, label: s })), "e5m", drawSens);
+
+// ---------- 每种 batch 的最好 ----------
+(() => {
+  const c = chart("#c-batch", { w: 520, h: 300, m: { l: 48, b: 38, r: 12 } });
+  const series = SC.map(s => ({ s, pts: Array.from(d3.rollup(D.scales[s].byCfg.filter(cc => cc.s2 != null), v => d3.min(v, cc => cc.s2), cc => cc.tokens_per_step), ([b, v]) => ({ b, v })).sort((a, b) => a.b - b.b) }));
+  const x = d3.scaleLog().base(2).domain([2 ** 12.2, 2 ** 21.3]).range([0, c.iw]);
+  const y = d3.scaleLinear().domain([1.2, 2.8]).range([c.ih, 0]).clamp(true);
+  axes(c, x, y, { xTicks: d3.range(13, 22).map(e => 2 ** e), xf: p2, xl: "batch（token / 步）", yl: "最好 val_bpb（2/8）", yN: 5 });
+  const line = d3.line().x(p => x(p.b)).y(p => y(p.v));
+  c.g.append("g").selectAll("path").data(series).join("path").attr("d", d => line(d.pts)).style("fill", "none").style("stroke", d => scVar(d.s)).style("stroke-width", 2);
+  for (const ser of series) {
+    const m = d3.least(ser.pts, p => p.v);
+    const dots = c.g.append("g").selectAll("circle").data(ser.pts).join("circle").attr("cx", p => x(p.b)).attr("cy", p => y(p.v)).attr("r", p => p === m ? 5.5 : 3.5)
+      .style("fill", scVar(ser.s)).style("stroke", "var(--surface)").style("stroke-width", 1.5);
+    hover(dots, p => `<b>${ser.s}</b> · batch ${p2(p.b)}<br>最好 2/8：<span class="mono">${f4(p.v)}</span>`);
+    const fp = ser.pts[0];
+    c.g.append("text").attr("class", "lab").attr("x", x(fp.b) - 8).attr("y", y(fp.v) + 4).attr("text-anchor", "end").text(ser.s);
+  }
+  d3.select("#lg-batch").html(SC.map(s => `<span><i class="sw line" style="background:${scVar(s)}"></i>${s}</span>`).join("") + `<span>大圆点 = 这一档的最优 batch</span>`);
+})();
+
+// ---------- 最好成绩 vs N ----------
+(() => {
+  const c = chart("#c-bestN", { w: 520, h: 300, m: { l: 48, b: 38, r: 30 } });
+  const R = SC.map(s => ({ s, N: D.scales[s].n_eff, v: best(s) }));
+  const x = d3.scaleLog().domain([3.5e6, 1.1e8]).range([0, c.iw]);
+  const y = d3.scaleLog().domain([1.05, 1.95]).range([c.ih, 0]);
+  axes(c, x, y, { xTicks: [5e6, 1e7, 2e7, 5e7, 1e8], xf: fM, yTicks: [1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.8], yf: d3.format(".1f"), xl: "N_eff（对数）", yl: "最好 val_bpb（对数）" });
+  // 去掉 e5m 的拟合在 D = 32 N_eff × 1.25 处的值
+  const L = D.fits.drop.law;
+  const xs = d3.range(0, 41).map(i => 3.5e6 * Math.pow(1.1e8 / 3.5e6, i / 40));
+  c.g.append("path").attr("d", d3.line().x(n => x(n)).y(n => y(law(L, n, 40 * n)))(xs)).style("fill", "none").style("stroke", "var(--muted)").style("stroke-dasharray", "4 4").style("stroke-width", 1.4);
+  c.g.append("text").attr("class", "lab").attr("x", 6).attr("y", c.ih - 8).text("虚线：去掉 e5m 的拟合，取 D = 40 N_eff");
+  c.g.append("path").attr("d", d3.line().x(d => x(d.N)).y(d => y(d.v))(R)).style("fill", "none").style("stroke", "var(--c1)").style("stroke-width", 2);
+  const dots = c.g.append("g").selectAll("circle").data(R).join("circle").attr("cx", d => x(d.N)).attr("cy", d => y(d.v)).attr("r", 5.5).style("fill", d => scVar(d.s)).style("stroke", "var(--surface)").style("stroke-width", 1.5);
+  hover(dots, d => `<b>${d.s}</b><br>N_eff ${fM(d.N)} · 最好 <span class="mono">${f4(d.v)}</span>`);
+  c.g.append("g").selectAll("text").data(R).join("text").attr("class", "lab-strong").attr("x", d => x(d.N) + 8).attr("y", d => y(d.v) - 8).text(d => d.s);
+  c.g.append("g").selectAll("text").data(R.slice(1)).join("text").attr("class", "lab").attr("text-anchor", "middle")
+    .attr("x", (d, i) => (x(d.N) + x(R[i].N)) / 2 - 6).attr("y", (d, i) => (y(d.v) + y(R[i].v)) / 2 - 10).text((d, i) => ((d.v / R[i].v - 1) * 100).toFixed(1) + "%");
+})();
+
+// ---------- 超参数迁移 ----------
+(() => {
+  const box = d3.select("#c-transfer");
+  const R = SC.map(s => ({ s, N: D.scales[s].n_eff, c: D.scales[s].frontier.best_all_config }));
+  for (const h of HP) {
+    const cell = box.append("div"); cell.append("div").attr("class", "sm-t").text(HPN[h]);
+    const c = chart(cell.append("div"), { w: 300, h: 200, m: { l: 56, r: 12, t: 8, b: 30 } });
+    const x = d3.scaleLog().domain([3.5e6, 1.2e8]).range([0, c.iw]);
+    const ranges = Object.entries(D.narrow).map(([s, r]) => ({ s, lo: r[h][0], hi: r[h][1], N: D.scales[s].n_eff }));
+    const vals = R.map(r => r.c[h]).concat(ranges.flatMap(r => [r.lo, r.hi]));
+    const isB = h === "beta1" || h === "beta2", tr = isB ? v => 1 - v : v => v;
+    const tv = vals.map(tr);
+    const y = (h === "tokens_per_step" ? d3.scaleLog().base(2) : d3.scaleLog()).domain([d3.min(tv) / 1.3, d3.max(tv) * 1.3]);
+    if (isB) y.range([0, c.ih]); else y.range([c.ih, 0]);
+    const dm = y.domain();
+    const yt = h === "tokens_per_step" ? d3.range(Math.ceil(Math.log2(dm[0])), Math.floor(Math.log2(dm[1])) + 1).map(e => 2 ** e)
+      : isB ? BETA_T.filter(b => b >= dm[0] && b <= dm[1]) : logTicks(dm[0], dm[1], [1]);
+    axes(c, x, y, { xTicks: [1e7, 3e7, 1e8], xf: fM, yTicks: yt.length > 5 ? yt.filter((_, i) => i % 2 === 0) : yt,
+      yf: h === "tokens_per_step" ? p2 : isB ? betaFmt : expFmt, yN: 4 });
+    const rb = c.g.append("g").selectAll("rect").data(ranges).join("rect").attr("x", r => x(r.N) - 7).attr("width", 14)
+      .attr("y", r => Math.min(y(tr(r.lo)), y(tr(r.hi)))).attr("height", r => Math.abs(y(tr(r.lo)) - y(tr(r.hi)))).attr("rx", 3).style("fill", "var(--c-faint)");
+    hover(rb, r => `<b>${r.s}</b> 收窄空间<br>${HPN[h]}：<span class="mono">${hpFmt(h, r.lo)} – ${hpFmt(h, r.hi)}</span>`);
+    c.g.append("path").attr("d", d3.line().x(r => x(r.N)).y(r => y(tr(r.c[h])))(R)).style("fill", "none").style("stroke", "var(--c1)").style("stroke-width", 1.4).style("stroke-opacity", 0.6);
+    const dots = c.g.append("g").selectAll("circle").data(R).join("circle").attr("cx", r => x(r.N)).attr("cy", r => y(tr(r.c[h]))).attr("r", 4.5)
+      .style("fill", "var(--c1)").style("stroke", "var(--surface)").style("stroke-width", 1.5);
+    hover(dots, r => `<b>${r.s}</b> 最好配置<br>${HPN[h]} = <span class="mono">${hpFmt(h, r.c[h])}</span>`);
+  }
+})();
+
+// ---------- 拟合图 ----------
+const FITS = [{ key: "prereg", label: "e5m–e44m（预注册）" }, { key: "drop", label: "去掉 e5m" }, { key: "ot", label: "去掉 e5m + 过训练点" }];
+function drawFit(key) {
+  const F = D.fits[key], L = F.law;
+  const c = chart("#c-fit", { h: 440, m: { l: 52, r: 54 } });
+  const x = d3.scaleLog().domain([5e7, 4e9]).range([0, c.iw]);
+  const y = d3.scaleLog().domain([1.08, 2.15]).range([c.ih, 0]);
+  axes(c, x, y, { xTicks: [5e7, 1e8, 2e8, 5e8, 1e9, 2e9], xf: tokFmt, yTicks: [1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.8, 2.0], yf: d3.format(".1f"), xl: "训练 token D（对数）", yl: "val_bpb（衰减后，对数）", xGrid: true });
+  const fitSet = key === "prereg" ? ["e5m", "e11m", "e24m", "e44m"] : ["e11m", "e24m", "e44m"];
+  for (const s of SC) {
+    const N = D.scales[s].n_eff, pts = D.scales[s].points;
+    const ot = D.ot[s + "_ot"]?.points ?? [];
+    const dmin = d3.min(pts, p => p.D) * 0.85, dmax = Math.max(d3.max(pts, p => p.D), d3.max(ot, p => p.D) ?? 0) * 1.15;
+    const xs = d3.range(0, 50).map(i => dmin * Math.pow(Math.min(dmax, 4e9) / dmin, i / 49));
+    const inFit = fitSet.includes(s);
+    c.g.append("path").attr("d", d3.line().x(d => x(d)).y(d => y(law(L, N, d)))(xs)).style("fill", "none").style("stroke", scVar(s))
+      .style("stroke-width", 1.8).style("stroke-dasharray", s === "e83m" ? "6 4" : inFit ? null : "2 3").style("stroke-opacity", inFit || s === "e83m" ? 1 : 0.6);
+    const used = inFit;
+    const dots = c.g.append("g").selectAll("circle").data(pts).join("circle").attr("cx", p => x(p.D)).attr("cy", p => y(p.loss)).attr("r", 4.5)
+      .style("fill", s === "e83m" || !used ? "var(--surface)" : scVar(s)).style("stroke", scVar(s)).style("stroke-width", 2);
+    hover(dots, p => { const pr = law(L, N, p.D); return `<b>${p.name}</b>${s === "e83m" ? "（留出）" : used ? "" : "（不参与这次拟合）"}<br>D ${fM(p.D)} · D/N ${(p.D / N).toFixed(0)}<br>实际 <span class="mono">${f4(p.loss)}</span> · 拟合 <span class="mono">${f4(pr)}</span>（${pct(pr / p.loss - 1)}）`; });
+    if (ot.length) {
+      const sym = d3.symbol(d3.symbolDiamond, 70);
+      const od = c.g.append("g").selectAll("path").data(ot).join("path").attr("d", sym).attr("transform", p => `translate(${x(p.D)},${y(p.loss)})`)
+        .style("fill", key === "ot" ? "var(--c2)" : "var(--surface)").style("stroke", "var(--c2)").style("stroke-width", 2);
+      hover(od, p => { const pr = law(L, N, p.D); return `<b>${p.name}</b>（过训练点${key === "ot" ? "" : "，不参与这次拟合"}）<br>D/N ${(p.D / N).toFixed(0)}<br>实际 <span class="mono">${f4(p.loss)}</span> · 拟合 <span class="mono">${f4(pr)}</span>（${pct(pr / p.loss - 1)}）`; });
+    }
+    const xe = Math.min(dmax, 4e9);
+    c.g.append("text").attr("class", "lab-strong").attr("x", x(xe) + 5).attr("y", y(law(L, N, xe)) + 4).text(s);
+  }
+  d3.select("#lg-fit").html(SC.map(s => `<span><i class="sw" style="background:${scVar(s)};border-radius:50%"></i>${s}</span>`).join("") +
+    `<span><i class="sw ring" style="border-color:var(--sc4)"></i>空心 = 不参与拟合（e83m 留出）</span><span><i class="sw dia" style="background:var(--c2)"></i>过训练点</span>`);
+  const hmax = d3.max(Object.values(F.holdout), Math.abs);
+  d3.select("#cap-fit").html(`<b>${F.label}</b>：E = <span class="mono">${L.E.toFixed(3)}</span>，α = <span class="mono">${L.alpha.toFixed(3)}</span>，β = <span class="mono">${L.beta.toFixed(3)}</span>；拟合点最大误差 <span class="mono">${(F.fit_max * 100).toFixed(2)}%</span>，e83m 留出最大误差 <span class="mono" style="color:${hmax > 0.01 ? "var(--bad)" : "var(--good)"}">${(hmax * 100).toFixed(2)}%</span>。` +
+    (key === "prereg" ? " 拟合曲线为了照顾 e5m 把 E 推到 1.10，e83m 的虚线预测整体偏高。" : key === "drop" ? " e11m–e83m 基本是一条纯幂律，但这是看过 e83m 之后的选择。过训练点（空心菱形）都落在曲线上方。" : " 加上过训练点后，曲线被拉向它们，老点和 e83m 的误差都变大了。") +
+    ` 每条曲线画到这一档最远的数据点；点虚线的档不参与这次拟合。悬停看每个点的误差。`);
+}
+seg("#seg-fit", FITS, "prereg", drawFit);
+
+// ---------- 留出误差 ----------
+(() => {
+  const c = chart("#c-holdout", { w: 520, h: 300, m: { l: 52, b: 38 } });
+  const ks = [3, 4, 5, 6, 7, 8];
+  const x = d3.scalePoint().domain(ks).range([0, c.iw]).padding(0.4);
+  const y = d3.scaleLinear().domain([-0.02, 0.065]).range([c.ih, 0]);
+  c.g.append("rect").attr("x", 0).attr("width", c.iw).attr("y", y(0.01)).attr("height", y(-0.01) - y(0.01)).style("fill", "var(--c-faint)").style("fill-opacity", 0.6);
+  axes(c, x, y, { xTicks: ks, xf: k => k + "/8", yf: v => (v * 100).toFixed(0) + "%", xl: "e83m 的预算", yl: "预测 / 实际 − 1", yN: 6 });
+  c.g.append("line").attr("x1", 0).attr("x2", c.iw).attr("y1", y(0)).attr("y2", y(0)).style("stroke", "var(--muted)");
+  const cols = { prereg: "var(--c1)", drop: "var(--c2)", ot: "var(--c3)" };
+  for (const f of ["prereg", "drop", "ot"]) {
+    const pts = Object.entries(D.fits[f].holdout).map(([n, v]) => ({ k: +n.split("/k")[1], v, n }));
+    c.g.append("path").attr("d", d3.line().x(p => x(p.k)).y(p => y(p.v))(pts)).style("fill", "none").style("stroke", cols[f]).style("stroke-width", 2);
+    const dots = c.g.append("g").selectAll("circle").data(pts).join("circle").attr("cx", p => x(p.k)).attr("cy", p => y(p.v)).attr("r", 4).style("fill", cols[f]).style("stroke", "var(--surface)").style("stroke-width", 1.5);
+    hover(dots, p => `<b>${D.fits[f].label}</b><br>${p.n}<br>误差 <span class="mono">${pct(p.v)}</span>`);
+    const l = pts.at(-1); c.g.append("text").attr("class", "lab").attr("x", x(l.k) + 7).attr("y", y(l.v) + 4).text(pct(l.v));
+  }
+})();
+
+// ---------- 残差 vs D/N ----------
+(() => {
+  const L = D.fits.ot.law;
+  const c = chart("#c-resid", { w: 520, h: 300, m: { l: 52, b: 38 } });
+  const pts = [];
+  for (const s of ["e11m", "e24m", "e44m", "e83m"]) {
+    const N = D.scales[s].n_eff;
+    for (const p of D.scales[s].points) pts.push({ s, ot: false, dn: p.D / N, r: law(L, N, p.D) / p.loss - 1, name: p.name, hold: s === "e83m" });
+    for (const p of D.ot[s + "_ot"]?.points ?? []) pts.push({ s, ot: true, dn: p.D / N, r: law(L, N, p.D) / p.loss - 1, name: p.name });
+  }
+  const x = d3.scaleLog().domain([10, 320]).range([0, c.iw]);
+  const y = d3.scaleLinear().domain([-0.016, 0.01]).range([c.ih, 0]);
+  c.g.append("rect").attr("x", 0).attr("width", c.iw).attr("y", y(0.005)).attr("height", y(-0.005) - y(0.005)).style("fill", "var(--c-faint)").style("fill-opacity", 0.5);
+  axes(c, x, y, { xTicks: [10, 20, 40, 64, 128, 256], xf: d3.format("d"), yf: v => (v * 100).toFixed(1) + "%", xl: "D / N_eff（对数）", yl: "拟合 / 实际 − 1", yN: 6 });
+  c.g.append("line").attr("x1", 0).attr("x2", c.iw).attr("y1", y(0)).attr("y2", y(0)).style("stroke", "var(--muted)");
+  for (const s of ["e11m", "e24m"]) {
+    const ser = pts.filter(p => p.s === s).sort((a, b) => a.dn - b.dn);
+    c.g.append("path").attr("d", d3.line().x(p => x(p.dn)).y(p => y(p.r))(ser)).style("fill", "none").style("stroke", scVar(s)).style("stroke-width", 1.2).style("stroke-opacity", 0.6);
+  }
+  const sym = d3.symbol(d3.symbolDiamond, 80), circ = d3.symbol(d3.symbolCircle, 44);
+  const m = c.g.append("g").selectAll("path").data(pts).join("path").attr("d", p => p.ot ? sym() : circ()).attr("transform", p => `translate(${x(p.dn)},${y(p.r)})`)
+    .style("fill", p => p.hold ? "var(--surface)" : scVar(p.s)).style("stroke", p => p.ot ? "var(--c2)" : scVar(p.s)).style("stroke-width", p => p.ot ? 2 : 1.5);
+  hover(m, p => `<b>${p.name}</b>${p.hold ? "（留出）" : ""}<br>D/N ${p.dn.toFixed(0)} · 残差 <span class="mono">${pct(p.r)}</span>`);
+  d3.select("#lg-resid").html(["e11m", "e24m", "e44m"].map(s => `<span><i class="sw" style="background:${scVar(s)};border-radius:50%"></i>${s}</span>`).join("") +
+    `<span><i class="sw ring" style="border-color:var(--sc4)"></i>e83m（留出）</span><span><i class="sw dia" style="background:var(--sc1);outline:2px solid var(--c2)"></i>过训练点</span>`);
+})();
+
+// ---------- 诊断表 ----------
+(() => {
+  const V = D.diag.variants, FE = D.diag.fixed_E;
+  const rows = [
+    ["e5m–e44m（第 4 阶段预注册）", 24, V.all, true],
+    ["e5m–e44m，α = β", 24, V.all_tie],
+    ["去掉 e5m（= 第 6 阶段预注册拟合）", 18, V.drop_e5m, true],
+    ["去掉 e5m，α = β", 18, V.drop_e5m_tie],
+    ...Object.keys(FE).filter(k => +k > 0).map(k => [`去掉 e5m，固定 E = ${k}`, 18, FE[k]]),
+  ];
+  const O = D.fits.ot;
+  const ohmax = d3.max(Object.values(O.holdout), Math.abs);
+  const tr = (n, pts, v, hl) => `<tr class="${hl ? "hl" : ""}"><td>${n}</td><td class="r">${pts}</td><td class="r">${v.E.toFixed(3)}</td><td class="r">${v.alpha.toFixed(3)}</td><td class="r">${v.beta.toFixed(3)}</td><td class="r">${(v.fit_max_rel_err * 100).toFixed(2)}%</td><td class="r ${v.holdout_max_rel_err > 0.01 ? "bad" : "good"}">${(v.holdout_max_rel_err * 100).toFixed(2)}%</td><td class="r">${v.main_T2048_400B.toFixed(3)}</td></tr>`;
+  d3.select("#t-diag").html(`<tr><th>拟合方式</th><th class="r">点数</th><th class="r">E</th><th class="r">α</th><th class="r">β</th><th class="r">拟合最大误差</th><th class="r">e83m 留出最大误差</th><th class="r">外推主线</th></tr>` +
+    rows.map(r => tr(r[0], r[1], r[2], r[3])).join("") +
+    tr("去掉 e5m + 4 个过训练点（第 6 阶段，只报告）", 22, { E: O.law.E, alpha: O.law.alpha, beta: O.law.beta, fit_max_rel_err: O.fit_max, holdout_max_rel_err: ohmax, main_T2048_400B: O.main }));
+})();
+
+// ---------- 过训练曲线 ----------
+function drawOT(s) {
+  const e = D.ot[s + "_ot"], N = e.n_eff, old = D.scales[s].points;
+  const pred = D.ot_pred.predictions["free (E=0.000)"];
+  const c = chart("#c-ot-" + s, { w: 520, h: 320, m: { l: 50, b: 38, r: 20 } });
+  const all = e.byCfg.flatMap(cc => cc.stable.concat(cc.decay));
+  const x = d3.scaleLog().domain([12, 300]).range([0, c.iw]);
+  const ys = all.map(p => p.v).concat(old.map(p => p.loss), Object.entries(pred).filter(([k]) => k.startsWith(s)).map(([, v]) => v));
+  const y = d3.scaleLinear().domain([d3.min(ys) - 0.01, Math.min(d3.max(ys), d3.min(ys) + 0.3) + 0.01]).range([c.ih, 0]).clamp(true);
+  axes(c, x, y, { xTicks: [16, 32, 64, 128, 256], xf: d3.format("d"), xl: "D / N_eff（对数）", yl: "val_bpb", yN: 5 });
+  const col = m => m === 0.5 ? "var(--c3)" : m === 2 ? "var(--c2)" : "var(--c1)";
+  const line = d3.line().x(p => x(p.tok / N)).y(p => y(p.v));
+  for (const cc of e.byCfg) {
+    const m = cc.lr_mult ?? 1;
+    c.g.append("path").attr("d", line(cc.stable)).style("fill", "none").style("stroke", col(m)).style("stroke-width", 2);
+    const dd = c.g.append("g").selectAll("circle").data(cc.decay).join("circle").attr("cx", p => x(p.tok / N)).attr("cy", p => y(p.v)).attr("r", 5)
+      .style("fill", "var(--fg)").style("stroke", col(m)).style("stroke-width", 2);
+    hover(dd, p => `<b>${cc.id}</b>（lr ×${m}）衰减后<br>D/N ${(p.tok / N).toFixed(0)} · <span class="mono">${f4(p.v)}</span>`);
+    const sp = c.g.append("g").selectAll("circle").data(cc.stable).join("circle").attr("cx", p => x(p.tok / N)).attr("cy", p => y(p.v)).attr("r", 2.5).style("fill", col(m));
+    hover(sp, p => `<b>${cc.id}</b>（lr ×${m}）稳定段 ${p.k}/8<br>D/N ${(p.tok / N).toFixed(0)} · <span class="mono">${f4(p.v)}</span>`);
+  }
+  const od = c.g.append("g").selectAll("circle").data(old).join("circle").attr("cx", p => x(p.D / N)).attr("cy", p => y(p.loss)).attr("r", 4.5)
+    .style("fill", "var(--surface)").style("stroke", "var(--muted)").style("stroke-width", 1.6);
+  hover(od, p => `阶梯老点 <b>${p.name}</b><br>D/N ${(p.D / N).toFixed(0)} · <span class="mono">${f4(p.loss)}</span>`);
+  const xs = d3.range(0, 40).map(i => 12 * Math.pow(300 / 12, i / 39));
+  for (const [f, dash] of [["drop", "5 4"], ["ot", "1.5 3"]]) {
+    c.g.append("path").attr("d", d3.line().x(r => x(r)).y(r => y(law(D.fits[f].law, N, r * N)))(xs)).style("fill", "none").style("stroke", "var(--muted)").style("stroke-width", 1.4).style("stroke-dasharray", dash);
+  }
+  const pr = Object.entries(pred).filter(([k]) => k.startsWith(s + "-ot-000")).map(([k, v]) => ({ k, v, dn: +k.split("DN")[1] }));
+  const actual = D.ot_fit.new_points;
+  const pm = c.g.append("g").selectAll("path").data(pr).join("path").attr("d", d3.symbol(d3.symbolX, 90)).attr("transform", p => `translate(${x(p.dn)},${y(p.v)})`)
+    .style("stroke", "var(--bad)").style("stroke-width", 2.4).style("fill", "none");
+  hover(pm, p => { const a = Object.entries(actual).find(([k]) => k.startsWith(s + "_ot") && k.endsWith("DN" + p.dn)); return `预注册预测 <b>${p.k}</b>：<span class="mono">${f4(p.v)}</span>` + (a ? `<br>实际（最好）：<span class="mono">${f4(a[1])}</span>，误差 ${pct(p.v / a[1] - 1)}` : ""); });
+  for (const p of pr) {
+    const a = Object.entries(actual).find(([k]) => k.startsWith(s + "_ot") && k.endsWith("DN" + p.dn));
+    if (!a) continue;
+    c.g.append("line").attr("x1", x(p.dn) + 9).attr("x2", x(p.dn) + 9).attr("y1", y(p.v)).attr("y2", y(a[1])).style("stroke", "var(--bad)").style("stroke-width", 1.2);
+    c.g.append("text").attr("class", "lab").style("fill", "var(--bad)").attr("x", x(p.dn) + 13).attr("y", (y(p.v) + y(a[1])) / 2 + 4).text(pct(p.v / a[1] - 1));
+  }
+}
+drawOT("e11m"); drawOT("e24m");
+
+// ---------- 过训练检验表 ----------
+(() => {
+  const pred = D.ot_pred.predictions["free (E=0.000)"], act = D.ot_fit.new_points;
+  const rows = Object.entries(act).map(([k, v]) => { const key = k.split("/").slice(1).join("/"); return { key, v, p: pred[key], gate: key === "e11m-ot-000/DN256" || key === "e24m-ot-000/DN128" }; });
+  d3.select("#t-ot").html(`<tr><th>点</th><th class="r">预注册预测</th><th class="r">实际</th><th class="r">误差</th><th>角色</th></tr>` +
+    rows.map(r => `<tr class="${r.gate ? "hl" : ""}"><td class="mono">${r.key}</td><td class="r">${f4(r.p)}</td><td class="r">${f4(r.v)}</td><td class="r ${Math.abs(r.p / r.v - 1) > 0.01 ? "bad" : "good"}">${pct(r.p / r.v - 1)}</td><td>${r.gate ? "<b>检验点</b>" : "只报告"}</td></tr>`).join(""));
+})();
+
+// ---------- 学习率检查 ----------
+(() => {
+  const e = D.ot.e11m_ot, N = e.n_eff;
+  const R = e.byCfg.map(cc => { const d = cc.decay.find(p => Math.round(p.tok / N) === 128); return d && { m: cc.lr_mult ?? 1, v: d.v, id: cc.id }; }).filter(Boolean).sort((a, b) => a.m - b.m);
+  const base = R.find(r => r.m === 1).v;
+  const c = chart("#c-lr", { w: 520, h: 220, m: { l: 64, b: 38, r: 70 } });
+  const y = d3.scaleBand().domain(R.map(r => "lr ×" + r.m)).range([0, c.ih]).padding(0.5);
+  const x = d3.scaleLinear().domain([1.455, 1.47]).range([0, c.iw]);
+  c.g.append("rect").attr("x", x(base * 0.995)).attr("width", x(base) - x(base * 0.995)).attr("y", 0).attr("height", c.ih).style("fill", "var(--c-faint)").style("fill-opacity", 0.7);
+  c.g.append("text").attr("class", "lab").attr("x", x(base * 0.995) + 4).attr("y", 12).text("比 ×1 好 0.5% 以内");
+  axes(c, x, y, { noYGrid: true, xGrid: true, yTicks: R.map(r => "lr ×" + r.m), xf: d3.format(".3f"), xl: "val_bpb（衰减后，D/N = 128）", xN: 5 });
+  const col = m => m === 0.5 ? "var(--c3)" : m === 2 ? "var(--c2)" : "var(--c1)";
+  const dots = c.g.append("g").selectAll("circle").data(R).join("circle").attr("cx", r => x(r.v)).attr("cy", r => y("lr ×" + r.m) + y.bandwidth() / 2).attr("r", 7).style("fill", r => col(r.m));
+  hover(dots, r => `<b>${r.id}</b>（lr ×${r.m}）<br><span class="mono">${f4(r.v)}</span>，相对 ×1：${pct(r.v / base - 1)}`);
+  c.g.append("g").selectAll("text").data(R).join("text").attr("class", "lab").attr("x", r => x(r.v) + 12).attr("y", r => y("lr ×" + r.m) + y.bandwidth() / 2 + 4).text(r => f4(r.v) + (r.m !== 1 ? `（${pct(r.v / base - 1)}）` : ""));
+})();
+
+// ---------- 不同 E 的误差 ----------
+(() => {
+  const P = D.ot_fit.preregistered_pred_rel_err;
+  const keys = Object.keys(P).filter(k => !k.startsWith("free"));
+  const c = chart("#c-Eerr", { w: 520, h: 260, m: { l: 70, b: 38 } });
+  const y = d3.scaleBand().domain(keys).range([0, c.ih]).padding(0.3);
+  const x = d3.scaleLinear().domain([-0.04, 0.012]).range([0, c.iw]);
+  c.g.append("rect").attr("x", x(-0.01)).attr("width", x(0.01) - x(-0.01)).attr("y", 0).attr("height", c.ih).style("fill", "var(--c-faint)").style("fill-opacity", 0.6);
+  axes(c, x, y, { noYGrid: true, xGrid: true, yTicks: keys, xf: v => (v * 100).toFixed(0) + "%", xl: "预测 / 实际 − 1", xN: 6 });
+  c.g.append("line").attr("x1", x(0)).attr("x2", x(0)).attr("y1", 0).attr("y2", c.ih).style("stroke", "var(--muted)");
+  const pts = keys.flatMap(k => Object.entries(P[k]).map(([n, v]) => ({ k, n, v, gate: n === "e11m-ot-000/DN256" ? 1 : n === "e24m-ot-000/DN128" ? 2 : 0 })));
+  const dots = c.g.append("g").selectAll("circle").data(pts.sort((a, b) => a.gate - b.gate)).join("circle").attr("cx", p => x(p.v)).attr("cy", p => y(p.k) + y.bandwidth() / 2).attr("r", p => p.gate ? 6 : 4)
+    .style("fill", p => p.gate === 1 ? "var(--c1)" : p.gate === 2 ? "var(--c2)" : "var(--c-muted)").style("stroke", "var(--surface)").style("stroke-width", 1.5);
+  hover(dots, p => `<b>${p.k}</b><br>${p.n}：<span class="mono">${pct(p.v)}</span>`);
+})();
+
+// ---------- E 剖面 ----------
+(() => {
+  const P = Object.entries(D.ot_fit.E_profile_rms).map(([e, r]) => ({ e: +e, r })).sort((a, b) => a.e - b.e);
+  const c = chart("#c-Eprof", { w: 520, h: 260, m: { l: 52, b: 38 } });
+  const x = d3.scaleLinear().domain([0, 1.2]).range([0, c.iw]);
+  const y = d3.scaleLinear().domain([0, 0.028]).range([c.ih, 0]);
+  const [a0, a1] = D.ot_fit.E_allowed;
+  c.g.append("rect").attr("x", x(a0)).attr("width", x(a1) - x(a0)).attr("y", 0).attr("height", c.ih).style("fill", "var(--good-bg)");
+  axes(c, x, y, { xf: d3.format(".1f"), yf: v => (v * 100).toFixed(1) + "%", xl: "固定的下限 E", yl: "拟合相对误差 RMS", yN: 5 });
+  c.g.append("line").attr("x1", 0).attr("x2", c.iw).attr("y1", y(0.005)).attr("y2", y(0.005)).style("stroke", "var(--bad)").style("stroke-dasharray", "4 3");
+  c.g.append("text").attr("class", "lab").style("fill", "var(--bad)").attr("x", c.iw).attr("y", y(0.005) - 6).attr("text-anchor", "end").text("0.5%");
+  c.g.append("text").attr("class", "lab").style("fill", "var(--good)").attr("x", x((a0 + a1) / 2)).attr("y", 14).attr("text-anchor", "middle").text(`数据允许：E ∈ [${a0}, ${a1}]`);
+  c.g.append("path").attr("d", d3.line().x(p => x(p.e)).y(p => y(p.r))(P)).style("fill", "none").style("stroke", "var(--c1)").style("stroke-width", 2);
+  const dots = c.g.append("g").selectAll("circle").data(P).join("circle").attr("cx", p => x(p.e)).attr("cy", p => y(p.r)).attr("r", 3.5).style("fill", "var(--c1)");
+  hover(dots, p => `E = ${p.e.toFixed(2)}<br>RMS <span class="mono">${(p.r * 100).toFixed(2)}%</span>`);
+})();
+
+// ---------- 外推主线（forest） ----------
+(() => {
+  const V = D.diag.variants, FE = D.diag.fixed_E, F = D.fits;
+  const R = [
+    { n: "e5m–e44m（第 4 阶段预注册）", v: F.prereg.main, ci: F.prereg.ci, kind: F.prereg.ci_kind, g: "预注册" },
+    { n: "e5m–e44m，α = β", v: V.all_tie.main_T2048_400B, g: "诊断" },
+    { n: "去掉 e5m（第 6 阶段预注册拟合）", v: F.drop.main, ci: F.drop.ci, kind: F.drop.ci_kind, g: "预注册" },
+    { n: "去掉 e5m，α = β", v: V.drop_e5m_tie.main_T2048_400B, g: "诊断" },
+    ...Object.keys(FE).filter(k => +k > 0).map(k => ({ n: `去掉 e5m，固定 E = ${k}`, v: FE[k].main_T2048_400B, g: "诊断" })),
+    { n: "去掉 e5m + 过训练点", v: F.ot.main, ci: F.ot.ci, kind: F.ot.ci_kind, g: "只报告" },
+  ];
+  const c = chart("#c-forest", { h: 360, m: { l: 230, r: 30, b: 40 } });
+  const y = d3.scaleBand().domain(R.map(r => r.n)).range([0, c.ih]).padding(0.35);
+  const x = d3.scaleLinear().domain([0.65, 1.3]).range([0, c.iw]);
+  axes(c, x, y, { noYGrid: true, xGrid: true, yTicks: R.map(r => r.n), xf: d3.format(".2f"), xl: "外推的主线 val_bpb（N_eff 0.92B，400B token）", xN: 7 });
+  c.g.append("line").attr("x1", x(best("e83m"))).attr("x2", x(best("e83m"))).attr("y1", 0).attr("y2", c.ih).style("stroke", "var(--c2)").style("stroke-dasharray", "4 3");
+  c.g.append("text").attr("class", "lab").style("fill", "var(--c2)").attr("x", x(best("e83m")) + 4).attr("y", c.ih - 6).text("e83m 实测 1.124");
+  const g = c.g.append("g").selectAll("g").data(R).join("g").attr("transform", r => `translate(0,${y(r.n) + y.bandwidth() / 2})`);
+  g.filter(r => r.ci).append("line").attr("x1", r => x(r.ci[0])).attr("x2", r => x(r.ci[1])).style("stroke", "var(--c1)").style("stroke-width", 2.5).style("stroke-linecap", "round");
+  g.append("circle").attr("cx", r => x(r.v)).attr("r", 6).style("fill", r => r.g === "诊断" ? "var(--surface)" : "var(--c1)").style("stroke", "var(--c1)").style("stroke-width", 2);
+  g.append("text").attr("class", "lab").attr("x", r => x(r.ci ? r.ci[1] : r.v) + 10).attr("y", 4).text(r => r.v.toFixed(3));
+  hover(g, r => `<b>${r.n}</b><br>点估计 <span class="mono">${r.v.toFixed(3)}</span>` + (r.ci ? `<br>${r.kind}：<span class="mono">[${r.ci[0].toFixed(3)}, ${r.ci[1].toFixed(3)}]</span>` : ""));
+})();
+
+// ---------- 决定 ----------
+(() => {
+  const N = { successive_halving: "从 e11m 起采用逐轮淘汰", ext_e5m: "e5m 边界扩展", ext_e11m: "e11m 边界扩展", ext_e24m: "e24m 边界扩展", ext_e44m: "e44m 边界扩展", ot_lr: "过训练的学习率倍数 m" };
+  d3.select("#t-dec").html(`<tr><th>时间</th><th>决定</th><th>结果</th><th>理由</th></tr>` +
+    Object.entries(D.decisions).map(([k, d]) => `<tr><td class="mono">${d.time}</td><td>${N[k] ?? k}</td><td class="mono">${d.value === true ? "是" : d.value === false ? "否" : d.value}</td><td class="wr">${d.why}</td></tr>`).join(""));
+})();
+</script>
