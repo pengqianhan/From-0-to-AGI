@@ -150,6 +150,8 @@ def main() -> None:
     data["ot_fit"] = {k: ot[k] for k in ("E_profile_rms", "E_allowed", "preregistered_pred_rel_err", "gates", "new_points")}
     data["ot_pred"] = json.loads((A.RES / "ot_predictions.json").read_text())
     data["loop_result"] = json.loads((A.RES / "loop_result.json").read_text())
+    snap = A.REPO / "out" / "ladder3090" / "status.json"  # monitor.py 写的最近一次状态（没有就不放）
+    data["live_snapshot"] = json.loads(snap.read_text()) if snap.exists() else None
     data["decisions"] = json.loads((A.RES / "decisions.json").read_text())
     for s in ["e5m", "e11m"]:
         data["scales"][s]["nql"] = json.loads((A.RES / f"{s}_nql.json").read_text())

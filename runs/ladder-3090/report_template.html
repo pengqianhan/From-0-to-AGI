@@ -8,7 +8,7 @@
   --bg: #f6f7f8; --surface: #fcfcfb; --fg: #16181b; --fg2: #4c5158; --muted: #7a8089; --rule: #e2e5e9; --grid: #e8eaec;
   --accent: #2a78d6; --accent-ink: #1c5cab;
   --sc0: #86b6ef; --sc1: #5598e7; --sc2: #2a78d6; --sc3: #1c5cab; --sc4: #104281;
-  --c1: #2a78d6; --c2: #eb6834; --c3: #1baf7a; --c-muted: #b4b6b9; --c-faint: #d4d7db;
+  --c1: #2a78d6; --c2: #eb6834; --c3: #1baf7a; --c4: #eda100; --c5: #e87ba4; --c6: #008300; --c-muted: #b4b6b9; --c-faint: #d4d7db;
   --bad: #c8312f; --bad-bg: #fbe9e8; --good: #127a3e; --good-bg: #e5f4ea; --warn: #9a6400; --warn-bg: #fbf1dc;
   --pause: #c9cdd2;
   --f-display: "Noto Serif SC", "Songti SC", "STSong", serif;
@@ -19,14 +19,14 @@
   --bg: #121315; --surface: #1a1a19; --fg: #eceef0; --fg2: #b8bdc4; --muted: #8b9199; --rule: #2c2f33; --grid: #2a2c2f;
   --accent: #3987e5; --accent-ink: #86b6ef;
   --sc0: #184f95; --sc1: #256abf; --sc2: #3987e5; --sc3: #6da7ec; --sc4: #9ec5f4;
-  --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c-muted: #5d6268; --c-faint: #3a3d42;
+  --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500; --c5: #d55181; --c6: #0ca30c; --c-muted: #5d6268; --c-faint: #3a3d42;
   --bad: #ef6b68; --bad-bg: #3a1d1c; --good: #4cc27a; --good-bg: #16301f; --warn: #e0a640; --warn-bg: #352a14;
   --pause: #3d4146; color-scheme: dark; } }
 :root[data-theme="dark"] {
   --bg: #121315; --surface: #1a1a19; --fg: #eceef0; --fg2: #b8bdc4; --muted: #8b9199; --rule: #2c2f33; --grid: #2a2c2f;
   --accent: #3987e5; --accent-ink: #86b6ef;
   --sc0: #184f95; --sc1: #256abf; --sc2: #3987e5; --sc3: #6da7ec; --sc4: #9ec5f4;
-  --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c-muted: #5d6268; --c-faint: #3a3d42;
+  --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500; --c5: #d55181; --c6: #0ca30c; --c-muted: #5d6268; --c-faint: #3a3d42;
   --bad: #ef6b68; --bad-bg: #3a1d1c; --good: #4cc27a; --good-bg: #16301f; --warn: #e0a640; --warn-bg: #352a14;
   --pause: #3d4146; color-scheme: dark; }
 
@@ -111,6 +111,13 @@ tr.hl td { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .tip .mono { font-size: 11.5px; }
 .callout { border-left: 3px solid var(--warn); background: var(--warn-bg); padding: 10px 14px; border-radius: 0 6px 6px 0; font-size: 14px; max-width: 80ch; }
 .callout.bad { border-left-color: var(--bad); background: var(--bad-bg); }
+.live-bar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.btn { font: inherit; font-size: 12.5px; padding: 4px 11px; border: 1px solid var(--rule); border-radius: 7px; background: var(--surface); color: var(--accent-ink); cursor: pointer; text-decoration: none; }
+.btn:hover, .btn:focus-visible { border-color: var(--accent); outline: none; }
+.pbar { height: 10px; border-radius: 99px; background: var(--c-faint); overflow: hidden; }
+.pbar i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 99px; }
+.logbox { margin: 0; font-family: var(--f-mono); font-size: 11.5px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg2); max-height: 260px; overflow: auto; }
+.pill.idle { color: var(--fg2); background: var(--c-faint); }
 footer { color: var(--muted); font-size: 12.5px; }
 @media (prefers-reduced-motion: no-preference) { .seg button { transition: background .12s; } }
 </style>
@@ -120,6 +127,7 @@ footer { color: var(--muted); font-size: 12.5px; }
   <div class="eyebrow">目录</div>
   <ol>
     <li><a href="#summary">结论速览</a></li>
+    <li><a href="#live">实时监控</a></li>
     <li><a href="#timeline">时间线与算力</a></li>
     <li><a href="#data">数据与试点</a></li>
     <li><a href="#ladder">阶梯与搜索</a></li>
@@ -169,6 +177,47 @@ footer { color: var(--muted); font-size: 12.5px; }
     </div>
   </div>
 </header>
+
+<section id="live">
+  <h2><span class="no">●</span>实时监控</h2>
+  <p>服务器上的监控进程每 3 分钟把训练状态传到一个私有的 Hugging Face 数据集，这一节每分钟读一次。逐步的完整曲线记在服务器上的 Trackio 里（<code>trackio show --project ladder-3090</code>）。</p>
+  <div class="live-bar">
+    <span class="pill" id="live-pill">正在连接…</span>
+    <span id="live-updated" class="mono" style="font-size:12.5px;color:var(--fg2)"></span>
+    <button type="button" class="btn" id="live-refresh" hidden>立即刷新</button>
+    <button type="button" class="btn" id="live-allow" hidden>允许读取 Hugging Face</button>
+    <a class="btn" id="live-trackio" target="_blank" rel="noopener" hidden>打开 Trackio 面板 ↗</a>
+  </div>
+  <div class="callout" id="live-msg" hidden></div>
+  <div id="live-body" hidden style="display:grid;gap:18px">
+    <div class="tiles" id="live-tiles"></div>
+    <div class="fig" id="live-progress-fig">
+      <div class="fig-head"><h3 id="live-run-name"></h3><span class="mono" id="live-progress-txt" style="font-size:13px;color:var(--fg2)"></span></div>
+      <div class="pbar"><i id="live-pbar"></i></div>
+    </div>
+    <div class="grid2" id="live-charts">
+      <div class="fig"><h3>训练 loss</h3><div id="c-live-loss"></div><div class="cap">每个点是一段步数的平均（最多 240 段）。单位是 nats/token，不是 val_bpb。</div></div>
+      <div class="fig"><h3>验证集 val_bpb</h3><div id="c-live-val"></div><div class="cap" id="cap-live-val">每 1/8 预算评估一次。</div></div>
+    </div>
+    <div class="grid2" id="live-charts2">
+      <div class="fig"><h3>学习率</h3><div id="c-live-lr"></div></div>
+      <div class="fig"><h3>吞吐（tok/s）</h3><div id="c-live-toks"></div></div>
+    </div>
+    <div class="fig" id="live-data-fig">
+      <h3>训练数据：batch 里是什么内容</h3>
+      <div class="legend" id="lg-live-mix"></div>
+      <div id="c-live-mixlast"></div>
+      <div class="cap" id="cap-live-mixlast"></div>
+      <div id="c-live-mix"></div>
+      <div class="cap">上图：最近一段（10 步）里各类内容的序列数。下图：最近 60 段里各类内容占比的变化，每一列是 10 步。每条序列 2048 个 token，来自单一数据来源。这里按来源分类，没有对每篇文档做主题分类。</div>
+      <div class="tbl" style="border:0"><table id="t-live-mix"></table></div>
+    </div>
+    <div class="grid2">
+      <div class="fig"><h3>调度器日志（最后几行）</h3><pre class="logbox" id="live-sched"></pre></div>
+      <div class="fig"><h3>最近结束的运行</h3><div class="tbl" style="border:0"><table id="t-live-recent"></table></div></div>
+    </div>
+  </div>
+</section>
 
 <section id="timeline">
   <h2><span class="no">01</span>时间线与算力</h2>
@@ -1130,6 +1179,151 @@ seg("#seg-loop", [{ key: "e24m", label: "e24m" }, { key: "e44m", label: "e44m" }
     .style("fill", r => r.m === 1 ? lpCol(r.s) : "var(--surface)").style("stroke", r => lpCol(r.s)).style("stroke-width", 2);
   hover(dots, r => `<b>${r.s}</b>，lr ×${r.m}<br><span class="mono">${f4(r.v)}</span>` + (r.m !== 1 ? `，相对 ×1：${pct(r.v / r.b - 1)}` : "（选中）"));
   c.g.append("g").selectAll("text").data(R).join("text").attr("class", "lab").attr("x", r => x(r.v) + 12).attr("y", r => y(r.key) + y.bandwidth() / 2 + 4).text(r => f4(r.v) + (r.m !== 1 ? `（${pct(r.v / r.b - 1)}）` : " ← 选中"));
+})();
+
+// ---------- 实时监控 ----------
+(() => {
+  const SERVER = "Hugging Face", TOOL = "hf_fs";
+  const INPUT = { operations: [{ cmd: "cat", args: ["hf://datasets/pengqian/ladder-3090-status/status.json", "--max-bytes", "400000"] }] };
+  const MIXC = ["var(--c1)", "var(--c2)", "var(--c3)", "var(--c4)", "var(--c5)", "var(--c6)"];
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s).replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+  const num = v => (typeof v === "number" && isFinite(v)) ? v : null;
+  const dur = s => { if (num(s) === null) return "—"; const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60); return h ? `${h} 小时 ${m} 分` : `${m} 分`; };
+  let lastGood = null;
+
+  function pill(cls, text) { const p = $("live-pill"); p.className = "pill " + cls; p.textContent = text; }
+  function msg(text) { const m = $("live-msg"); m.hidden = !text; m.textContent = text || ""; }
+
+  function small(el, pts, { yf, col = "var(--c1)", yl, dots } = {}) {
+    const c = chart(el, { w: 520, h: 230, m: { l: 56, b: 34, r: 16, t: 20 } });
+    if (!pts.length) { c.g.append("text").attr("class", "lab").attr("x", c.iw / 2).attr("y", c.ih / 2).attr("text-anchor", "middle").text("还没有数据"); return; }
+    const x = d3.scaleLinear().domain([0, d3.max(pts, p => p[0]) * 1.02 || 1]).range([0, c.iw]);
+    const ext = d3.extent(pts, p => p[1]), pad = (ext[1] - ext[0]) * 0.08 || Math.abs(ext[1]) * 0.05 || 1;
+    const y = d3.scaleLinear().domain([ext[0] - pad, ext[1] + pad]).range([c.ih, 0]);
+    axes(c, x, y, { xl: "步数", yl, yN: 5, xN: 5, yf, xf: d3.format("~s") });
+    c.g.append("path").attr("d", d3.line().x(p => x(p[0])).y(p => y(p[1]))(pts)).style("fill", "none").style("stroke", col).style("stroke-width", 2);
+    const sel = c.g.append("g").selectAll("circle").data(pts).join("circle").attr("cx", p => x(p[0])).attr("cy", p => y(p[1])).attr("r", dots ? 4.5 : 6)
+      .style("fill", dots ? col : "transparent").style("stroke", dots ? "var(--surface)" : "none").style("stroke-width", 2);
+    hover(sel, p => `第 ${d3.format(",")(p[0])} 步<br><span class="mono">${(yf || d3.format(".4g"))(p[1])}</span>`);
+    if (dots) c.g.append("text").attr("class", "lab").attr("x", x(pts.at(-1)[0]) - 8).attr("y", y(pts.at(-1)[1]) - 10).attr("text-anchor", "end").text(f4(pts.at(-1)[1]));
+  }
+
+  function render(st, cachedAt) {
+    lastGood = st;
+    { const a = $("live-trackio"), u = typeof st.trackio === "string" && st.trackio.startsWith("https://huggingface.co/") ? st.trackio : null; a.hidden = !u; if (u) a.href = u; }
+    const src = Array.isArray(st.sources) ? st.sources : [], r = st.run;
+    const age = (cachedAt ?? Date.now()) - (num(st.updated_ms) ?? 0), stale = age > 12 * 60 * 1000;
+    $("live-updated").textContent = "状态更新于 " + String(st.updated || "?") + (stale ? "（超过 12 分钟没有更新，监控进程可能停了）" : "");
+    pill(stale ? "warn" : r ? "good" : "idle", stale ? "△ 状态过期" : r ? "● 训练中" : "○ 空闲");
+    $("live-body").hidden = false; $("live-body").style.display = "grid";
+    const g = st.gpu || {};
+    const tiles = r ? [
+      { k: "当前运行", v: r.name, s: "档 " + r.scale },
+      { k: "进度", v: r.max_steps ? (100 * r.step / r.max_steps).toFixed(1) + "%" : "—", s: `${d3.format(",")(r.step)} / ${r.max_steps ? d3.format(",")(r.max_steps) : "?"} 步` },
+      { k: "这次运行还要", v: dur(r.eta_s), s: "已用 " + dur(r.elapsed_s) },
+      { k: "吞吐", v: num(r.tok_per_s) !== null ? fM(r.tok_per_s) : "—", s: "tok/s（最近 30 条的中位数）" },
+      { k: "训练 loss", v: num(r.loss) !== null ? r.loss.toFixed(3) : "—", s: "lr " + (num(r.lr) !== null ? r.lr.toExponential(2) : "—") },
+      { k: "最近的 val_bpb", v: r.val && r.val.length ? f4(r.val.at(-1)[1]) : "—", s: r.val && r.val.length ? `第 ${d3.format(",")(r.val.at(-1)[0])} 步` : "还没有评估" },
+    ] : [{ k: "当前运行", v: "没有", s: "最近 15 分钟没有日志更新" }];
+    tiles.push({ k: "GPU 0", v: num(g.util) !== null ? g.util.toFixed(0) + "%" : "—", s: num(g.mem_used_mib) !== null ? `${(g.mem_used_mib / 1024).toFixed(1)} / ${(g.mem_total_mib / 1024).toFixed(0)} GB · ${g.temp_c}°C · ${Math.round(g.power_w)} W` : "" });
+    const T = d3.select("#live-tiles").selectAll("div").data(tiles).join("div").attr("class", "tile");
+    T.selectAll("*").remove();
+    T.append("span").attr("class", "k").text(d => d.k);
+    T.append("span").attr("class", "v").style("font-size", d => String(d.v).length > 9 ? "17px" : null).text(d => d.v);
+    T.append("span").attr("class", "s").text(d => d.s);
+    for (const id of ["live-progress-fig", "live-charts", "live-charts2", "live-data-fig"]) $(id).hidden = !r;
+    if (r) {
+      $("live-run-name").textContent = r.scale + " / " + r.name;
+      $("live-progress-txt").textContent = `${fM(r.tokens)} token · 日志更新于 ${r.updated}`;
+      $("live-pbar").style.width = (r.max_steps ? Math.min(100, 100 * r.step / r.max_steps) : 0) + "%";
+      small("#c-live-loss", r.loss_curve || [], { yf: d3.format(".2f"), yl: "loss" });
+      small("#c-live-val", r.val || [], { yf: d3.format(".3f"), yl: "val_bpb", dots: true, col: "var(--c2)" });
+      small("#c-live-lr", r.lr_curve || [], { yf: d3.format(".1e"), yl: "学习率", col: "var(--c3)" });
+      small("#c-live-toks", r.toks_curve || [], { yf: d3.format("~s"), yl: "tok/s", col: "var(--c1)" });
+      d3.select("#lg-live-mix").html(src.map((s, i) => `<span><i class="sw" style="background:${MIXC[i % 6]}"></i>${esc(s.label)}</span>`).join(""));
+      // 最近一段的 batch 构成
+      const ml = r.mix_last, keys = src.map(s => s.key);
+      if (ml && ml.counts) {
+        const tot = d3.sum(keys, k => num(ml.counts[k]) || 0) || 1;
+        const c = chart("#c-live-mixlast", { w: 900, h: 86, m: { l: 4, r: 4, t: 22, b: 22 } });
+        const x = d3.scaleLinear().domain([0, tot]).range([0, c.iw]);
+        let acc = 0;
+        const segs = keys.map((k, i) => { const n = num(ml.counts[k]) || 0, o = { k, i, n, x0: acc }; acc += n; return o; });
+        const gg = c.g.append("g").selectAll("g").data(segs).join("g");
+        gg.append("rect").attr("x", d => x(d.x0) + 1).attr("width", d => Math.max(0, x(d.n) - 2)).attr("y", 0).attr("height", c.ih).attr("rx", 4).style("fill", d => MIXC[d.i % 6]);
+        gg.append("text").attr("class", "lab").attr("x", d => x(d.x0 + d.n / 2)).attr("y", -6).attr("text-anchor", "middle").text(d => x(d.n) > 46 ? `${d.n} 条` : "");
+        gg.append("text").attr("class", "lab").attr("x", d => x(d.x0 + d.n / 2)).attr("y", c.ih + 16).attr("text-anchor", "middle").text(d => x(d.n) > 46 ? (100 * d.n / tot).toFixed(0) + "%" : "");
+        hover(gg, d => `<b>${esc(src[d.i].label)}</b><br>${d.n} 条序列（${(100 * d.n / tot).toFixed(1)}%），配比 ${(100 * src[d.i].weight).toFixed(0)}%`);
+        $("cap-live-mixlast").textContent = `第 ${ml.from + 1}–${ml.to} 步，共 ${tot} 条序列（${fM(tot * 2048)} token）。`;
+      }
+      // 最近 60 段的占比
+      const MR = (r.mix_recent || []).filter(a => Array.isArray(a) && a.length === keys.length + 1);
+      const c2 = chart("#c-live-mix", { w: 900, h: 220, m: { l: 44, r: 8, t: 10, b: 32 } });
+      if (MR.length) {
+        const xb = d3.scaleBand().domain(MR.map(a => a[0])).range([0, c2.iw]).paddingInner(0.12);
+        const y = d3.scaleLinear().domain([0, 1]).range([c2.ih, 0]);
+        axes(c2, xb, y, { yf: d3.format(".0%"), yN: 4, xTicks: MR.map(a => a[0]).filter((_, i) => i % 10 === 0 || i === MR.length - 1), xl: "步数", xf: d3.format(",") });
+        const cells = MR.flatMap(a => { const tot = d3.sum(a.slice(1)) || 1; let acc = 0; return a.slice(1).map((n, i) => { const o = { step: a[0], i, n, tot, y0: acc / tot }; acc += n; return o; }); });
+        const rc = c2.g.append("g").selectAll("rect").data(cells).join("rect").attr("x", d => xb(d.step)).attr("width", xb.bandwidth())
+          .attr("y", d => y(d.y0 + d.n / d.tot) + 0.5).attr("height", d => Math.max(0, y(d.y0) - y(d.y0 + d.n / d.tot) - 1)).style("fill", d => MIXC[d.i % 6]);
+        hover(rc, d => `到第 ${d3.format(",")(d.step)} 步的 10 步<br><b>${esc(src[d.i].label)}</b>：${d.n} 条（${(100 * d.n / d.tot).toFixed(1)}%）`);
+      }
+      // 累计占比与配比
+      const cum = r.mix_cum || {};
+      d3.select("#t-live-mix").html(`<tr><th>内容类型</th><th>数据来源</th><th class="r">配比（目标）</th><th class="r">这次运行累计</th><th class="r">最近一段</th></tr>` +
+        src.map((s, i) => { const lt = ml && ml.counts ? d3.sum(keys, k => num(ml.counts[k]) || 0) || 1 : 1; return `<tr><td><i class="sw" style="background:${MIXC[i % 6]};margin-right:8px"></i>${esc(s.label)}</td><td class="mono">${esc(s.key)}</td><td class="r">${(100 * s.weight).toFixed(0)}%</td><td class="r">${num(cum[s.key]) !== null ? (100 * cum[s.key]).toFixed(2) + "%" : "—"}</td><td class="r">${ml && ml.counts ? (100 * (num(ml.counts[s.key]) || 0) / lt).toFixed(1) + "%" : "—"}</td></tr>`; }).join("") +
+        `<tr><td colspan="5" style="color:var(--muted);white-space:normal">这次运行到现在共抽了 ${d3.format(",")(num(r.seqs_seen) || 0)} 条序列。</td></tr>`);
+    }
+    $("live-sched").textContent = st.scheduler ? `${st.scheduler.name}（更新于 ${st.scheduler.updated}）\n` + (st.scheduler.lines || []).join("\n") : "没有调度器日志";
+    d3.select("#t-live-recent").html(`<tr><th>运行</th><th class="r">步数</th><th class="r">val_bpb</th><th>结束时间</th></tr>` +
+      (st.recent || []).map(x => `<tr><td class="mono">${esc(x.name)}</td><td class="r">${d3.format(",")(num(x.step) || 0)}</td><td class="r">${num(x.val_bpb) !== null ? f4(x.val_bpb) : "—"}</td><td class="mono">${esc(x.ended)}</td></tr>`).join(""));
+  }
+
+  function parse(result) {
+    const p = result && result.payload;
+    const item = p && p.results && p.results[0];
+    if (!item || item.status !== "success" || !item.result || typeof item.result.content !== "string") throw new Error("连接器返回的内容不是预期的格式");
+    if (item.result.truncated) throw new Error("状态文件被截断了");
+    return JSON.parse(item.result.content);
+  }
+  function onData(result) {
+    try { render(parse(result), result.cache && result.cache.storedAt); msg(""); $("live-refresh").hidden = false; $("live-allow").hidden = true; }
+    catch (e) { msg("读到了状态文件，但解析失败：" + e.message); }
+  }
+  const FIX = {
+    needs_reauth: "Hugging Face 连接器的登录已过期。请在 claude.ai 的 设置 → 连接器 里重新连接 Hugging Face。",
+    server_not_connected: "当前账号没有连接 Hugging Face 连接器。请在 claude.ai 的 设置 → 连接器 里添加 Hugging Face。",
+    selection_required: "账号里有多个 Hugging Face 连接器，需要先选一个。",
+    not_in_manifest: "这个页面没有被允许读取 Hugging Face。可以在页面的权限菜单里重新允许。",
+    blocked_by_policy: "组织的策略不允许这个页面使用 Hugging Face 连接器。",
+    not_granted: "这个视图没有连接器权限，只能看下面的快照。",
+    capability_disabled: "这个视图不支持连接器，只能看下面的快照。",
+  };
+  function onError(err, mcp) {
+    const code = err && err.code;
+    if (code === "approval_required" || code === "consent_required") {
+      pill("warn", "△ 需要允许"); msg("需要你允许这个页面通过 Hugging Face 连接器读取状态文件（只读）。");
+      const b = $("live-allow"); b.hidden = false;
+      b.onclick = () => { b.disabled = true; mcp.callTool(SERVER, TOOL, INPUT).then(onData, e => onError(e, mcp)).finally(() => { b.disabled = false; }); };
+      return;
+    }
+    const denied = ["needs_reauth", "server_not_connected", "selection_required", "not_in_manifest", "blocked_by_policy", "not_granted", "capability_disabled", "capability_removed"].includes(code);
+    if (denied) { pill("idle", "○ 读不到实时状态"); msg(FIX[code] || FIX.capability_disabled); if (!lastGood) fallback(); return; }
+    msg("这次没读到最新状态（" + (code || "未知错误") + "），页面会自动再试。" + (lastGood ? "下面是上一次读到的内容。" : ""));
+    if (!lastGood) fallback();
+  }
+  function fallback() {
+    if (D.live_snapshot) { render(D.live_snapshot); pill("idle", "○ 生成报告时的快照"); }
+  }
+
+  (async () => {
+    let mcp = null;
+    try { mcp = window.claude && window.claude.use ? await window.claude.use("mcp") : null; } catch (e) { mcp = null; }
+    if (!mcp) { pill("idle", "○ 这里读不到实时状态"); msg("实时状态要在 claude.ai 里打开这个页面、并连接了 Hugging Face 连接器才能读到。下面是生成报告时的快照。"); fallback(); return; }
+    mcp.watchTool(SERVER, TOOL, INPUT, ev => { if (ev.type === "data") onData(ev.result); else onError(ev.error, mcp); }, { refetchInterval: 60000, cache: { staleTime: 30000, gcTime: 600000 } });
+    $("live-refresh").onclick = () => { mcp.invalidate(SERVER, TOOL, INPUT).catch(() => {}); };
+  })();
 })();
 
 // ---------- 决定 ----------
