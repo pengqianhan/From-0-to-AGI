@@ -1,0 +1,1 @@
+{"tokens_per_step": 65536, "lr": 0.021526894812520694, "beta1": 0.9748204266626914, "beta2": 0.9987626767857999, "warmup_frac": 0.10839676809681228, "weight_decay": 0.0027607625195034792, "rope_theta": 4779.522748707844, "id": "e44m_lm3-000", "scale": "e44m_lm3", "space": "loop", "base": "e44m-002", "lr_mult": 1.0, "stable_steps": 21648, "warmup_steps": 2347}
