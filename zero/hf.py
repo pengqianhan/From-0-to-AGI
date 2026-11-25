@@ -76,7 +76,10 @@ def zero_to_hf_name(name: str) -> str:
 
 
 def _check_no_loop(config: ModelConfig) -> None:
-    """Qwen3 in HF has no looped layers: a looped model (n_loops > 1) cannot be exported."""
+    """Qwen3 in HF has no looped layers and no attention residuals: such a model (n_loops > 1 or
+    attn_res) cannot be exported."""
+    if config.attn_res:
+        raise NotImplementedError("Export of a model with attention residuals (attn_res) to HF Qwen3 is not supported")
     if config.n_loops > 1:
         raise NotImplementedError(
             f"Export of a looped model (n_loops={config.n_loops}) to HF Qwen3 is not supported"

@@ -1,0 +1,10 @@
+# Ladder stage 8 (runs/ladder-3090/README.md): e44m_lf3 (whole stack looped 3 times) + the
+# attention residuals of ARLoop with the full history (all blocks).
+# A block is 3 layers (half of the 6-layer stack). N_eff = 82.67M, the same as e44m_lf3.
+base = "e44m.toml"
+[model]
+n_loops = 3
+attn_res = true
+attn_res_block_layers = 3
+[train]
+out_dir = "out/ladder3090/e44m_arf3/scratch"

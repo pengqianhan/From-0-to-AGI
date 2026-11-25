@@ -1,0 +1,11 @@
+# Ladder stage 8 (runs/ladder-3090/README.md): e24m_lf3 (whole stack looped 3 times) + the
+# attention residuals of ARLoop with a sliding window (the embedding + the 3 most recent blocks).
+# A block is 2 layers (half of the 4-layer stack). N_eff = 38.21M, the same as e24m_lf3.
+base = "e24m.toml"
+[model]
+n_loops = 3
+attn_res = true
+attn_res_block_layers = 2
+attn_res_window = 3
+[train]
+out_dir = "out/ladder3090/e24m_ar3/scratch"

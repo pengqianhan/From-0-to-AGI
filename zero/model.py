@@ -15,6 +15,7 @@ The components (all are "consensus techniques", see GOAL.md 3.3):
 - `Transformer`: embedding → N Blocks → final RMSNorm → lm_head (it can share weights with the
   embedding). Optional for experiments: a range of layers can run several times with shared
   weights (looped Transformer, `n_loops` in ModelConfig; runs/ladder-3090/README.md, stage 7).
+  Also optional: the attention residuals of ARLoop (`attn_res` in ModelConfig; stage 8).
 
 No linear layer has a bias. `zero/hf.py` gives the mapping from these parameter names to the
 names of Hugging Face `Qwen3ForCausalLM`. `tests/test_model_hf_parity.py` makes sure that the two
@@ -280,6 +281,33 @@ class Block(nn.Module):
 
 
 # ---------------------------------------------------------------------------
+# Attention residuals (ARLoop; runs/ladder-3090/README.md, stage 8)
+# ---------------------------------------------------------------------------
+
+
+def attn_res_mix(
+    query: torch.Tensor, weight: torch.Tensor, eps: float, values: list[torch.Tensor] | tuple[torch.Tensor, ...]
+) -> torch.Tensor:
+    """h = sum_l p_l * v_l with p = softmax_l( rms_norm(v_l; weight) . query ), in float32.
+
+    The same math as `naive_attnres` of flash-linear-attention (scale 1): the softmax is over the
+    sources, separately for each token. rms_norm(v; w) . q = rstd(v) * (v . (w * q)), so the
+    normalized copy of each source is not stored. The result has the dtype of the first source.
+    """
+    wq = weight.float() * query.float()
+    logits = []
+    for v in values:
+        vf = v.float()
+        rstd = torch.rsqrt(vf.pow(2).mean(-1) + eps)
+        logits.append((vf * wq).sum(-1) * rstd)
+    p = torch.stack(logits).softmax(0)
+    out = p[0].unsqueeze(-1) * values[0].float()
+    for i in range(1, len(values)):
+        out = out + p[i].unsqueeze(-1) * values[i].float()
+    return out.to(values[0].dtype)
+
+
+# ---------------------------------------------------------------------------
 # Transformer
 # ---------------------------------------------------------------------------
 
@@ -303,6 +331,23 @@ class Transformer(nn.Module):
             self.loop_gates = nn.ParameterList(
                 [nn.Parameter(torch.zeros(config.dim)) for _ in range(config.n_loops - 1)]
             )
+        # Attention residuals: one query (init 0) and one RMSNorm weight (init 1) for each sublayer
+        # after the loop is unrolled (not shared between passes), and one pair for the output.
+        # All are 1-D, so the optimizer puts them in the group without weight decay.
+        self.attn_res_queries: nn.ParameterList | None = None
+        self.attn_res_norms: nn.ModuleList | None = None
+        self.final_attn_res_query: nn.Parameter | None = None
+        self.final_attn_res_norm: RMSNorm | None = None
+        if config.attn_res:
+            n_sub = 2 * config.layer_applications
+            self.attn_res_queries = nn.ParameterList(
+                [nn.Parameter(torch.zeros(config.dim)) for _ in range(n_sub)]
+            )
+            self.attn_res_norms = nn.ModuleList(
+                [RMSNorm(config.dim, config.norm_eps) for _ in range(n_sub)]
+            )
+            self.final_attn_res_query = nn.Parameter(torch.zeros(config.dim))
+            self.final_attn_res_norm = RMSNorm(config.dim, config.norm_eps)
         self.rope = RotaryEmbedding(
             config.head_dim, config.max_seq_len, config.rope_theta, config.rope_scaling
         )
@@ -321,7 +366,8 @@ class Transformer(nn.Module):
         divided by sqrt(2 * n_layers). Then the variance of the residual stream does not grow
         with the number of layers (a common method, for example in GPT-2 and OLMo).
         With a loop, n_layers is the number of layer applications (a looped layer counts each
-        time it runs). The RMSNorm weights are 1. The loop gates are 0.
+        time it runs). The RMSNorm weights are 1. The loop gates and the attention-residual
+        queries are 0.
         """
         std = self.config.init_std
         out_std = std / math.sqrt(2 * self.config.layer_applications)
@@ -336,6 +382,11 @@ class Transformer(nn.Module):
         if self.loop_gates is not None:
             for g in self.loop_gates:
                 nn.init.zeros_(g)
+        if self.attn_res_queries is not None:
+            for q in self.attn_res_queries:
+                nn.init.zeros_(q)
+        if self.final_attn_res_query is not None:
+            nn.init.zeros_(self.final_attn_res_query)
 
     # ---- Forward pass ----
     def forward(
@@ -361,7 +412,11 @@ class Transformer(nn.Module):
                     h = layer(h, cos, sin, kv_cache, start_pos)
             return h
 
-        if self.config.n_loops == 1:
+        if self.config.attn_res:
+            if kv_cache is not None:
+                raise NotImplementedError("KV cache with attention residuals (attn_res) is not supported")
+            h = self._run_attn_res(h, cos, sin, use_ckpt)
+        elif self.config.n_loops == 1:
             h = run(self.layers, h)
         else:
             if kv_cache is not None:
@@ -378,6 +433,68 @@ class Transformer(nn.Module):
             h = run(self.layers[end:], h)  # coda
         h = self.norm(h)
         return self.lm_head(h)
+
+    # ---- Attention residuals ----
+    def attn_res_route(self, i: int, values: list[torch.Tensor]) -> torch.Tensor:
+        """The input of sublayer i (i = 2 * n_layers * n_loops is the final output) from its sources."""
+        assert self.attn_res_queries is not None and self.attn_res_norms is not None
+        if i == len(self.attn_res_queries):
+            q, norm = self.final_attn_res_query, self.final_attn_res_norm
+        else:
+            q, norm = self.attn_res_queries[i], self.attn_res_norms[i]
+        assert q is not None and norm is not None
+        return attn_res_mix(q, norm.weight, norm.eps, values)
+
+    def attn_res_sources(self, blocks: list[torch.Tensor], partial: torch.Tensor) -> list[torch.Tensor]:
+        """[E, B_1, ..., B_k, P]; with a window w: E and the w most recent sources."""
+        values = [*blocks, partial]
+        w = self.config.attn_res_window
+        if w is None or len(values) <= w + 1:
+            return values
+        return [values[0], *values[-w:]]
+
+    def _attn_res_sublayer(
+        self, i: int, cos: torch.Tensor, sin: torch.Tensor, *values: torch.Tensor
+    ) -> torch.Tensor:
+        """Route the sources into sublayer i, then the layer's own pre-norm and the sublayer."""
+        layer = self.layers[(i // 2) % self.config.n_layers]
+        x = self.attn_res_route(i, list(values))
+        if i % 2 == 0:
+            return layer.attn(layer.attn_norm(x), cos, sin)
+        return layer.ffn(layer.ffn_norm(x))
+
+    def _run_attn_res(
+        self, h: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, use_ckpt: bool
+    ) -> torch.Tensor:
+        """The unrolled stack with attention residuals (ARLoop, `_run_loops` of the reference code).
+
+        blocks = [E], partial = E. Sublayer i (even = attention, odd = FFN) gets a mixture of
+        the sources. A new block starts at the attention sublayer of effective layer e when
+        e > 0 and e % attn_res_block_layers == 0, after that sublayer has taken its input. The
+        update of a sublayer is added to the open block. The sources keep the dtype of E (the
+        residual stream of the plain model is also in this dtype).
+        """
+        per_block = self.config.attn_res_block_layers
+        n_sub = 2 * self.config.layer_applications
+        blocks: list[torch.Tensor] = [h]
+        partial: torch.Tensor | None = h
+        for i in range(n_sub):
+            assert partial is not None
+            values = self.attn_res_sources(blocks, partial)
+            if use_ckpt:
+                update = torch.utils.checkpoint.checkpoint(
+                    self._attn_res_sublayer, i, cos, sin, *values, use_reentrant=False
+                )
+            else:
+                update = self._attn_res_sublayer(i, cos, sin, *values)
+            update = update.to(h.dtype)
+            e = i // 2
+            if i % 2 == 0 and e > 0 and e % per_block == 0:
+                blocks.append(partial)
+                partial = None
+            partial = update if partial is None else partial + update
+        assert partial is not None
+        return self.attn_res_route(n_sub, self.attn_res_sources(blocks, partial))
 
     def loss(
         self, tokens: torch.Tensor, targets: torch.Tensor, ignore_index: int = -100
@@ -430,7 +547,9 @@ def count_params(config: ModelConfig) -> dict[str, int]:
     emb = config.vocab_size * d
     head = 0 if config.tie_embeddings else config.vocab_size * d
     gates = (config.n_loops - 1) * d if config.loop_gate else 0  # stored once (not per application)
-    total = emb + head + L * per_layer + d + gates
+    # attention residuals: a query and an RMSNorm weight per unrolled sublayer, plus the final pair
+    attn_res = (2 * config.layer_applications + 1) * 2 * d if config.attn_res else 0
+    total = emb + head + L * per_layer + d + gates + attn_res
     return {
         "total": total,
         "embedding": emb + head,
@@ -455,6 +574,8 @@ def estimate_flops_per_token(config: ModelConfig, seq_len: int) -> float:
       halving for the causal mask; this is the same definition as PaLM / nanochat.
     - Looped model: L is the number of layer applications (a looped layer counts each time it
       runs). lm_head counts once. The loop gates are elementwise and do not count.
+    - Attention residuals (attn_res): the mixing is elementwise operations and inner products
+      over the sources; by the same convention it does not count.
     """
     assert config.head_dim is not None
     d, L = config.dim, config.layer_applications

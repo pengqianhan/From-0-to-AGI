@@ -6,6 +6,7 @@
     uv run python runs/ladder-3090/analyze.py fit --fit e5m e11m e24m e44m --holdout e83m   # L(N, D) 与外推
     uv run python runs/ladder-3090/analyze.py diagnose --fit e5m e11m e24m e44m --holdout e83m   # 留出没过时找原因
     uv run python runs/ladder-3090/analyze.py loop      # 第 7 阶段：循环 Transformer vs 稠密（results/loop_result.json）
+    uv run python runs/ladder-3090/analyze.py arloop    # 第 8 阶段：ARLoop 注意力残差 vs lf3（results/arloop_result.json）
 
 图写到 runs/ladder-3090/figures/，数字写到 runs/ladder-3090/results/*.json。
 """
@@ -493,7 +494,8 @@ def loop_main_config(scale: str, decisions: dict) -> tuple[dict | None, str]:
     """这一档用来比较的那个配置：e24m 是学习率检查选中的倍数；e44m 是最后一个没有失败的配置（发散后减半重训的那个）。"""
     import sweep as sw
 
-    cfgs = [c for c in sw.load_configs(scale) if not sw.failed(sw.run_dir(c))]
+    # 第 8 阶段在 e24m_lf3 里加的换种子重训（有 seed 键）不属于第 7 阶段的比较
+    cfgs = [c for c in sw.load_configs(scale) if not sw.failed(sw.run_dir(c)) and "seed" not in c]
     if not cfgs:
         return None, "还没有配置（或全部失败）"
     if scale.startswith("e24m"):
@@ -577,7 +579,8 @@ def cmd_loop(args: argparse.Namespace) -> None:
             missing.append(f"{scale}：没有 {csv_path.name}（先跑 sweep.py collect --scale {scale}）")
         # 学习率检查（只报告；e24m 才有）
         lr_vals = {f"x{r['lr_mult']}": r["val_bpb"] for r in rows
-                   if r["phase"] == "decay" and r["k"] == 4 and "lr_mult" in r} if scale.startswith("e24m") else {}
+                   if r["phase"] == "decay" and r["k"] == 4 and "lr_mult" in r and not r.get("seed")
+                   } if scale.startswith("e24m") else {}
         res["lr_check_k4"] = {k: float(v) for k, v in lr_vals.items()}
         key = f"loop_lr_{scale.split('_')[1]}"
         res["lr_decision"] = decisions.get(key)
@@ -681,6 +684,315 @@ def cmd_loop(args: argparse.Namespace) -> None:
     print(f"\n写到 {RES / 'loop_result.json'}")
 
 
+# ---------------------------------------------------------------- 第 8 阶段：ARLoop 注意力残差
+
+AR_SCALES = {"e24m_ar3": "e24m", "e44m_ar3": "e44m", "e24m_arf3": "e24m", "e44m_arf3": "e44m"}
+AR_PRIMARY = ("e24m_ar3", "e44m_ar3")  # 主要检验只看滑动窗口；完整历史只报告
+AR_SEED_IDS = ("e24m_lf3-000", "e24m_lf3-s1338", "e24m_lf3-s1339")  # 种子 1337、1338、1339
+AR_LF3_STAGE7 = {"e24m_lf3-000": 1.3282, "e44m_lf3-000": 1.2140}  # 第 7 阶段的实测（README），用来核对
+AR_T_MIN = 0.005  # 判定线 t = max(0.5%, 2s)
+AR_DENSE_TOK_S = {"e24m": 139_945, "e44m": 101_540}  # 稠密的试点吞吐（README 第 7 阶段）
+
+
+def ar_verdict(rel: float, t: float) -> str:
+    return "ARLoop 更好" if rel <= -t else "ARLoop 更差" if rel >= t else "分不出"
+
+
+def ar_dense_verdict(rel: float) -> str:
+    return "ARLoop 更好" if rel <= -LOOP_TIE else "ARLoop 更差" if rel >= LOOP_TIE else "持平"
+
+
+def ar_point(cfg: dict, k: int) -> dict | None:
+    """一个配置在 k/8 的衰减点（k = 8 是主干的终点，k = 4 是 4/8 的分支），直接读运行目录的日志。"""
+    from fractions import Fraction
+
+    import sweep as sw
+
+    pl = sw.plan_for(cfg, sw.n_eff(cfg["scale"]))
+    start = pl.stable_steps if k == 8 else pl.step_at(Fraction(k, 8))
+    step = sw.with_decay(start)[0]
+    v = sw.val_at(sw.run_dir(cfg, None if k == 8 else k)).get(step)
+    if v is None:
+        return None
+    return {"id": cfg["id"], "val_bpb": float(v), "D": float(step * cfg["tokens_per_step"]), "steps": step}
+
+
+def ar_stage7_point(scale: str, cid: str, k: int) -> dict | None:
+    """第 7 阶段的 lf3 点：先读 results/<档>.csv（第 7 阶段的结果），没有再读运行目录。"""
+    import sweep as sw
+
+    path = RES / f"{scale}.csv"
+    if path.exists():
+        for r in load(scale):
+            if r["id"] == cid and r["phase"] == "decay" and r["k"] == k:
+                return {"id": cid, "val_bpb": r["val_bpb"], "D": r["tokens"], "steps": int(r["steps"]),
+                        "source": path.name}
+    cfg = next((c for c in sw.load_configs(scale) if c["id"] == cid), None)
+    pt = ar_point(cfg, k) if cfg is not None else None
+    if pt is not None:
+        pt["source"] = "log.jsonl"
+    return pt
+
+
+def ar_main_config(scale: str, decisions: dict) -> tuple[dict | None, str]:
+    """比较用的配置：e24m_ar3 是学习率检查选中的倍数；其余是最后一个没有失败的配置（发散后减半重训的那个）。"""
+    import sweep as sw
+
+    cfgs = [c for c in sw.load_configs(scale) if not sw.failed(sw.run_dir(c))]
+    if not cfgs:
+        return None, "还没有配置（或全部失败）"
+    if scale == "e24m_ar3":
+        if "arloop_lr" not in decisions:
+            return None, "decisions.json 里还没有 arloop_lr"
+        cfgs = [c for c in cfgs if c["lr_mult"] == decisions["arloop_lr"]["value"]]
+        if not cfgs:
+            return None, f"选中的 lr×{decisions['arloop_lr']['value']} 那个配置失败了"
+    return cfgs[-1], ""
+
+
+def ar_trunk_stats(cfg: dict) -> dict:
+    """主干日志里的稳态吞吐（tok/s 中位数，去掉前 100 步）和显存峰值（GB）。"""
+    import sweep as sw
+
+    rows = sw.read_log(sw.run_dir(cfg))
+    tok = [r["tok_per_s"] for r in rows if r.get("step", 0) > 100 and "tok_per_s" in r]
+    mem = [r["max_mem_gb"] for r in rows if isinstance(r.get("max_mem_gb"), (int, float))]
+    return {"tok_per_s": float(np.median(tok)) if tok else None, "max_mem_gb": float(max(mem)) if mem else None}
+
+
+def ar_query_stats(cfg: dict) -> dict | None:
+    """训练后各子层的 |q|（只报告）：读主干最后一个 checkpoint 的 model.pt。"""
+    import sweep as sw
+    import torch
+
+    from zero.train.checkpoint import find_latest
+
+    ck = find_latest(sw.run_dir(cfg) / "ckpt")
+    if ck is None or not (ck / "model.pt").exists():
+        return None
+    sd = torch.load(ck / "model.pt", map_location="cpu", weights_only=True)
+    sd = {k.removeprefix("_orig_mod."): v for k, v in sd.items()}
+
+    def stats(q: torch.Tensor) -> dict:
+        q = q.float()
+        return {"mean_abs": float(q.abs().mean()), "rms": float(q.pow(2).mean().sqrt()),
+                "max_abs": float(q.abs().max()), "norm": float(q.norm())}
+
+    qs = sorted((int(k.split(".")[1]), v) for k, v in sd.items() if k.startswith("attn_res_queries."))
+    out: dict = {"checkpoint": ck.name, "sublayers": [{"i": i, "kind": "attn" if i % 2 == 0 else "ffn", **stats(v)}
+                                                      for i, v in qs]}
+    if "final_attn_res_query" in sd:
+        out["final"] = stats(sd["final_attn_res_query"])
+    return out
+
+
+def cmd_arloop(args: argparse.Namespace) -> None:
+    """ARLoop（注意力残差）vs lf3（D、N_eff 都相同），以及 vs 稠密。结果缺了就说缺什么，不崩。"""
+    import sweep as sw
+
+    from zero.tools.fit_scaling import fit_chinchilla
+
+    missing: list[str] = []
+    notes: list[str] = []
+    decisions = json.loads((RES / "decisions.json").read_text()) if (RES / "decisions.json").exists() else {}
+    law = fit_chinchilla([p for s in LOOP_FIT for p in frontier_points(s)], param_count="flops")
+    got = {"E": law.E, "A": law.A, "alpha": law.alpha, "B": law.B, "beta": law.beta}
+    law_ok = abs(got["E"]) < 1e-9 and all(abs(got[k] / v - 1) < 1e-3 for k, v in LOOP_LAW.items() if v)
+    print(f"稠密拟合（{'+'.join(LOOP_FIT)}，param_count=flops）：E={law.E:.4f} A={law.A:.3f} α={law.alpha:.4f} "
+          f"B={law.B:.3f} β={law.beta:.4f} → {'与预注册一致' if law_ok else '!!! 与预注册不一致 !!!'}")
+    lf3_tok = {}
+    if (RES / "loop_result.json").exists():
+        lr = json.loads((RES / "loop_result.json").read_text())
+        lf3_tok = {s: lr["scales"].get(s, {}).get("tok_per_s") for s in ("e24m_lf3", "e44m_lf3")}
+    out: dict = {"law": law.to_dict(), "law_matches_prereg": law_ok, "t_min": AR_T_MIN,
+                 "dense_tie_threshold": LOOP_TIE, "lf3": {}, "scales": {}}
+
+    # 1. lf3 对照：e24m 三个种子、e44m 一个种子
+    seeds: dict[str, dict] = {}
+    seed_cfgs = {c["id"]: c for c in sw.load_configs("e24m_lf3")}
+    for cid in AR_SEED_IDS:
+        cfg = seed_cfgs.get(cid)
+        if cid == "e24m_lf3-000":
+            pts = {k: ar_stage7_point("e24m_lf3", cid, k) for k in (4, 8)}
+        elif cfg is None or sw.failed(sw.run_dir(cfg)):
+            pts = {4: None, 8: None}
+        else:
+            pts = {k: ar_point(cfg, k) for k in (4, 8)}
+        if cfg is not None and cfg.get("seed") is None and cid != "e24m_lf3-000":
+            notes.append(f"{cid} 的配置没有 seed 键")
+        info: dict = {"seed": 1337 if cid == "e24m_lf3-000" else (cfg or {}).get("seed"), "k4": pts[4], "k8": pts[8]}
+        if cfg is not None and cid != "e24m_lf3-000":
+            info.update(ar_trunk_stats(cfg))
+        seeds[cid] = info
+        if pts[8] is None:
+            missing.append(f"e24m_lf3：{cid} 没有 8/8 的衰减点")
+    e44_lf3 = ar_stage7_point("e44m_lf3", "e44m_lf3-000", 8)
+    e44_lf3_k4 = ar_stage7_point("e44m_lf3", "e44m_lf3-000", 4)
+    if e44_lf3 is None:
+        missing.append("e44m_lf3：e44m_lf3-000 没有 8/8 的衰减点")
+    for cid, pt in (("e24m_lf3-000", seeds["e24m_lf3-000"]["k8"]), ("e44m_lf3-000", e44_lf3)):
+        if pt is not None and abs(pt["val_bpb"] - AR_LF3_STAGE7[cid]) > 5e-5:
+            print(f"!!! {cid} 的 8/8 = {pt['val_bpb']:.4f} ≠ 第 7 阶段报告的 {AR_LF3_STAGE7[cid]}")
+            notes.append(f"{cid} 的 8/8 与第 7 阶段报告的不同")
+    vals = [seeds[c]["k8"]["val_bpb"] for c in AR_SEED_IDS if seeds[c]["k8"] is not None]
+    s = t = None
+    if len(vals) == len(AR_SEED_IDS):
+        s = max(vals) / min(vals) - 1  # 两两相对差的最大值 = 最大 / 最小 − 1
+        t = max(AR_T_MIN, 2 * s)
+    else:
+        missing.append("运行间的波动 s 还不能算（e24m_lf3 三个种子的 8/8 不全），判定线 t 未定，主要检验不判定")
+    out["lf3"] = {"e24m_seeds": seeds, "e24m_mean_k8": float(np.mean(vals)) if len(vals) == len(AR_SEED_IDS) else None,
+                  "e44m": {"k8": e44_lf3, "k4": e44_lf3_k4}, "s": s, "t": t,
+                  "tok_per_s_stage7": lf3_tok}
+    ref8 = {"e24m": out["lf3"]["e24m_mean_k8"], "e44m": e44_lf3["val_bpb"] if e44_lf3 else None}
+    ref_D = {"e24m": seeds["e24m_lf3-000"]["k8"]["D"] if seeds["e24m_lf3-000"]["k8"] else None,
+             "e44m": e44_lf3["D"] if e44_lf3 else None}
+
+    # 2. 每个 ARLoop 档
+    table = []
+    for scale, dense in AR_SCALES.items():
+        lf3 = f"{dense}_lf3"
+        res: dict = {"dense_scale": dense, "lf3_scale": lf3, "n_eff": sw.n_eff(scale), "n_eff_lf3": sw.n_eff(lf3),
+                     "primary": scale in AR_PRIMARY}
+        out["scales"][scale] = res
+        if res["n_eff"] != res["n_eff_lf3"]:
+            print(f"!!! {scale} 的 N_eff 与 {lf3} 不同")
+        if scale == "e24m_ar3":
+            res["lr_check_k4"] = {}
+            for c in sw.load_configs(scale):
+                if "retry_of" in c:
+                    continue
+                if sw.failed(sw.run_dir(c)) or sw.failed(sw.run_dir(c, 4)):
+                    res["lr_check_k4"][f"x{c['lr_mult']}"] = "失败"
+                else:
+                    pt = ar_point(c, 4)
+                    res["lr_check_k4"][f"x{c['lr_mult']}"] = pt["val_bpb"] if pt else None
+            res["lr_decision"] = decisions.get("arloop_lr")
+        retry = decisions.get(f"arloop_lr_retry_{scale}")
+        if retry:
+            res["lr_retry"] = retry
+        cfg, why = ar_main_config(scale, decisions)
+        if cfg is None:
+            missing.append(f"{scale}：{why}")
+            continue
+        res["config"], res["lr_mult"] = cfg["id"], cfg["lr_mult"]
+        for k in (4, 8):
+            pt = ar_point(cfg, k)
+            if pt is None:
+                missing.append(f"{scale}：{cfg['id']} 没有 k={k}/8 的衰减点")
+                continue
+            L, D = pt["val_bpb"], pt["D"]
+            pt["D_over_N_eff"] = D / res["n_eff"]
+            if k == 8:
+                # 对 lf3（D、N_eff 相同）
+                if ref_D[dense] is not None and ref_D[dense] != D:
+                    print(f"!!! {scale}：D = {D:.0f} 与 {lf3} 的 D = {ref_D[dense]:.0f} 不同")
+                vs = {"lf3_val_bpb": ref8[dense], "lf3_ref": "三个种子的平均" if dense == "e24m" else "e44m_lf3-000",
+                      "D_matches": ref_D[dense] == D if ref_D[dense] is not None else None}
+                if ref8[dense] is not None:
+                    vs["rel_diff"] = L / ref8[dense] - 1
+                    vs["verdict"] = ar_verdict(vs["rel_diff"], t) if t is not None else None
+                    if dense == "e24m":
+                        vs["rel_diff_vs_seeds"] = {c: L / seeds[c]["k8"]["val_bpb"] - 1 for c in AR_SEED_IDS}
+                elif dense == "e24m":
+                    # 种子不全时只报 e24m_lf3-000，不判定
+                    p0 = seeds["e24m_lf3-000"]["k8"]
+                    if p0 is not None:
+                        vs["rel_diff_vs_e24m_lf3-000_only"] = L / p0["val_bpb"] - 1
+                    vs["verdict"] = None
+                pt["vs_lf3"] = vs
+                # 对稠密（算力相同），与第 7 阶段完全相同的数
+                pred = float(law.predict(res["n_eff"], D))
+                pt["vs_dense"] = {"pred": pred, "prereg_pred": LOOP_PRED[lf3],
+                                  "pred_matches_prereg": abs(pred - LOOP_PRED[lf3]) < 6e-5,
+                                  "rel_diff": L / pred - 1, "verdict": ar_dense_verdict(L / pred - 1)}
+                if not pt["vs_dense"]["pred_matches_prereg"]:
+                    print(f"!!! {scale}：拟合在 (N_eff, D) 的预测 {pred:.4f} ≠ 预注册 {LOOP_PRED[lf3]:.4f}")
+                if dense == "e44m":
+                    ref = e83m_interp(D)
+                    pt["e83m_interp"] = {"value": ref, "prereg_value": LOOP_E83M[1],
+                                         "rel_diff": None if ref is None else L / ref - 1,
+                                         "verdict": None if ref is None else ar_dense_verdict(L / ref - 1)}
+            else:
+                ref4 = seeds["e24m_lf3-000"]["k4"] if dense == "e24m" else e44_lf3_k4
+                if ref4 is not None:
+                    pt["vs_lf3_000"] = {"lf3_val_bpb": ref4["val_bpb"], "rel_diff": L / ref4["val_bpb"] - 1,
+                                        "D_matches": ref4["D"] == D}
+            res[f"k{k}"] = pt
+        res.update(ar_trunk_stats(cfg))
+        tk = res["tok_per_s"]
+        if tk:
+            res["time_vs_lf3"] = lf3_tok[lf3] / tk if lf3_tok.get(lf3) else None
+            res["time_vs_dense"] = AR_DENSE_TOK_S[dense] / tk
+        try:
+            res["queries"] = ar_query_stats(cfg)
+        except Exception as e:  # noqa: BLE001  只报告的数，读不出来不影响检验
+            res["queries"] = None
+            print(f"{scale}：读不出 q（{e}）")
+        table.append(scale)
+
+    # 3. 打印
+    print("\n运行间的波动（e24m_lf3，8/8）：" + "  ".join(
+        f"{c} {seeds[c]['k8']['val_bpb']:.4f}" if seeds[c]["k8"] else f"{c} —" for c in AR_SEED_IDS))
+    if s is not None:
+        print(f"s = 最大 / 最小 − 1 = {s:.3%} → 判定线 t = max(0.5%, 2s) = {t:.3%}")
+    print("\n主要检验（ARLoop 滑动窗口 vs lf3，8/8，D、N_eff 相同）：相对差 ≤ −t ARLoop 更好，≥ +t 更差，中间分不出")
+    print(f"{'档':10s} {'配置':14s} {'lr×':>5s} {'D':>7s} {'ARLoop':>7s} {'lf3':>7s} {'相对差':>8s}  判定")
+    for scale in table:
+        res = out["scales"][scale]
+        pt = res.get("k8")
+        if not pt:
+            continue
+        v = pt["vs_lf3"]
+        ref = f"{v['lf3_val_bpb']:7.4f}" if v.get("lf3_val_bpb") is not None else "      —"
+        rel = f"{v['rel_diff']:+8.2%}" if "rel_diff" in v else "       —"
+        tag = "" if res["primary"] else "（只报告）"
+        print(f"{scale:10s} {res['config']:14s} {res['lr_mult']:5g} {pt['D'] / 1e9:6.3f}B {pt['val_bpb']:7.4f} {ref} {rel}  "
+              f"{v.get('verdict') or '不判定'}{tag}")
+    print("\n次要检验（算力相同，对稠密）：≤ −1% ARLoop 更好，≥ +1% 更差，中间持平")
+    for scale in table:
+        pt = out["scales"][scale].get("k8")
+        if not pt:
+            continue
+        d = pt["vs_dense"]
+        print(f"{scale:10s} {pt['val_bpb']:.4f} vs 稠密预测 {d['pred']:.4f}：{d['rel_diff']:+.2%} → {d['verdict']}"
+              f"{'' if out['scales'][scale]['primary'] else '（只报告）'}")
+        if pt.get("e83m_interp", {}).get("value") is not None:
+            e = pt["e83m_interp"]
+            print(f"{'':10s} 不靠拟合的对照：e83m 实测内插 {e['value']:.4f}，相对差 {e['rel_diff']:+.2%} → {e['verdict']}")
+    print("\n只报告：4/8 点、学习率检查、吞吐与时间比、显存峰值、|q|")
+    for scale in table:
+        res = out["scales"][scale]
+        pt = res.get("k4")
+        if pt and "vs_lf3_000" in pt:
+            print(f"{scale:10s} 4/8：{pt['val_bpb']:.4f} vs lf3-000 {pt['vs_lf3_000']['lf3_val_bpb']:.4f}："
+                  f"{pt['vs_lf3_000']['rel_diff']:+.2%}")
+        if res.get("lr_check_k4"):
+            print(f"{scale:10s} 学习率检查 4/8：" + "  ".join(
+                f"{k} {v:.4f}" if isinstance(v, float) else f"{k} {v or '—'}" for k, v in sorted(res["lr_check_k4"].items()))
+                + (f" → 选 lr×{res['lr_decision']['value']}" if res.get("lr_decision") else ""))
+        if res.get("tok_per_s"):
+            print(f"{scale:10s} 稳态吞吐 {res['tok_per_s']:,.0f} tok/s；时间是 lf3 的 "
+                  f"{res['time_vs_lf3']:.2f} 倍、稠密的 {res['time_vs_dense']:.2f} 倍" if res.get("time_vs_lf3") else
+                  f"{scale:10s} 稳态吞吐 {res['tok_per_s']:,.0f} tok/s；时间是稠密的 {res['time_vs_dense']:.2f} 倍")
+        if res.get("max_mem_gb"):
+            print(f"{scale:10s} 显存峰值 {res['max_mem_gb']:.1f} GB")
+        q = res.get("queries")
+        if q:
+            print(f"{scale:10s} |q|（{q['checkpoint']}，平均|q|，按子层）：" + " ".join(
+                f"{x['mean_abs']:.3f}" for x in q["sublayers"]) + (f"；输出 {q['final']['mean_abs']:.3f}" if "final" in q else ""))
+    for cid in AR_SEED_IDS[1:]:
+        st = seeds[cid]
+        if st.get("tok_per_s"):
+            print(f"{cid} 稳态吞吐 {st['tok_per_s']:,.0f} tok/s，显存峰值 {st['max_mem_gb']:.1f} GB")
+    out["missing"], out["notes"] = missing, notes
+    if missing:
+        print("\n缺的结果（这些检验还不能做）：\n  " + "\n  ".join(missing))
+    RES.mkdir(exist_ok=True)
+    (RES / "arloop_result.json").write_text(json.dumps(out, indent=2, ensure_ascii=False, default=float))
+    print(f"\n写到 {RES / 'arloop_result.json'}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -705,10 +1017,11 @@ def main() -> None:
     p.add_argument("--boot", type=int, default=200)
     p.add_argument("--main-tokens", type=float, default=400e9)
     sub.add_parser("loop")
+    sub.add_parser("arloop")
     args = ap.parse_args()
     {"frontier": cmd_frontier, "nql": cmd_nql, "sensitivity": cmd_sensitivity, "fit": cmd_fit,
      "diagnose": cmd_diagnose, "preregister": cmd_preregister, "ot-fit": cmd_ot_fit,
-     "loop": cmd_loop}[args.cmd](args)
+     "loop": cmd_loop, "arloop": cmd_arloop}[args.cmd](args)
 
 
 if __name__ == "__main__":

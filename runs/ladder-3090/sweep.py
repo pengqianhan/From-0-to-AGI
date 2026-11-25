@@ -50,7 +50,9 @@ TOKENS_PER_PARAM = 32
 # 小模型的显存几乎全花在这里。试点阶段按实测调整
 MICRO = {"e5m": 4, "e11m": 4, "e24m": 4, "e44m": 4, "e83m": 4, "e166m": 2,
          # 第 7 阶段的循环模型（configs/ladder3090/<档>_lf3/_lm3.toml）：与稠密的同一档相同，试点核对过显存
-         "e24m_lf3": 4, "e24m_lm3": 4, "e44m_lf3": 4, "e44m_lm3": 4}
+         "e24m_lf3": 4, "e24m_lm3": 4, "e44m_lf3": 4, "e44m_lm3": 4,
+         # 第 8 阶段的 ARLoop（configs/ladder3090/<档>_ar3/_arf3.toml）：与 lf3 相同，试点核对过显存
+         "e24m_ar3": 4, "e24m_arf3": 4, "e44m_ar3": 4, "e44m_arf3": 4}
 
 
 def n_eff(scale: str) -> float:
@@ -275,6 +277,8 @@ def train_cmd(cfg: dict, plan: Plan, out_dir: Path, max_steps: int, decay_frac: 
         "optim.weight_decay": repr(cfg["weight_decay"]),
         "model.rope_theta": repr(cfg["rope_theta"]),
     }
+    if "seed" in cfg:  # 可选：换种子重训（第 8 阶段）；没有这个键时命令与以前逐字相同
+        s["train.seed"] = int(cfg["seed"])
     cmd = [sys.executable, "-m", "zero.train.pretrain", "--config",
            str(REPO / "configs" / "ladder3090" / f"{cfg['scale']}.toml")]
     for k, v in s.items():

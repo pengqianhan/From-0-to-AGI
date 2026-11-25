@@ -88,6 +88,14 @@ class ModelConfig:
     # Gated re-entry of the looped range: pass r >= 2 gets p + g_r * (m_{r-1} - p), where p is the
     # input of the looped range and g_r is a learnable vector (init 0). Needs n_loops > 1.
     loop_gate: bool = False
+    # Attention residuals of ARLoop (runs/ladder-3090/README.md, stage 8). The input of each
+    # sublayer (attention or FFN, counted after the loop is unrolled) is a learned softmax
+    # mixture of the earlier block outputs instead of their plain sum. A block is
+    # attn_res_block_layers layers. attn_res_window = None uses all blocks; an integer w uses the
+    # embedding and the w most recent blocks. Needs the whole stack as the looped range.
+    attn_res: bool = False
+    attn_res_block_layers: int = 0
+    attn_res_window: int | None = None
 
     def __post_init__(self) -> None:
         if self.head_dim is None and self.n_heads > 0:
@@ -125,6 +133,26 @@ class ModelConfig:
             f"0 <= loop_start < loop_end <= n_layers={self.n_layers}",
         )
         need(not self.loop_gate or self.n_loops > 1, "loop_gate = true needs n_loops > 1")
+        if self.attn_res:
+            need(
+                (start, end) == (0, self.n_layers),
+                f"attn_res = true needs the whole stack as the looped range, got [{start}, {end})",
+            )
+            need(not self.loop_gate, "attn_res = true cannot be used with loop_gate = true")
+            need(
+                self.attn_res_block_layers >= 1 and self.n_layers % self.attn_res_block_layers == 0,
+                f"attn_res_block_layers={self.attn_res_block_layers} must be >= 1 and divide "
+                f"n_layers={self.n_layers}",
+            )
+            need(
+                self.attn_res_window is None or self.attn_res_window >= 1,
+                f"attn_res_window must be None (full history) or >= 1, got {self.attn_res_window}",
+            )
+        else:
+            need(
+                self.attn_res_block_layers == 0 and self.attn_res_window is None,
+                "attn_res_block_layers / attn_res_window need attn_res = true",
+            )
         need(self.rope_theta > 0, "rope_theta must be > 0")
         need(self.norm_eps > 0, "norm_eps must be > 0")
         need(self.init_std > 0, "init_std must be > 0")
