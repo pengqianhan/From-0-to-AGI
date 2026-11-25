@@ -128,6 +128,7 @@ footer { color: var(--muted); font-size: 12.5px; }
     <li><a href="#fit">第 4 阶段：拟合与留出</a></li>
     <li><a href="#ot">第 6 阶段：过训练</a></li>
     <li><a href="#mainline">外推主线</a></li>
+    <li><a href="#loop">第 7 阶段：循环</a></li>
     <li><a href="#decisions">决定记录</a></li>
     <li><a href="#files">文件在哪里</a></li>
   </ol>
@@ -136,9 +137,9 @@ footer { color: var(--muted); font-size: 12.5px; }
 <main>
 <header id="summary" style="display:grid;gap:18px">
   <div>
-    <div class="eyebrow">From-0-to-AGI · runs/ladder-3090 · 2026-10-01 → 2026-11-24</div>
+    <div class="eyebrow">From-0-to-AGI · runs/ladder-3090 · 2026-10-01 → 2026-11-25</div>
     <h1>3090 阶梯实验报告</h1>
-    <p class="lede">在 3 张 RTX 3090 上，从 4.8M 到 83M 有效参数训练了 5 档模型。每档做超参数搜索，拟合 L(N, D) = E + A/N<sup>α</sup> + B/D<sup>β</sup>，再用留出的一档和过训练点检验外推。目的是给"主线模型要买多少算力"提供依据。</p>
+    <p class="lede">在 3 张 RTX 3090 上，从 4.8M 到 83M 有效参数训练了 5 档模型。每档做超参数搜索，拟合 L(N, D) = E + A/N<sup>α</sup> + B/D<sup>β</sup>，再用留出的一档和过训练点检验外推。目的是给"主线模型要买多少算力"提供依据。最后用同一套数据和配方，对照检验了循环 Transformer。</p>
   </div>
   <div class="tiles" id="tiles"></div>
   <div class="verdicts">
@@ -155,6 +156,12 @@ footer { color: var(--muted); font-size: 12.5px; }
       <p style="font-size:13.5px;color:var(--fg2)">把 D/N 从约 40 拉到 128–256，实际 loss 都比预测高。数据增加时 loss 下降得比公式慢，这个函数形式不能沿 D 外推到主线（D/N 约 400）。</p>
     </div>
     <div class="verdict">
+      <span class="pill warn">△ 算力相同时更差</span>
+      <h3>第 7 阶段：循环 Transformer（预注册）</h3>
+      <div class="big">+1.1% ~ +5.2% <span style="font-size:13px;color:var(--muted)">（持平线 ±1%）</span></div>
+      <p style="font-size:13.5px;color:var(--fg2)">循环 3 次的模型，参数相同时比稠密好 1–2%，但算力相同时四组都不如更大的稠密模型。只循环中间层比整栈循环划算。循环模型没有重新调参，这是弱证据。</p>
+    </div>
+    <div class="verdict">
       <span class="pill good">✓ 可用</span>
       <h3>能可靠做到的</h3>
       <div class="big">预测下一档（约 2 倍 N）</div>
@@ -165,7 +172,7 @@ footer { color: var(--muted); font-size: 12.5px; }
 
 <section id="timeline">
   <h2><span class="no">01</span>时间线与算力</h2>
-  <p>实验跨 55 天，真正训练的时间约 22 天，其余是暂停。两次暂停是因为用户要用 GPU，一次是 GPU 维护。10 月 27 日起只能用 GPU0，后面三档都是单卡跑的。</p>
+  <p>实验跨 56 天，真正训练的时间约 23 天，其余是暂停。两次暂停是因为用户要用 GPU，一次是 GPU 维护。10 月 27 日起只能用 GPU0，后面三档和过训练、循环实验都是单卡跑的。</p>
   <div class="fig">
     <div class="legend" id="tl-legend"></div>
     <div id="c-timeline" style="overflow-x:auto"></div>
@@ -335,14 +342,69 @@ footer { color: var(--muted); font-size: 12.5px; }
   <div class="callout">要可信地外推到主线，需要更大的 N（e166m 起）或更多不重复的数据（让 D/N 超过 256）。这就是第 5 阶段"要买多少算力"要测算的问题。</div>
 </section>
 
+<section id="loop">
+  <h2><span class="no">09</span>第 7 阶段：循环 Transformer（预注册）</h2>
+  <p>循环 Transformer 让一部分层重复执行多次，权重共享：参数量不变，每个 token 的算力变多。这一阶段在 e24m 和 e44m 上各训两种结构，都循环 3 次，数据、分词器和全部超参数沿用稠密模型最好的配置。稠密阶梯就是对照组。</p>
+  <ul class="notes">
+    <li><b>整栈循环（lf3）</b>：全部层按顺序执行 3 遍，是 ARLoop 论文里的基线，不加注意力残差。</li>
+    <li><b>中间循环（lm3）</b>：只循环中间一半的层（e24m 是 1 + 2×3 + 1，e44m 是 2 + 2×3 + 2）。第 2、3 遍的输入是 p + g ⊙ (上一遍的输出 − p)，g 是初始为 0 的可学向量。受 Inkling 2 Mini 启发，门控公式是我们自己定的。</li>
+    <li><b>两种比法</b>：算力相同（主要检验，和每 token FLOPs 相同的稠密模型比）、参数相同（次要检验，和同一档的稠密模型比）。判定线是 ±1%。</li>
+  </ul>
+  <div class="grid2">
+    <div class="fig">
+      <h3>e24m：val_bpb vs 算力（D = 0.957B）</h3>
+      <div id="c-loopN-e24m"></div>
+    </div>
+    <div class="fig">
+      <h3>e44m：val_bpb vs 算力（D = 1.773B）</h3>
+      <div id="c-loopN-e44m"></div>
+    </div>
+  </div>
+  <div class="legend" style="margin-top:-6px"><span><i class="sw" style="background:var(--c1);border-radius:50%"></i>稠密（实测）</span><span><i class="sw" style="background:var(--c2);border-radius:50%"></i>整栈循环 ×3</span><span><i class="sw" style="background:var(--c3);border-radius:50%"></i>中间循环 ×3</span><span><i class="sw line" style="background:var(--muted)"></i>稠密拟合（去掉 e5m）在这个 D 上的预测</span><span><b style="color:var(--bad)">│</b> 与相同算力的稠密预测的差</span></div>
+  <div class="cap">横轴是 N_eff（每 token FLOPs ÷ 6）。循环让点向右移（算力变多）、向下移（loss 变低），但下降的幅度不如沿稠密曲线向右走同样的距离。e44m 的整栈循环和 e83m 的算力几乎相同（82.67M 对 83.03M），可以不靠拟合直接比：差 5.22%。</div>
+  <div class="fig">
+    <h3>检验结果</h3>
+    <div class="tbl" style="border:0"><table id="t-loop"></table></div>
+    <div class="cap">主要检验四组都是"循环更差"；次要检验里循环好 0.7–1.9%，和预期一致，说明实现和超参数没有明显问题。</div>
+  </div>
+  <div class="grid2">
+    <div class="fig">
+      <h3>两种比法的相对差</h3>
+      <div class="legend"><span><i class="sw" style="background:var(--c2);border-radius:50%"></i>算力相同（8/8，主要检验）</span><span><i class="sw" style="background:var(--c1);border-radius:50%"></i>参数相同（8/8）</span><span><i class="sw ring" style="border-color:var(--c1)"></i>参数相同（4/8）</span></div>
+      <div id="c-loop-rel"></div>
+      <div class="cap">灰带是 ±1% 的"持平"范围。右边是循环更差，左边是循环更好。整栈循环的差距（+3.8%、+5.2%）很大；中间循环（+1.1%、+1.4%）刚过 1% 的线。</div>
+    </div>
+    <div class="fig">
+      <h3>付出的和得到的（都是稠密同一档的倍数）</h3>
+      <div class="legend"><span><i class="sw" style="background:var(--c1);border-radius:50%"></i>得到：等效的稠密模型大小</span><span><i class="sw" style="background:var(--c2);border-radius:50%"></i>付出：算力（FLOPs）</span><span><i class="sw ring" style="border-color:var(--c2)"></i>付出：实际训练时间</span></div>
+      <div id="c-loop-pay"></div>
+      <div class="cap">"等效的稠密模型大小"：在同一个 D 上，稠密拟合要多大的 N 才能达到循环模型的 loss。循环 3 次只相当于把稠密模型加大 1.10–1.16 倍，付出的算力是 1.3–1.9 倍。右边的两个数是 FLOPs 倍数 / 训练时间倍数。</div>
+    </div>
+  </div>
+  <div class="grid2">
+    <div class="fig">
+      <div class="fig-head"><h3>训练过程：循环与稠密（同样的超参数、同样的 D）</h3><div class="seg" id="seg-loop" role="group" aria-label="选择档"></div></div>
+      <div id="c-loop-curve"></div>
+      <div class="cap">线是稳定段的 val_bpb，大圆点是衰减后的成绩（4/8 和 8/8）。循环模型全程都比同参数的稠密模型低一点。</div>
+    </div>
+    <div class="fig">
+      <h3>学习率检查（e24m，4/8 衰减分支）</h3>
+      <div id="c-loop-lr"></div>
+      <div class="cap">两种结构在 ×0.5 和 ×2 下都不如 ×1，所以都沿用稠密的学习率，e44m 也用 ×1。门控 g 训练后的平均 |g|：<span id="loop-gates"></span>。没有停在初值 0，也没有到 1（普通循环）。</div>
+    </div>
+  </div>
+  <div class="callout bad"><b>结论的强度不对称：</b>稠密点是每档从 24–48 组配置里挑出的最好成绩，循环模型只沿用稠密的超参数、检查了 3 个学习率，每个点一个种子。所以"循环更差"是弱证据。整栈循环的差距远大于换学习率带来的变化（0.3–1.4%），比较确定；中间循环充分调参后变成持平是可能的。</div>
+  <div class="callout"><b>局限：</b>只有 4 层和 6 层两个规模，中间段只有 2 层（Inkling 是 12 层）；没有测 ARLoop 的注意力残差；比的是验证集 bpb，没有测推理时的显存和带宽；这两档里不循环的输出层占 N_eff 的 57%–70%，大模型里循环 3 次的算力倍数会更接近 3。</div>
+</section>
+
 <section id="decisions">
-  <h2><span class="no">09</span>自动决定的记录</h2>
+  <h2><span class="no">10</span>自动决定的记录</h2>
   <p>调度器在阶段之间按事先写好的规则自动做决定，记进 <code>results/decisions.json</code>。</p>
   <div class="tbl"><table id="t-dec"></table></div>
 </section>
 
 <section id="files">
-  <h2><span class="no">10</span>文件在哪里</h2>
+  <h2><span class="no">11</span>文件在哪里</h2>
   <div class="tbl"><table>
     <tr><th>内容</th><th>路径</th><th>进 git</th></tr>
     <tr><td>计划、每阶段的进度与结论</td><td class="mono">runs/ladder-3090/README.md</td><td>是</td></tr>
@@ -350,6 +412,7 @@ footer { color: var(--muted); font-size: 12.5px; }
     <tr><td>每档的前沿、分位数、逐轮淘汰模拟</td><td class="mono">results/&lt;档&gt;_frontier.json</td><td>是</td></tr>
     <tr><td>拟合：第 4 阶段 / 训 e83m 之前 / 事后诊断</td><td class="mono">results/scaling_law.json、fit_before_e83m.json、fit_diagnosis.json</td><td>是</td></tr>
     <tr><td>第 6 阶段：预注册的预测 / 拟合与检验</td><td class="mono">results/ot_predictions.json、scaling_law_ot.json</td><td>是</td></tr>
+    <tr><td>第 7 阶段：循环模型的成绩 / 对比与判定</td><td class="mono">results/&lt;档&gt;_lf3.csv、_lm3.csv、loop_result.json</td><td>是</td></tr>
     <tr><td>noisy quadratic limit、收窄与扩展的范围</td><td class="mono">results/&lt;档&gt;_nql.json、_narrow_ranges.json、_ext_ranges.json</td><td>是</td></tr>
     <tr><td>自动决定</td><td class="mono">results/decisions.json</td><td>是</td></tr>
     <tr><td>静态图（matplotlib）</td><td class="mono">runs/ladder-3090/figures/*.png</td><td>是</td></tr>
@@ -435,7 +498,7 @@ const logTicks = (lo, hi, per = [1, 2, 5]) => { const t = []; for (let e = Math.
 const tokFmt = v => v >= 1e9 ? (v / 1e9) + "B" : (v / 1e6) + "M";
 
 // ---------- 数据整理 ----------
-const ALL = Object.assign({}, D.scales, D.ot);
+const ALL = Object.assign({}, D.scales, D.ot, D.loop);
 for (const [s, e] of Object.entries(ALL)) {
   e.name = s; e.byCfg = e.configs.map(c => ({ ...c, stable: [], decay: [] }));
   for (const [ci, k, ph, tok, v] of e.rows) (ph ? e.byCfg[ci].decay : e.byCfg[ci].stable).push({ k, tok, v });
@@ -445,11 +508,11 @@ const best = s => D.scales[s].frontier.best_all_val_bpb;
 
 // ---------- 概览数字 ----------
 (() => {
-  const nCfg = SC.reduce((a, s) => a + D.scales[s].configs.length, 0) + Object.values(D.ot).reduce((a, e) => a + e.configs.length, 0);
+  const nCfg = SC.reduce((a, s) => a + D.scales[s].configs.length, 0) + Object.values(D.ot).concat(Object.values(D.loop)).reduce((a, e) => a + e.configs.length, 0);
   const nEval = Object.values(ALL).reduce((a, e) => a + e.rows.length, 0);
   const gpu = D.manual.gpu_hours.reduce((a, r) => a + r.actual, 0);
   const tiles = [
-    { v: "5 + 2", k: "档（阶梯 + 过训练）", s: "N_eff 4.8M → 83M" },
+    { v: "5 + 2 + 4", k: "档（阶梯 + 过训练 + 循环）", s: "N_eff 4.8M → 83M" },
     { v: nCfg, k: "组超参数配置", s: "随机搜索 + 收窄 + 边界扩展" },
     { v: nEval.toLocaleString(), k: "次验证集评估", s: "稳定段 checkpoint + 衰减分叉" },
     { v: "≈" + Math.round(gpu), k: "GPU·小时", s: "RTX 3090，功耗上限 240 W" },
@@ -462,10 +525,10 @@ const best = s => D.scales[s].frontier.best_all_val_bpb;
 // ---------- 时间线 ----------
 (() => {
   const T = D.manual.timeline, P = d3.timeParse("%Y-%m-%dT%H:%M");
-  const lanes = ["准备", ...SC, "过训练", "可用 GPU"];
-  const c = chart("#c-timeline", { w: 900, h: 300, m: { l: 70, r: 16, t: 8, b: 30 } });
+  const lanes = ["准备", ...SC, "过训练", "循环", "可用 GPU"];
+  const c = chart("#c-timeline", { w: 900, h: 330, m: { l: 70, r: 16, t: 8, b: 30 } });
   c.svg.style("min-width", "640px");
-  const x = d3.scaleTime().domain([P("2026-10-01T00:00"), P("2026-11-25T00:00")]).range([0, c.iw]);
+  const x = d3.scaleTime().domain([P("2026-10-01T00:00"), P("2026-11-27T00:00")]).range([0, c.iw]);
   const y = d3.scaleBand().domain(lanes).range([0, c.ih]).padding(0.28);
   c.g.append("g").selectAll("line").data(x.ticks(d3.timeWeek.every(1))).join("line").attr("class", "gridl").attr("y1", 0).attr("y2", c.ih).attr("x1", x).attr("x2", x);
   c.g.append("g").attr("class", "ax").attr("transform", `translate(0,${c.ih})`).call(d3.axisBottom(x).ticks(d3.timeWeek.every(1)).tickFormat(d3.timeFormat("%m-%d")).tickSizeOuter(0));
@@ -473,7 +536,7 @@ const best = s => D.scales[s].frontier.best_all_val_bpb;
   const defs = c.svg.append("defs");
   defs.append("pattern").attr("id", "hatch").attr("width", 6).attr("height", 6).attr("patternUnits", "userSpaceOnUse").attr("patternTransform", "rotate(45)")
     .append("rect").attr("width", 2.5).attr("height", 6).style("fill", "var(--pause)");
-  const col = d => d.kind === "pause" ? "url(#hatch)" : d.kind === "crash" ? "var(--bad)" : d.kind === "prep" ? "var(--c-muted)" : d.lane === "过训练" ? "var(--c2)" : scVar(d.lane);
+  const col = d => d.kind === "pause" ? "url(#hatch)" : d.kind === "crash" ? "var(--bad)" : d.kind === "prep" ? "var(--c-muted)" : d.lane === "过训练" ? "var(--c2)" : d.lane === "循环" ? "var(--c3)" : scVar(d.lane);
   const dur = d => { const h = (P(d.end) - P(d.start)) / 36e5; return h > 48 ? (h / 24).toFixed(1) + " 天" : h.toFixed(1) + " 小时"; };
   const bars = c.g.append("g").selectAll("rect").data(T).join("rect")
     .attr("x", d => x(P(d.start))).attr("width", d => Math.max(2, x(P(d.end)) - x(P(d.start))))
@@ -488,7 +551,7 @@ const best = s => D.scales[s].frontier.best_all_val_bpb;
     .text(d => (x(P(d.end)) - x(P(d.start)) > 40) ? "GPU " + d.cards : "");
   hover(gb, d => `GPU ${d.cards}<br><span class="mono">${d.start.replace("T", " ")} → ${d.end.replace("T", " ")}</span>`);
   d3.select("#tl-legend").html(SC.map(s => `<span><i class="sw" style="background:${scVar(s)}"></i>${s}</span>`).join("") +
-    `<span><i class="sw" style="background:var(--c2)"></i>过训练</span><span><i class="sw" style="background:var(--c-muted)"></i>准备</span><span><i class="sw" style="background:repeating-linear-gradient(45deg,var(--pause) 0 2px,transparent 2px 5px);border:1px solid var(--pause)"></i>暂停</span><span><i class="sw" style="background:var(--bad)"></i>崩溃后空闲</span>`);
+    `<span><i class="sw" style="background:var(--c2)"></i>过训练</span><span><i class="sw" style="background:var(--c3)"></i>循环</span><span><i class="sw" style="background:var(--c-muted)"></i>准备</span><span><i class="sw" style="background:repeating-linear-gradient(45deg,var(--pause) 0 2px,transparent 2px 5px);border:1px solid var(--pause)"></i>暂停</span><span><i class="sw" style="background:var(--bad)"></i>崩溃后空闲</span>`);
 })();
 
 // ---------- GPU 小时 ----------
@@ -496,7 +559,7 @@ const best = s => D.scales[s].frontier.best_all_val_bpb;
   const R = D.manual.gpu_hours;
   d3.select("#gpuh-total").text(Math.round(d3.sum(R, r => r.actual)));
   d3.select("#gpuh-plan").text(Math.round(d3.sum(R, r => r.plan)));
-  const c = chart("#c-gpuh", { h: 250, m: { l: 64, b: 34 } });
+  const c = chart("#c-gpuh", { h: 280, m: { l: 64, b: 34 } });
   const y = d3.scaleBand().domain(R.map(r => r.stage)).range([0, c.ih]).padding(0.25);
   const x = d3.scaleLinear().domain([0, 140]).range([0, c.iw]);
   axes(c, x, y, { noYGrid: true, xGrid: true, yTicks: R.map(r => r.stage), xl: "GPU·小时" });
@@ -957,9 +1020,121 @@ drawOT("e11m"); drawOT("e24m");
   hover(g, r => `<b>${r.n}</b><br>点估计 <span class="mono">${r.v.toFixed(3)}</span>` + (r.ci ? `<br>${r.kind}：<span class="mono">[${r.ci[0].toFixed(3)}, ${r.ci[1].toFixed(3)}]</span>` : ""));
 })();
 
+// ---------- 第 7 阶段：循环 Transformer ----------
+const LOOPS = ["e24m_lf3", "e24m_lm3", "e44m_lf3", "e44m_lm3"];
+const LR = D.loop_result.scales;
+const lpStruct = s => s.endsWith("lf3") ? "lf3" : "lm3";
+const lpCol = s => lpStruct(s) === "lf3" ? "var(--c2)" : "var(--c3)";
+const lpName = s => lpStruct(s) === "lf3" ? "整栈 ×3" : "中间 ×3";
+const mFmt = v => +(v / 1e6).toFixed(0) + "M";
+
+function drawLoopN(ds) {
+  const ss = LOOPS.filter(s => LR[s].dense_scale === ds), Dd = LR[ss[0]].k8.D, L = D.fits.drop.law;
+  const nd = LR[ss[0]].n_eff_dense, ld = LR[ss[0]].k8.same_params.dense_val_bpb;
+  const dom = ds === "e24m" ? [20e6, 47e6] : [38e6, 104e6];
+  const P = ss.map(s => ({ s, n: LR[s].n_eff_loop, v: LR[s].k8.val_bpb, pred: LR[s].k8.same_compute.pred, rel: LR[s].k8.same_compute.rel_diff }));
+  const dense = [{ n: nd, v: ld, name: "稠密 " + ds, dy: 18 }];
+  const e83 = LR[ss[0]].k8.e83m_interp ?? LR[ss[1]].k8.e83m_interp;
+  if (e83) dense.push({ n: D.scales.e83m.n_eff, v: e83.value, name: "稠密 e83m（实测内插）", dy: 18, end: true });
+  const c = chart("#c-loopN-" + ds, { w: 520, h: 330, m: { l: 50, b: 38, r: 20, t: 24 } });
+  const x = d3.scaleLog().domain(dom).range([0, c.iw]);
+  const vals = P.map(p => p.v).concat(P.map(p => p.pred), dense.map(p => p.v));
+  const y = d3.scaleLinear().domain([d3.min(vals) - 0.02, d3.max(vals) + 0.015]).range([c.ih, 0]);
+  axes(c, x, y, { xTicks: ds === "e24m" ? [20e6, 25e6, 30e6, 40e6] : [40e6, 50e6, 60e6, 80e6, 100e6], xf: mFmt, xl: "N_eff（对数）", yl: "val_bpb", yN: 5, yf: d3.format(".2f") });
+  const xs = d3.range(0, 80).map(i => dom[0] * Math.pow(dom[1] / dom[0], i / 79)).filter(n => { const v = law(L, n, Dd); return v <= y.domain()[1] && v >= y.domain()[0]; });
+  c.g.append("path").attr("d", d3.line().x(n => x(n)).y(n => y(law(L, n, Dd)))(xs)).style("fill", "none").style("stroke", "var(--muted)").style("stroke-width", 1.6).style("stroke-dasharray", "5 4");
+  for (const p of P) {
+    c.g.append("line").attr("x1", x(p.n)).attr("x2", x(p.n)).attr("y1", y(p.v) + 8).attr("y2", y(p.pred)).style("stroke", "var(--bad)").style("stroke-width", 1.4);
+    c.g.append("text").attr("class", "lab").style("fill", "var(--bad)").attr("x", x(p.n) + 7).attr("y", (y(p.v) + y(p.pred)) / 2 + 4).text(pct(p.rel));
+    c.g.append("line").attr("x1", x(nd) + 8).attr("x2", x(p.n) - 8).attr("y1", y(ld)).attr("y2", y(p.v)).style("stroke", lpCol(p.s)).style("stroke-width", 1.2).style("stroke-opacity", 0.55);
+  }
+  const dd = c.g.append("g").selectAll("circle").data(dense).join("circle").attr("cx", p => x(p.n)).attr("cy", p => y(p.v)).attr("r", 6).style("fill", "var(--c1)").style("stroke", "var(--surface)").style("stroke-width", 2);
+  hover(dd, p => `<b>${p.name}</b><br>N_eff ${fM(p.n)} · <span class="mono">${f4(p.v)}</span>`);
+  c.g.append("g").selectAll("text").data(dense).join("text").attr("class", "lab").attr("x", p => x(p.n) + (p.end ? 0 : -8)).attr("y", p => y(p.v) + p.dy).attr("text-anchor", p => p.end ? "end" : "start").text(p => p.name);
+  const lp = c.g.append("g").selectAll("circle").data(P).join("circle").attr("cx", p => x(p.n)).attr("cy", p => y(p.v)).attr("r", 6.5).style("fill", p => lpCol(p.s)).style("stroke", "var(--surface)").style("stroke-width", 2);
+  hover(lp, p => `<b>${p.s}</b>（${lpName(p.s)}）<br>N_eff ${fM(p.n)} · 实测 <span class="mono">${f4(p.v)}</span><br>相同算力的稠密预测 <span class="mono">${f4(p.pred)}</span>（${pct(p.rel)}）<br>相同参数的稠密实测 <span class="mono">${f4(ld)}</span>（${pct(p.v / ld - 1)}）`);
+  c.g.append("g").selectAll("text").data(P).join("text").attr("class", "lab").attr("x", p => x(p.n)).attr("y", p => y(p.v) - 12).attr("text-anchor", "middle").text(p => lpName(p.s));
+}
+drawLoopN("e24m"); drawLoopN("e44m");
+
+(() => {
+  const vc = v => v === "循环更差" ? "bad" : v === "循环更好" ? "good" : "";
+  d3.select("#t-loop").html(`<tr><th>配置档</th><th>结构</th><th class="r">N_eff</th><th class="r">循环实测</th><th class="r">稠密预测<br>（算力相同）</th><th class="r">相对差</th><th>主要检验</th><th class="r">稠密实测<br>（参数相同）</th><th class="r">相对差</th></tr>` +
+    LOOPS.map(s => { const r = LR[s], k = r.k8; return `<tr><td class="mono">${s}</td><td>${lpName(s)}</td><td class="r">${fM(r.n_eff_loop)}</td><td class="r">${f4(k.val_bpb)}</td><td class="r">${f4(k.same_compute.pred)}</td><td class="r ${vc(k.same_compute.verdict)}">${pct(k.same_compute.rel_diff)}</td><td>${k.same_compute.verdict}</td><td class="r">${f4(k.same_params.dense_val_bpb)}</td><td class="r ${vc(k.same_params.verdict)}">${pct(k.same_params.rel_diff)}</td></tr>`; }).join(""));
+  d3.select("#loop-gates").text(LOOPS.filter(s => LR[s].gates).map(s => `${s} 的 g₂ ${LR[s].gates.g2.mean_abs.toFixed(2)}、g₃ ${LR[s].gates.g3.mean_abs.toFixed(2)}`).join("；"));
+})();
+
+(() => {
+  const c = chart("#c-loop-rel", { w: 520, h: 250, m: { l: 86, b: 38, r: 24 } });
+  const y = d3.scaleBand().domain(LOOPS).range([0, c.ih]).padding(0.3);
+  const x = d3.scaleLinear().domain([-0.03, 0.06]).range([0, c.iw]);
+  c.g.append("rect").attr("x", x(-0.01)).attr("width", x(0.01) - x(-0.01)).attr("y", 0).attr("height", c.ih).style("fill", "var(--c-faint)").style("fill-opacity", 0.6);
+  axes(c, x, y, { noYGrid: true, xGrid: true, yTicks: LOOPS, xf: v => (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v * 100).toFixed(0) + "%", xl: "循环 / 稠密 − 1（右边：循环更差）", xN: 9 });
+  c.g.append("line").attr("x1", x(0)).attr("x2", x(0)).attr("y1", 0).attr("y2", c.ih).style("stroke", "var(--muted)");
+  const pts = LOOPS.flatMap(s => [
+    { s, v: LR[s].k4.same_params.rel_diff, t: "参数相同（4/8）", col: "var(--c1)", ring: true },
+    { s, v: LR[s].k8.same_params.rel_diff, t: "参数相同（8/8）", col: "var(--c1)" },
+    { s, v: LR[s].k8.same_compute.rel_diff, t: "算力相同（8/8）", col: "var(--c2)", lab: true }]);
+  const dots = c.g.append("g").selectAll("circle").data(pts).join("circle").attr("cx", p => x(p.v)).attr("cy", p => y(p.s) + y.bandwidth() / 2).attr("r", 6)
+    .style("fill", p => p.ring ? "var(--surface)" : p.col).style("stroke", p => p.ring ? p.col : "var(--surface)").style("stroke-width", 2);
+  hover(dots, p => `<b>${p.s}</b><br>${p.t}：<span class="mono">${pct(p.v)}</span>`);
+  c.g.append("g").selectAll("text").data(pts.filter(p => p.lab)).join("text").attr("class", "lab").attr("x", p => x(p.v) + 10).attr("y", p => y(p.s) + y.bandwidth() / 2 + 4).text(p => pct(p.v));
+})();
+
+(() => {
+  const R = LOOPS.map(s => { const r = LR[s]; return { s, got: r.k8.dense_equivalent_N_over_n_eff_dense, flops: r.n_eff_loop / r.n_eff_dense, time: D.manual.loop_dense_toks[r.dense_scale] / r.tok_per_s }; });
+  const c = chart("#c-loop-pay", { w: 520, h: 250, m: { l: 86, b: 38, r: 24 } });
+  const y = d3.scaleBand().domain(LOOPS).range([0, c.ih]).padding(0.3);
+  const x = d3.scaleLinear().domain([0.82, 2.4]).range([0, c.iw]);
+  axes(c, x, y, { noYGrid: true, xGrid: true, yTicks: LOOPS, xTicks: [1, 1.2, 1.4, 1.6, 1.8, 2], xf: v => v.toFixed(1) + "×", xl: "是稠密同一档的几倍" });
+  const g = c.g.append("g").selectAll("g").data(R).join("g").attr("transform", r => `translate(0,${y(r.s) + y.bandwidth() / 2})`);
+  g.append("line").attr("x1", r => x(r.got)).attr("x2", r => x(Math.max(r.flops, r.time))).style("stroke", "var(--c-muted)").style("stroke-width", 2);
+  g.append("circle").attr("cx", r => x(r.time)).attr("r", 6).style("fill", "var(--surface)").style("stroke", "var(--c2)").style("stroke-width", 2);
+  g.append("circle").attr("cx", r => x(r.flops)).attr("r", 6).style("fill", "var(--c2)").style("stroke", "var(--surface)").style("stroke-width", 2);
+  g.append("circle").attr("cx", r => x(r.got)).attr("r", 6).style("fill", "var(--c1)").style("stroke", "var(--surface)").style("stroke-width", 2);
+  g.append("text").attr("class", "lab").attr("x", r => x(r.got) - 10).attr("y", 4).attr("text-anchor", "end").text(r => r.got.toFixed(2) + "×");
+  g.append("text").attr("class", "lab").attr("x", r => x(Math.max(r.flops, r.time)) + 10).attr("y", 4).text(r => `${r.flops.toFixed(2)}× / ${r.time.toFixed(2)}×`);
+  hover(g, r => `<b>${r.s}</b><br>得到：等效稠密 N 是稠密的 <span class="mono">${r.got.toFixed(2)}×</span><br>付出：FLOPs <span class="mono">${r.flops.toFixed(2)}×</span>，训练时间 <span class="mono">${r.time.toFixed(2)}×</span><br>吞吐 ${fM(LR[r.s].tok_per_s)} tok/s`);
+})();
+
+function drawLoopCurve(ds) {
+  const base = ds === "e24m" ? "e24m-045" : "e44m-002";
+  const series = [{ name: "稠密 " + base, col: "var(--c1)", cc: D.scales[ds].byCfg.find(cc => cc.id === base) },
+    ...["lf3", "lm3"].map(t => ({ name: `${ds}_${t}（${lpName(t)}）`, col: lpCol(t), cc: D.loop[`${ds}_${t}`].byCfg.find(cc => cc.id === LR[`${ds}_${t}`].config) }))];
+  const c = chart("#c-loop-curve", { w: 520, h: 300, m: { l: 50, b: 38, r: 20 } });
+  const all = series.flatMap(s => s.cc.stable.filter(p => p.k >= 2).concat(s.cc.decay));
+  const x = d3.scaleLinear().domain([0, d3.max(all, p => p.tok) * 1.04]).range([0, c.iw]);
+  const y = d3.scaleLinear().domain([d3.min(all, p => p.v) - 0.01, d3.max(all, p => p.v) + 0.01]).range([c.ih, 0]).clamp(true);
+  axes(c, x, y, { xf: tokFmt, xl: "训练 token", yl: "val_bpb", yN: 5, xN: 5, yf: d3.format(".2f") });
+  for (const s of series) {
+    const st = s.cc.stable.filter(p => p.k >= 2);
+    c.g.append("path").attr("d", d3.line().x(p => x(p.tok)).y(p => y(p.v))(st)).style("fill", "none").style("stroke", s.col).style("stroke-width", 2);
+    const sp = c.g.append("g").selectAll("circle").data(st).join("circle").attr("cx", p => x(p.tok)).attr("cy", p => y(p.v)).attr("r", 2.5).style("fill", s.col);
+    hover(sp, p => `<b>${s.name}</b> 稳定段 ${p.k}/8<br><span class="mono">${f4(p.v)}</span>`);
+    const dc = s.cc.decay.filter(p => p.k === 4 || p.k === 8);
+    const dp = c.g.append("g").selectAll("circle").data(dc).join("circle").attr("cx", p => x(p.tok)).attr("cy", p => y(p.v)).attr("r", 5.5).style("fill", s.col).style("stroke", "var(--surface)").style("stroke-width", 2);
+    hover(dp, p => `<b>${s.name}</b> 衰减后（${p.k}/8）<br><span class="mono">${f4(p.v)}</span>`);
+  }
+  c.g.append("g").selectAll("text").data(series).join("text").attr("class", "lab").attr("x", c.iw).attr("y", (s, i) => 14 + i * 16).attr("text-anchor", "end").text(s => "● " + s.name).style("fill", s => s.col);
+}
+seg("#seg-loop", [{ key: "e24m", label: "e24m" }, { key: "e44m", label: "e44m" }], "e44m", drawLoopCurve);
+
+(() => {
+  const R = ["e24m_lf3", "e24m_lm3"].flatMap(s => { const v = LR[s].lr_check_k4, b = v["x1.0"]; return [0.5, 1, 2].map(m => ({ s, m, v: v["x" + m.toFixed(1)], b, key: `${lpName(s)}，lr ×${m}` })); });
+  const c = chart("#c-loop-lr", { w: 520, h: 260, m: { l: 104, b: 38, r: 100 } });
+  const y = d3.scaleBand().domain(R.map(r => r.key)).range([0, c.ih]).padding(0.4);
+  const x = d3.scaleLinear().domain([1.355, 1.39]).range([0, c.iw]);
+  axes(c, x, y, { noYGrid: true, xGrid: true, yTicks: R.map(r => r.key), xf: d3.format(".2f"), xl: "val_bpb（衰减后，D = 0.478B）", xN: 4 });
+  c.g.append("line").attr("x1", 0).attr("x2", c.iw).attr("y1", c.ih / 2).attr("y2", c.ih / 2).style("stroke", "var(--rule)");
+  const dots = c.g.append("g").selectAll("circle").data(R).join("circle").attr("cx", r => x(r.v)).attr("cy", r => y(r.key) + y.bandwidth() / 2).attr("r", 6.5)
+    .style("fill", r => r.m === 1 ? lpCol(r.s) : "var(--surface)").style("stroke", r => lpCol(r.s)).style("stroke-width", 2);
+  hover(dots, r => `<b>${r.s}</b>，lr ×${r.m}<br><span class="mono">${f4(r.v)}</span>` + (r.m !== 1 ? `，相对 ×1：${pct(r.v / r.b - 1)}` : "（选中）"));
+  c.g.append("g").selectAll("text").data(R).join("text").attr("class", "lab").attr("x", r => x(r.v) + 12).attr("y", r => y(r.key) + y.bandwidth() / 2 + 4).text(r => f4(r.v) + (r.m !== 1 ? `（${pct(r.v / r.b - 1)}）` : " ← 选中"));
+})();
+
 // ---------- 决定 ----------
 (() => {
-  const N = { successive_halving: "从 e11m 起采用逐轮淘汰", ext_e5m: "e5m 边界扩展", ext_e11m: "e11m 边界扩展", ext_e24m: "e24m 边界扩展", ext_e44m: "e44m 边界扩展", ot_lr: "过训练的学习率倍数 m" };
+  const N = { successive_halving: "从 e11m 起采用逐轮淘汰", ext_e5m: "e5m 边界扩展", ext_e11m: "e11m 边界扩展", ext_e24m: "e24m 边界扩展", ext_e44m: "e44m 边界扩展", ot_lr: "过训练的学习率倍数 m", loop_lr_lf3: "整栈循环的学习率倍数", loop_lr_lm3: "中间循环的学习率倍数" };
   d3.select("#t-dec").html(`<tr><th>时间</th><th>决定</th><th>结果</th><th>理由</th></tr>` +
     Object.entries(D.decisions).map(([k, d]) => `<tr><td class="mono">${d.time}</td><td>${N[k] ?? k}</td><td class="mono">${d.value === true ? "是" : d.value === false ? "否" : d.value}</td><td class="wr">${d.why}</td></tr>`).join(""));
 })();

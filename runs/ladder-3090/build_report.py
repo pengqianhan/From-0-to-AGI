@@ -18,6 +18,7 @@ import analyze as A  # noqa: E402
 
 SCALES = ["e5m", "e11m", "e24m", "e44m", "e83m"]
 OT = ["e11m_ot", "e24m_ot"]
+LOOP = ["e24m_lf3", "e24m_lm3", "e44m_lf3", "e44m_lm3"]
 
 # README 里的数字（各条注明出处节）
 MANUAL = {
@@ -39,6 +40,7 @@ MANUAL = {
         {"stage": "e44m", "plan": 79, "actual": 72, "note": ""},
         {"stage": "e83m", "plan": 130, "actual": 109, "note": "主干约 83 + 衰减分叉 25.7"},
         {"stage": "过训练", "plan": 16, "actual": 16.6, "note": "只用 GPU0"},
+        {"stage": "循环", "plan": 29, "actual": 29.8, "note": "e24m 12.7 + e44m 17.1；只用 GPU0"},
     ],
     # 第 0 阶段：训练数据（B token）与验证集 字节/token
     "data_tokens": [
@@ -66,16 +68,20 @@ MANUAL = {
         {"lane": "e83m", "label": "GPU 维护", "start": "2026-11-03T09:17", "end": "2026-11-16T14:10", "kind": "pause"},
         {"lane": "e83m", "label": "继续 + 拟合", "start": "2026-11-16T14:10", "end": "2026-11-18T09:53", "kind": "run"},
         {"lane": "过训练", "label": "e11m / e24m 过训练（GPU0）", "start": "2026-11-23T10:21", "end": "2026-11-24T02:55", "kind": "run"},
+        {"lane": "循环", "label": "e24m 两种结构（学习率检查 + 训满）", "start": "2026-11-24T14:42", "end": "2026-11-25T03:22", "kind": "run"},
+        {"lane": "循环", "label": "e44m 两种结构", "start": "2026-11-25T03:22", "end": "2026-11-25T20:31", "kind": "run"},
     ],
     "gpus": [
         {"start": "2026-10-01T23:00", "end": "2026-10-03T13:35", "cards": "0,1,2"},
         {"start": "2026-10-03T13:35", "end": "2026-10-03T14:19", "cards": "0,2"},
         {"start": "2026-10-04T14:46", "end": "2026-10-05T10:00", "cards": "0,1,2"},
         {"start": "2026-10-05T10:00", "end": "2026-10-05T15:12", "cards": "0,2"},
-        {"start": "2026-10-27T10:26", "end": "2026-11-24T02:55", "cards": "0"},
+        {"start": "2026-10-27T10:26", "end": "2026-11-25T20:31", "cards": "0"},
     ],
     # 主线：N_eff（序列 2048 口径）与 token
     "main": {"n_eff": 924319744.0, "tokens": 400e9},
+    # 第 7 阶段开训前的试点：同一档稠密模型的吞吐（tok/s），与循环模型同一次测的
+    "loop_dense_toks": {"e24m": 139945, "e44m": 101540},
 }
 
 
@@ -90,8 +96,8 @@ def law_dict(law) -> dict:  # noqa: ANN001
 def main() -> None:
     from zero.tools.fit_scaling import fit_chinchilla
 
-    data: dict = {"manual": MANUAL, "scales": {}, "ot": {}}
-    for s in SCALES + OT:
+    data: dict = {"manual": MANUAL, "scales": {}, "ot": {}, "loop": {}}
+    for s in SCALES + OT + LOOP:
         rows = A.load(s)
         cfg_ids = sorted({r["id"] for r in rows}, key=lambda i: (len(i), i))
         idx = {c: i for i, c in enumerate(cfg_ids)}
@@ -116,6 +122,8 @@ def main() -> None:
                                  if k in fr}
             entry["points"] = [{"name": p.name, "D": p.D, "loss": p.loss} for p in A.frontier_points(s)]
             data["scales"][s] = entry
+        elif s in LOOP:
+            data["loop"][s] = entry
         else:
             entry["points"] = [{"name": p.name, "D": p.D, "loss": p.loss} for p in A.ot_points(s.removesuffix("_ot"))]
             data["ot"][s] = entry
@@ -141,6 +149,7 @@ def main() -> None:
     data["diag"] = {"variants": diag["variants"], "fixed_E": diag["fixed_E"]}
     data["ot_fit"] = {k: ot[k] for k in ("E_profile_rms", "E_allowed", "preregistered_pred_rel_err", "gates", "new_points")}
     data["ot_pred"] = json.loads((A.RES / "ot_predictions.json").read_text())
+    data["loop_result"] = json.loads((A.RES / "loop_result.json").read_text())
     data["decisions"] = json.loads((A.RES / "decisions.json").read_text())
     for s in ["e5m", "e11m"]:
         data["scales"][s]["nql"] = json.loads((A.RES / f"{s}_nql.json").read_text())
