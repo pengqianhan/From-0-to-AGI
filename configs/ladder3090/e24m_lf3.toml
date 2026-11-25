@@ -1,0 +1,7 @@
+# Ladder stage 7 (runs/ladder-3090/README.md): e24m with the whole stack looped 3 times (lf3).
+# 12 layer applications, N_eff = 38.21M (FLOPs per token / 6, sequence length 2048).
+base = "e24m.toml"
+[model]
+n_loops = 3
+[train]
+out_dir = "out/ladder3090/e24m_lf3/scratch"

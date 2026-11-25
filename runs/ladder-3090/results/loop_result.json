@@ -1,0 +1,286 @@
+{
+  "law": {
+    "E": 0.0,
+    "A": 12.17831578978293,
+    "B": 5.424059623666524,
+    "alpha": 0.1532364556962025,
+    "beta": 0.12145620253164555,
+    "rmse": 0.0024587359927260603,
+    "max_rel_err": 0.0032121430637541354,
+    "n_points": 18,
+    "param_count": "flops",
+    "at_boundary": false
+  },
+  "law_matches_prereg": true,
+  "prereg_law": {
+    "E": 0.0,
+    "A": 12.178,
+    "alpha": 0.1532,
+    "B": 5.424,
+    "beta": 0.1215
+  },
+  "tie_threshold": 0.01,
+  "scales": {
+    "e24m_lf3": {
+      "dense_scale": "e24m",
+      "n_eff_loop": 38207488.0,
+      "n_eff_dense": 23920640.0,
+      "lr_check_k4": {
+        "x1.0": 1.3667212831315358,
+        "x0.5": 1.3729146538281936,
+        "x2.0": 1.3860514865547722
+      },
+      "lr_decision": {
+        "value": 1.0,
+        "why": "e24m_lf3 4/8 衰减分支（D = 0.478B）：lr×0.5 1.3729、×1 1.3667、×2 1.3861；较好的 ×0.5 比 ×1 差 0.45%（阈值 0.5%）→ e24m_lf3、e44m_lf3 用 lr×1.0",
+        "time": "2026-11-24 19:19:01"
+      },
+      "config": "e24m_lf3-000",
+      "lr_mult": 1.0,
+      "k4": {
+        "val_bpb": 1.3667212831315358,
+        "D": 478412800.0,
+        "D_over_N_eff": 12.521440823327616,
+        "same_params": {
+          "dense_id": "e24m/e24m-045/k4",
+          "dense_val_bpb": 1.3820795201409979,
+          "dense_D": 478412800.0,
+          "D_matches": true,
+          "rel_diff": -0.011112411974598446,
+          "verdict": "循环更好"
+        },
+        "dense_equivalent_N": 26371418.315613028,
+        "dense_equivalent_N_over_n_eff_loop": 0.6902159680221067,
+        "dense_equivalent_N_over_n_eff_dense": 1.1024545461832556
+      },
+      "k8": {
+        "val_bpb": 1.328182358335454,
+        "D": 956825600.0,
+        "D_over_N_eff": 25.042881646655232,
+        "same_params": {
+          "dense_id": "e24m/e24m-045/k8",
+          "dense_val_bpb": 1.3457612670713766,
+          "dense_D": 956825600.0,
+          "D_matches": true,
+          "rel_diff": -0.013062427316085201,
+          "verdict": "循环更好"
+        },
+        "dense_equivalent_N": 26349013.77742653,
+        "dense_equivalent_N_over_n_eff_loop": 0.6896295767318315,
+        "dense_equivalent_N_over_n_eff_dense": 1.1015179266702952,
+        "same_compute": {
+          "pred": 1.2790250723676533,
+          "prereg_pred": 1.279,
+          "pred_matches_prereg": true,
+          "rel_diff": 0.03843340293306663,
+          "verdict": "循环更差"
+        }
+      },
+      "tok_per_s": 83863.79197741288
+    },
+    "e24m_lm3": {
+      "dense_scale": "e24m",
+      "n_eff_loop": 31064064.0,
+      "n_eff_dense": 23920640.0,
+      "lr_check_k4": {
+        "x1.0": 1.3602364620833065,
+        "x0.5": 1.375023053816731,
+        "x2.0": 1.3645495355898527
+      },
+      "lr_decision": {
+        "value": 1.0,
+        "why": "e24m_lm3 4/8 衰减分支（D = 0.478B）：lr×0.5 1.3750、×1 1.3602、×2 1.3645；较好的 ×2.0 比 ×1 差 0.32%（阈值 0.5%）→ e24m_lm3、e44m_lm3 用 lr×1.0",
+        "time": "2026-11-25 01:35:57"
+      },
+      "config": "e24m_lm3-000",
+      "lr_mult": 1.0,
+      "k4": {
+        "val_bpb": 1.3602364620833065,
+        "D": 478412800.0,
+        "D_over_N_eff": 15.40084388185654,
+        "same_params": {
+          "dense_id": "e24m/e24m-045/k4",
+          "dense_val_bpb": 1.3820795201409979,
+          "dense_D": 478412800.0,
+          "D_matches": true,
+          "rel_diff": -0.015804487179914894,
+          "verdict": "循环更好"
+        },
+        "dense_equivalent_N": 27663497.753066815,
+        "dense_equivalent_N_over_n_eff_loop": 0.8905305420780364,
+        "dense_equivalent_N_over_n_eff_dense": 1.1564697998492857
+      },
+      "k8": {
+        "val_bpb": 1.3206612299508216,
+        "D": 956825600.0,
+        "D_over_N_eff": 30.80168776371308,
+        "same_params": {
+          "dense_id": "e24m/e24m-045/k8",
+          "dense_val_bpb": 1.3457612670713766,
+          "dense_D": 956825600.0,
+          "D_matches": true,
+          "rel_diff": -0.018651181108204518,
+          "verdict": "循环更好"
+        },
+        "dense_equivalent_N": 27852789.600788023,
+        "dense_equivalent_N_over_n_eff_loop": 0.8966241378072111,
+        "dense_equivalent_N_over_n_eff_dense": 1.164383126905803,
+        "same_compute": {
+          "pred": 1.3060597565143999,
+          "prereg_pred": 1.3061,
+          "pred_matches_prereg": true,
+          "rel_diff": 0.011179789717577604,
+          "verdict": "循环更差"
+        }
+      },
+      "tok_per_s": 91925.4044732224,
+      "gates": {
+        "checkpoint": "step_00014600",
+        "g2": {
+          "mean": 0.19185304641723633,
+          "mean_abs": 0.22139479219913483,
+          "rms": 0.24958118796348572,
+          "min": -0.4115902781486511,
+          "max": 0.6144644618034363
+        },
+        "g3": {
+          "mean": 0.10148114711046219,
+          "mean_abs": 0.1544499695301056,
+          "rms": 0.19810990989208221,
+          "min": -0.5776194930076599,
+          "max": 1.0449446439743042
+        }
+      }
+    },
+    "e44m_lf3": {
+      "dense_scale": "e44m",
+      "n_eff_loop": 82673664.0,
+      "n_eff_dense": 44335104.0,
+      "lr_check_k4": {},
+      "lr_decision": {
+        "value": 1.0,
+        "why": "e24m_lf3 4/8 衰减分支（D = 0.478B）：lr×0.5 1.3729、×1 1.3667、×2 1.3861；较好的 ×0.5 比 ×1 差 0.45%（阈值 0.5%）→ e24m_lf3、e44m_lf3 用 lr×1.0",
+        "time": "2026-11-24 19:19:01"
+      },
+      "config": "e44m_lf3-000",
+      "lr_mult": 1.0,
+      "k4": {
+        "val_bpb": 1.2545341030804769,
+        "D": 886702080.0,
+        "D_over_N_eff": 10.725326991676576,
+        "same_params": {
+          "dense_id": "e44m/e44m-002/k4",
+          "dense_val_bpb": 1.262950267603468,
+          "dense_D": 886702080.0,
+          "D_matches": true,
+          "rel_diff": -0.006663892267873228,
+          "verdict": "持平"
+        },
+        "dense_equivalent_N": 47904529.000008956,
+        "dense_equivalent_N_over_n_eff_loop": 0.5794412232655971,
+        "dense_equivalent_N_over_n_eff_dense": 1.080510130302366
+      },
+      "k8": {
+        "val_bpb": 1.2139913936199074,
+        "D": 1773404160.0,
+        "D_over_N_eff": 21.450653983353153,
+        "same_params": {
+          "dense_id": "e44m/e44m-002/k8",
+          "dense_val_bpb": 1.2272610957088137,
+          "dense_D": 1773404160.0,
+          "D_matches": true,
+          "rel_diff": -0.010812452326000255,
+          "verdict": "循环更好"
+        },
+        "dense_equivalent_N": 49749518.202781156,
+        "dense_equivalent_N_over_n_eff_loop": 0.6017577520548885,
+        "dense_equivalent_N_over_n_eff_dense": 1.1221247660269649,
+        "same_compute": {
+          "pred": 1.1536648484469214,
+          "prereg_pred": 1.1537,
+          "pred_matches_prereg": true,
+          "rel_diff": 0.05229122240674866,
+          "verdict": "循环更差"
+        },
+        "e83m_interp": {
+          "value": 1.1537614872685569,
+          "prereg_value": 1.1538,
+          "rel_diff": 0.052203082713343285,
+          "verdict": "循环更差"
+        }
+      },
+      "tok_per_s": 58534.22371760114
+    },
+    "e44m_lm3": {
+      "dense_scale": "e44m",
+      "n_eff_loop": 57114624.0,
+      "n_eff_dense": 44335104.0,
+      "lr_check_k4": {},
+      "lr_decision": {
+        "value": 1.0,
+        "why": "e24m_lm3 4/8 衰减分支（D = 0.478B）：lr×0.5 1.3750、×1 1.3602、×2 1.3645；较好的 ×2.0 比 ×1 差 0.32%（阈值 0.5%）→ e24m_lm3、e44m_lm3 用 lr×1.0",
+        "time": "2026-11-25 01:35:57"
+      },
+      "config": "e44m_lm3-000",
+      "lr_mult": 1.0,
+      "k4": {
+        "val_bpb": 1.2492827978059136,
+        "D": 886702080.0,
+        "D_over_N_eff": 15.524956970740103,
+        "same_params": {
+          "dense_id": "e44m/e44m-002/k4",
+          "dense_val_bpb": 1.262950267603468,
+          "dense_D": 886702080.0,
+          "D_matches": true,
+          "rel_diff": -0.01082185906139399,
+          "verdict": "循环更好"
+        },
+        "dense_equivalent_N": 49980707.40339154,
+        "dense_equivalent_N_over_n_eff_loop": 0.8750947463716392,
+        "dense_equivalent_N_over_n_eff_dense": 1.1273393517559256
+      },
+      "k8": {
+        "val_bpb": 1.213808154494685,
+        "D": 1773404160.0,
+        "D_over_N_eff": 31.049913941480206,
+        "same_params": {
+          "dense_id": "e44m/e44m-002/k8",
+          "dense_val_bpb": 1.2272610957088137,
+          "dense_D": 1773404160.0,
+          "D_matches": true,
+          "rel_diff": -0.010961759694956164,
+          "verdict": "循环更好"
+        },
+        "dense_equivalent_N": 49823420.53931263,
+        "dense_equivalent_N_over_n_eff_loop": 0.8723408656128531,
+        "dense_equivalent_N_over_n_eff_dense": 1.1237916694480434,
+        "same_compute": {
+          "pred": 1.1971258282109072,
+          "prereg_pred": 1.1971,
+          "pred_matches_prereg": true,
+          "rel_diff": 0.013935315645732471,
+          "verdict": "循环更差"
+        }
+      },
+      "tok_per_s": 68298.81790102841,
+      "gates": {
+        "checkpoint": "step_00027060",
+        "g2": {
+          "mean": 0.19268028438091278,
+          "mean_abs": 0.326596736907959,
+          "rms": 0.3707409203052521,
+          "min": -1.0241143703460693,
+          "max": 1.5215109586715698
+        },
+        "g3": {
+          "mean": 0.1254020780324936,
+          "mean_abs": 0.15234942734241486,
+          "rms": 0.2728498578071594,
+          "min": -0.48558735847473145,
+          "max": 3.0502731800079346
+        }
+      }
+    }
+  },
+  "missing": []
+}

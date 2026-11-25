@@ -75,12 +75,21 @@ def zero_to_hf_name(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _check_no_loop(config: ModelConfig) -> None:
+    """Qwen3 in HF has no looped layers: a looped model (n_loops > 1) cannot be exported."""
+    if config.n_loops > 1:
+        raise NotImplementedError(
+            f"Export of a looped model (n_loops={config.n_loops}) to HF Qwen3 is not supported"
+        )
+
+
 def config_to_hf_qwen3(config: ModelConfig, **extra: Any) -> dict[str, Any]:
     """ModelConfig → the content of the Qwen3 config.json (dict).
 
     Write both the new and the old RoPE fields: transformers>=5 reads `rope_parameters`; older
     versions read `rope_theta`/`rope_scaling`.
     """
+    _check_no_loop(config)
     rope_parameters: dict[str, Any] = {
         "rope_type": "default",
         "rope_theta": float(config.rope_theta),
@@ -255,6 +264,8 @@ def export_to_hf_qwen3(
     from safetensors.torch import save_file
 
     config = config or model.config
+    _check_no_loop(config)
+    _check_no_loop(model.config)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
